@@ -31,6 +31,7 @@ export enum RbacResource {
 	APIKeys = "APIKeys",
 	Inference = "Inference",
 	Metrics = "Metrics",
+	FeatureFlags = "FeatureFlags",
 }
 
 // RBAC Operation Names (must match backend definitions)

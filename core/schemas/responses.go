@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -71,7 +72,7 @@ type BifrostResponsesResponse struct {
 	FrequencyPenalty   *float64                            `json:"frequency_penalty,omitempty"`
 	Reasoning          *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier   *string                             `json:"safety_identifier"` // Safety identifier
-	ServiceTier        *string                             `json:"service_tier"`
+	ServiceTier        *BifrostServiceTier                 `json:"service_tier"`
 	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
@@ -90,6 +91,27 @@ type BifrostResponsesResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle).
+func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
+	type Alias BifrostResponsesResponse
+	aux := &struct {
+		CreatedAt   float64  `json:"created_at"`
+		CompletedAt *float64 `json:"completed_at"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.CreatedAt = int(aux.CreatedAt)
+	if aux.CompletedAt != nil {
+		v := int(*aux.CompletedAt)
+		r.CompletedAt = &v
+	}
+	return nil
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -175,7 +197,17 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	// Response configuration - defaults: standard behavior
 	result.Store = orDefault(resp.Store, true)
 	result.Background = orDefault(resp.Background, false)
-	result.ServiceTier = orDefault(resp.ServiceTier, "auto")
+
+	if resp.ServiceTier != nil {
+		switch *resp.ServiceTier {
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority:
+			result.ServiceTier = resp.ServiceTier
+		default:
+			result.ServiceTier = new(BifrostServiceTierAuto)
+		}
+	} else {
+		result.ServiceTier = new(BifrostServiceTierAuto)
+	}
 	result.Truncation = orDefault(resp.Truncation, "disabled")
 	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
 
@@ -255,7 +287,7 @@ type ResponsesParameters struct {
 	PromptCacheKey     *string                       `json:"prompt_cache_key,omitempty"`  // Prompt cache key
 	Reasoning          *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
 	SafetyIdentifier   *string                       `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *string                       `json:"service_tier,omitempty"`
+	ServiceTier        *BifrostServiceTier           `json:"service_tier,omitempty"`
 	StreamOptions      *ResponsesStreamOptions       `json:"stream_options,omitempty"`
 	Store              *bool                         `json:"store,omitempty"`
 	Temperature        *float64                      `json:"temperature,omitempty"`

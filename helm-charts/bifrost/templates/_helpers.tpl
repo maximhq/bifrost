@@ -1251,6 +1251,21 @@ false
 {{- $_ := set $config "websocket" $ws }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.featureFlags }}
+{{- $flags := dict }}
+{{- range $name, $cfg := .Values.bifrost.featureFlags }}
+{{- if not (kindIs "map" $cfg) }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s must be an object with an 'enabled' field." $name) }}
+{{- end }}
+{{- if not (hasKey $cfg "enabled") }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s.enabled is required." $name) }}
+{{- end }}
+{{- $_ := set $flags $name (dict "enabled" $cfg.enabled) }}
+{{- end }}
+{{- if $flags }}
+{{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
+{{- end }}
+{{- end }}
 {{- $config | toJson }}
 {{- end }}
 
@@ -1374,6 +1389,22 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "zitadel" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "google" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
 {{- end }}

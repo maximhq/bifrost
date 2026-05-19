@@ -155,33 +155,41 @@ func RunSingleMigration(ctx context.Context, db *gorm.DB, migration *migrator.Mi
 	return m.Migrate()
 }
 
+// legacyBudgetVirtualKey holds the legacy budget virtual key model.
 type legacyBudgetVirtualKey struct {
 	tables.TableVirtualKey
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// TableName returns the governance_virtual_keys table name for legacyBudgetVirtualKey.
 func (legacyBudgetVirtualKey) TableName() string { return "governance_virtual_keys" }
 
+// legacyBudgetVirtualKeyProviderConfig holds the legacy budget virtual key provider config model.
 type legacyBudgetVirtualKeyProviderConfig struct {
 	tables.TableVirtualKeyProviderConfig
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// TableName returns the governance_virtual_key_provider_configs table name for legacyBudgetVirtualKeyProviderConfig.
 func (legacyBudgetVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
 
+// legacyBudgetTeam holds the legacy budget team model.
 type legacyBudgetTeam struct {
 	tables.TableTeam
 	BudgetID *string `gorm:"column:budget_id;type:varchar(255);index"`
 }
 
+// TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
+// sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
 }
 
+// legacyBudgetColumnModel returns the legacy budget column model for a given table name.
 func legacyBudgetColumnModel(tableName string) (any, error) {
 	switch tableName {
 	case "governance_virtual_keys":
@@ -195,6 +203,7 @@ func legacyBudgetColumnModel(tableName string) (any, error) {
 	}
 }
 
+// currentBudgetOwnerModel returns the current budget owner model for a given table name.
 func currentBudgetOwnerModel(tableName string) (any, error) {
 	switch tableName {
 	case "governance_virtual_keys":
@@ -208,10 +217,12 @@ func currentBudgetOwnerModel(tableName string) (any, error) {
 	}
 }
 
+// quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
 func quoteSQLiteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// sqliteTableColumns returns the column names of a SQLite table.
 func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
 	var columns []sqliteColumnInfo
 	query := fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(tableName))
@@ -226,6 +237,7 @@ func sqliteTableColumns(tx *gorm.DB, tableName string) ([]string, error) {
 	return result, nil
 }
 
+// sqliteTableHasColumn checks if a SQLite table has a column with the given name.
 func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, error) {
 	columns, err := sqliteTableColumns(tx, tableName)
 	if err != nil {
@@ -235,6 +247,24 @@ func sqliteTableHasColumn(tx *gorm.DB, tableName, columnName string) (bool, erro
 		return true, nil
 	}
 	return false, nil
+}
+
+// hasColumn checks if a table has a column with the given name.
+// Returns the introspection error rather than collapsing it to false so callers
+// can distinguish "column missing" from "could not determine".
+func hasColumn(tx *gorm.DB, table, column string) (bool, error) {
+	var count int64
+	var q string
+	switch tx.Dialector.Name() {
+	case "sqlite":
+		q = `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`
+	default:
+		q = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ? AND table_schema = current_schema()`
+	}
+	if err := tx.Raw(q, table, column).Scan(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // sqliteDropLegacyBudgetColumn removes the legacy budget_id column from a
@@ -378,6 +408,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationTeamsTableUpdates(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddTeamSourceIDColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddKeyNameColumn(ctx, db); err != nil {
@@ -716,7 +749,35 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
+		return err
+	}
+  if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// migrationAddFeatureFlagsTable creates the feature_flags table holding
+// user-toggled overrides for the in-memory featureflags registry.
+func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_feature_flags_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.TableFeatureFlag{}) {
+				if err := migrator.CreateTable(&tables.TableFeatureFlag{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+  return nil
 }
 
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
@@ -1311,6 +1372,44 @@ func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddTeamSourceIDColumn adds optional source_id to governance_teams, with a unique index
+func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_teams_source_id"
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_team_source_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.AddColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("add source_id column to governance_teams: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.CreateIndex(&tables.TableTeam{}, "SourceID"); err != nil {
+					return fmt.Errorf("create unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.DropIndex(&tables.TableTeam{}, idxName); err != nil {
+					return fmt.Errorf("drop unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.DropColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("drop source_id column from governance_teams: %w", err)
+				}
+			}
+			return nil
+		},
+	})
 }
 
 // migrationAddKeyNameColumn adds the name column to the key table and populates unique names
@@ -7257,16 +7356,23 @@ func migrateCalendarAlignedToBudgetsAndRateLimitsTable(ctx context.Context, db *
 		ID: "migrate_calendar_aligned",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
 			// Adding columns first
-			if !mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mig.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+			budgetsHasCol, err := hasColumn(tx, "governance_budgets", "calendar_aligned")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_budgets for calendar_aligned: %w", err)
+			}
+			if !budgetsHasCol {
+				if err := tx.Exec(`ALTER TABLE governance_budgets ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to budgets: %w", err)
 				}
 			}
 			// Adding columns first
-			if !mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
-				if err := mig.AddColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
+			rateLimitsHasCol, err := hasColumn(tx, "governance_rate_limits", "calendar_aligned")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_rate_limits for calendar_aligned: %w", err)
+			}
+			if !rateLimitsHasCol {
+				if err := tx.Exec(`ALTER TABLE governance_rate_limits ADD COLUMN calendar_aligned BOOLEAN DEFAULT FALSE`).Error; err != nil {
 					return fmt.Errorf("failed to add calendar_aligned column to rate_limits: %w", err)
 				}
 			}
@@ -7621,6 +7727,41 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
+// so that existing VKs can be attached directly to an access profile template (enterprise feature).
+func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
+				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
+					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
+				}
+			}
+			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
+				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
+				return mig.DropColumn(&tables.TableVirtualKey{}, "access_profile_id")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
 	}
 	return nil
 }

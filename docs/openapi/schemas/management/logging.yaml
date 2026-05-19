@@ -316,8 +316,6 @@ SearchMCPLogsResponse:
           type: integer
           format: int64
           description: Total number of items matching the query
-    stats:
-      $ref: '#/MCPToolLogStats'
     has_logs:
       type: boolean
       description: Whether any logs exist in the system

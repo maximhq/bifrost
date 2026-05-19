@@ -205,13 +205,17 @@ broker is a pure relay: a message received from one node is fanned out to all
 other connected nodes. The broker also pushes a **roster** (the list of
 connected node IDs) to every node.
 
+```mermaid
+flowchart LR
+    A["Node A<br/>(Cloud Run)"] -->|outbound stream| B["Broker<br/>(relay)"]
+    C["Node B<br/>(Cloud Run)"] -->|outbound stream| B
+    D["Node C<br/>(Cloud Run)"] -->|outbound stream| B
+    B -.->|fan-out| A
+    B -.->|fan-out| C
+    B -.->|fan-out| D
 ```
-   ┌──────────┐   outbound    ┌──────────┐   outbound   ┌──────────┐
-   │  Node A  │──── stream ──▶│  Broker  │◀── stream ────│  Node B  │
-   │(CloudRun)│               │ (relay)  │               │(CloudRun)│
-   └──────────┘               └──────────┘               └──────────┘
-        message from A ──▶ broker ──▶ forwarded to B, C, …  (never back to A)
-```
+
+A message from Node A travels to the broker, which forwards it to Node B and Node C (never back to A).
 
 Because nodes only need **outbound** connectivity, broker mode runs on any
 platform that can make an outbound gRPC connection.

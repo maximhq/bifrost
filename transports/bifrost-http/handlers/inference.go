@@ -1887,6 +1887,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {

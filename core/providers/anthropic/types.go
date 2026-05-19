@@ -132,6 +132,7 @@ type ProviderFeatureSupport struct {
 	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
+	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -149,6 +150,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
+		ServiceTier: true,
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -204,6 +206,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
+		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -220,6 +223,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		RedactThinking:      true,
 		EagerInputStreaming: true,
 		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
+		ServiceTier: true,
 	},
 }
 

@@ -1077,8 +1077,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 

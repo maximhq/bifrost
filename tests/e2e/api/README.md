@@ -80,6 +80,26 @@ From this directory (`tests/e2e/api`):
 ./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
+### API Management Extensions
+
+The API management runner can merge enterprise-only Postman folders without checking
+them into OSS:
+
+```bash
+./runners/run-newman-api-tests.sh --extra-collection /path/to/enterprise.postman_collection.json
+```
+
+You can also pass extensions via environment variable:
+
+```bash
+BIFROST_API_EXTRA_COLLECTION=/path/to/enterprise.postman_collection.json \
+  ./runners/run-newman-api-tests.sh
+```
+
+The default OSS run does not load extra collections. Enterprise should pass its
+collection from the enterprise repo, so shared management requests stay in OSS and
+DAC-specific assertions stay out of OSS.
+
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 

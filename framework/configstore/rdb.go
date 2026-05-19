@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -280,6 +281,18 @@ func (s *RDBConfigStore) DB() *gorm.DB {
 	return s.db.Load()
 }
 
+// ScopedDB returns the DB bound to ctx with any QueryScope on ctx
+// pre-applied. Use this in read paths that should respect caller-
+// driven row visibility. Use DB().WithContext(ctx) for writes and for
+// internal lookups (e.g. inference VK auth) that must bypass scoping.
+func (s *RDBConfigStore) ScopedDB(ctx context.Context) *gorm.DB {
+	db := s.DB().WithContext(ctx)
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		db = scope(db)
+	}
+	return db
+}
+
 // RunMigration opens a throwaway connection against the same
 // backing database, invokes fn with it, and closes the connection. Use this
 // for DDL that must not leave cached prepared-statement plans on the runtime
@@ -389,6 +402,13 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 		if columnName != "" {
 			// Convert snake_case to space-separated words
 			columnName = strings.ReplaceAll(columnName, "_", " ")
+			// For config_keys.name uniqueness violations, give a more specific error message.
+			// Scope to config_keys specifically (SQLite: "config_keys.name",
+			// PostgreSQL: constraint "idx_key_name") to avoid matching other tables like
+			// governance_teams.name or config_plugins.name.
+			if strings.Contains(errMsg, "config_keys.name") || strings.Contains(errMsg, "idx_key_name") {
+				return fmt.Errorf("API key names must be unique across providers. A key with this name %w. Rename it in the UI or config.json", ErrAlreadyExists)
+			}
 			return fmt.Errorf("a record with this %s %w. Please use a different value", columnName, ErrAlreadyExists)
 		}
 		// Fallback message if we couldn't parse the column name
@@ -421,6 +441,27 @@ func (s *RDBConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.TableF
 		return nil, err
 	}
 	return &dbConfig, nil
+}
+
+// ListFeatureFlags returns every persisted feature-flag override. Flags at
+// their code default are absent from this table by design.
+func (s *RDBConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error) {
+	var rows []tables.TableFeatureFlag
+	if err := s.DB().WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// UpsertFeatureFlag writes or replaces a single override row. ID is the
+// primary key so concurrent writers cannot create duplicates. updatedAt is
+// the caller-supplied logical timestamp used by gossip for last-write-wins.
+func (s *RDBConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error {
+	row := tables.TableFeatureFlag{ID: id, Enabled: enabled, UpdatedAt: updatedAt}
+	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"enabled", "updated_at"}),
+	}).Create(&row).Error
 }
 
 // GetClientConfig retrieves the client configuration from the database.
@@ -2260,7 +2301,7 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 	var virtualKeys []tables.TableVirtualKey
 
 	// Preload all relationships for complete information
-	if err := preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx)).
+	if err := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx)).
 		Order("created_at ASC").
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
@@ -2271,7 +2312,10 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
 	// Build base query with filters
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableVirtualKey{})
+	// ScopedDB applies any caller-supplied row visibility before
+	// per-call filters so the total count and the page result agree
+	// on what the caller is allowed to see.
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{})
 
 	// Virtual keys are either customer-scoped or team-scoped, never both.
 	// When both filters are provided, use OR to match keys belonging to either.
@@ -2281,6 +2325,8 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
 	} else if params.TeamID != "" {
 		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	} else if params.AccessProfileID > 0 {
+		baseQuery = baseQuery.Where("access_profile_id = ?", params.AccessProfileID)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -2360,10 +2406,16 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 }
 
 // GetVirtualKey retrieves a virtual key from the database.
+//
+// When ctx carries a QueryScope, the query is narrowed to rows the
+// caller is allowed to see. A row that exists but falls outside the
+// scope returns ErrNotFound, the same response a genuinely-missing
+// row produces, so URL guessing cannot distinguish "hidden" from
+// "absent".
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := preloadVirtualKeyDetailRelations(s.DB().WithContext(ctx)).
-		First(&virtualKey, "id = ?", id).Error; err != nil {
+	q := preloadVirtualKeyDetailRelations(s.ScopedDB(ctx))
+	if err := q.First(&virtualKey, "governance_virtual_keys.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2951,9 +3003,12 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 const teamSelectWithVKCount = "governance_teams.*, (SELECT COUNT(*) FROM governance_virtual_keys WHERE team_id = governance_teams.id) AS virtual_key_count"
 
 // GetTeams retrieves all teams from the database.
+//
+// When ctx carries a QueryScope, the query is narrowed to teams the
+// caller is allowed to see.
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	// Preload relationships for complete information
-	query := s.DB().WithContext(ctx).
+	query := s.ScopedDB(ctx).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit")
 	// Optional filtering by customer
@@ -2968,8 +3023,11 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 }
 
 // GetTeamsPaginated retrieves teams with pagination, filtering, and search support.
+//
+// When ctx carries a QueryScope, the query is narrowed to teams the
+// caller is allowed to see.
 func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableTeam{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableTeam{})
 
 	if params.CustomerID != "" {
 		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
@@ -3007,12 +3065,17 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 }
 
 // GetTeam retrieves a specific team from the database.
+//
+// When ctx carries a QueryScope, a team that doesn't satisfy the scope
+// returns ErrNotFound; the caller cannot distinguish "doesn't exist"
+// from "not visible," matching the leak-prevention contract used by
+// the other governance entities.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.DB().WithContext(ctx).
+	if err := s.ScopedDB(ctx).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
-		First(&team, "id = ?", id).Error; err != nil {
+		First(&team, "governance_teams.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3033,6 +3096,26 @@ func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, custome
 	}
 
 	if err := q.First(&team).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &team, nil
+}
+
+// GetTeamBySourceID retrieves a team by its source ID.
+func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return nil, ErrNotFound
+	}
+	var team tables.TableTeam
+	if err := s.DB().WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Where("source_id = ?", sourceID).
+		First(&team).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3110,9 +3193,12 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 }
 
 // GetCustomers retrieves all customers from the database.
+//
+// When ctx carries a QueryScope, the query is narrowed to customers
+// the caller is allowed to see.
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelations(s.DB().WithContext(ctx), "").
+	if err := preloadCustomerRelations(s.ScopedDB(ctx), "").
 		Order("created_at ASC").
 		Find(&customers).Error; err != nil {
 		return nil, err
@@ -3120,9 +3206,13 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 	return customers, nil
 }
 
-// GetCustomersPaginated retrieves customers with pagination and optional search filtering.
+// GetCustomersPaginated retrieves customers with pagination and optional
+// search filtering.
+//
+// When ctx carries a QueryScope, the query is narrowed to customers
+// the caller is allowed to see.
 func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableCustomer{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableCustomer{})
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
@@ -3152,10 +3242,15 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 }
 
 // GetCustomer retrieves a specific customer from the database.
+//
+// When ctx carries a QueryScope, a customer that doesn't satisfy the
+// scope returns ErrNotFound; the caller cannot distinguish "doesn't
+// exist" from "not visible," matching the leak-prevention contract
+// used by the other governance entities.
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := preloadCustomerRelations(s.DB().WithContext(ctx), "").
-		First(&customer, "id = ?", id).Error; err != nil {
+	if err := preloadCustomerRelations(s.ScopedDB(ctx), "").
+		First(&customer, "governance_customers.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3546,8 +3641,12 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 }
 
 // GetRoutingRulesPaginated retrieves routing rules with pagination and optional search filtering.
+//
+// When ctx carries a QueryScope, the query is narrowed to rules the
+// caller is allowed to see; rules with scope='global' are always
+// included by the scope builder.
 func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableRoutingRule{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableRoutingRule{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"

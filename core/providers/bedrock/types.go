@@ -64,8 +64,19 @@ func (r *BedrockTextCompletionRequest) IsStreamingRequested() bool {
 	return r.Stream
 }
 
+// BedrockServiceTierType represents the processing tier for a Bedrock request.
+// See https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ServiceTier.html
+type BedrockServiceTierType string
+
+const (
+	BedrockServiceTierTypePriority BedrockServiceTierType = "priority"
+	BedrockServiceTierTypeDefault  BedrockServiceTierType = "default"
+	BedrockServiceTierTypeFlex     BedrockServiceTierType = "flex"
+	BedrockServiceTierTypeReserved BedrockServiceTierType = "reserved"
+)
+
 type BedrockServiceTier struct {
-	Type string `json:"type"` // Service tier type: "reserved" | "priority" | "default" | "flex"
+	Type BedrockServiceTierType `json:"type"`
 }
 
 // BedrockConverseRequest represents a Bedrock Converse API request

@@ -29,6 +29,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
+	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -161,6 +162,63 @@ type ConfigData struct {
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+}
+
+// FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
+// boot overrides. Values declared here win over DB overrides and are
+// rendered as "locked" in the UI so operators must edit config.json (or
+// re-deploy Helm) to change them.
+type FeatureFlagsFileConfig struct {
+	Flags map[string]FeatureFlagFileValue `json:"flags"`
+}
+
+// FeatureFlagFileValue accepts either a JSON literal bool or a string. The
+// string form supports the same "env.NAME" indirection used elsewhere in
+// config.json (encryption_key, provider creds), so Helm can flip flags via
+// container env vars without re-templating the JSON. Recognized truthy
+// string values are "true", "1", "yes", "on" (case-insensitive); anything
+// else parses as false.
+type FeatureFlagFileValue struct {
+	Enabled bool `json:"enabled"`
+}
+
+// UnmarshalJSON accepts {"enabled": true} (literal bool), {"enabled": "true"}
+// (string literal), or {"enabled": "env.BIFROST_FOO"} (env-var indirection).
+// The string form is critical for Helm because chart values are stringly
+// typed when sourced from env vars.
+func (v *FeatureFlagFileValue) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Enabled json.RawMessage `json:"enabled"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Enabled) == 0 {
+		return nil
+	}
+	// Literal bool path.
+	var asBool bool
+	if err := json.Unmarshal(raw.Enabled, &asBool); err == nil {
+		v.Enabled = asBool
+		return nil
+	}
+	// String path: literal "true"/"false" or "env.X" indirection.
+	var asStr string
+	if err := json.Unmarshal(raw.Enabled, &asStr); err != nil {
+		return fmt.Errorf("feature flag enabled: must be bool or string, got %s", string(raw.Enabled))
+	}
+	resolved := asStr
+	if envKey, ok := strings.CutPrefix(asStr, "env."); ok {
+		resolved = os.Getenv(envKey)
+	}
+	switch strings.ToLower(strings.TrimSpace(resolved)) {
+	case "true", "1", "yes", "on":
+		v.Enabled = true
+	default:
+		v.Enabled = false
+	}
+	return nil
 }
 
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
@@ -182,6 +240,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -199,6 +258,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
+	cd.FeatureFlags = temp.FeatureFlags
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -299,6 +359,12 @@ type Config struct {
 	AsyncJobExecutor *logstore.AsyncJobExecutor
 	// Shared in-memory kvstore for transport-level protocol coordination.
 	KVStore *kvstore.Store
+
+	// Process-wide feature flag store. Flags are code-declared via
+	// featureflags.Register; this struct holds the effective state with
+	// layered overrides (DB then file). May be wired with a SyncDelegate
+	// by enterprise for cluster-wide gossip.
+	FeatureFlags *featureflags.Store
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -460,6 +526,12 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 	}
 }
 
+// registerFeatureFlags registers feature flags from the config store into the global flag registry.
+func registerFeatureFlags(_ context.Context) error {
+	// No feature flags to register
+	return nil
+}
+
 // LoadConfig loads initial configuration from a JSON config file into memory
 // with full preprocessing including environment variable resolution and key config parsing.
 // All processing is done upfront to ensure zero latency when retrieving data.
@@ -483,6 +555,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		configPath: configFilePath,
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
+	}
+	// Register feature flags before any file/DB-driven init so the
+	// registry is populated even when config.json is absent. initFeatureFlags
+	// (called below) hydrates DB overrides and applies file overrides; both
+	// depend on the registry being populated to surface flags correctly.
+	if err := registerFeatureFlags(ctx); err != nil {
+		logger.Error("failed to register feature flags: %v", err)
 	}
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
@@ -567,6 +646,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 3. KV store
 	if err := initKVStore(config); err != nil {
+		return nil, err
+	}
+	// 3a. Feature flags (after ConfigStore from initStores, before handlers)
+	if err := initFeatureFlags(ctx, config, &configData); err != nil {
 		return nil, err
 	}
 	// 4. Client config (store → file → defaults)
@@ -3635,6 +3718,50 @@ func (c *Config) Close(ctx context.Context) {
 	if c.VectorStore != nil {
 		c.VectorStore.Close(ctx, "")
 	}
+}
+
+// initFeatureFlags constructs the feature flag store and applies overrides
+// in precedence order: DB first (Hydrate), then config.json file (ApplyFile,
+// which marks the entry as locked so it cannot be toggled via the UI).
+// Errors from configstore are logged and ignored so a transient DB hiccup
+// at boot does not block startup; the store falls back to defaults +
+// file overrides.
+func initFeatureFlags(ctx context.Context, config *Config, configData *ConfigData) error {
+	// Type-assert to bool so a stored `false` (or non-bool / missing key)
+	// resolves to OSS mode rather than the misleading "any non-nil = true"
+	// behavior of the previous `!= nil` check. The schemas comment for this
+	// context key declares it as bool, so the assertion is the documented
+	// shape; the comma-ok zero-value handles the unset path cleanly.
+	isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool)
+	store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+	if err != nil {
+		return fmt.Errorf("failed to initialize feature flags: %w", err)
+	}
+	config.FeatureFlags = store
+
+	if config.ConfigStore != nil {
+		rows, err := config.ConfigStore.ListFeatureFlags(ctx)
+		if err != nil {
+			logger.Warn("[featureflags] hydrate from configstore failed: %v", err)
+		} else {
+			hydration := make([]featureflags.HydrationRow, 0, len(rows))
+			for _, row := range rows {
+				hydration = append(hydration, featureflags.HydrationRow{
+					ID:        row.ID,
+					Enabled:   row.Enabled,
+					UpdatedAt: row.UpdatedAt,
+				})
+			}
+			store.Hydrate(hydration)
+		}
+	}
+
+	if configData != nil && configData.FeatureFlags != nil {
+		for id, val := range configData.FeatureFlags.Flags {
+			store.ApplyFile(id, val.Enabled)
+		}
+	}
+	return nil
 }
 
 // initKVStore initializes the kvstore for the config

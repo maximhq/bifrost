@@ -2062,22 +2062,24 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 		case <-done:
-			// If context was also cancelled (race between done and ctx.Done),
-			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			// Race between done and ctx.Done: the streaming goroutine has reached its defer
+			// chain (Read has returned), and ctx is also cancelled. The body may already be
+			// at EOF and fasthttp may have released the underlying conn to the idle pool.
+			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
+			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
+			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
+			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					} else {
-						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					} else {
-						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
-
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				}
 			}
 		}
@@ -2395,8 +2397,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace:
-		// Cerebras, Perplexity, and HuggingFace don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
+		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -2415,18 +2417,15 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	// Skip drain + ReleaseResponse if the stream was already closed (e.g. by SetupStreamCancellation); fasthttp.ReleaseResponse would re-Close and nil-deref the TCP conn — leaking to GC is the intentional trade-off, so keep the defer below this check.
+	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
-		// Always release the response to prevent leaks, even after a panic
-		fasthttp.ReleaseResponse(resp)
 	}()
-	// First we will check if the connection is already closed
-	// In that case we won't drain the body stream, as it is already closed
-	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
-		return
-	}
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
@@ -2434,11 +2433,8 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}
-		if closer, ok := bodyStream.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				getLogger().Warn("failed to close streaming response body: %v", err)
-			}
-		}
+		// Always release the response to prevent leaks, even after a panic
+		fasthttp.ReleaseResponse(resp)
 	}
 }
 

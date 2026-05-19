@@ -45,11 +45,12 @@ import {
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import { useGetAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
 import { toast } from "sonner";
@@ -62,6 +63,9 @@ interface VirtualKeySheetProps {
 	// When set, the new VK is created under this team. The entity assignment is pre-set
 	// and cannot be changed (but all other fields remain editable).
 	defaultTeamId?: string;
+	// When set, the new VK is created under this access profile. The entity assignment is
+	// pre-set and cannot be changed.
+	defaultAccessProfileId?: number;
 	onSave: () => void;
 	onCancel: () => void;
 }
@@ -106,9 +110,10 @@ const formSchema = z
 		description: z.string().optional(),
 		providerConfigs: z.array(providerConfigSchema).optional(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
-		entityType: z.enum(["team", "customer", "none"]),
+		entityType: z.enum(["team", "customer", "access_profile", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
+		accessProfileId: z.string().optional(),
 		isActive: z.boolean(),
 		// Budget
 		budgetCalendarAligned: z.boolean(),
@@ -137,11 +142,15 @@ const formSchema = z
 			if (data.entityType === "customer") {
 				return data.customerId && data.customerId.trim() !== "";
 			}
+			// If entityType is "access_profile", accessProfileId must be provided and not empty
+			if (data.entityType === "access_profile") {
+				return data.accessProfileId && data.accessProfileId.trim() !== "";
+			}
 			return true;
 		},
 		{
-			message: "Please select a valid team or customer when assignment type is chosen",
-			path: ["entityType"], // This will show the error on the entityType field
+			message: "Please select a valid team, customer, or access profile when assignment type is chosen",
+			path: ["entityType"],
 		},
 	);
 
@@ -154,7 +163,7 @@ type VirtualKeyType = {
 	provider: string;
 };
 
-export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
+export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, defaultAccessProfileId, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -172,6 +181,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : defaultTeamId || "";
 	const attachedTeam = attachedTeamId ? teams.find((t) => t.id === attachedTeamId) : undefined;
 	const isTeamLocked = !isEditing && !!defaultTeamId;
+	const isAPLocked = !isEditing && !!defaultAccessProfileId;
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -186,6 +196,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
+	const { data: accessProfilesData } = useGetAccessProfilesQuery({ limit: 100 });
+	const accessProfiles = accessProfilesData?.access_profiles ?? [];
 	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating;
 
@@ -224,9 +236,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_client_name: config.mcp_client?.name || "",
 					tools_to_execute: config.tools_to_execute || [],
 				})) || [],
-			entityType: virtualKey?.team_id ? "team" : virtualKey?.customer_id ? "customer" : !isEditing && defaultTeamId ? "team" : "none",
+			entityType: virtualKey?.team_id ? "team"
+				: virtualKey?.customer_id ? "customer"
+				: virtualKey?.access_profile_id ? "access_profile"
+				: !isEditing && defaultTeamId ? "team"
+				: !isEditing && defaultAccessProfileId ? "access_profile"
+				: "none",
 			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
+			accessProfileId: virtualKey?.access_profile_id
+				? String(virtualKey.access_profile_id)
+				: !isEditing && defaultAccessProfileId
+					? String(defaultAccessProfileId)
+					: "",
 			isActive: virtualKey?.is_active ?? true,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
@@ -261,16 +283,22 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		}
 	}, [mcpClientsError]);
 
-	// Clear team/customer IDs when entityType changes to "none"
+	// Clear entity ID fields when entityType changes
 	useEffect(() => {
 		const entityType = form.watch("entityType");
 		if (entityType === "none") {
 			form.setValue("teamId", "", { shouldDirty: true });
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("accessProfileId", "", { shouldDirty: true });
 		} else if (entityType === "team") {
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("accessProfileId", "", { shouldDirty: true });
 		} else if (entityType === "customer") {
 			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("accessProfileId", "", { shouldDirty: true });
+		} else if (entityType === "access_profile") {
+			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("customerId", "", { shouldDirty: true });
 		}
 	}, [form.watch("entityType"), form]);
 
@@ -368,6 +396,27 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 	const [showReassignTeamWarning, setShowReassignTeamWarning] = useState(false);
 	const [pendingTeamId, setPendingTeamId] = useState<string | null>(null);
+	const [showReassignAPWarning, setShowReassignAPWarning] = useState(false);
+	const [pendingAccessProfileId, setPendingAccessProfileId] = useState<string | null>(null);
+	const [showReassignTypeWarning, setShowReassignTypeWarning] = useState(false);
+	const [pendingEntityType, setPendingEntityType] = useState<"team" | "customer" | "access_profile" | "none" | null>(null);
+
+	const currentAssignmentLabel = useMemo(() => {
+		if (!isEditing) return null;
+		if (virtualKey?.team_id) {
+			const team = teams?.find((t) => t.id === virtualKey.team_id);
+			return team ? `Team: ${team.name}` : "a team";
+		}
+		if (virtualKey?.customer_id) {
+			const customer = customers?.find((c) => c.id === virtualKey.customer_id);
+			return customer ? `Customer: ${customer.name}` : "a customer";
+		}
+		if (virtualKey?.access_profile_id) {
+			const ap = accessProfiles?.find((p) => p.id === virtualKey.access_profile_id);
+			return ap ? `Access Profile: ${ap.name}` : "an access profile";
+		}
+		return null;
+	}, [isEditing, virtualKey, teams, customers, accessProfiles]);
 
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		if (checked && isEditing) {
@@ -451,6 +500,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_configs: data.mcpConfigs,
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
+					access_profile_id: data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== "" ? Number(data.accessProfileId) : undefined,
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
 				};
@@ -493,6 +543,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					mcp_configs: data.mcpConfigs,
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
+					access_profile_id: data.entityType === "access_profile" && data.accessProfileId && data.accessProfileId.trim() !== "" ? Number(data.accessProfileId) : undefined,
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
@@ -1287,6 +1338,99 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											</AlertDialogFooter>
 										</AlertDialogContent>
 									</AlertDialog>
+
+								<AlertDialog
+									open={showReassignAPWarning}
+									onOpenChange={(open) => {
+										setShowReassignAPWarning(open);
+										if (!open) {
+											setPendingAccessProfileId(null);
+										}
+									}}
+								>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Reassign to a different access profile?</AlertDialogTitle>
+											<AlertDialogDescription>
+												This key is currently assigned to another access profile. Reassigning it will move budget tracking to this access profile — future requests through this key will count against this profile's budget, not the previous one.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel data-testid="reassign-ap-cancel" onClick={() => setPendingAccessProfileId(null)}>
+												Cancel
+											</AlertDialogCancel>
+											<AlertDialogAction
+												data-testid="reassign-ap-confirm"
+												onClick={() => {
+													if (pendingAccessProfileId !== null) {
+														form.setValue("accessProfileId", pendingAccessProfileId, { shouldDirty: true });
+													}
+													setPendingAccessProfileId(null);
+													setShowReassignAPWarning(false);
+												}}
+											>
+												Reassign
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
+
+								{/* Cross-type assignment warning */}
+								<AlertDialog
+									open={showReassignTypeWarning}
+									onOpenChange={(open) => {
+										if (!open) setPendingEntityType(null);
+										setShowReassignTypeWarning(open);
+									}}
+								>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Change assignment?</AlertDialogTitle>
+											<AlertDialogDescription>
+												This key is currently assigned to {currentAssignmentLabel}. Changing the assignment type will move budget
+												tracking — future requests will count against the new entity, not the previous one.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel data-testid="reassign-type-cancel" onClick={() => setPendingEntityType(null)}>
+												Cancel
+											</AlertDialogCancel>
+											<AlertDialogAction
+												data-testid="reassign-type-confirm"
+												onClick={async () => {
+													if (pendingEntityType) {
+														form.setValue("entityType", pendingEntityType, { shouldDirty: true });
+														if (pendingEntityType === "team" && teams?.length > 0) {
+															form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
+															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+														} else if (pendingEntityType === "customer" && customers?.length > 0) {
+															form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
+															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+														} else if (pendingEntityType === "access_profile") {
+															const apId = accessProfiles?.length > 0
+																? String(accessProfiles[0].id)
+																: virtualKey?.access_profile_id ? String(virtualKey.access_profile_id) : "";
+															form.setValue("accessProfileId", apId, { shouldDirty: true, shouldValidate: true });
+															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+														} else {
+															form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+															form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+															form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+														}
+														await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
+													}
+													setPendingEntityType(null);
+													setShowReassignTypeWarning(false);
+												}}
+											>
+												Change Assignment
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
 								</div>
 								{/* Rate Limiting Configuration */}
 								<div className="space-y-4">
@@ -1398,7 +1542,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										</AlertDialogFooter>
 									</AlertDialogContent>
 								</AlertDialog>
-								{(teams?.length > 0 || customers?.length > 0) && (
+								{(teams?.length > 0 || customers?.length > 0 || accessProfiles?.length > 0 || !!virtualKey?.access_profile_id || !!defaultAccessProfileId) && (
 									<>
 										<DottedSeparator className="my-6" />
 
@@ -1418,26 +1562,47 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																	{ value: "none", label: "No Assignment" },
 																	...(teams?.length > 0 ? [{ value: "team", label: "Assign to Team" }] : []),
 																	...(customers?.length > 0 ? [{ value: "customer", label: "Assign to Customer" }] : []),
+																	...(accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId ? [{ value: "access_profile", label: "Assign to Access Profile" }] : []),
 																]}
 																value={field.value}
 																onValueChange={async (value) => {
 																	const val = value ?? "none";
+																	const originalType = virtualKey?.team_id ? "team"
+																		: virtualKey?.customer_id ? "customer"
+																		: virtualKey?.access_profile_id ? "access_profile"
+																		: "none";
+																	if (isEditing && currentAssignmentLabel && val !== "none" && val !== originalType) {
+																		setPendingEntityType(val as "team" | "customer" | "access_profile");
+																		setShowReassignTypeWarning(true);
+																		return;
+																	}
 																	field.onChange(val);
 																	if (val === "team" && teams?.length > 0) {
 																		form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
 																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
+																		form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+																		await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
 																	} else if (val === "customer" && customers?.length > 0) {
 																		form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
 																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
+																		form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+																		await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
+																	} else if (val === "access_profile") {
+																		const apId = accessProfiles?.length > 0
+																			? String(accessProfiles[0].id)
+																			: virtualKey?.access_profile_id ? String(virtualKey.access_profile_id) : "";
+																		form.setValue("accessProfileId", apId, { shouldDirty: true, shouldValidate: true });
+																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
+																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
+																		await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
 																	} else {
 																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
 																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
+																		form.setValue("accessProfileId", "", { shouldDirty: true, shouldValidate: true });
+																		await form.trigger(["teamId", "customerId", "accessProfileId", "entityType"]);
 																	}
 																}}
-																disabled={isTeamLocked}
+																disabled={isTeamLocked || isAPLocked}
 																disableSearch
 																hideClear
 																className="h-9"
@@ -1502,6 +1667,37 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 														)}
 													/>
 												)}
+
+											{form.watch("entityType") === "access_profile" && (accessProfiles?.length > 0 || virtualKey?.access_profile_id || defaultAccessProfileId) && (
+												<FormField
+													control={form.control}
+													name="accessProfileId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel className="font-normal">Select Access Profile</FormLabel>
+															<ComboboxSelect
+																data-testid="access-profile-selector"
+																options={accessProfiles.map((ap) => ({ value: String(ap.id), label: ap.name }))}
+																value={field.value || null}
+																onValueChange={(val) => {
+																	const newVal = val ?? "";
+																	if (isEditing && virtualKey?.access_profile_id && newVal && newVal !== String(virtualKey.access_profile_id)) {
+																		setPendingAccessProfileId(newVal);
+																		setShowReassignAPWarning(true);
+																	} else {
+																		field.onChange(newVal);
+																	}
+																}}
+																placeholder="Select an access profile"
+																disabled={isAPLocked}
+																emptyMessage="No access profiles found."
+																className="h-9"
+															/>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											)}
 											</div>
 										</div>
 									</>

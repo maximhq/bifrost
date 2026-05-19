@@ -39,7 +39,7 @@ type BifrostChatResponse struct {
 	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
@@ -205,7 +205,7 @@ type ChatParameters struct {
 	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
 	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
 	Seed                 *int                  `json:"seed,omitempty"`
-	ServiceTier          *string               `json:"service_tier,omitempty"`
+	ServiceTier          *BifrostServiceTier   `json:"service_tier,omitempty"`
 	StreamOptions        *ChatStreamOptions    `json:"stream_options,omitempty"`
 	Stop                 []string              `json:"stop,omitempty"`
 	Store                *bool                 `json:"store,omitempty"`
@@ -1480,6 +1480,17 @@ const (
 	BifrostFinishReasonStop      BifrostFinishReason = "stop"
 	BifrostFinishReasonLength    BifrostFinishReason = "length"
 	BifrostFinishReasonToolCalls BifrostFinishReason = "tool_calls"
+)
+
+// BifrostServiceTier represents the service tier for a request/response.
+type BifrostServiceTier string
+
+// BifrostServiceTier values
+const (
+	BifrostServiceTierAuto     BifrostServiceTier = "auto"
+	BifrostServiceTierDefault  BifrostServiceTier = "default"
+	BifrostServiceTierFlex     BifrostServiceTier = "flex"
+	BifrostServiceTierPriority BifrostServiceTier = "priority"
 )
 
 type BifrostReasoningDetailsType string

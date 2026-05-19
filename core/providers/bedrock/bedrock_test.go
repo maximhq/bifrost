@@ -362,7 +362,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 	stop := testStop
 	trace := testTrace
 	latency := testLatency
-	serviceTier := "priority"
+	serviceTier := schemas.BifrostServiceTierPriority
 	props := testProps
 
 	tests := []struct {
@@ -514,7 +514,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				},
 				InferenceConfig: &bedrock.BedrockInferenceConfig{},
 				ServiceTier: &bedrock.BedrockServiceTier{
-					Type: serviceTier,
+					Type: bedrock.BedrockServiceTierTypePriority,
 				},
 			},
 		},
@@ -4142,10 +4142,10 @@ func TestBifrostToBedrockStopReasonReverseMapping(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		stopReason     *string
+		name              string
+		stopReason        *string
 		incompleteDetails *schemas.ResponsesResponseIncompleteDetails
-		expectedBedrock string
+		expectedBedrock   string
 	}{
 		{"Stop", schemas.Ptr("stop"), nil, "end_turn"},
 		{"Length", schemas.Ptr("length"), nil, "max_tokens"},
@@ -4155,17 +4155,17 @@ func TestBifrostToBedrockStopReasonReverseMapping(t *testing.T) {
 		{"UnknownPassthrough", schemas.Ptr("some_unknown_reason"), nil, "some_unknown_reason"},    // passes through
 		{
 			// StopReason takes priority over IncompleteDetails
-			name:            "StopReasonOverridesIncompleteDetails",
-			stopReason:      schemas.Ptr("stop"),
+			name:              "StopReasonOverridesIncompleteDetails",
+			stopReason:        schemas.Ptr("stop"),
 			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
-			expectedBedrock: "end_turn",
+			expectedBedrock:   "end_turn",
 		},
 		{
 			// IncompleteDetails is used when StopReason is nil
-			name:            "IncompleteDetailsFallback",
-			stopReason:      nil,
+			name:              "IncompleteDetailsFallback",
+			stopReason:        nil,
 			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
-			expectedBedrock: "max_tokens",
+			expectedBedrock:   "max_tokens",
 		},
 	}
 

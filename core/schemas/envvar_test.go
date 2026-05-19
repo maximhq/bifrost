@@ -377,6 +377,58 @@ func TestEnvVar_Redacted(t *testing.T) {
 	}
 }
 
+func TestEnvVar_FullyRedacted(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var ev *EnvVar
+		if got := ev.FullyRedacted(); got != nil {
+			t.Fatalf("expected nil, got %+v", got)
+		}
+	})
+
+	tests := []struct {
+		name        string
+		input       EnvVar
+		wantVal     string
+		wantFromEnv bool
+		wantEnvVar  string
+	}{
+		{
+			name:        "empty value",
+			input:       EnvVar{Val: ""},
+			wantVal:     "",
+			wantFromEnv: false,
+		},
+		{
+			name:        "long literal never leaks prefix or suffix",
+			input:       EnvVar{Val: "mysecretpassword", FromEnv: false},
+			wantVal:     "<REDACTED>",
+			wantFromEnv: false,
+		},
+		{
+			name:        "resolved env password preserves reference metadata",
+			input:       EnvVar{Val: "resolved-secret", FromEnv: true, EnvVar: "env.PROXY_PASS"},
+			wantVal:     "<REDACTED>",
+			wantFromEnv: true,
+			wantEnvVar:  "env.PROXY_PASS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.input.FullyRedacted()
+			if result.Val != tt.wantVal {
+				t.Errorf("Val: want %q, got %q", tt.wantVal, result.Val)
+			}
+			if result.FromEnv != tt.wantFromEnv {
+				t.Errorf("FromEnv: want %v, got %v", tt.wantFromEnv, result.FromEnv)
+			}
+			if result.EnvVar != tt.wantEnvVar {
+				t.Errorf("EnvVar: want %q, got %q", tt.wantEnvVar, result.EnvVar)
+			}
+		})
+	}
+}
+
 func TestEnvVar_IsRedacted(t *testing.T) {
 	tests := []struct {
 		name     string

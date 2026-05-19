@@ -20,6 +20,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	AccessProfileID                    uint // When set, return VKs attached to this access profile template
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)
@@ -96,6 +97,13 @@ type ConfigStore interface {
 	// Framework config CRUD
 	UpdateFrameworkConfig(ctx context.Context, config *tables.TableFrameworkConfig) error
 	GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error)
+
+	// Feature flag overrides: list + upsert. Flags themselves are
+	// code-declared (via featureflags.Register); only the toggle state
+	// lives here. There is intentionally no Delete: removing a flag means
+	// removing its Register() call in code.
+	ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error)
+	UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error
 
 	// Provider config CRUD
 	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
@@ -174,6 +182,7 @@ type ConfigStore interface {
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
+	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	DeleteTeam(ctx context.Context, id string) error
@@ -372,7 +381,7 @@ type ConfigStore interface {
 	// Prompt Repository - Prompts
 	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
 	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
-	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error
 	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
 	DeletePrompt(ctx context.Context, id string) error
 
@@ -394,6 +403,12 @@ type ConfigStore interface {
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
+
+	// ScopedDB returns the underlying DB bound to ctx with any
+	// QueryScope on ctx pre-applied. Use this in read paths that
+	// should respect caller-driven row visibility; use DB().WithContext(ctx)
+	// for writes and internal lookups that must bypass scoping.
+	ScopedDB(ctx context.Context) *gorm.DB
 
 	// RunMigration opens a throwaway *gorm.DB against the same
 	// backing database, invokes fn with it, and closes the connection. Use

@@ -353,6 +353,20 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	return params
 }
 
+// mapGeminiServiceTierToBifrost converts a Gemini ServiceTier to an OpenAI-compatible BifrostServiceTier.
+func mapGeminiServiceTierToBifrost(tier ServiceTier) schemas.BifrostServiceTier {
+	switch tier {
+	case ServiceTierStandard:
+		return schemas.BifrostServiceTierDefault
+	case ServiceTierFlex:
+		return schemas.BifrostServiceTierFlex
+	case ServiceTierPriority:
+		return schemas.BifrostServiceTierPriority
+	default:
+		return schemas.BifrostServiceTierAuto
+	}
+}
+
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
 func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{
@@ -1226,6 +1240,20 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		}
 	}
 	return config, nil
+}
+
+// mapBifrostServiceTierToGemini converts a BifrostServiceTier to a Gemini ServiceTier.
+func mapBifrostServiceTierToGemini(tier schemas.BifrostServiceTier) ServiceTier {
+	switch tier {
+	case schemas.BifrostServiceTierDefault:
+		return ServiceTierStandard
+	case schemas.BifrostServiceTierFlex:
+		return ServiceTierFlex
+	case schemas.BifrostServiceTierPriority:
+		return ServiceTierPriority
+	default:
+		return ServiceTierUnspecified
+	}
 }
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
