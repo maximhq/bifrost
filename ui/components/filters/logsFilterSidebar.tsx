@@ -838,19 +838,48 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 // ---------------------------------------------------------------------------
 
 function UserFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
-	const hasActive = !!filters.user_ids?.length;
+	const hasActive = (filters.user_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["users"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableUsers = filterData?.users || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableUsers.map((u) => u.id));
+		const extras = (filters.user_ids || []).filter((id) => !seen.has(id));
+		return [...availableUsers.map((u) => ({ key: u.id, label: u.name || u.id })), ...extras.map((id) => ({ key: id, label: id }))];
+	}, [availableUsers, filters.user_ids]);
+
+	if (!isUninitialized && !isLoading && availableUsers.length === 0 && !hasActive && !opened) return null;
+
 	return (
-		<FilterSection title="User" defaultOpen={defaultOpen || hasActive} testId="user-filter-toggle">
-			<div className="relative">
-				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-				<Input
-					value={filters.user_ids?.[0] || ""}
-					onChange={(e) => onFiltersChange({ ...filters, user_ids: e.target.value ? [e.target.value] : [] })}
-					placeholder="User ID"
-					className="h-8 border-0 pl-8 text-sm"
-					data-testid="user-id-filter-input"
-				/>
-			</div>
+		<FilterSection
+			title="User"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="user-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a user"
+				items={items}
+				allowCustom
+				isSelected={(id) => (filters.user_ids || []).includes(id)}
+				onToggle={(id) => {
+					const current = filters.user_ids || [];
+					const next = current.includes(id) ? current.filter((u) => u !== id) : [...current, id];
+					onFiltersChange({ ...filters, user_ids: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="user-filter"
+			/>
 		</FilterSection>
 	);
 }
