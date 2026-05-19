@@ -746,6 +746,31 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationAddFeatureFlagsTable creates the feature_flags table holding
+// user-toggled overrides for the in-memory featureflags registry.
+func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_feature_flags_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.TableFeatureFlag{}) {
+				if err := migrator.CreateTable(&tables.TableFeatureFlag{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
 	return nil
 }
 

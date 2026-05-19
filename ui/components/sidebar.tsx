@@ -10,6 +10,7 @@ import {
   ChevronsLeftRightEllipsis,
   Construction,
   DatabaseZap,
+  Flag,
   FlaskConical,
   FolderGit,
   Globe,
@@ -684,6 +685,7 @@ export default function AppSidebar() {
     RbacOperation.View,
   );
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+  const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
   const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(
     RbacResource.PromptRepository,
@@ -1027,6 +1029,13 @@ export default function AppSidebar() {
             icon: TrendingUp,
             description: "Performance tuning settings",
             hasAccess: hasSettingsAccess,
+          },
+          {
+            title: "Feature Flags",
+            url: "/workspace/config/feature-flags",
+            icon: Flag,
+            description: "Toggle feature flags",
+            hasAccess: hasFeatureFlagsAccess,
           },
         ],
       },

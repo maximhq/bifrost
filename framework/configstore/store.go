@@ -97,6 +97,13 @@ type ConfigStore interface {
 	UpdateFrameworkConfig(ctx context.Context, config *tables.TableFrameworkConfig) error
 	GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error)
 
+	// Feature flag overrides: list + upsert. Flags themselves are
+	// code-declared (via featureflags.Register); only the toggle state
+	// lives here. There is intentionally no Delete: removing a flag means
+	// removing its Register() call in code.
+	ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error)
+	UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error
+
 	// Provider config CRUD
 	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
 	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
