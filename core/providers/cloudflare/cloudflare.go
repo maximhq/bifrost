@@ -125,7 +125,7 @@ func (provider *CloudflareProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,

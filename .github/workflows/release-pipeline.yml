@@ -152,6 +152,7 @@ jobs:
           allowed-endpoints: >
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
@@ -619,6 +620,7 @@ jobs:
             172.38.0.2:5432
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.github.com:443
@@ -741,6 +743,7 @@ jobs:
           allowed-endpoints: >
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.github.com:443
@@ -853,6 +856,7 @@ jobs:
           allowed-endpoints: >
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.github.com:443

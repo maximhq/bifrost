@@ -222,6 +222,16 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
 }
 CONFIGEOF
 
+# The heredoc above is single-quoted, which is correct for `env.XXX` strings
+# (those are resolved by Bifrost at runtime, not by the shell). The Cloudflare
+# base_url is the one exception because it's a plain string field that needs
+# the runtime account id substituted in. Do that here so it doesn't matter
+# whether the heredoc is single- or double-quoted.
+if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  # Use a non-/ delimiter for sed so the URL's slashes don't need escaping.
+  sed -i.bak "s|\$CLOUDFLARE_ACCOUNT_ID|${CLOUDFLARE_ACCOUNT_ID}|g" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
+fi
+
 echo "Config file created at: $CONFIG_FILE"
 
 # Run the Bifrost container connected to the docker-compose network
