@@ -3313,9 +3313,6 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 			return &MCPToolLogSearchResult{
 				Logs:       logs,
 				Pagination: pagination,
-				Stats: MCPToolLogStats{
-					TotalExecutions: totalCount,
-				},
 			}, nil
 		}
 		return nil, err
@@ -3343,10 +3340,7 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	return &MCPToolLogSearchResult{
 		Logs:       logs,
 		Pagination: pagination,
-		Stats: MCPToolLogStats{
-			TotalExecutions: totalCount,
-		},
-		HasLogs: hasLogs,
+		HasLogs:    hasLogs,
 	}, nil
 }
 

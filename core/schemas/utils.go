@@ -32,6 +32,17 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
+func EnvVarAsString(e *EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar
+	}
+	return e.GetValue()
+}
+
 // knownProvidersMu protects concurrent access to knownProviders.
 var knownProvidersMu sync.RWMutex
 

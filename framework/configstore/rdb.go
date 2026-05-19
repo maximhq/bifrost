@@ -2325,6 +2325,8 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
 	} else if params.TeamID != "" {
 		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	} else if params.AccessProfileID > 0 {
+		baseQuery = baseQuery.Where("access_profile_id = ?", params.AccessProfileID)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -3094,6 +3096,26 @@ func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, custome
 	}
 
 	if err := q.First(&team).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &team, nil
+}
+
+// GetTeamBySourceID retrieves a team by its source ID.
+func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return nil, ErrNotFound
+	}
+	var team tables.TableTeam
+	if err := s.DB().WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Where("source_id = ?", sourceID).
+		First(&team).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}

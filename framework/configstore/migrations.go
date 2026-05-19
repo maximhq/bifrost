@@ -410,6 +410,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationTeamsTableUpdates(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddTeamSourceIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddKeyNameColumn(ctx, db); err != nil {
 		return err
 	}
@@ -746,7 +749,10 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropLegacyCalendarAlignedColumns(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
+	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
+		return err
+	}
+  if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -771,7 +777,7 @@ func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
-	return nil
+  return nil
 }
 
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
@@ -1366,6 +1372,44 @@ func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddTeamSourceIDColumn adds optional source_id to governance_teams, with a unique index
+func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_teams_source_id"
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_team_source_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.AddColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("add source_id column to governance_teams: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.CreateIndex(&tables.TableTeam{}, "SourceID"); err != nil {
+					return fmt.Errorf("create unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableTeam{}, idxName) {
+				if err := mg.DropIndex(&tables.TableTeam{}, idxName); err != nil {
+					return fmt.Errorf("drop unique index on governance_teams.source_id: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableTeam{}, "source_id") {
+				if err := mg.DropColumn(&tables.TableTeam{}, "source_id"); err != nil {
+					return fmt.Errorf("drop source_id column from governance_teams: %w", err)
+				}
+			}
+			return nil
+		},
+	})
 }
 
 // migrationAddKeyNameColumn adds the name column to the key table and populates unique names
@@ -7683,6 +7727,41 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
+// so that existing VKs can be attached directly to an access profile template (enterprise feature).
+func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
+				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
+					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
+				}
+			}
+			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
+				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
+				return mig.DropColumn(&tables.TableVirtualKey{}, "access_profile_id")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
 	}
 	return nil
 }

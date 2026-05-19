@@ -20,6 +20,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	AccessProfileID                    uint // When set, return VKs attached to this access profile template
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)
@@ -181,6 +182,7 @@ type ConfigStore interface {
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
+	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	DeleteTeam(ctx context.Context, id string) error
