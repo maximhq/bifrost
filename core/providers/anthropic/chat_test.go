@@ -845,3 +845,128 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 		t.Errorf("expected Display to be nil for non-Opus 4.7, got %q", *result.Thinking.Display)
 	}
 }
+
+func TestToBifrostChatCompletionStream_ToolUseStartEmitsOpenAIFirstChunk(t *testing.T) {
+	state := NewAnthropicStreamState()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chunk := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStart,
+		Index: schemas.Ptr(1),
+		ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeToolUse,
+			ID:   schemas.Ptr("toolu_123"),
+			Name: schemas.Ptr("get_weather"),
+		},
+	}
+
+	resp, bifrostErr, isLast := chunk.ToBifrostChatCompletionStream(ctx, "", state)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk")
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("expected one streaming response choice, got %#v", resp)
+	}
+
+	delta := resp.Choices[0].ChatStreamResponseChoice.Delta
+	if delta == nil || len(delta.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call delta, got %#v", delta)
+	}
+
+	toolCall := delta.ToolCalls[0]
+	if toolCall.Index != 0 {
+		t.Fatalf("expected first tool call index 0, got %d", toolCall.Index)
+	}
+	if toolCall.Type == nil || *toolCall.Type != string(schemas.ChatToolTypeFunction) {
+		t.Fatalf("expected tool call type=function on first delta, got %#v", toolCall.Type)
+	}
+	if toolCall.ID == nil || *toolCall.ID != "toolu_123" {
+		t.Fatalf("expected tool call id to be preserved, got %#v", toolCall.ID)
+	}
+	if toolCall.Function.Name == nil || *toolCall.Function.Name != "get_weather" {
+		t.Fatalf("expected tool call name to be preserved, got %#v", toolCall.Function.Name)
+	}
+	if toolCall.Function.Arguments != "" {
+		t.Fatalf("expected initial arguments chunk to be empty, got %q", toolCall.Function.Arguments)
+	}
+}
+
+func TestToBifrostChatCompletionStream_EmptyToolInputDeltaIsSuppressed(t *testing.T) {
+	state := NewAnthropicStreamState()
+	state.contentBlockToToolCallIdx[4] = 0
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chunk := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockDelta,
+		Index: schemas.Ptr(4),
+		Delta: &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: schemas.Ptr(""),
+		},
+	}
+
+	resp, bifrostErr, isLast := chunk.ToBifrostChatCompletionStream(ctx, "", state)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk")
+	}
+	if resp != nil {
+		t.Fatalf("expected empty partial_json delta to be suppressed, got %#v", resp)
+	}
+}
+
+func TestToBifrostChatCompletionStream_ToolInputDeltaOmitsRepeatedMetadata(t *testing.T) {
+	state := NewAnthropicStreamState()
+	state.contentBlockToToolCallIdx[7] = 2
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chunk := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockDelta,
+		Index: schemas.Ptr(7),
+		Delta: &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: schemas.Ptr("{\"loc"),
+		},
+	}
+
+	resp, bifrostErr, isLast := chunk.ToBifrostChatCompletionStream(ctx, "", state)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk")
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("expected one streaming response choice, got %#v", resp)
+	}
+
+	delta := resp.Choices[0].ChatStreamResponseChoice.Delta
+	if delta == nil || len(delta.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call delta, got %#v", delta)
+	}
+
+	toolCall := delta.ToolCalls[0]
+	if toolCall.Index != 2 {
+		t.Fatalf("expected mapped tool call index 2, got %d", toolCall.Index)
+	}
+	if toolCall.Type != nil {
+		t.Fatalf("expected continuation delta to omit type, got %#v", toolCall.Type)
+	}
+	if toolCall.ID != nil {
+		t.Fatalf("expected continuation delta to omit id, got %#v", toolCall.ID)
+	}
+	if toolCall.Function.Name != nil {
+		t.Fatalf("expected continuation delta to omit function name, got %#v", toolCall.Function.Name)
+	}
+	if toolCall.Function.Arguments != "{\"loc" {
+		t.Fatalf("expected arguments chunk to be preserved, got %q", toolCall.Function.Arguments)
+	}
+}

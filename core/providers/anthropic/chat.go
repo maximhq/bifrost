@@ -1152,6 +1152,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Handle tool use streaming - accumulate partial JSON
 				if chunk.Delta.PartialJSON != nil {
+					if *chunk.Delta.PartialJSON == "" {
+						// Anthropic may emit an empty partial_json marker immediately after
+						// tool_use starts. OpenAI-style chat tool deltas should keep that
+						// initialization folded into the first tool_call chunk instead of
+						// emitting a second empty arguments delta.
+						return nil, nil, false
+					}
+
 					if structuredOutputToolName != "" {
 						// Structured output: stream JSON as content
 						streamResponse := &schemas.BifrostChatResponse{
@@ -1184,7 +1192,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
 											{
 												Index: uint16(toolCallIdx),
-												Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
 												Function: schemas.ChatAssistantMessageToolCallFunction{
 													Arguments: *chunk.Delta.PartialJSON,
 												},
