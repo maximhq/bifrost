@@ -37,6 +37,8 @@ var securityHeaders = []string{
 	"x-api-key",
 	"x-goog-api-key",
 	"x-bf-api-key",
+	"x-bf-api-key-id",
+	"x-bf-provider-api-key",
 	"x-bf-vk",
 }
 

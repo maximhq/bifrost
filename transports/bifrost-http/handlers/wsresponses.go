@@ -685,6 +685,10 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 				// Already handled above
 			case k == "x-bf-api-key":
 				ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, v)
+			case k == "x-bf-provider-api-key":
+				if rawKey := strings.TrimSpace(v); rawKey != "" {
+					ctx.SetValue(schemas.BifrostContextKeyProviderAPIKey, rawKey)
+				}
 			case strings.HasPrefix(k, "x-bf-eh-"):
 				addForwardedHeader(extraHeaders, matcher, strings.TrimPrefix(k, "x-bf-eh-"), v)
 			case matcher != nil && matcher.HasAllowlist() && matcher.MatchesAllow(k):
@@ -719,7 +723,7 @@ func isSecurityDeniedExtraHeader(name string) bool {
 	}
 	switch name {
 	case "authorization", "proxy-authorization", "cookie", "host", "content-length", "connection", "transfer-encoding",
-		"upgrade", "origin", "x-api-key", "x-goog-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
+		"upgrade", "origin", "x-api-key", "x-goog-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-provider-api-key", "x-bf-vk":
 		return true
 	default:
 		return false
