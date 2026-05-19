@@ -48,6 +48,7 @@ const (
 	Parasail    ModelProvider = "parasail"
 	Perplexity  ModelProvider = "perplexity"
 	Cerebras    ModelProvider = "cerebras"
+	Cloudflare  ModelProvider = "cloudflare"
 	Gemini      ModelProvider = "gemini"
 	OpenRouter  ModelProvider = "openrouter"
 	Elevenlabs  ModelProvider = "elevenlabs"
@@ -77,6 +78,7 @@ var StandardProviders = []ModelProvider{
 	Azure,
 	Bedrock,
 	Cerebras,
+	Cloudflare,
 	Cohere,
 	Gemini,
 	Groq,

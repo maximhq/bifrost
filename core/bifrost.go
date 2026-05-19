@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
+	"github.com/maximhq/bifrost/core/providers/cloudflare"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
@@ -3900,6 +3901,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return perplexity.NewPerplexityProvider(config, bifrost.logger)
 	case schemas.Cerebras:
 		return cerebras.NewCerebrasProvider(config, bifrost.logger)
+	case schemas.Cloudflare:
+		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
