@@ -183,6 +183,7 @@ jobs:
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1204,6 +1205,7 @@ jobs:
             iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1505,6 +1507,7 @@ jobs:
             172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.github.com:443
@@ -1635,6 +1638,7 @@ jobs:
             172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.elevenlabs.io:443
             api.github.com:443
