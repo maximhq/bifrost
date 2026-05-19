@@ -11,6 +11,21 @@ import (
 	"gorm.io/gorm"
 )
 
+// sanitizeJSONForJSONB removes JSON escape sequences that PostgreSQL's jsonb
+// type cannot represent. Specifically, jsonb rejects the NUL unicode escape
+// (\u0000) with errcode 22P05 even though plain TEXT and the json type can
+// store it. Stripping the escape from the marshaled JSON keeps subsequent
+// TEXT->jsonb casts in list queries safe. The replacement is case-insensitive
+// since JSON allows \u0000 or \U0000.
+func sanitizeJSONForJSONB(s string) string {
+	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\U`) {
+		return s
+	}
+	s = strings.ReplaceAll(s, `\u0000`, "")
+	s = strings.ReplaceAll(s, `\U0000`, "")
+	return s
+}
+
 type SortBy string
 
 const (
@@ -277,7 +292,7 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.InputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.InputHistory = string(data)
+			l.InputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
@@ -285,7 +300,7 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.ResponsesInputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.ResponsesInputHistory = string(data)
+			l.ResponsesInputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
@@ -785,6 +800,7 @@ type MCPToolLog struct {
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
 	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
+	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed

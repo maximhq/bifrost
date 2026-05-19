@@ -1,7 +1,7 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { TokenHistogramResponse } from "@/lib/types/logs";
 import { Info } from "lucide-react";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
@@ -18,7 +18,7 @@ const formatTokenCount = (count: number): string => {
 	return count.toLocaleString();
 };
 
-export default function ExternalCacheTokenMeterChart({ data }: ExternalCacheTokenMeterChartProps) {
+function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
 
 	const { percentage, totalCachedRead, totalPromptTokens } = useMemo(() => {
@@ -114,3 +114,5 @@ export default function ExternalCacheTokenMeterChart({ data }: ExternalCacheToke
 		</ChartErrorBoundary>
 	);
 }
+
+export default memo(ExternalCacheTokenMeterChartImpl);

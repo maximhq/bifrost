@@ -5361,7 +5361,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	// Build request body
 	openAIReq := &OpenAIBatchRequest{
-		InputFileID:        inputFileID,
+		InputFileID:        schemas.Ptr(inputFileID),
 		Endpoint:           string(request.Endpoint),
 		CompletionWindow:   request.CompletionWindow,
 		Metadata:           request.Metadata,

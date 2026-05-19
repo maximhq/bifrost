@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
@@ -25,6 +26,13 @@ const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes
 	migrationAdvisoryLockKey = 1000001
+
+	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
+	advisoryLockRetryInterval = 5 * time.Second
+
+	// advisoryLockTimeout is the maximum time to wait for the advisory lock
+	// before giving up with actionable operator guidance.
+	advisoryLockTimeout = 5 * time.Minute
 )
 
 // migrationLock holds a dedicated connection for the advisory lock.
@@ -34,7 +42,10 @@ type migrationLock struct {
 	conn *sql.Conn
 }
 
-// acquireMigrationLock gets a dedicated connection and acquires an advisory lock.
+// acquireMigrationLock gets a dedicated connection and acquires an advisory lock
+// using pg_try_advisory_lock with retry + timeout. This prevents pods from
+// blocking indefinitely if a previous pod crashed without releasing the lock
+// (e.g., behind a connection proxy or with slow TCP keepalive detection).
 // For non-PostgreSQL databases, returns a no-op lock.
 func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, error) {
 	if db.Dialector.Name() != "postgres" {
@@ -52,15 +63,70 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, err
 		return nil, fmt.Errorf("failed to get dedicated connection: %w", err)
 	}
 
-	// Acquire advisory lock on this dedicated connection.
-	// This will BLOCK if another node holds the lock.
-	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockKey)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to acquire migration advisory lock: %w", err)
-	}
+	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
+	// pg_try_advisory_lock returns true if acquired, false if held by another session.
+	deadline := time.Now().Add(advisoryLockTimeout)
+	maxAttempts := int(advisoryLockTimeout / advisoryLockRetryInterval)
+	attempt := 0
 
-	return &migrationLock{conn: conn}, nil
+	for {
+		attempt++
+		// Derive a per-attempt context with the remaining lock budget as timeout,
+		// so a stalled DB round-trip can't block beyond the overall deadline.
+		attemptTimeout := time.Until(deadline)
+		if attemptTimeout <= 0 {
+			attemptTimeout = advisoryLockRetryInterval
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
+		var acquired bool
+		err = conn.QueryRowContext(attemptCtx, "SELECT pg_try_advisory_lock($1)", migrationAdvisoryLockKey).Scan(&acquired)
+		attemptCancel()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to attempt migration advisory lock: %w", err)
+		}
+
+		if acquired {
+			if attempt > 1 {
+				log.Printf("[configstore] migration lock acquired after %d attempts", attempt)
+			}
+			return &migrationLock{conn: conn}, nil
+		}
+
+		// Lock not acquired -- check if we've exceeded the timeout
+		if time.Now().After(deadline) {
+			conn.Close()
+			return nil, fmt.Errorf(
+				"failed to acquire configstore migration lock (key=%d) after %d attempts over %s\n\n"+
+					"This usually means another Bifrost pod (or a previous crashed pod's lingering\n"+
+					"database session) is still holding the lock. To diagnose and resolve:\n\n"+
+					"1. Find who holds the lock:\n"+
+					"   SELECT pid, usename, application_name, client_addr, backend_start, state, query\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = true);\n\n"+
+					"2. If the session belongs to a dead/crashed pod, terminate it:\n"+
+					"   SELECT pg_terminate_backend(<pid_from_step_1>);\n\n"+
+					"3. List all sessions waiting for this lock:\n"+
+					"   SELECT pid, usename, client_addr, state, wait_event\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = false);\n\n"+
+					"After terminating the stale session, restart this pod and it should proceed normally.",
+				migrationAdvisoryLockKey, attempt, advisoryLockTimeout,
+				migrationAdvisoryLockKey, migrationAdvisoryLockKey,
+			)
+		}
+
+		log.Printf("[configstore] waiting for migration lock (attempt %d/%d) — another node is running migrations, retrying in %s...",
+			attempt, maxAttempts, advisoryLockRetryInterval)
+
+		// Wait before retrying, but respect context cancellation
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			return nil, fmt.Errorf("context cancelled while waiting for migration lock: %w", ctx.Err())
+		case <-time.After(advisoryLockRetryInterval):
+		}
+	}
 }
 
 // release unlocks and closes the dedicated connection
@@ -641,6 +707,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1045,25 +1114,20 @@ func migrationAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationDropAllowDirectKeysColumn drops the allow_direct_keys column.
-// The "Allow Direct Keys" feature was retired in v1.5 — keys passed through
-// HTTP headers are no longer accepted.
+// migrationDropAllowDirectKeysColumn recomputes config_hash after the
+// AllowDirectKeys field was removed from GenerateClientConfigHash in v1.5.
+// Without this, every existing config_hash would mismatch on first startup
+// and trigger a spurious config-reload cycle.
 //
-// AllowDirectKeys was previously included in GenerateClientConfigHash, so
-// every existing config_hash on disk would mismatch on first v1.5 startup
-// and trigger a spurious config-reload cycle. Recompute config_hash for all
-// rows here to avoid that, mirroring migrationAddRoutingChainMaxDepthColumn.
+// The actual DROP COLUMN is handled by migrationDropAllowDirectKeysColumnDDL
+// so that the DDL (AccessExclusiveLock) never shares a transaction with the
+// SELECT + UPDATE on the same table — that combination was observed to lock
+// config_client indefinitely on contended Postgres instances.
 func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "drop_allow_direct_keys_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
-				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
-					return err
-				}
-			}
 
 			var clientConfigs []tables.TableClientConfig
 			if err := tx.Find(&clientConfigs).Error; err != nil {
@@ -1117,6 +1181,33 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running drop_allow_direct_keys_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropAllowDirectKeysColumnDDL drops the now-unused allow_direct_keys
+// column in its own migration. Splitting the DDL from the hash-recompute DML
+// ensures the AccessExclusiveLock from DROP COLUMN is held only for the brief
+// catalog update and never contends with reads/writes on the same table.
+func migrationDropAllowDirectKeysColumnDDL(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_allow_direct_keys_column_ddl",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
 				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
@@ -1127,7 +1218,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running drop_allow_direct_keys_column migration: %s", err.Error())
+		return fmt.Errorf("error while running drop_allow_direct_keys_column_ddl migration: %s", err.Error())
 	}
 	return nil
 }

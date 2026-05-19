@@ -289,21 +289,34 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Get available models
+		// Get available filter data. Pass `dimensions` to fetch only a subset of
+		// dropdowns — the backend runs only those SELECT DISTINCTs and caches the
+		// subset independently. Omitting `dimensions` returns everything (used by
+		// any caller that needs the full bundle).
 		getAvailableFilterData: builder.query<
 			{
-				models: string[];
-				aliases: string[];
-				selected_keys: RedactedDBKey[];
-				virtual_keys: VirtualKey[];
-				routing_rules: RoutingRule[];
-				routing_engines: string[];
-				stop_reasons: string[];
-				metadata_keys: Record<string, string[]>;
+				models?: string[];
+				aliases?: string[];
+				selected_keys?: RedactedDBKey[];
+				virtual_keys?: VirtualKey[];
+				routing_rules?: RoutingRule[];
+				routing_engines?: string[];
+				stop_reasons?: string[];
+				teams?: { id: string; name: string }[];
+				customers?: { id: string; name: string }[];
+				users?: { id: string; name: string }[];
+				business_units?: { id: string; name: string }[];
+				metadata_keys?: Record<string, string[]>;
 			},
-			void
+			{ dimensions?: string[] } | void
 		>({
-			query: () => "/logs/filterdata",
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				if (!dims || dims.length === 0) return "/logs/filterdata";
+				// Sort to keep the cache key stable regardless of caller-side ordering.
+				const sorted = [...dims].sort().join(",");
+				return `/logs/filterdata?dimensions=${encodeURIComponent(sorted)}`;
+			},
 			providesTags: ["Logs"],
 		}),
 

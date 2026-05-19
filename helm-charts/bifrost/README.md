@@ -563,7 +563,7 @@ bifrost:
 |-----------|-------------|---------|
 | `bifrost.mcp.enabled` | Enable MCP (Model Context Protocol) | `false` |
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
-| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form. | `"30s"` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |

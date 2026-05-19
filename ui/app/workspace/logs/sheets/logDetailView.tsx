@@ -48,6 +48,7 @@ import {
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import {
@@ -1942,7 +1943,25 @@ export function LogDetailView({
                         last={isOverallLast}
                       >
                         {text ? (
-                          usePlainText ? (
+                          usePlainText && isJson(text) ? (
+                            <CodeEditor
+                              wrap
+                              code={(() => {
+                                try {
+                                  return JSON.stringify(JSON.parse(text), null, 2);
+                                } catch {
+                                  return text;
+                                }
+                              })()}
+                              lang="json"
+                              readonly
+                              autoResize
+                              options={{
+                                showIndentLines: false,
+                                disableHover: true,
+                              }}
+                            />
+                          ) : usePlainText ? (
                             <CollapsibleCode text={text} preview={3} mono={false} />
                           ) : (
                             <CollapsibleCode
@@ -2052,7 +2071,27 @@ export function LogDetailView({
                                 )}
                               </div>
                             ) : text ? (
-                              <CollapsibleCode text={text} preview={3} mono={false} />
+                              isJson(text) ? (
+                                <CodeEditor
+                                  wrap
+                                  code={(() => {
+                                    try {
+                                      return JSON.stringify(JSON.parse(text), null, 2);
+                                    } catch {
+                                      return text;
+                                    }
+                                  })()}
+                                  lang="json"
+                                  readonly
+                                  autoResize
+                                  options={{
+                                    showIndentLines: false,
+                                    disableHover: true,
+                                  }}
+                                />
+                              ) : (
+                                <CollapsibleCode text={text} preview={3} mono={false} />
+                              )
                             ) : (
                               <LogChatMessageView
                                 message={log.output_message}

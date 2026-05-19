@@ -71,6 +71,10 @@ ports:
 
 Apply the same addition to your headless `Service`. See the updated [Clustering documentation](/enterprise/clustering) for full manifests.
 
+<Note>
+If you deploy via Helm, **upgrade to Bifrost chart `>= 2.1.14`** before rolling out v1.4.0. Earlier chart versions don't expose the `10102/TCP` gRPC port on the StatefulSet or headless `Service`, so cluster nodes won't be able to reach each other for counter-sync. The chart's [cluster values](/deployment-guides/helm/cluster) include the `grpc.port` field by default.
+</Note>
+
 **Optional `cluster_config.grpc` block** (defaults shown):
 ```json
 {
@@ -167,7 +171,7 @@ Work through the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) checklis
 </Step>
 
 <Step title="Open the gRPC cluster port (10102/TCP) on every node">
-Update Kubernetes StatefulSets/Deployments, headless Services, NetworkPolicies, and any cloud-level security groups or firewall rules to allow `10102/TCP` peer-to-peer between cluster nodes.
+Update Kubernetes StatefulSets/Deployments, headless Services, NetworkPolicies, and any cloud-level security groups or firewall rules to allow `10102/TCP` peer-to-peer between cluster nodes. **Helm users:** upgrade to Bifrost chart `>= 2.1.14`, which exposes this port automatically.
 </Step>
 
 <Step title="Verify SCIM group claims in tokens">

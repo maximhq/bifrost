@@ -54,6 +54,8 @@ export const pluginsApi = baseApi.injectEndpoints({
 							const index = draft.findIndex((p) => p.name === arg.name);
 							if (index !== -1) {
 								draft[index] = updatedPlugin;
+							} else {
+								draft.push(updatedPlugin);
 							}
 						}),
 					);

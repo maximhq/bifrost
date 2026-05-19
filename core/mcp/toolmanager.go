@@ -22,13 +22,22 @@ type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	GetPluginPipeline() PluginPipeline
+	ReleasePluginPipeline(pipeline PluginPipeline)
 }
 
 // PluginPipeline represents the plugin execution pipeline interface
-// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost
+// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost.
+// Two parallel pipelines exist: the envelope-based MCP pipeline for Ping/ListTools/
+// ExecuteTool variants, and the typed Connect pipeline for MCPConnectionPlugin.
 type PluginPipeline interface {
+	// Envelope pipeline (Ping / ListTools / ExecuteTool variants)
 	RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int)
 	RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+
+	// Typed Connect pipeline (MCPConnectionPlugin)
+	RunMCPPreConnectionHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, int)
+	RunMCPPostConnectionHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError)
 }
 
 // ToolsManager manages MCP tool execution and agent mode.
@@ -51,13 +60,6 @@ type ToolsManager struct {
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provided, same request ID is used for all tool call result messages without any overrides.
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
-
-	// Function to get a plugin pipeline from the pool for running MCP plugin hooks
-	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them
-	pluginPipelineProvider func() PluginPipeline
-
-	// Function to release a plugin pipeline back to the pool
-	releasePluginPipeline func(pipeline PluginPipeline)
 }
 
 // NewToolsManager creates and initializes a new tools manager instance.
@@ -68,8 +70,6 @@ type ToolsManager struct {
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
-//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
-//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //
 // Returns:
 //   - *ToolsManager: Initialized tools manager instance
@@ -77,8 +77,6 @@ func NewToolsManager(
 	config *schemas.MCPToolManagerConfig,
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	pluginPipelineProvider func() PluginPipeline,
-	releasePluginPipeline func(pipeline PluginPipeline),
 	oauth2Provider schemas.OAuth2Provider,
 	logger schemas.Logger,
 ) *ToolsManager {
@@ -86,8 +84,6 @@ func NewToolsManager(
 		config,
 		clientManager,
 		fetchNewRequestIDFunc,
-		pluginPipelineProvider,
-		releasePluginPipeline,
 		nil, // Use default code mode (will be set later via SetCodeMode)
 		oauth2Provider,
 		logger,
@@ -101,8 +97,6 @@ func NewToolsManager(
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
-//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
-//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //   - codeMode: Optional CodeMode implementation (if nil, must be set later via SetCodeMode)
 //
 // Returns:
@@ -111,8 +105,6 @@ func NewToolsManagerWithCodeMode(
 	config *schemas.MCPToolManagerConfig,
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	pluginPipelineProvider func() PluginPipeline,
-	releasePluginPipeline func(pipeline PluginPipeline),
 	codeMode CodeMode,
 	oauth2Provider schemas.OAuth2Provider,
 	logger schemas.Logger,
@@ -144,14 +136,12 @@ func NewToolsManagerWithCodeMode(
 	}
 
 	manager := &ToolsManager{
-		clientManager:          clientManager,
-		fetchNewRequestIDFunc:  fetchNewRequestIDFunc,
-		pluginPipelineProvider: pluginPipelineProvider,
-		releasePluginPipeline:  releasePluginPipeline,
-		codeMode:               codeMode,
-		logger:                 logger,
-		agentModeExecutor:      agentModeExecutor,
-		oauth2Provider:         oauth2Provider,
+		clientManager:         clientManager,
+		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
+		codeMode:              codeMode,
+		logger:                logger,
+		agentModeExecutor:     agentModeExecutor,
+		oauth2Provider:        oauth2Provider,
 	}
 
 	// Initialize atomic values
@@ -178,23 +168,9 @@ func (m *ToolsManager) GetCodeMode() CodeMode {
 // This is useful when constructing a CodeMode implementation externally.
 func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 	return &CodeModeDependencies{
-		ClientManager:          m.clientManager,
-		PluginPipelineProvider: m.pluginPipelineProvider,
-		ReleasePluginPipeline:  m.releasePluginPipeline,
-		FetchNewRequestIDFunc:  m.fetchNewRequestIDFunc,
-		OAuth2Provider:         m.oauth2Provider,
-	}
-}
-
-// SetPluginPipeline updates the plugin pipeline provider and release function
-// on both the ToolsManager and its CodeMode implementation.
-// This is used when an externally-created MCPManager is attached to a Bifrost instance
-// via SetMCPManager, so the CodeMode can route nested tool calls through Bifrost's plugin hooks.
-func (m *ToolsManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
-	m.pluginPipelineProvider = provider
-	m.releasePluginPipeline = release
-	if m.codeMode != nil {
-		m.codeMode.SetDependencies(m.GetCodeModeDependencies())
+		ClientManager:         m.clientManager,
+		FetchNewRequestIDFunc: m.fetchNewRequestIDFunc,
+		OAuth2Provider:        m.oauth2Provider,
 	}
 }
 
@@ -734,18 +710,9 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 }
 
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
-// iterative tool calls up to the configured maximum depth. It delegates to the
-// shared agent execution logic with the manager's configuration and dependencies.
-//
-// Parameters:
-//   - ctx: Context for agent execution
-//   - req: The original chat request
-//   - resp: The initial chat response containing tool calls
-//   - makeReq: Function to make subsequent chat requests during agent execution
-//
-// Returns:
-//   - *schemas.BifrostChatResponse: The final response after agent execution
-//   - *schemas.BifrostError: Any error that occurred during agent execution
+// iterative tool calls up to the configured maximum depth. Tool executions inside
+// the agent loop are dispatched through the executeTool callback the caller provides
+// (typically MCPManager.executeToolForAgent, which routes through the plugin gate).
 func (m *ToolsManager) ExecuteAgentForChatRequest(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostChatRequest,
@@ -753,10 +720,10 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// Use provided executeTool function, or fall back to internal ExecuteTool
-	executeToolFunc := executeTool
-	if executeToolFunc == nil {
-		executeToolFunc = m.ExecuteTool
+	// Defensive: if no executor was supplied, fall back to the un-hooked path. This
+	// path is only exercised by internal callers that have already gated above.
+	if executeTool == nil {
+		executeTool = m.ExecuteTool
 	}
 	return m.agentModeExecutor.ExecuteAgentForChatRequest(
 		ctx,
@@ -765,24 +732,12 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		executeToolFunc,
+		executeTool,
 		m.clientManager,
 	)
 }
 
-// ExecuteAgentForResponsesRequest executes agent mode for a responses request, handling
-// iterative tool calls up to the configured maximum depth. It delegates to the
-// shared agent execution logic with the manager's configuration and dependencies.
-//
-// Parameters:
-//   - ctx: Context for agent execution
-//   - req: The original responses request
-//   - resp: The initial responses response containing tool calls
-//   - makeReq: Function to make subsequent responses requests during agent execution
-//
-// Returns:
-//   - *schemas.BifrostResponsesResponse: The final response after agent execution
-//   - *schemas.BifrostError: Any error that occurred during agent execution
+// ExecuteAgentForResponsesRequest mirrors ExecuteAgentForChatRequest for the Responses API.
 func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostResponsesRequest,
@@ -790,10 +745,8 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// Use provided executeTool function, or fall back to internal ExecuteTool
-	executeToolFunc := executeTool
-	if executeToolFunc == nil {
-		executeToolFunc = m.ExecuteTool
+	if executeTool == nil {
+		executeTool = m.ExecuteTool
 	}
 	return m.agentModeExecutor.ExecuteAgentForResponsesRequest(
 		ctx,
@@ -802,7 +755,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		executeToolFunc,
+		executeTool,
 		m.clientManager,
 	)
 }
@@ -902,7 +855,6 @@ func ExecuteToolWithUserToken(ctx context.Context, config *schemas.MCPClientConf
 	}
 	return tempClient.CallTool(ctx, callRequest)
 }
-
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
 // This method is safe to call concurrently from multiple goroutines.

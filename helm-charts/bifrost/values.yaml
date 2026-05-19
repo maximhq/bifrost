@@ -355,7 +355,7 @@ bifrost:
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
-      toolExecutionTimeout: 30
+      toolExecutionTimeout: "30s"
       maxAgentDepth: 10
       # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
@@ -598,7 +598,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra
+    # Provider: okta, entra, keycloak
     provider: ""
     config: {}
       # Okta configuration:
@@ -619,6 +619,16 @@ bifrost:
       # audience: ""
       # appIdUri: ""
       # userIdField: "oid"
+      # teamIdsField: "groups"
+      # rolesField: "roles"
+      #
+      # Keycloak configuration:
+      # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
+      # realm: "bifrost-prod"
+      # clientId: "bifrost"
+      # clientSecret: "env.KEYCLOAK_CLIENT_SECRET"  # supports env. prefix
+      # audience: ""
+      # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
 
@@ -729,6 +739,7 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []

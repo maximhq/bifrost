@@ -13,6 +13,8 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -40,6 +42,105 @@ func isGemini3Plus(model string) bool {
 		return false
 	}
 	return firstChar >= '3'
+}
+
+// NormalizeRawGenerateContentRequestForCompatibility applies the same
+// provider-compatibility cleanup expected by the typed conversion path, while
+// preserving JSON key order with gjson/sjson-style byte edits.
+func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte {
+	if len(jsonBody) == 0 {
+		return jsonBody
+	}
+
+	out := jsonBody
+	for _, path := range []string{
+		"generationConfig.responseLogprobs",
+		"generationConfig.logprobs",
+		"generationConfig.presencePenalty",
+		"generationConfig.frequencyPenalty",
+		"fallbacks",
+	} {
+		if providerUtils.JSONFieldExists(out, path) {
+			if updated, err := providerUtils.DeleteJSONField(out, path); err == nil {
+				out = updated
+			}
+		}
+	}
+
+	contents := gjson.GetBytes(out, "contents")
+	if !contents.IsArray() {
+		return out
+	}
+
+	var rebuiltContents bytes.Buffer
+	rebuiltContents.WriteByte('[')
+	keptContents := 0
+	removedAny := false
+	for _, content := range contents.Array() {
+		contentRaw := content.Raw
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			if keptContents > 0 {
+				rebuiltContents.WriteByte(',')
+			}
+			rebuiltContents.WriteString(contentRaw)
+			keptContents++
+			continue
+		}
+		var rebuiltParts bytes.Buffer
+		rebuiltParts.WriteByte('[')
+		keptParts := 0
+		contentRemovedAny := false
+		parts.ForEach(func(_, part gjson.Result) bool {
+			inlineData := part.Get("inlineData")
+			removePart := false
+			if inlineData.Exists() {
+				mimeType := strings.ToLower(inlineData.Get("mimeType").String())
+				data := inlineData.Get("data").String()
+				if strings.HasPrefix(mimeType, "audio/") && !isValidAudioBase64Payload(data) {
+					removePart = true
+					removedAny = true
+					contentRemovedAny = true
+				}
+			}
+			if !removePart {
+				if keptParts > 0 {
+					rebuiltParts.WriteByte(',')
+				}
+				rebuiltParts.WriteString(part.Raw)
+				keptParts++
+			}
+			return true
+		})
+		rebuiltParts.WriteByte(']')
+		if keptParts == 0 {
+			if contentRemovedAny {
+				continue
+			}
+		} else if contentRemovedAny {
+			if updated, err := sjson.SetRawBytes([]byte(contentRaw), "parts", rebuiltParts.Bytes()); err == nil {
+				contentRaw = string(updated)
+			}
+		}
+		if keptContents > 0 {
+			rebuiltContents.WriteByte(',')
+		}
+		rebuiltContents.WriteString(contentRaw)
+		keptContents++
+	}
+	rebuiltContents.WriteByte(']')
+	if removedAny {
+		if updated, err := sjson.SetRawBytes(out, "contents", rebuiltContents.Bytes()); err == nil {
+			out = updated
+		}
+	}
+
+	return out
+}
+
+func isValidAudioBase64Payload(data string) bool {
+	decoded, err := decodeBase64StringToBytes(data)
+	return err == nil && len(decoded) > 0
 }
 
 // supportsThinkingConfig returns true if the model supports ThinkingConfig.
@@ -1210,6 +1311,12 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	// Note: Gemini doesn't have native allOf support, but we can still attempt to pass it through AnyOf
 	// This is a best-effort conversion as allOf semantics differ from anyOf
 
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, params.Nullable)
+	}
+
 	// String validation fields
 	if params.Format != nil {
 		schema.Format = *params.Format
@@ -1246,6 +1353,77 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 	return schema
 }
 
+// extractUnionTypes parses a JSON Schema "type" value into the set of non-null
+// type strings and a boolean indicating whether "null" was present. It reuses
+// extractTypesFromValue for supported input shapes; duplicates are deduplicated.
+func extractUnionTypes(v interface{}) (nonNullTypes []string, hasNull bool) {
+	seen := make(map[string]struct{})
+	for _, s := range extractTypesFromValue(v) {
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		if s == "null" {
+			hasNull = true
+		} else {
+			nonNullTypes = append(nonNullTypes, s)
+		}
+	}
+
+	return nonNullTypes, hasNull
+}
+
+// applyUnionType applies the result of extractUnionTypes to a Schema, following
+// Gemini/Vertex normalisation rules:
+//
+//	["T", "null"]      → Type=T,  Nullable=true
+//	["T1", "T2", ...]  → anyOf:[{type:T1},{type:T2},...], optionally with a null branch
+//	["null"]           → Type=TypeNULL
+//	[1, 2]             → no type set (all elements were non-string; invalid input)
+func applyUnionType(schema *Schema, nonNullTypes []string, hasNull bool) {
+	switch len(nonNullTypes) {
+	case 0:
+		// Only "null" was in the array (or all elements were invalid non-string values).
+		// Emit TypeNULL only when "null" was explicitly present.
+		if hasNull {
+			schema.Type = TypeNULL
+		}
+		// Otherwise leave Type as zero-value — the array carried no usable type info.
+	case 1:
+		schema.Type = Type(nonNullTypes[0])
+		if hasNull {
+			schema.Nullable = schemas.Ptr(true)
+		}
+	default:
+		anyOfSchemas := make([]*Schema, 0, len(nonNullTypes))
+		for _, t := range nonNullTypes {
+			anyOfSchemas = append(anyOfSchemas, &Schema{Type: Type(t)})
+		}
+		if hasNull {
+			schema.AnyOf = append(anyOfSchemas, &Schema{Type: Type("null")})
+			return
+		}
+		schema.AnyOf = anyOfSchemas
+	}
+}
+
+func schemaWithAnyOfOnly(anyOf []*Schema, nullable *bool) *Schema {
+	if nullable != nil && *nullable {
+		hasNull := false
+		for _, item := range anyOf {
+			if item != nil && strings.EqualFold(string(item.Type), "null") {
+				hasNull = true
+				break
+			}
+		}
+		if !hasNull {
+			anyOf = append(anyOf, &Schema{Type: Type("null")})
+		}
+	}
+
+	return &Schema{AnyOf: anyOf}
+}
+
 // convertPropertyToSchema recursively converts a property to Gemini Schema
 func convertPropertyToSchema(prop interface{}) *Schema {
 	schema := &Schema{}
@@ -1262,8 +1440,17 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 	}
 	if propMap != nil {
 		if propType, exists := propMap["type"]; exists {
-			if typeStr, ok := propType.(string); ok {
-				schema.Type = Type(typeStr)
+			switch v := propType.(type) {
+			case string:
+				schema.Type = Type(v)
+			case []interface{}, []string:
+				// Handle JSON Schema union types like ["integer", "null"].
+				// Gemini/Vertex AI does not support array-typed "type" fields in
+				// tool parameter schemas (Vertex rejects with "schema didn't specify
+				// the schema type field"), so we normalise to the closest supported
+				// form via extractUnionTypes + applyUnionType.
+				nonNullTypes, hasNull := extractUnionTypes(v)
+				applyUnionType(schema, nonNullTypes, hasNull)
 			}
 		}
 
@@ -1423,6 +1610,12 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 		}
 	}
 
+	// Gemini requires any_of to be the only populated schema-composition field.
+	// Unsupported siblings must be removed or folded before sending.
+	if len(schema.AnyOf) > 0 {
+		return schemaWithAnyOfOnly(schema.AnyOf, schema.Nullable)
+	}
+
 	return schema
 }
 
@@ -1537,6 +1730,14 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		content := convertSystemChatMessageToGeminiUserContent(messages[0])
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -1548,7 +1749,8 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 
 	for i, message := range messages {
 		// Handle system messages separately - Gemini requires them in SystemInstruction field
-		if message.Role == schemas.ChatMessageRoleSystem {
+		// Gemini has no support for role "developer", so we treat it as "system"
+		if message.Role == schemas.ChatMessageRoleSystem || message.Role == schemas.ChatMessageRoleDeveloper {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -1884,6 +2086,33 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 	}
 
 	return contents, systemInstruction
+}
+
+func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {
+	content := Content{Role: "user"}
+
+	if message.Content == nil {
+		return content
+	}
+
+	if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+		content.Parts = append(content.Parts, &Part{
+			Text: *message.Content.ContentStr,
+		})
+		return content
+	}
+
+	if message.Content.ContentBlocks != nil {
+		for _, block := range message.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *block.Text,
+				})
+			}
+		}
+	}
+
+	return content
 }
 
 // normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase

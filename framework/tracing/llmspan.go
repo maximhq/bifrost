@@ -3,10 +3,34 @@ package tracing
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func formatTraceValue(v any) string {
+	if v == nil {
+		return ""
+	}
+
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct:
+		if data, err := schemas.MarshalString(v); err == nil {
+			return data
+		}
+	}
+
+	return fmt.Sprint(rv.Interface())
+}
 
 // PopulateRequestAttributes extracts common request attributes from a BifrostRequest.
 // This is the main entry point for populating request attributes on a span.
@@ -193,7 +217,7 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -269,6 +293,18 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
 				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
 			}
+			if d := resp.Usage.PromptTokensDetails.CachedWriteTokenDetails; d != nil {
+				if d.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = d.CachedWriteTokens5m
+				}
+				if d.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = d.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
 		}
 
 		if resp.Usage.CompletionTokensDetails != nil {
@@ -336,7 +372,7 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrEcho] = *req.Params.Echo
 		}
 		if req.Params.LogitBias != nil {
-			attrs[schemas.AttrLogitBias] = fmt.Sprintf("%v", req.Params.LogitBias)
+			attrs[schemas.AttrLogitBias] = formatTraceValue(req.Params.LogitBias)
 		}
 		if req.Params.LogProbs != nil {
 			attrs[schemas.AttrLogProbs] = *req.Params.LogProbs
@@ -355,7 +391,7 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -429,7 +465,7 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -704,7 +740,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespMaxToolCalls] = *resp.MaxToolCalls
 	}
 	if resp.Metadata != nil {
-		attrs[schemas.AttrRespMetadata] = fmt.Sprintf("%v", resp.Metadata)
+		attrs[schemas.AttrRespMetadata] = formatTraceValue(resp.Metadata)
 	}
 	if resp.PreviousResponseID != nil {
 		attrs[schemas.AttrRespPreviousRespID] = *resp.PreviousResponseID
@@ -784,6 +820,63 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrInputTokens] = resp.Usage.InputTokens
 		attrs[schemas.AttrOutputTokens] = resp.Usage.OutputTokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
+		}
+
+		if d := resp.Usage.InputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsImage] = d.ImageTokens
+			}
+			if d.CachedReadTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
+			}
+			if d.CachedWriteTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens
+			}
+			if wd := d.CachedWriteTokenDetails; wd != nil {
+				if wd.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+				}
+				if wd.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if d := resp.Usage.OutputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens != nil && *d.ImageTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsImage] = *d.ImageTokens
+			}
+			if d.ReasoningTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens
+			}
+			if d.AcceptedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAccept] = d.AcceptedPredictionTokens
+			}
+			if d.RejectedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReject] = d.RejectedPredictionTokens
+			}
+			if d.CitationTokens != nil && *d.CitationTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsCite] = *d.CitationTokens
+			}
+			if d.NumSearchQueries != nil && *d.NumSearchQueries > 0 {
+				attrs[schemas.AttrOutputTokenDetailsSearch] = *d.NumSearchQueries
+			}
+		}
 	}
 }
 
@@ -810,11 +903,11 @@ func PopulateBatchCreateRequestAttributes(req *schemas.BifrostBatchCreateRequest
 		attrs[schemas.AttrBatchRequestsCount] = len(req.Requests)
 	}
 	if len(req.Metadata) > 0 {
-		attrs[schemas.AttrBatchMetadata] = fmt.Sprintf("%v", req.Metadata)
+		attrs[schemas.AttrBatchMetadata] = formatTraceValue(req.Metadata)
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -844,7 +937,7 @@ func PopulateBatchListRequestAttributes(req *schemas.BifrostBatchListRequest, at
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -859,7 +952,7 @@ func PopulateBatchRetrieveRequestAttributes(req *schemas.BifrostBatchRetrieveReq
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -874,7 +967,7 @@ func PopulateBatchCancelRequestAttributes(req *schemas.BifrostBatchCancelRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -889,7 +982,7 @@ func PopulateBatchResultsRequestAttributes(req *schemas.BifrostBatchResultsReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1064,7 +1157,7 @@ func PopulateFileUploadRequestAttributes(req *schemas.BifrostFileUploadRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1088,7 +1181,7 @@ func PopulateFileListRequestAttributes(req *schemas.BifrostFileListRequest, attr
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1103,7 +1196,7 @@ func PopulateFileRetrieveRequestAttributes(req *schemas.BifrostFileRetrieveReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1118,7 +1211,7 @@ func PopulateFileDeleteRequestAttributes(req *schemas.BifrostFileDeleteRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1133,7 +1226,7 @@ func PopulateFileContentRequestAttributes(req *schemas.BifrostFileContentRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 

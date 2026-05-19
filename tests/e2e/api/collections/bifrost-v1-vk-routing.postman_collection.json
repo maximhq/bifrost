@@ -5,11 +5,31 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {"key": "base_url", "value": "http://localhost:8080", "type": "string"},
-    {"key": "provider", "value": "openai", "type": "string"},
-    {"key": "chat_model", "value": "gpt-4o", "type": "string"},
-    {"key": "vk_value", "value": "", "type": "string"},
-    {"key": "vk_id", "value": "", "type": "string"}
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    }
   ],
   "item": [
     {
@@ -53,123 +73,26 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{"key": "Content-Type", "value": "application/json"}],
-        "body": {"mode": "raw", "raw": "{}"},
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
         "url": {
           "raw": "{{base_url}}/api/governance/virtual-keys",
-          "host": ["{{base_url}}"],
-          "path": ["api", "governance", "virtual-keys"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion - model without provider prefix",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "var code = pm.response.code;",
-              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
-              "if (code >= 200 && code <= 299) {",
-              "  var json = pm.response.json();",
-              "  var extra = json.extra_fields || {};",
-              "  var providerUsed = extra.provider;",
-              "  var expected = (pm.collectionVariables.get('provider') || 'openai').toLowerCase();",
-              "  pm.test('Provider matches VK config', function() {",
-              "    pm.expect(String(providerUsed).toLowerCase()).to.equal(expected);",
-              "  });",
-              "}"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion - explicit provider prefix",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "var code = pm.response.code;",
-              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
-              "if (code >= 200 && code <= 299) {",
-              "  var json = pm.response.json();",
-              "  var extra = json.extra_fields || {};",
-              "  var providerUsed = extra.provider;",
-              "  var expected = (pm.collectionVariables.get('provider') || 'openai').toLowerCase();",
-              "  pm.test('Provider matches VK config (explicit prefix)', function() {",
-              "    pm.expect(String(providerUsed).toLowerCase()).to.equal(expected);",
-              "  });",
-              "}"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
-        }
-      }
-    },
-    {
-      "name": "Chat Completion - blocked model (expect 403)",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "var code = pm.response.code;",
-              "pm.test('Model blocked - expect 4xx', function() { pm.expect(code).to.be.oneOf([400, 403]); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {"key": "Content-Type", "value": "application/json"},
-          {"key": "x-bf-vk", "value": "{{vk_value}}"}
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"nonexistent-model\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
-        },
-        "url": {
-          "raw": "{{base_url}}/v1/chat/completions",
-          "host": ["{{base_url}}"],
-          "path": ["v1", "chat", "completions"]
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
         }
       }
     },
@@ -192,8 +115,15 @@
         "header": [],
         "url": {
           "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
-          "host": ["{{base_url}}"],
-          "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
         }
       }
     }

@@ -325,7 +325,7 @@ bifrost:
       envVar: "S3_SECRET_ACCESS_KEY"
 ```
 
-`storage.logsStore.objectStorageExcludeFields` keeps selected payload fields in Postgres while still offloading the rest to object storage. Use DB payload field names such as `output_message`, `input_history`, `raw_request`, or `raw_response`.
+`storage.logsStore.objectStorageExcludeFields` keeps selected LLM log payload fields in Postgres while still offloading the rest to object storage. Use DB payload field names such as `output_message`, `input_history`, `raw_request`, or `raw_response`. MCP logs always offload the full tool log and keep dashboard/table fields plus a 200-character input preview in Postgres.
 
 **Using IAM role (IRSA / instance profile) instead of static keys:**
 

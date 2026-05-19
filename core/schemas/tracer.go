@@ -62,6 +62,10 @@ type Tracer interface {
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
 
+	// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+	// If spanID is nil, returns a handle for the trace's root span.
+	GetSpanHandleByID(traceID string, spanID *string) SpanHandle
+
 	// AddEvent adds a timestamped event to the span.
 	// Events represent discrete occurrences during the span's lifetime.
 	AddEvent(handle SpanHandle, name string, attrs map[string]any)
@@ -148,6 +152,9 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
+
+// GetSpanHandleByID returns nil.
+func (n *NoOpTracer) GetSpanHandleByID(_ string, _ *string) SpanHandle { return nil }
 
 // AddEvent does nothing.
 func (n *NoOpTracer) AddEvent(_ SpanHandle, _ string, _ map[string]any) {}

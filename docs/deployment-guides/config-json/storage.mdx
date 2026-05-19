@@ -208,9 +208,53 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+### Materialized View Refresh Interval (PostgreSQL only)
+
+The PostgreSQL logs store backs the dashboard's stats and histograms with materialized views, refreshed in the background. The default cadence is **30 seconds**, which keeps dashboard data near real-time but issues a `REFRESH MATERIALIZED VIEW CONCURRENTLY` every 30s — an expensive operation that can be too aggressive on smaller or CPU-constrained database instances.
+
+Set `matview_refresh_interval` (Go duration string) to slow down refreshes when near-real-time accuracy isn't critical:
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require",
+      "matview_refresh_interval": "5m"
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `matview_refresh_interval` | `"30s"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"30s"`, `"5m"`, `"1h"`). Minimum `5s`. |
+
+**Notes**
+
+- Refreshes are already **activity-gated**: when no INSERT/UPDATE/DELETE has hit the `logs` table since the last refresh, the scheduled tick short-circuits without touching the views. So idle clusters don't pay for the configured cadence — they only pay when there's actual log activity.
+- Dashboard freshness lag will be **at most** the configured interval. Stats and histograms over the last 24 hours come straight from the raw `logs` table (no matview), so short-window dashboards stay real-time regardless of this setting.
+- A 10-minute safety-net refresh runs even on totally idle clusters so the rolling 30-day filter dropdown window evicts aged-out values.
+
+**When to raise it:**
+
+- Your database instance is CPU-constrained and matview refreshes are showing up as a hot consumer.
+- Your team mostly looks at multi-day trends, not minute-by-minute dashboards.
+
+**When to leave it at the default:**
+
+- The database has consistent CPU headroom.
+- Operators rely on near-real-time dashboards (e.g. live incident triage).
+
 ### Object Storage for Logs
 
-Offload large request/response payloads from the database to S3 or GCS. The database retains only lightweight index records; payloads are fetched on demand.
+Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 <Tabs>
 <Tab title="AWS S3">

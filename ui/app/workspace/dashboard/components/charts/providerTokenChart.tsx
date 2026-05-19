@@ -1,7 +1,17 @@
 import type { ProviderTokenHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens, getModelColor } from "../../utils/chartUtils";
+import {
+	CHART_COLORS,
+	formatFullTimestamp,
+	formatTimestamp,
+	formatTokens,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	pickTopSeries,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -13,7 +23,7 @@ interface ProviderTokenChartProps {
 	selectedProvider: string;
 }
 
-function AllProvidersTooltip({ active, payload, providers }: any) {
+function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -23,14 +33,20 @@ function AllProvidersTooltip({ active, payload, providers }: any) {
 		<div className="rounded-sm border border-zinc-200 bg-white px-3 py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
 			<div className="mb-1 text-xs text-zinc-500">{formatFullTimestamp(data.timestamp)}</div>
 			<div className="space-y-1 text-sm">
-				{providers.map((provider: string, idx: number) => {
-					const tokens = data.by_provider?.[provider]?.total_tokens || 0;
+				{displayProviders.map((provider: string, idx: number) => {
+					const isOther = provider === OTHER_SERIES_KEY;
+					const tokens = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_provider?.[provider]?.total_tokens || 0);
 					if (tokens === 0) return null;
 					return (
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+								<span
+									className="h-2 w-2 rounded-full"
+									style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
+								/>
+								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
+									{isOther ? OTHER_SERIES_LABEL : provider}
+								</span>
 							</span>
 							<span className="font-medium">{formatTokens(tokens)}</span>
 						</div>
@@ -77,14 +93,23 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 	);
 }
 
-export function ProviderTokenChart({ data, chartType, startTime, endTime, selectedProvider }: ProviderTokenChartProps) {
+function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderTokenChartProps) {
 	const { chartData, mode, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], mode: "all" as const, displayProviders: [] };
 		}
 
 		const isSingleProvider = selectedProvider !== "all";
-		const providers = isSingleProvider ? [selectedProvider] : data.providers;
+		let providers: string[];
+		let hasOther = false;
+		if (isSingleProvider) {
+			providers = [selectedProvider];
+		} else {
+			const top = pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_tokens ?? 0);
+			hasOther = top.length < data.providers.length;
+			providers = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+		}
+		const topSet = new Set(providers);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -98,8 +123,18 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 				item.prompt_tokens = stats?.prompt_tokens || 0;
 				item.completion_tokens = stats?.completion_tokens || 0;
 			} else {
+				if (hasOther && bucket.by_provider) {
+					let otherSum = 0;
+					for (const provider of data.providers) {
+						if (!topSet.has(provider)) otherSum += bucket.by_provider[provider]?.total_tokens ?? 0;
+					}
+					item[OTHER_SERIES_KEY] = otherSum;
+				}
 				providers.forEach((provider, idx) => {
-					item[`provider_${idx}`] = bucket.by_provider?.[provider]?.total_tokens || 0;
+					item[`provider_${idx}`] =
+						provider === OTHER_SERIES_KEY
+							? (item[OTHER_SERIES_KEY] ?? 0)
+							: (bucket.by_provider?.[provider]?.total_tokens ?? 0);
 				});
 			}
 
@@ -167,14 +202,14 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										isAnimationActive={false}
 										key={provider}
 										dataKey={`provider_${idx}`}
 										stackId="tokens"
-										fill={getModelColor(idx)}
+										fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 										fillOpacity={0.9}
 										barSize={30}
 										radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
@@ -229,19 +264,22 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} />
-								{displayProviders.map((provider, idx) => (
-									<Area
-										isAnimationActive={false}
-										key={provider}
-										type="monotone"
-										dataKey={`provider_${idx}`}
-										stackId="1"
-										stroke={getModelColor(idx)}
-										fill={getModelColor(idx)}
-										fillOpacity={0.7}
-									/>
-								))}
+								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} />
+								{displayProviders.map((provider, idx) => {
+									const color = provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
+									return (
+										<Area
+											isAnimationActive={false}
+											key={provider}
+											type="monotone"
+											dataKey={`provider_${idx}`}
+											stackId="1"
+											stroke={color}
+											fill={color}
+											fillOpacity={0.7}
+										/>
+									);
+								})}
 							</>
 						)}
 					</AreaChart>
@@ -250,3 +288,5 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 		</ChartErrorBoundary>
 	);
 }
+
+export const ProviderTokenChart = memo(ProviderTokenChartImpl);

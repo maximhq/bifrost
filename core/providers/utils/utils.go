@@ -109,34 +109,37 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
-// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
-// wait function. The wait function MUST be called (typically via defer) before releasing the
-// request or response objects. On the normal path it is a no-op. On the context-cancellation
-// path it blocks until the background client.Do goroutine finishes, preventing a data race
-// between the still-running goroutine and the caller's release of req/resp.
+// makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
+// MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
+// context cancellation, latency tracking, and error classification uniformly.
 //
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
 // or times out based on its own settings. This function merely stops *waiting* for the
 // fasthttp call and returns an error related to the context.
-func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+//
+// The wait function MUST be called (typically via defer) before releasing the request or
+// response objects. On the normal path it is a no-op. On the context-cancellation path it
+// blocks until the background goroutine finishes, preventing a data race between the
+// still-running goroutine and the caller's release of req/resp.
+func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
 	go func() {
-		// client.Do is a blocking call.
+		// do is a blocking call.
 		// It will send an error (or nil for success) to errChan when it completes.
-		errChan <- client.Do(req, resp)
+		errChan <- do()
 	}()
 
 	select {
 	case <-ctx.Done():
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
-		// Calculate latency even for cancelled requests
+		// Calculate latency even for cancelled requests.
 		latency := time.Since(startTime)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
-		// a data race with the still-running client.Do goroutine.
+		// a data race with the still-running goroutine.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			statusCode := 504
 			errorType := schemas.RequestTimedOut
@@ -162,8 +165,8 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			},
 		}, func() { <-errChan }
 	case err := <-errChan:
-		// The fasthttp.Do call completed.
-		// Calculate latency for both successful and failed requests
+		// The do() call completed.
+		// Calculate latency for both successful and failed requests.
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -176,16 +179,16 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 					},
 				}, noop
 			}
-			// Check for timeout errors first before checking net.OpError to avoid misclassification
+			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
 			}
-			// Check if error implements net.Error and has Timeout() == true
+			// Check if error implements net.Error and has Timeout() == true.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
 			}
-			// Check for DNS lookup and network errors after timeout checks
+			// Check for DNS lookup and network errors after timeout checks.
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
@@ -210,6 +213,21 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
 		return latency, nil, noop
 	}
+}
+
+// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
+// wait function. The wait function MUST be called (typically via defer) before releasing the
+// request or response objects. On the normal path it is a no-op. On the context-cancellation
+// path it blocks until the background client.Do goroutine finishes, preventing a data race
+// between the still-running goroutine and the caller's release of req/resp.
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+}
+
+// MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
+// maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
+func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
+	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.

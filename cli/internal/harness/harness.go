@@ -93,6 +93,9 @@ var all = map[string]Harness{
 			}
 			return []string{"--model", model}
 		},
+		PreLaunch:         codexPreLaunch,
+		WriteNativeConfig: codexWriteNativeConfig,
+		NativeConfigPath:  "~/.codex/auth.json, ~/.codex/config.toml",
 	},
 	"gemini": {
 		ID:         "gemini",

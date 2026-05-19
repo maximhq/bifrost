@@ -74,6 +74,10 @@ type BifrostBatchCreateRequest struct {
 	// Anthropic-style: inline requests
 	Requests []BatchRequestItem `json:"requests,omitempty"` // Inline request items
 
+	// Azure-style: Blob storage input and output folder
+	InputBlob    *string            `json:"input_blob,omitempty"`
+	OutputFolder *BatchOutputFolder `json:"output_folder,omitempty"`
+
 	// Common fields
 	Endpoint           BatchEndpoint      `json:"endpoint,omitempty"`             // Target endpoint for batch requests
 	CompletionWindow   string             `json:"completion_window,omitempty"`    // Time window (e.g., "24h")
@@ -82,6 +86,10 @@ type BifrostBatchCreateRequest struct {
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+type BatchOutputFolder struct {
+	URL string `json:"url"`
 }
 
 // BatchExpiresAfter represents an expiration configuration for batch output.

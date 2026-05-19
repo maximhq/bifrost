@@ -125,9 +125,6 @@ func TestAgent_StateTransition_LargeMixedToolBatch(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr, "should handle large mixed batch")
@@ -197,9 +194,6 @@ func TestAgent_StateTransition_DepthCountingBasic(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -283,9 +277,6 @@ func TestAgent_StateTransition_AlternatingAutoNonAuto(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -367,9 +358,6 @@ func TestAgent_StateTransition_EmptyToolCallsList(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -459,9 +447,6 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -561,9 +546,6 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -635,9 +617,6 @@ func TestAgent_StateTransition_BoundaryConditions(t *testing.T) {
 				originalReq,
 				initialResponse,
 				mockLLM.MakeChatRequest,
-				func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-					return manager.ExecuteToolCall(ctx, request)
-				},
 			)
 
 			require.Nil(t, bifrostErr)

@@ -85,7 +85,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				isLocalhostOrigin(origin) ||
 				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
 
-			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK"}
+			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
 			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a

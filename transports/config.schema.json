@@ -1036,6 +1036,12 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "matview_refresh_interval": {
+                    "type": "string",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '30s', '5m', '1h'). Default 30s. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "default": "30s"
                   }
                 },
                 "required": [
@@ -1053,7 +1059,7 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
@@ -1151,7 +1157,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "Payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
@@ -1549,7 +1555,7 @@
                     "collector_url": {
                       "type": "string",
                       "description": "URL of the OpenTelemetry collector",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },
@@ -1576,7 +1582,7 @@
                     "metrics_endpoint": {
                       "type": "string",
                       "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },
@@ -2919,8 +2925,8 @@
       "type": "object",
       "properties": {
         "tool_execution_timeout": {
-          "type": "integer",
-          "description": "Tool execution timeout in seconds",
+          "type": ["integer", "string"],
+          "description": "Tool execution timeout. Accepts a duration string (e.g. \"30s\", \"2m\") or an integer number of seconds (e.g. 30 means 30 seconds).",
           "minimum": 1,
           "default": 30
         },
@@ -3424,7 +3430,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra"],
+          "enum": ["okta", "entra", "keycloak"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -3438,10 +3444,14 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "okta"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
@@ -3454,15 +3464,39 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "entra"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
               "config": {
                 "$ref": "#/$defs/entra_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "keycloak"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/keycloak_config"
               }
             }
           }
@@ -3561,6 +3595,71 @@
         }
       },
       "required": ["tenantId", "clientId"],
+      "additionalProperties": false
+    },
+    "keycloak_config": {
+      "type": "object",
+      "description": "Keycloak OIDC/SCIM authentication configuration",
+      "properties": {
+        "serverUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of the Keycloak server (e.g., https://keycloak.company.com). Must NOT include the /realms/{realm} suffix."
+        },
+        "realm": {
+          "type": "string",
+          "description": "Keycloak realm name (e.g., 'bifrost-prod')"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Keycloak client ID for the confidential client used by Bifrost"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Keycloak client secret. Supports env. prefix for environment variable references (e.g., 'env.KEYCLOAK_CLIENT_SECRET')"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected JWT audience (default: clientId)"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'sub')",
+          "default": "sub"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
     },
     "load_balancer_config": {

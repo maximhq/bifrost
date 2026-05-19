@@ -418,7 +418,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+		// Pagination total count uses the same time-window hybrid as
+		// /api/logs/stats: short windows go raw so the count stays consistent
+		// with the (always-raw) row list rendered alongside it. Long windows
+		// keep the matview win because raw COUNT over multi-day ranges is the
+		// expensive path.
+		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 			var err error
 			totalCount, err = s.getCountFromMatView(gCtx, filters)
 			return err
@@ -646,14 +651,23 @@ func (s *RDBLogStore) listSelectColumns() string {
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {
 	case "postgres":
+		// Postgres jsonb cannot represent \u0000 (errcode 22P05) and rejects
+		// malformed JSON (22P02). A single bad row would otherwise abort the
+		// whole list query. Guard the cast: only attempt jsonb conversion
+		// when the TEXT looks like a JSON array and contains no \u0000
+		// escape; otherwise fall back to returning the raw TEXT.
 		inputHistoryExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN input_history
 			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			     AND position('\u0000' in input_history) = 0
+			     AND left(btrim(input_history), 1) = '['
 			THEN jsonb_build_array(input_history::jsonb->-1)::text
 			ELSE input_history END AS input_history`
 		responsesInputExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN responses_input_history
 			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			     AND position('\u0000' in responses_input_history) = 0
+			     AND left(btrim(responses_input_history), 1) = '['
 			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
 			ELSE responses_input_history END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
@@ -676,7 +690,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 
 // GetStats calculates statistics for logs matching the given filters.
 func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	// Stats has a stricter matview gate than other paths: short windows go to
+	// the raw table even if matview-eligible, so /api/logs/stats stays
+	// consistent with the real-time /api/logs row list. See
+	// canUseMatViewForFreshAggregate.
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		return s.getStatsFromMatView(ctx, filters)
 	}
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
@@ -2732,6 +2750,9 @@ func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
 // GetDistinctAliases returns all unique non-empty alias values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctAliasesFromMatView(ctx)
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var aliases []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
@@ -2765,7 +2786,11 @@ var allowedKeyPairColumns = map[string]struct{}{
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
 func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
-		return s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol)
+		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol)
+		if served {
+			return results, err
+		}
+		// Pair has no per-dimension matview registered — fall through to raw path.
 	}
 	if _, ok := allowedKeyPairColumns[idCol]; !ok {
 		return nil, fmt.Errorf("invalid id column: %s", idCol)
@@ -2820,6 +2845,9 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 // GetDistinctStopReasons returns all unique non-empty stop_reason values using SELECT DISTINCT.
 // Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctStopReasonsFromMatView(ctx)
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var stopReasons []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
@@ -3067,6 +3095,18 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 // CreateMCPToolLog inserts a new MCP tool log entry into the database.
 func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
 	return s.db.WithContext(ctx).Create(entry).Error
+}
+
+// BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries in a single transaction.
+// Uses ON CONFLICT DO NOTHING for idempotency.
+func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&entries).Error
 }
 
 // FindMCPToolLog retrieves a single MCP tool log entry by its ID.

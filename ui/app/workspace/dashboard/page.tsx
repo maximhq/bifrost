@@ -780,9 +780,9 @@ export default function DashboardPage() {
 						/>
 						{urlState.tab === "mcp" && mcpFilterData && (
 							<div className="flex items-center gap-1">
-								{mcpFilterData.tool_names?.length > 0 && (
+								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
 									<ModelFilterSelect
-										models={mcpFilterData.tool_names}
+										models={mcpFilterData.tool_names ?? []}
 										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
 										onModelChange={(value) => {
 											if (value === "all") {
@@ -795,9 +795,9 @@ export default function DashboardPage() {
 										data-testid="dashboard-mcp-tool-filter"
 									/>
 								)}
-								{mcpFilterData.server_labels?.length > 0 && (
+								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
 									<ModelFilterSelect
-										models={mcpFilterData.server_labels}
+										models={mcpFilterData.server_labels ?? []}
 										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
 										onModelChange={(value) => {
 											if (value === "all") {

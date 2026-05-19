@@ -7,6 +7,52 @@ import (
 	"time"
 )
 
+type traceAttributeTestTracer struct {
+	NoOpTracer
+	gotTraceID string
+	gotSpanID  *string
+	gotHandle  SpanHandle
+	gotKey     string
+	gotValue   any
+}
+
+func (t *traceAttributeTestTracer) GetSpanHandleByID(traceID string, spanID *string) SpanHandle {
+	t.gotTraceID = traceID
+	t.gotSpanID = spanID
+	t.gotHandle = struct{}{}
+	return t.gotHandle
+}
+
+func (t *traceAttributeTestTracer) SetAttribute(handle SpanHandle, key string, value any) {
+	if handle != t.gotHandle {
+		return
+	}
+	t.gotKey = key
+	t.gotValue = value
+}
+
+func TestBifrostContext_SetTraceAttribute_UsesRootSpanHandle(t *testing.T) {
+	tracer := &traceAttributeTestTracer{}
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyTracer, tracer)
+	ctx.SetValue(BifrostContextKeyTraceID, "trace-123")
+
+	ctx.SetTraceAttribute("custom.root_attr", "root-value")
+
+	if tracer.gotTraceID != "trace-123" {
+		t.Fatalf("trace ID = %q, want trace-123", tracer.gotTraceID)
+	}
+	if tracer.gotSpanID != nil {
+		t.Fatalf("span ID = %v, want nil for root span lookup", tracer.gotSpanID)
+	}
+	if tracer.gotKey != "custom.root_attr" {
+		t.Fatalf("attribute key = %q, want custom.root_attr", tracer.gotKey)
+	}
+	if tracer.gotValue != "root-value" {
+		t.Fatalf("attribute value = %v, want root-value", tracer.gotValue)
+	}
+}
+
 func TestNewBifrostContext_NoGoroutineLeakWithBackgroundAndNoDeadline(t *testing.T) {
 	// Get baseline goroutine count
 	runtime.GC()

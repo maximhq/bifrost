@@ -1166,6 +1166,7 @@ type GeminiEmbeddingRequest struct {
 	Title                *string                `json:"title,omitempty"`
 	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
 	Model                string                 `json:"model,omitempty"`
+	Fallbacks            []string               `json:"fallbacks,omitempty"`
 	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 
@@ -1870,7 +1871,7 @@ type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
 	Modality Modality `json:"modality,omitempty"`
 	// Number of tokens.
-	TokenCount int32 `json:"tokenCount,omitempty"`
+	TokenCount int32 `json:"tokenCount"`
 }
 
 // GenerateContentResponseUsageMetadata represents usage metadata about response(s).
@@ -2308,7 +2309,8 @@ type GeminiVideoGenerationRequest struct {
 	Model       string                          `json:"model,omitempty"` // Model field for explicit model specification
 	Instances   []GeminiVideoGenerationInstance `json:"instances"`
 	Parameters  *VideoGenerationParameters      `json:"parameters,omitempty"` // Optional parameters including reference images
-	ExtraParams map[string]interface{}          `json:"-"`                    // Optional: Extra parameters
+	Fallbacks   []string                        `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{}          `json:"-"` // Optional: Extra parameters
 }
 
 func (r *GeminiVideoGenerationRequest) GetExtraParams() map[string]interface{} {

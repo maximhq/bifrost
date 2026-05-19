@@ -1,248 +1,214 @@
 ---
 title: "Log Exports"
-description: "Export and analyze request logs, traces, and telemetry data from Bifrost with enterprise-grade data export capabilities for compliance, monitoring, and analytics."
+description: "Offload Bifrost request and response payloads to S3 or GCS object storage while keeping searchable metadata in the logs database."
 icon: "download"
 ---
 
-# Log Exports
+Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite or Postgres) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
 
-Bifrost Enterprise provides comprehensive log export capabilities, allowing you to automatically export request logs, traces, and telemetry data to various storage systems and data lakes on configurable schedules.
+## How it works
 
-## Overview
+`object_storage` is **not** a standalone feature. It is a sub-config of `logs_store`:
 
-The log export system enables:
-- **Scheduled Exports**: Daily, weekly, or monthly automated exports
-- **Multiple Destinations**: Object stores, data warehouses, and data lakes
-- **Format Flexibility**: JSON, CSV, Parquet, and custom formats
-- **Filtering & Transformation**: Export specific data subsets with custom transformations
-- **Compliance**: Meet data retention and audit requirements
-
-## Supported Export Destinations
-
-### Object Storage
-
-#### Amazon S3
-```json
-{
-  "export": {
-    "destination": "s3",
-    "config": {
-      "bucket": "bifrost-logs",
-      "region": "us-west-2",
-      "prefix": "logs/{year}/{month}/{day}/",
-      "credentials": {
-        "access_key_id": "${AWS_ACCESS_KEY_ID}",
-        "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
-      }
-    }
-  }
-}
+```
+logs_store
+├── enabled
+├── type            (sqlite | postgres)
+├── config          (SQLite path or Postgres connection)
+├── object_storage              ← S3 or GCS payload offload (optional)
+└── object_storage_exclude_fields
 ```
 
-#### Google Cloud Storage
-```json
-{
-  "export": {
-    "destination": "gcs",
-    "config": {
-      "bucket": "bifrost-logs",
-      "prefix": "logs/{year}/{month}/{day}/",
-      "credentials": {
-        "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
-      }
-    }
-  }
-}
-```
+Retention is configured separately, at `client_config.log_retention_days` - see [Retention policy](#retention-policy) below.
 
-#### Azure Blob Storage
-```json
-{
-  "export": {
-    "destination": "azure_blob",
-    "config": {
-      "container": "bifrost-logs",
-      "account_name": "${AZURE_ACCOUNT_NAME}",
-      "account_key": "${AZURE_ACCOUNT_KEY}",
-      "prefix": "logs/{year}/{month}/{day}/"
-    }
-  }
-}
-```
+When `logs_store.object_storage` is set:
 
-### Data Warehouses & Lakes
+1. Bifrost writes per-request metadata (timestamps, provider, model, latency, token counts, cost, status, IDs) to the logs database.
+2. Large payload fields (request body, response body, streamed chunks, tool call arguments, etc.) are uploaded to the configured bucket under `prefix/`.
+3. The database row stores the object key, so the UI and API can fetch the payload on demand.
+4. `object_storage_exclude_fields` lets you skip specific fields from offload (for example, when you do not want to retain raw user prompts at all).
 
-#### Snowflake
-```json
-{
-  "export": {
-    "destination": "snowflake",
-    "config": {
-      "account": "your-account.snowflakecomputing.com",
-      "database": "BIFROST_LOGS",
-      "schema": "PUBLIC",
-      "table": "request_logs",
-      "warehouse": "COMPUTE_WH",
-      "credentials": {
-        "username": "${SNOWFLAKE_USERNAME}",
-        "password": "${SNOWFLAKE_PASSWORD}"
-      }
-    }
-  }
-}
-```
+Only **S3** and **GCS** are supported today. Azure Blob, local filesystem, and data warehouse destinations are not implemented.
 
-#### Amazon Redshift
-```json
-{
-  "export": {
-    "destination": "redshift",
-    "config": {
-      "cluster": "bifrost-cluster",
-      "database": "bifrost_logs",
-      "schema": "public",
-      "table": "request_logs",
-      "region": "us-west-2",
-      "credentials": {
-        "username": "${REDSHIFT_USERNAME}",
-        "password": "${REDSHIFT_PASSWORD}"
-      }
-    }
-  }
-}
-```
+## Configuration via `config.json`
 
-#### Google BigQuery
-```json
-{
-  "export": {
-    "destination": "bigquery",
-    "config": {
-      "project_id": "your-project-id",
-      "dataset": "bifrost_logs",
-      "table": "request_logs",
-      "credentials": {
-        "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
-      }
-    }
-  }
-}
-```
-
-## Export Schedules
-
-### Daily Exports
-```json
-{
-  "export": {
-    "schedule": "daily",
-    "time": "02:00",
-    "timezone": "UTC"
-  }
-}
-```
-
-### Weekly Exports
-```json
-{
-  "export": {
-    "schedule": "weekly",
-    "day": "sunday",
-    "time": "03:00",
-    "timezone": "UTC"
-  }
-}
-```
-
-### Monthly Exports
-```json
-{
-  "export": {
-    "schedule": "monthly",
-    "day": 1,
-    "time": "04:00",
-    "timezone": "UTC"
-  }
-}
-```
-
-## Export Configuration
-
-### Complete Export Configuration Example
+### Amazon S3
 
 ```json
 {
-  "log_exports": {
+  "logs_store": {
     "enabled": true,
-    "exports": [
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/logs.db"
+    },
+    "object_storage": {
+      "type": "s3",
+      "bucket": "env.AWS_S3_BUCKET",
+      "region": "env.AWS_REGION",
+      "access_key_id": "env.AWS_ACCESS_KEY_ID",
+      "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
+      "prefix": "bifrost/logs",
+      "compress": true
+    },
+    "object_storage_exclude_fields": []
+  }
+}
+```
+
+S3 fields (all values support the `env.<NAME>` indirection to read from environment variables):
+
+| Field | Required | Notes |
+|---|---|---|
+| `type` | yes | Must be `"s3"`. |
+| `bucket` | yes | Target bucket name. |
+| `region` | yes | AWS region, e.g. `us-west-2`. |
+| `access_key_id` | conditional | Required for static credentials. Omit when using `role_arn` or the default credential chain (IRSA, instance profile, env). |
+| `secret_access_key` | conditional | Pairs with `access_key_id`. |
+| `session_token` | optional | For temporary STS credentials. |
+| `role_arn` | optional | Assume this role instead of using static keys. |
+| `endpoint` | optional | Override for S3-compatible stores (MinIO, Cloudflare R2, Wasabi). |
+| `force_path_style` | optional | Set `true` for most S3-compatible endpoints. |
+| `prefix` | optional | Object key prefix. Defaults to `bifrost`. |
+| `compress` | optional | Gzip payloads before upload. Defaults to `false`. |
+
+A live example is checked in at `examples/configs/withobjectstorages3/config.json`.
+
+### Google Cloud Storage
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/logs.db"
+    },
+    "object_storage": {
+      "type": "gcs",
+      "bucket": "env.GCS_BUCKET",
+      "credentials_json": "env.GCS_KEY",
+      "project_id": "env.GCP_PROJECT_ID",
+      "prefix": "bifrost/logs",
+      "compress": true
+    },
+    "object_storage_exclude_fields": []
+  }
+}
+```
+
+GCS fields:
+
+| Field | Required | Notes |
+|---|---|---|
+| `type` | yes | Must be `"gcs"`. |
+| `bucket` | yes | Target bucket name. |
+| `credentials_json` | conditional | Service-account JSON (or `env.GCS_KEY` pointing at it). Omit when running on GKE with Workload Identity or any environment where Application Default Credentials work. |
+| `credentials` | deprecated | Legacy alias for `credentials_json`. Use `credentials_json` in new configs. |
+| `project_id` | optional | Useful when ADC cannot infer the project. |
+| `prefix` | optional | Object key prefix. Defaults to `bifrost`. |
+| `compress` | optional | Gzip payloads before upload. Defaults to `false`. |
+
+A live example is checked in at `examples/configs/withobjectstoragegcs/config.json`.
+
+### Choosing what stays in the database vs. what is offloaded
+
+By default, every offloadable payload field is uploaded to object storage. `object_storage_exclude_fields` lets you pin specific fields to the **database only**, so they are never written to the bucket. Listed fields are **not dropped** - they continue to live in the logs DB row as before. Everything not listed is offloaded.
+
+Values must be **database column names** (not JSON paths). Common choices:
+
+| Column | Contents |
+|---|---|
+| `raw_request` | The verbatim provider request body. |
+| `raw_response` | The verbatim provider response body. |
+| `input_history` | The full conversation sent to the model. |
+| `output_message` | The model's primary output message. |
+
+```json
+{
+  "logs_store": {
+    "object_storage": { "...": "..." },
+    "object_storage_exclude_fields": [
+      "raw_request",
+      "raw_response"
+    ]
+  }
+}
+```
+
+Unknown column names are silently ignored, so a typo will not error - it will just leave that field on the default (offloaded) path. Reference tests covering this behaviour live at `framework/logstore/hybrid_test.go`.
+
+Typical use cases:
+
+- **Data residency**: keep raw prompts and responses inside the DB (which may itself sit inside a controlled VPC) while still benefiting from offload for less sensitive fields.
+- **Operational queries**: keep `input_history` in the DB so SQL queries and the UI's search can run against the full conversation without paying an object-fetch round trip.
+
+## Retention policy
+
+Bifrost ships a background log cleaner that deletes old logs on a fixed schedule.
+
+### Configuration
+
+Retention is configured on the **client config**, not on `logs_store`. The active key is `client_config.log_retention_days`:
+
+```json
+{
+  "client_config": {
+    "log_retention_days": 30
+  }
+}
+```
+
+| Aspect | Value |
+|---|---|
+| Default | `365` days |
+| Minimum | `1` day (enforced by validator) |
+| Disable | Set to `0` (cleanup is skipped entirely) |
+| Cleanup cadence | Every 24 hours, plus a random jitter of 15-30 minutes |
+| Startup behaviour | A cleanup pass runs immediately when Bifrost starts |
+| Delete batch size | 100 rows per query |
+| Per-pass timeout | 30 minutes |
+
+Source: `framework/logstore/cleaner.go` and `transports/bifrost-http/server/server.go`.
+
+### What gets deleted
+
+The cleaner deletes **database rows** older than `now - retention_days` (UTC). It deletes from the main `Log` table as well as the MCP tool logs table.
+
+### What does NOT get deleted automatically
+
+> **Important**: the retention cleaner does **not** delete the corresponding payloads in S3 or GCS. The hybrid log store explicitly delegates object cleanup to the bucket's own lifecycle policy.
+
+If you have object storage enabled, configure a lifecycle / object-lifecycle-management rule on the bucket to expire objects under your `prefix/`. Pick a duration that matches (or exceeds) `log_retention_days`.
+
+**Amazon S3 lifecycle rule (example)**
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "bifrost-logs-expire-30d",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "bifrost/logs/" },
+      "Expiration": { "Days": 30 }
+    }
+  ]
+}
+```
+
+Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lifecycle-configuration file://lifecycle.json`. See the AWS docs on [object lifecycle management](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html).
+
+**Google Cloud Storage lifecycle rule (example)**
+
+```json
+{
+  "lifecycle": {
+    "rule": [
       {
-        "name": "daily_s3_export",
-        "enabled": true,
-        "schedule": {
-          "frequency": "daily",
-          "time": "02:00",
-          "timezone": "UTC"
-        },
-        "destination": {
-          "type": "s3",
-          "config": {
-            "bucket": "bifrost-logs-prod",
-            "region": "us-west-2",
-            "prefix": "daily-exports/{year}/{month}/{day}/",
-            "credentials": {
-              "access_key_id": "${AWS_ACCESS_KEY_ID}",
-              "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
-            }
-          }
-        },
-        "data": {
-          "format": "parquet",
-          "compression": "gzip",
-          "include": [
-            "request_logs",
-            "response_logs",
-            "error_logs"
-          ],
-          "filters": {
-            "date_range": "last_24_hours",
-            "status_codes": [200, 400, 401, 403, 404, 500]
-          }
-        }
-      },
-      {
-        "name": "weekly_bigquery_export",
-        "enabled": true,
-        "schedule": {
-          "frequency": "weekly",
-          "day": "sunday",
-          "time": "03:00",
-          "timezone": "UTC"
-        },
-        "destination": {
-          "type": "bigquery",
-          "config": {
-            "project_id": "your-analytics-project",
-            "dataset": "bifrost_analytics",
-            "table": "weekly_logs",
-            "credentials": {
-              "service_account_key": "${GCP_SERVICE_ACCOUNT_KEY}"
-            }
-          }
-        },
-        "data": {
-          "format": "json",
-          "include": [
-            "request_logs",
-            "metrics",
-            "traces"
-          ],
-          "transformations": [
-            {
-              "type": "aggregate",
-              "group_by": ["provider", "model", "customer_id"],
-              "metrics": ["total_requests", "avg_latency", "error_rate"]
-            }
-          ]
+        "action": { "type": "Delete" },
+        "condition": {
+          "age": 30,
+          "matchesPrefix": ["bifrost/logs/"]
         }
       }
     ]
@@ -250,99 +216,74 @@ The log export system enables:
 }
 ```
 
-## Data Formats
+Apply with `gcloud storage buckets update gs://<bucket> --lifecycle-file=lifecycle.json`. See the GCS docs on [Object Lifecycle Management](https://cloud.google.com/storage/docs/lifecycle).
 
-### JSON Format
-```json
-{
-  "timestamp": "2024-01-15T10:30:00Z",
-  "request_id": "req_123456789",
-  "customer_id": "cust_abc123",
-  "provider": "openai",
-  "model": "gpt-4",
-  "endpoint": "/v1/chat/completions",
-  "method": "POST",
-  "status_code": 200,
-  "latency_ms": 1250,
-  "input_tokens": 100,
-  "output_tokens": 150,
-  "cost_usd": 0.0045
-}
+### Manual deletes still cascade
+
+Single and batch deletes triggered explicitly (via the UI's **Delete log** action or the underlying `DeleteLog` / `DeleteLogs` APIs) **do** remove the associated objects from S3 or GCS at the same time. Only the time-based retention sweep is bucket-blind.
+
+## Configuration via Helm
+
+The Bifrost Helm chart at `helm-charts/bifrost/` does not expose dedicated values for `logs_store.object_storage`. It renders the same `config.json` schema documented above, so you supply the block under the chart's `bifrost.*` configuration tree (or mount your own `config.json` via an existing ConfigMap/Secret).
+
+### Inline values
+
+```yaml
+bifrost:
+  logsStore:
+    enabled: true
+    type: sqlite
+    config:
+      path: /app/data/logs.db
+    objectStorage:
+      type: s3
+      bucket: env.AWS_S3_BUCKET
+      region: env.AWS_REGION
+      accessKeyId: env.AWS_ACCESS_KEY_ID
+      secretAccessKey: env.AWS_SECRET_ACCESS_KEY
+      prefix: bifrost/logs
+      compress: true
 ```
 
-### CSV Format
-```csv
-timestamp,request_id,customer_id,provider,model,endpoint,method,status_code,latency_ms,input_tokens,output_tokens,cost_usd
-2024-01-15T10:30:00Z,req_123456789,cust_abc123,openai,gpt-4,/v1/chat/completions,POST,200,1250,100,150,0.0045
+For GCS, substitute the `objectStorage` block:
+
+```yaml
+bifrost:
+  logsStore:
+    enabled: true
+    type: sqlite
+    config:
+      path: /app/data/logs.db
+    objectStorage:
+      type: gcs
+      bucket: env.GCS_BUCKET
+      credentialsJson: env.GCS_KEY
+      projectId: env.GCP_PROJECT_ID
+      prefix: bifrost/logs
+      compress: true
 ```
 
-### Parquet Schema
-```
-message log_record {
-  required int64 timestamp;
-  required binary request_id (UTF8);
-  required binary customer_id (UTF8);
-  required binary provider (UTF8);
-  required binary model (UTF8);
-  required binary endpoint (UTF8);
-  required binary method (UTF8);
-  required int32 status_code;
-  required int32 latency_ms;
-  optional int32 input_tokens;
-  optional int32 output_tokens;
-  optional double cost_usd;
-}
-```
+The chart converts camelCase keys to the `snake_case` form Bifrost expects when it writes the runtime `config.json`. Provide the referenced env vars (`AWS_*`, `GCS_*`) through `extraEnv`, `envFrom`, or an existing Kubernetes Secret.
 
-## Data Filtering & Transformation
+### BYO config.json
 
-### Filtering Options
-```json
-{
-  "filters": {
-    "date_range": {
-      "start": "2024-01-01T00:00:00Z",
-      "end": "2024-01-31T23:59:59Z"
-    },
-    "providers": ["openai", "anthropic", "azure"],
-    "models": ["gpt-4", "claude-3-sonnet"],
-    "status_codes": [200, 201, 400, 401, 403, 404, 500],
-    "customers": ["cust_123", "cust_456"],
-    "min_latency_ms": 100,
-    "max_latency_ms": 10000,
-    "has_errors": true
-  }
-}
-```
+If you prefer to manage the full `config.json` yourself, mount it as a Secret and point the chart at it. Use the same `logs_store.object_storage` blocks shown in the [config.json](#configuration-via-config-json) section verbatim.
 
-### Transformation Options
-```json
-{
-  "transformations": [
-    {
-      "type": "aggregate",
-      "group_by": ["provider", "model", "date"],
-      "metrics": [
-        "count",
-        "avg_latency",
-        "p95_latency",
-        "total_tokens",
-        "total_cost",
-        "error_rate"
-      ]
-    },
-    {
-      "type": "anonymize",
-      "fields": ["customer_id", "request_id"],
-      "method": "hash"
-    },
-    {
-      "type": "enrich",
-      "add_fields": {
-        "export_timestamp": "${EXPORT_TIMESTAMP}",
-        "export_version": "${EXPORT_VERSION}"
-      }
-    }
-  ]
-}
-```
+## Configuration via the UI
+
+The web UI does **not** currently expose a form for `logs_store.object_storage`. To enable payload offload:
+
+1. Edit `config.json` (or the Helm values) using the snippets above.
+2. Restart Bifrost so the new log store wiring takes effect.
+3. Confirm new requests are landing in the bucket by browsing the configured `prefix/` path.
+
+Once configured, the existing **Logs** screen in the UI transparently fetches payloads from object storage when you open a log entry. No UI changes are needed on the read path.
+
+## Verifying the setup
+
+1. Send a request through Bifrost.
+2. Confirm a row appears in the logs DB (visible via the UI's **Logs** screen).
+3. List the bucket under your `prefix/`. You should see one or more objects per request.
+4. Open the log entry in the UI. The payload pane should render the content fetched from object storage.
+
+If the bucket stays empty, check the Bifrost logs for `objectstore` errors. The most common causes are missing credentials, a region/endpoint mismatch, or a bucket policy that blocks the credentials' principal.

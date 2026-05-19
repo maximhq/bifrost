@@ -1214,6 +1214,31 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_OtelPlugin_GrpcAddress(t *testing.T) {
+	// gRPC configs use bare host:port — previously failed because host:port satisfies both
+	// format:uri (RFC 3986 opaque URI) and the host:port pattern, causing oneOf to reject it.
+	grpcConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "otel",
+				"config": {
+					"collector_url": "something.somewhere.svc.cluster.local:1111",
+					"trace_type": "open_inference",
+					"protocol": "grpc",
+					"metrics_enabled": true,
+					"metrics_endpoint": "something.somewhere.svc.cluster.local:1111"
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(grpcConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected gRPC OTel config to pass validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 	// Missing required field: collector_url
 	invalidConfig := `{
@@ -1353,9 +1378,9 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingEndpoint(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
-	// Missing required field: api_version in azure_key_config
-	invalidConfig := `{
+func TestValidateConfigSchema_AzureKeyConfig_ApiVersionOptional(t *testing.T) {
+	// api_version is optional; Azure uses the provider default when it is omitted.
+	validConfig := `{
 		"providers": {
 			"azure": {
 				"keys": [
@@ -1372,9 +1397,9 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'api_version' in Azure key config to fail validation")
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected config missing optional 'api_version' in Azure key config to pass validation, got: %v", err)
 	}
 }
 

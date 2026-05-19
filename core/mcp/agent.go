@@ -317,11 +317,9 @@ func (a *AgentModeExecutor) executeAgent(
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
 						channelToolResults <- mcpResponse.ChatMessage
-					} else if mcpResponse != nil && mcpResponse.ChatMessage == nil {
-						// Send empty result when mcpResponse is non-nil but ChatMessage is nil
-						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					} else {
-						// Fallback: send empty result when both mcpResponse and toolErr are nil
+						// Fallback: empty result when mcpResponse is missing the chat message
+						// (either nil mcpResponse, missing execute-tool payload, or nil ChatMessage).
 						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					}
 				}(toolCall)

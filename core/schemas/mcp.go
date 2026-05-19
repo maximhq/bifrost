@@ -119,12 +119,47 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 }
 
 type MCPToolManagerConfig struct {
-	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or an
-	// integer nanosecond value for backward compatibility.
+	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or a
+	// bare integer treated as seconds (e.g. 30 → 30s). This intentionally differs
+	// from schemas.Duration, which treats bare integers as nanoseconds.
 	ToolExecutionTimeout  Duration             `json:"tool_execution_timeout"`
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+}
+
+// UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
+// bare integers as seconds (matching the schema description and user expectation)
+// rather than the nanosecond interpretation used by the underlying Duration type.
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion, then fix up ToolExecutionTimeout.
+	type alias MCPToolManagerConfig
+	aux := &struct {
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.ToolExecutionTimeout == nil {
+		return nil
+	}
+
+	raw := *aux.ToolExecutionTimeout
+	// If it's a quoted string, delegate to the normal Duration parser ("30s", "2m", etc.)
+	if len(raw) > 0 && raw[0] == '"' {
+		return json.Unmarshal(raw, &c.ToolExecutionTimeout)
+	}
+
+	// Bare integer: treat as seconds (not nanoseconds).
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+	}
+	c.ToolExecutionTimeout = Duration(time.Duration(n) * time.Second)
+	return nil
 }
 
 const (

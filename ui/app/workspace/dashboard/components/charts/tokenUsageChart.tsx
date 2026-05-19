@@ -1,5 +1,5 @@
 import type { TokenHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -54,7 +54,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUsageChartProps) {
+function TokenUsageChartImpl({ data, chartType, startTime, endTime }: TokenUsageChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -187,3 +187,4 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 		</ChartErrorBoundary>
 	);
 }
+export const TokenUsageChart = memo(TokenUsageChartImpl);

@@ -17,6 +17,24 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
+// (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
+// recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
+var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+
+// parseBedrockRegionAndModel splits a model string that optionally carries an AWS region prefix
+// into its region and bare model ID components.
+// If no region prefix is present the returned region is empty and bareModel equals model.
+func parseBedrockRegionAndModel(model string) (region, bareModel string) {
+	if idx := strings.IndexByte(model, '/'); idx > 0 {
+		prefix := model[:idx]
+		if awsRegionRegex.MatchString(prefix) {
+			return prefix, model[idx+1:]
+		}
+	}
+	return "", model
+}
+
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)
@@ -187,7 +205,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type":          "enabled",
 					"budget_tokens": tokenBudget,
 				})
@@ -234,9 +252,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type": "adaptive",
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					} else if anthropic.IsOpus47(bifrostReq.Model) {
+						// Opus 4.7+ omits reasoning text by default; default to "summarized"
+						thinkingConfig["display"] = "summarized"
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking
@@ -260,7 +285,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					"type": "disabled",
 				})
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
 				})
 			}
@@ -563,10 +588,23 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.ChatMessageRoleUser
+		bedrockMsg, err := convertMessage(ctx, msg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to convert message: %w", err)
+		}
+		if len(bedrockMsg.Content) > 0 {
+			return []BedrockMessage{bedrockMsg}, nil, nil
+		}
+	}
+
 	for i := 0; i < len(bifrostMessages); i++ {
 		msg := bifrostMessages[i]
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
 			// Convert system message
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {

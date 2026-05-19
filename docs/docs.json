@@ -100,6 +100,13 @@
             ]
           },
           {
+            "group": "Release Cadence",
+            "icon": "calendar",
+            "pages": [
+              "release-cadence"
+            ]
+          },
+          {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
@@ -247,6 +254,13 @@
             ]
           },
           {
+            "group": "Release Cadence",
+            "icon": "calendar",
+            "pages": [
+              "enterprise/release-cadence"
+            ]
+          },
+          {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
@@ -257,7 +271,15 @@
             "group": "Features",
             "icon": "bolt",
             "pages": [
-              "enterprise/guardrails",
+              {
+                "group": "Guardrails",
+                "icon": "road-barrier",
+                "pages": [
+                  "enterprise/guardrails",
+                  "enterprise/guardrails/secrets-detection",
+                  "enterprise/guardrails/custom-regex"
+                ]
+              },
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/mcp-with-fa",
@@ -534,6 +556,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.2",
+              "changelogs/v1.5.1",
               "changelogs/v1.5.0",
               "changelogs/v1.5.0-prerelease8",
               {
@@ -697,6 +721,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.2",
+              "changelogs/ent-v1.4.1",
               "changelogs/ent-v1.4.0",
               "changelogs/ent-v1.4.0-prerelease7",
               {
@@ -735,10 +761,16 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.3",
-              "changelogs/cli-v0.10.2",
-              "changelogs/cli-v0.10.1",
-              "changelogs/cli-v0.10.0"
+              "changelogs/cli-v0.10.4",
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.3",
+                  "changelogs/cli-v0.10.2",
+                  "changelogs/cli-v0.10.1",
+                  "changelogs/cli-v0.10.0"
+                ]
+              }
             ]
           }
         ]

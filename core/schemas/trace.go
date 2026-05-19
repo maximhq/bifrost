@@ -164,6 +164,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
+	// These run in the background per-client and are not part of an LLM request flow.
+	SpanKindMCPClient SpanKind = "mcp.client"
 	// SpanKindRetry represents a retry attempt
 	SpanKindRetry SpanKind = "retry"
 	// SpanKindFallback represents a fallback to another provider
@@ -257,9 +260,11 @@ const (
 	AttrPromptTokenDetailsText        = "gen_ai.usage.prompt_token_details.text_tokens"
 	AttrPromptTokenDetailsAudio       = "gen_ai.usage.prompt_token_details.audio_tokens"
 	AttrPromptTokenDetailsImage       = "gen_ai.usage.prompt_token_details.image_tokens"
-	AttrPromptTokenDetailsCachedRead  = "gen_ai.usage.prompt_token_details.cached_read_tokens"
-	AttrPromptTokenDetailsCachedWrite = "gen_ai.usage.prompt_token_details.cached_write_tokens"
-	AttrCompletionTokenDetailsText    = "gen_ai.usage.completion_token_details.text_tokens"
+	AttrPromptTokenDetailsCachedRead    = "gen_ai.usage.prompt_token_details.cached_read_tokens"
+	AttrPromptTokenDetailsCachedWrite   = "gen_ai.usage.prompt_token_details.cached_write_tokens"
+	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
+	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
+	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
 	AttrCompletionTokenDetailsAudio   = "gen_ai.usage.completion_token_details.audio_tokens"
 	AttrCompletionTokenDetailsImage   = "gen_ai.usage.completion_token_details.image_tokens"
 	AttrCompletionTokenDetailsReason  = "gen_ai.usage.completion_token_details.reasoning_tokens"
@@ -281,6 +286,7 @@ const (
 	AttrOutputMessages = "gen_ai.output.messages"
 
 	// Bifrost Context Attributes
+	AttrRequestID       = "gen_ai.request_id"
 	AttrVirtualKeyID    = "gen_ai.virtual_key_id"
 	AttrVirtualKeyName  = "gen_ai.virtual_key_name"
 	AttrSelectedKeyID   = "gen_ai.selected_key_id"
@@ -370,6 +376,21 @@ const (
 	// Transcription Response Attributes
 	AttrInputTokenDetailsText  = "gen_ai.usage.input_token_details.text_tokens"
 	AttrInputTokenDetailsAudio = "gen_ai.usage.input_token_details.audio_tokens"
+
+	// Responses API usage detail attributes
+	AttrInputTokenDetailsImage        = "gen_ai.usage.input_token_details.image_tokens"
+	AttrInputTokenDetailsCachedRead   = "gen_ai.usage.input_token_details.cached_read_tokens"
+	AttrInputTokenDetailsCachedWrite  = "gen_ai.usage.input_token_details.cached_write_tokens"
+	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
+	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
+	AttrOutputTokenDetailsText        = "gen_ai.usage.output_token_details.text_tokens"
+	AttrOutputTokenDetailsAudio       = "gen_ai.usage.output_token_details.audio_tokens"
+	AttrOutputTokenDetailsImage       = "gen_ai.usage.output_token_details.image_tokens"
+	AttrOutputTokenDetailsReason      = "gen_ai.usage.output_token_details.reasoning_tokens"
+	AttrOutputTokenDetailsAccept      = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
+	AttrOutputTokenDetailsReject      = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
+	AttrOutputTokenDetailsCite        = "gen_ai.usage.output_token_details.citation_tokens"
+	AttrOutputTokenDetailsSearch      = "gen_ai.usage.output_token_details.num_search_queries"
 
 	// File Operation Attributes
 	AttrFileID             = "gen_ai.file.id"

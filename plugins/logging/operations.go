@@ -979,6 +979,11 @@ func (p *LoggerPlugin) GetLog(ctx context.Context, id string) (*logstore.Log, er
 	return p.store.FindByID(ctx, id)
 }
 
+// GetMCPToolLog retrieves a single MCP tool log entry by ID.
+func (p *LoggerPlugin) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
+	return p.store.FindMCPToolLog(ctx, id)
+}
+
 // GetStats calculates statistics for logs matching the given filters
 func (p *LoggerPlugin) GetStats(ctx context.Context, filters logstore.SearchFilters) (*logstore.SearchStats, error) {
 	return p.store.GetStats(ctx, filters)

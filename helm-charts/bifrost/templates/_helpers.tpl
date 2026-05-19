@@ -699,6 +699,9 @@ false
 {{- if .Values.storage.logsStore.maxOpenConns }}
 {{- $_ := set $pgConfig "max_open_conns" (.Values.storage.logsStore.maxOpenConns | int) }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshInterval }}
+{{- $_ := set $pgConfig "matview_refresh_interval" .Values.storage.logsStore.matviewRefreshInterval }}
+{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
@@ -1359,6 +1362,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "keycloak" }}
+{{- if not $scimValidation.config.serverUrl }}
+{{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
+{{- end }}
+{{- if not $scimValidation.config.realm }}
+{{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientSecret }}
+{{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
 {{- end }}
 {{- end }}
 {{- end }}
