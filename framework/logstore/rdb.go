@@ -352,6 +352,81 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	})
 }
 
+// GetNodeUsageSince returns per-budget cost and per-rate-limit request/token usage
+// for a specific cluster node from a given timestamp onwards. Usage is attributed
+// to the exact budget and rate-limit IDs stored in each log entry, so callers get
+// correctly scoped breakdowns rather than a single aggregate.
+func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, since time.Time) (*NodeUsageAggregate, error) {
+	// Fetch only the columns needed for attribution. The row count is bounded by
+	// the ghost node's activity since its LastMessageAt, typically a small window.
+	type logRow struct {
+		Cost         float64 `gorm:"column:cost"`
+		TotalTokens  int64   `gorm:"column:total_tokens"`
+		BudgetIDs    *string `gorm:"column:budget_ids"`
+		RateLimitIDs *string `gorm:"column:rate_limit_ids"`
+	}
+	var rows []logRow
+
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("cluster_node_id = ?", nodeID).
+		Where("timestamp >= ?", since).
+		Where("status = ?", "success").
+		Select("COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node usage aggregate: %w", err)
+	}
+
+	budgetCosts := make(map[string]float64)
+	rateLimitRequests := make(map[string]int64)
+	rateLimitTokens := make(map[string]int64)
+
+	for i := range rows {
+		row := &rows[i]
+
+		// Attribute cost to each budget that governed this request.
+		if row.BudgetIDs != nil && *row.BudgetIDs != "" {
+			var budgetIDs []string
+			if err := sonic.Unmarshal([]byte(*row.BudgetIDs), &budgetIDs); err != nil {
+				s.logger.Warn(fmt.Sprintf("logstore: skipping malformed budget_ids JSON in node usage aggregate: %s", err))
+			} else {
+				// Deduplicate IDs so a row with ["b1","b1"] doesn't double-count cost.
+				seen := make(map[string]struct{}, len(budgetIDs))
+				for _, id := range budgetIDs {
+					if _, dup := seen[id]; !dup {
+						seen[id] = struct{}{}
+						budgetCosts[id] += row.Cost
+					}
+				}
+			}
+		}
+
+		// Attribute request count and tokens to each rate limit that governed this request.
+		if row.RateLimitIDs != nil && *row.RateLimitIDs != "" {
+			var rateLimitIDs []string
+			if err := sonic.Unmarshal([]byte(*row.RateLimitIDs), &rateLimitIDs); err != nil {
+				s.logger.Warn(fmt.Sprintf("logstore: skipping malformed rate_limit_ids JSON in node usage aggregate: %s", err))
+			} else {
+				// Deduplicate IDs so a row with ["r1","r1"] doesn't double-count.
+				seen := make(map[string]struct{}, len(rateLimitIDs))
+				for _, id := range rateLimitIDs {
+					if _, dup := seen[id]; !dup {
+						seen[id] = struct{}{}
+						rateLimitRequests[id]++
+						rateLimitTokens[id] += row.TotalTokens
+					}
+				}
+			}
+		}
+	}
+
+	return &NodeUsageAggregate{
+		BudgetCosts:       budgetCosts,
+		RateLimitRequests: rateLimitRequests,
+		RateLimitTokens:   rateLimitTokens,
+	}, nil
+}
+
 // serializeLogUpdateEntry serializes parsed Log fields before passing the
 // update payload to GORM. Non-Log payloads are returned unchanged.
 func serializeLogUpdateEntry(entry any) (any, error) {

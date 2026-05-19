@@ -292,6 +292,7 @@ type LoggerPlugin struct {
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
+	clusterNodeID          atomic.Value         // Cluster node ID (string) for log attribution in clustered deployments
 }
 
 // Init creates new logger plugin with given log store
@@ -348,6 +349,14 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
+// Used in clustered deployments to attribute log entries to specific nodes for
+// disconnected node usage recovery. Uses atomic.Value since it is written at
+// startup and read concurrently from request hot paths.
+func (p *LoggerPlugin) SetClusterNodeID(nodeID string) {
+	p.clusterNodeID.Store(nodeID)
 }
 
 // cleanupWorker periodically removes old processing logs
@@ -788,6 +797,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
+			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+				entry.ClusterNodeID = &nodeID
+			}
 			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
@@ -854,6 +866,16 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	// Attach cluster governance metadata for disconnected node usage recovery
+	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+		entry.ClusterNodeID = &nodeID
+	}
+	if budgetIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBudgetIDs).([]string); ok && len(budgetIDs) > 0 {
+		entry.BudgetIDsParsed = budgetIDs
+	}
+	if rateLimitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok && len(rateLimitIDs) > 0 {
+		entry.RateLimitIDsParsed = rateLimitIDs
+	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
