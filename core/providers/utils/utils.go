@@ -2425,8 +2425,6 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		if r := recover(); r != nil {
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
-		// Always release the response to prevent leaks, even after a panic
-		fasthttp.ReleaseResponse(resp)
 	}()
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
@@ -2435,17 +2433,8 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}
-		if closer, ok := bodyStream.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				getLogger().Warn("failed to close streaming response body: %v", err)
-			}
-			ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
-		} else if wce, ok := bodyStream.(streamCloserWithError); ok {
-			if err := wce.CloseWithError(ctx.Err()); err != nil {
-				getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
-			}
-			ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
-		}
+		// Always release the response to prevent leaks, even after a panic
+		fasthttp.ReleaseResponse(resp)
 	}
 }
 
