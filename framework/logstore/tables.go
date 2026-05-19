@@ -1030,7 +1030,6 @@ type MCPToolLogSearchFilters struct {
 type MCPToolLogSearchResult struct {
 	Logs       []MCPToolLog      `json:"logs"`
 	Pagination PaginationOptions `json:"pagination"`
-	Stats      MCPToolLogStats   `json:"stats"`
 	HasLogs    bool              `json:"has_logs"`
 }
 
