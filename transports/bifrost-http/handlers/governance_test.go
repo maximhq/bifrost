@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -44,6 +45,7 @@ type mockRotateConfigStore struct {
 	configstore.ConfigStore
 	virtualKeys map[string]*configstoreTables.TableVirtualKey
 	updates     int
+	updateErr   error
 }
 
 func cloneTestVirtualKey(vk *configstoreTables.TableVirtualKey) *configstoreTables.TableVirtualKey {
@@ -66,6 +68,9 @@ func (m *mockRotateConfigStore) GetVirtualKey(_ context.Context, id string) (*co
 }
 
 func (m *mockRotateConfigStore) UpdateVirtualKey(_ context.Context, virtualKey *configstoreTables.TableVirtualKey, _ ...*gorm.DB) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	existing, ok := m.virtualKeys[virtualKey.ID]
 	if !ok {
 		return configstore.ErrNotFound
@@ -81,10 +86,14 @@ type mockRotateGovernanceManager struct {
 	GovernanceManager
 	store     *mockRotateConfigStore
 	reloadIDs []string
+	reloadErr error
 }
 
 func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
 	m.reloadIDs = append(m.reloadIDs, id)
+	if m.reloadErr != nil {
+		return nil, m.reloadErr
+	}
 	return m.store.GetVirtualKey(ctx, id)
 }
 
@@ -102,12 +111,13 @@ func TestFindExistingBudgetPrefersIDOverResetDuration(t *testing.T) {
 		CurrentUsage:  3,
 	}
 
-	byID, byDuration := buildBudgetLookup([]configstoreTables.TableBudget{monthlyBudget, dailyBudget})
-	matched, found, err := findExistingBudget(CreateBudgetRequest{
+	request := CreateBudgetRequest{
 		ID:            "budget-monthly",
 		MaxLimit:      120,
 		ResetDuration: "1d",
-	}, byID, byDuration)
+	}
+	byID, byDuration := buildBudgetLookup([]configstoreTables.TableBudget{monthlyBudget, dailyBudget}, []CreateBudgetRequest{request})
+	matched, found, err := findExistingBudget(request, byID, byDuration)
 	if err != nil {
 		t.Fatalf("expected budget match, got error: %v", err)
 	}
@@ -120,17 +130,112 @@ func TestFindExistingBudgetPrefersIDOverResetDuration(t *testing.T) {
 }
 
 func TestFindExistingBudgetRejectsUnknownID(t *testing.T) {
-	byID, byDuration := buildBudgetLookup([]configstoreTables.TableBudget{
-		{ID: "budget-1", ResetDuration: "1d"},
-	})
-
-	_, _, err := findExistingBudget(CreateBudgetRequest{
+	request := CreateBudgetRequest{
 		ID:            "missing-budget",
 		MaxLimit:      100,
 		ResetDuration: "1d",
-	}, byID, byDuration)
+	}
+	byID, byDuration := buildBudgetLookup([]configstoreTables.TableBudget{
+		{ID: "budget-1", ResetDuration: "1d"},
+	}, []CreateBudgetRequest{request})
+
+	_, _, err := findExistingBudget(request, byID, byDuration)
 	if err == nil {
 		t.Fatal("expected unknown budget ID to fail")
+	}
+}
+
+// TestBudgetFrequencyReplaceInheritsUsageFromOriginalBudgets exercises the
+// scenario where the only existing shorter-duration budget is replaced (not
+// renamed by ID) by a longer-duration budget in the same request. The usage
+// from the original shorter budget must be inherited; if the inheritance
+// source were the partially-built reconciled slice, it would be empty here
+// (the shorter budget is being deleted, not reconciled) and usage would be
+// lost.
+func TestBudgetFrequencyReplaceInheritsUsageFromOriginalBudgets(t *testing.T) {
+	originalLastReset := time.Now().Add(-3 * time.Hour)
+	reconciled, err := reconcileBudgetRequestsForTest(
+		[]configstoreTables.TableBudget{
+			{
+				ID:            "vk-budget-daily",
+				MaxLimit:      100,
+				ResetDuration: "1d",
+				CurrentUsage:  42,
+				LastReset:     originalLastReset,
+			},
+		},
+		[]CreateBudgetRequest{
+			{MaxLimit: 500, ResetDuration: "1w"},
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("expected reconcile to succeed: %v", err)
+	}
+	if len(reconciled) != 1 {
+		t.Fatalf("expected one reconciled budget, got %d: %#v", len(reconciled), reconciled)
+	}
+	if reconciled[0].ResetDuration != "1w" || reconciled[0].MaxLimit != 500 {
+		t.Fatalf("expected new weekly@500 budget, got %#v", reconciled[0])
+	}
+	if reconciled[0].CurrentUsage != 42 {
+		t.Fatalf("expected usage to be inherited from the daily budget (42), got %v", reconciled[0].CurrentUsage)
+	}
+}
+
+// TestBudgetLookupConsumesMatchedRowsForDurationSwap exercises the scenario
+// where the request renames an existing budget by ID to a longer duration
+// while also adding a new budget reusing the old duration. The lookup must
+// reserve the renamed row for the ID-specified entry so the duration-only
+// entry creates a fresh budget instead of stealing the row.
+func TestBudgetLookupConsumesMatchedRowsForDurationSwap(t *testing.T) {
+	originalLastReset := time.Now().Add(-2 * time.Hour)
+	reconciled, err := reconcileBudgetRequestsForTest(
+		[]configstoreTables.TableBudget{
+			{
+				ID:            "vk-budget-1",
+				MaxLimit:      100,
+				ResetDuration: "1d",
+				CurrentUsage:  42,
+				LastReset:     originalLastReset,
+			},
+		},
+		[]CreateBudgetRequest{
+			{ID: "vk-budget-1", MaxLimit: 200, ResetDuration: "1w"},
+			{MaxLimit: 50, ResetDuration: "1d"},
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("expected reconcile to succeed: %v", err)
+	}
+	if len(reconciled) != 2 {
+		t.Fatalf("expected two reconciled budgets, got %d: %#v", len(reconciled), reconciled)
+	}
+
+	var rename, fresh *configstoreTables.TableBudget
+	for i := range reconciled {
+		b := &reconciled[i]
+		if b.ID == "vk-budget-1" {
+			rename = b
+		} else {
+			fresh = b
+		}
+	}
+	if rename == nil {
+		t.Fatal("expected renamed budget to retain vk-budget-1 ID")
+	}
+	if rename.ResetDuration != "1w" || rename.MaxLimit != 200 {
+		t.Fatalf("expected vk-budget-1 to become weekly@200, got %#v", rename)
+	}
+	if rename.CurrentUsage != 42 {
+		t.Fatalf("expected rename to preserve usage 42, got %#v", rename)
+	}
+	if fresh == nil {
+		t.Fatal("expected a new daily budget to be created alongside the rename")
+	}
+	if fresh.ResetDuration != "1d" || fresh.MaxLimit != 50 {
+		t.Fatalf("expected fresh daily@50, got %#v", fresh)
 	}
 }
 
@@ -164,7 +269,7 @@ func reconcileBudgetRequestsForTest(existing []configstoreTables.TableBudget, re
 		return compareBudgetRequestDurations(requestBudgets[i], requestBudgets[j])
 	})
 
-	byID, byDuration := buildBudgetLookup(existing)
+	byID, byDuration := buildBudgetLookup(existing, requestBudgets)
 	reconciled := make([]configstoreTables.TableBudget, 0, len(requestBudgets))
 	for _, request := range requestBudgets {
 		budget, found, err := findExistingBudget(request, byID, byDuration)
@@ -179,19 +284,11 @@ func reconcileBudgetRequestsForTest(existing []configstoreTables.TableBudget, re
 				LastReset:     budgetLastReset(false, request.ResetDuration),
 				ResetDuration: request.ResetDuration,
 			}
-			if err := inheritUsageFromClosestShorterBudget(&budget, reconciled, resetUsage); err != nil {
-				return nil, err
-			}
+			inheritUsageFromClosestShorterBudget(&budget, existing, resetUsage)
 		}
-		configChanged := budget.MaxLimit != request.MaxLimit || budget.ResetDuration != request.ResetDuration
 		budget.MaxLimit = request.MaxLimit
 		budget.ResetDuration = request.ResetDuration
 		resetBudgetUsageIfRequested(&budget, resetUsage, false)
-		if found && configChanged {
-			if err := validatePreservedBudgetUsageWithinLimit(&budget, "preserved", "", resetUsage); err != nil {
-				return nil, err
-			}
-		}
 		reconciled = append(reconciled, budget)
 	}
 	return reconciled, nil
@@ -301,8 +398,8 @@ func TestBudgetFrequencyChangeResetsUsageWhenRequested(t *testing.T) {
 	}
 }
 
-func TestExistingVirtualKeyBudgetLoweredBelowPreservedUsageFails(t *testing.T) {
-	_, err := reconcileBudgetRequestsForTest(
+func TestExistingVirtualKeyBudgetLoweredBelowPreservedUsageIsAllowed(t *testing.T) {
+	reconciled, err := reconcileBudgetRequestsForTest(
 		[]configstoreTables.TableBudget{
 			{
 				ID:            "monthly-budget",
@@ -320,16 +417,16 @@ func TestExistingVirtualKeyBudgetLoweredBelowPreservedUsageFails(t *testing.T) {
 		},
 		false,
 	)
-	if err == nil {
-		t.Fatal("expected lowering budget below preserved usage to fail")
+	if err != nil {
+		t.Fatalf("expected preserving usage above lowered budget to be allowed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "reset usage while setting up the budget or increase the budget limit") {
-		t.Fatalf("expected actionable error message, got %v", err)
+	if reconciled[0].CurrentUsage != 0.11 || reconciled[0].MaxLimit != 0.01 {
+		t.Fatalf("expected usage to be preserved above lowered budget, got %#v", reconciled[0])
 	}
 }
 
-func TestExistingProviderBudgetLoweredBelowPreservedUsageFails(t *testing.T) {
-	_, err := reconcileBudgetRequestsForTest(
+func TestExistingProviderBudgetLoweredBelowPreservedUsageIsAllowed(t *testing.T) {
+	reconciled, err := reconcileBudgetRequestsForTest(
 		[]configstoreTables.TableBudget{
 			{
 				ID:            "provider-monthly-budget",
@@ -347,11 +444,11 @@ func TestExistingProviderBudgetLoweredBelowPreservedUsageFails(t *testing.T) {
 		},
 		false,
 	)
-	if err == nil {
-		t.Fatal("expected lowering provider budget below preserved usage to fail")
+	if err != nil {
+		t.Fatalf("expected preserving provider usage above lowered budget to be allowed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "reset usage while setting up the budget or increase the budget limit") {
-		t.Fatalf("expected actionable error message, got %v", err)
+	if reconciled[0].CurrentUsage != 0.11 || reconciled[0].MaxLimit != 0.01 {
+		t.Fatalf("expected provider usage to be preserved above lowered budget, got %#v", reconciled[0])
 	}
 }
 
@@ -449,8 +546,8 @@ func TestNewProviderBudgetInheritsClosestShorterUsage(t *testing.T) {
 	}
 }
 
-func TestNewVirtualKeyBudgetInheritanceFailsWhenUsageExceedsLimit(t *testing.T) {
-	_, err := reconcileBudgetRequestsForTest(
+func TestNewVirtualKeyBudgetInheritanceAboveLimitIsAllowed(t *testing.T) {
+	reconciled, err := reconcileBudgetRequestsForTest(
 		[]configstoreTables.TableBudget{
 			{
 				ID:            "weekly-budget",
@@ -472,16 +569,17 @@ func TestNewVirtualKeyBudgetInheritanceFailsWhenUsageExceedsLimit(t *testing.T) 
 		},
 		false,
 	)
-	if err == nil {
-		t.Fatal("expected inherited usage above new budget limit to fail")
+	if err != nil {
+		t.Fatalf("expected inherited usage above new budget limit to be allowed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "reset usage while setting up the budget or increase the budget limit") {
-		t.Fatalf("expected actionable error message, got %v", err)
+	monthly := reconciled[1]
+	if monthly.CurrentUsage != 100 || monthly.MaxLimit != 50 {
+		t.Fatalf("expected inherited usage above new budget limit, got %#v", monthly)
 	}
 }
 
-func TestNewProviderBudgetInheritanceFailsWhenUsageExceedsLimit(t *testing.T) {
-	_, err := reconcileBudgetRequestsForTest(
+func TestNewProviderBudgetInheritanceAtLimitIsAllowed(t *testing.T) {
+	reconciled, err := reconcileBudgetRequestsForTest(
 		[]configstoreTables.TableBudget{
 			{
 				ID:            "weekly-budget",
@@ -503,11 +601,12 @@ func TestNewProviderBudgetInheritanceFailsWhenUsageExceedsLimit(t *testing.T) {
 		},
 		false,
 	)
-	if err == nil {
-		t.Fatal("expected inherited usage equal to new budget limit to fail")
+	if err != nil {
+		t.Fatalf("expected inherited provider usage equal to new budget limit to be allowed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "reset usage while setting up the budget or increase the budget limit") {
-		t.Fatalf("expected actionable error message, got %v", err)
+	monthly := reconciled[1]
+	if monthly.CurrentUsage != 100 || monthly.MaxLimit != 100 {
+		t.Fatalf("expected inherited provider usage at new budget limit, got %#v", monthly)
 	}
 }
 
@@ -702,6 +801,90 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 }
 
+func TestRotateVirtualKey_NotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{virtualKeys: map[string]*configstoreTables.TableVirtualKey{}}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "missing")
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 404 {
+		t.Fatalf("expected status 404, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.updates != 0 {
+		t.Fatalf("expected no updates, got %d", store.updates)
+	}
+	if len(manager.reloadIDs) != 0 {
+		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
+	}
+}
+
+func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+		},
+		updateErr: errors.New("database unavailable"),
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.virtualKeys["vk-1"].Value != "sk-bf-old" {
+		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value)
+	}
+	if len(manager.reloadIDs) != 0 {
+		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
+	}
+}
+
+func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.updates != 1 {
+		t.Fatalf("expected one update, got %d", store.updates)
+	}
+	if store.virtualKeys["vk-1"].Value == "sk-bf-old" {
+		t.Fatal("expected value to rotate before reload failure")
+	}
+	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
+		t.Fatalf("expected reload for vk-1, got %#v", manager.reloadIDs)
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "failed to reload in-memory state") {
+		t.Fatalf("expected reload failure in response, got %s", string(ctx.Response.Body()))
+	}
+}
+
 func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -744,6 +927,116 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	}
 	if resp.Errors["missing"] != "virtual key not found" {
 		t.Fatalf("expected missing error, got %#v", resp.Errors)
+	}
+}
+
+func TestRotateVirtualKeys_RejectsInvalidRequests(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "invalid JSON", body: `{`, want: "Invalid JSON"},
+		{name: "empty IDs", body: `{"ids":[]}`, want: "At least one virtual key ID is required"},
+		{name: "blank ID", body: `{"ids":["vk-1"," "]}`, want: "Virtual key ID cannot be empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockRotateConfigStore{
+				virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+					"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+				},
+			}
+			manager := &mockRotateGovernanceManager{store: store}
+			h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(tt.body)
+
+			h.rotateVirtualKeys(ctx)
+
+			if ctx.Response.StatusCode() != 400 {
+				t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			}
+			if store.updates != 0 {
+				t.Fatalf("expected no updates, got %d", store.updates)
+			}
+			if len(manager.reloadIDs) != 0 {
+				t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
+			}
+			if !strings.Contains(string(ctx.Response.Body()), tt.want) {
+				t.Fatalf("expected response to contain %q, got %s", tt.want, string(ctx.Response.Body()))
+			}
+		})
+	}
+}
+
+func TestRotateVirtualKeys_TrimsAndDeduplicatesIDs(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"ids":[" vk-1 ","vk-1","vk-2"]}`)
+
+	h.rotateVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.updates != 2 {
+		t.Fatalf("expected two updates, got %d", store.updates)
+	}
+	if len(manager.reloadIDs) != 2 || manager.reloadIDs[0] != "vk-1" || manager.reloadIDs[1] != "vk-2" {
+		t.Fatalf("expected reloads for vk-1 and vk-2, got %#v", manager.reloadIDs)
+	}
+}
+
+func TestRotateVirtualKeys_AllFailuresReturnsServerError(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{virtualKeys: map[string]*configstoreTables.TableVirtualKey{}}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"ids":["missing-1","missing-2"]}`)
+
+	h.rotateVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if store.updates != 0 {
+		t.Fatalf("expected no updates, got %d", store.updates)
+	}
+
+	var resp struct {
+		Message     string                              `json:"message"`
+		VirtualKeys []configstoreTables.TableVirtualKey `json:"virtual_keys"`
+		Errors      map[string]string                   `json:"errors"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.Message != "Failed to rotate virtual keys" {
+		t.Fatalf("expected failure message, got %q", resp.Message)
+	}
+	if len(resp.VirtualKeys) != 0 {
+		t.Fatalf("expected no rotated keys, got %#v", resp.VirtualKeys)
+	}
+	if resp.Errors["missing-1"] != "virtual key not found" || resp.Errors["missing-2"] != "virtual key not found" {
+		t.Fatalf("expected not found errors, got %#v", resp.Errors)
 	}
 }
 
