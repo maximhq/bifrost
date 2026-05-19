@@ -46,8 +46,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		getMCPLogs: builder.query<
 			{
 				logs: MCPToolLogEntry[];
-				pagination: Pagination;
-				stats: MCPToolLogStats;
+				pagination: Pagination & { total_count: number };
 				has_logs: boolean;
 			},
 			{
