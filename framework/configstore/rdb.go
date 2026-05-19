@@ -443,6 +443,27 @@ func (s *RDBConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.TableF
 	return &dbConfig, nil
 }
 
+// ListFeatureFlags returns every persisted feature-flag override. Flags at
+// their code default are absent from this table by design.
+func (s *RDBConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error) {
+	var rows []tables.TableFeatureFlag
+	if err := s.DB().WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// UpsertFeatureFlag writes or replaces a single override row. ID is the
+// primary key so concurrent writers cannot create duplicates. updatedAt is
+// the caller-supplied logical timestamp used by gossip for last-write-wins.
+func (s *RDBConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error {
+	row := tables.TableFeatureFlag{ID: id, Enabled: enabled, UpdatedAt: updatedAt}
+	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"enabled", "updated_at"}),
+	}).Create(&row).Error
+}
+
 // GetClientConfig retrieves the client configuration from the database.
 func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, error) {
 	var dbConfig tables.TableClientConfig
