@@ -586,6 +586,10 @@ func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]
 	return h.inner.BulkUpdateCost(ctx, updates)
 }
 
+func (h *HybridLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, since time.Time) (*NodeUsageAggregate, error) {
+	return h.inner.GetNodeUsageSince(ctx, nodeID, since)
+}
+
 func (h *HybridLogStore) Flush(ctx context.Context, since time.Time) error {
 	return h.inner.Flush(ctx, since)
 }

@@ -199,6 +199,12 @@ type Log struct {
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
 
+	// Cluster governance fields - attached by the logging plugin when running in a cluster
+	// so that leaders can recover disconnected node usage from the logs table.
+	ClusterNodeID  *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
+	BudgetIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
+	RateLimitIDs   *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
+
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
 	CompletionTokens int `gorm:"default:0" json:"-"`
@@ -240,6 +246,8 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	BudgetIDsParsed    []string `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed []string `gorm:"-" json:"rate_limit_ids,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -549,6 +557,22 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if len(l.BudgetIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.BudgetIDsParsed); err != nil {
+			return err
+		} else {
+			l.BudgetIDs = new(string(data))
+		}
+	}
+
+	if len(l.RateLimitIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.RateLimitIDsParsed); err != nil {
+			return err
+		} else {
+			l.RateLimitIDs = new(string(data))
+		}
+	}
+
 	// Build content summary for search.
 	// Skip if already set (e.g., by the hybrid log store which builds input-only summaries).
 	if l.ContentSummary == "" {
@@ -770,6 +794,18 @@ func (l *Log) DeserializeFields() error {
 	if l.Metadata != nil && *l.Metadata != "" {
 		if err := sonic.Unmarshal([]byte(*l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
+		}
+	}
+
+	if l.BudgetIDs != nil && *l.BudgetIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BudgetIDs), &l.BudgetIDsParsed); err != nil {
+			l.BudgetIDsParsed = nil
+		}
+	}
+
+	if l.RateLimitIDs != nil && *l.RateLimitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.RateLimitIDs), &l.RateLimitIDsParsed); err != nil {
+			l.RateLimitIDsParsed = nil
 		}
 	}
 
@@ -1502,4 +1538,14 @@ type UserRankingWithTrend struct {
 // UserRankingResult is the response for the user rankings endpoint.
 type UserRankingResult struct {
 	Rankings []UserRankingWithTrend `json:"rankings"`
+}
+
+// NodeUsageAggregate represents aggregated usage for a specific node from the logs table,
+// broken down by the budget and rate-limit IDs that each log entry was tagged with.
+// This ensures usage is attributed to the correct governance resource rather than
+// spread uniformly across all resources the node was tracking.
+type NodeUsageAggregate struct {
+	BudgetCosts       map[string]float64 `json:"budget_costs"`        // budget_id -> cumulative cost
+	RateLimitRequests map[string]int64   `json:"rate_limit_requests"` // rate_limit_id -> successful request count
+	RateLimitTokens   map[string]int64   `json:"rate_limit_tokens"`   // rate_limit_id -> total tokens
 }
