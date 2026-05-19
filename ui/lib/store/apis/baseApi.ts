@@ -4,6 +4,7 @@ import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
 
 // Auth tokens are now stored in HTTP-only cookies (set by server)
 // No client-side token needed — handled by credentials: "include"
@@ -39,23 +40,27 @@ export const clearAuthStorage = () => {
 
 // Define the base query with authentication headers
 const baseQuery = fetchBaseQuery({
-  baseUrl: getApiBaseUrl(),
-  credentials: "include",
-  prepareHeaders: async (headers) => {
-    // Default JSON only when an endpoint hasn't already set a content type.
-    // Forcing application/json unconditionally would clobber multipart
-    // requests (e.g. FormData uploads) — the browser-generated boundary
-    // would be lost and the upload would fail.
+	baseUrl: getApiBaseUrl(),
+	credentials: "include",
+	prepareHeaders: async (headers) => {
     if (!headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    // Automatically include token from localStorage in Authorization header
-    const token = await getTokenFromStorage();
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-    return headers;
-  },
+		// Automatically include token from localStorage in Authorization header
+		const token = await getTokenFromStorage();
+		if (token) {
+			headers.set("Authorization", `Bearer ${token}`);
+		}
+		// Attach a temp token when a TempTokenScope wrapper is mounted. The
+		// dashboard cookie (if present) still takes precedence on the server
+		// side; the temp token is the fallback that rescues unauthenticated
+		// browsers visiting a scoped page.
+		const tempToken = getActiveTempToken();
+		if (tempToken) {
+			headers.set("X-Bifrost-Temp-Token", tempToken);
+		}
+		return headers;
+	},
 });
 
 // Wrap base query with enterprise refresh logic (or passthrough for non-enterprise)
@@ -74,17 +79,20 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (
   if (result.error) {
     const error = result.error as any;
 
-    // Handle 401 for non-enterprise (no refresh available)
-    if (error?.status === 401 && !IS_ENTERPRISE) {
-      clearAuthStorage();
-      if (
-        typeof window !== "undefined" &&
-        !window.location.pathname.includes("/login")
-      ) {
-        window.location.href = "/login";
-      }
-      return result;
-    }
+		// Handle 401 for non-enterprise (no refresh available)
+		if (error?.status === 401 && !IS_ENTERPRISE) {
+			// When a TempTokenScope wrapper is active, the wrapped page handles
+			// its own 401 display (an "invalid/expired link" view). Skip the
+			// global redirect so the user stays on the page they opened.
+			if (getSuppressGlobal401()) {
+				return result;
+			}
+			clearAuthStorage();
+			if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
+				window.location.href = "/login";
+			}
+			return result;
+		}
 
     // Handle specific error types
     if (error?.status === "FETCH_ERROR") {

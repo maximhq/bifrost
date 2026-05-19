@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/temptoken"
 )
 
 const (
@@ -33,6 +34,13 @@ type OAuth2Provider struct {
 	configStore    configstore.ConfigStore
 	mu             sync.RWMutex
 	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; doubles each attempt (1×, 2×, 4×)
+
+	// tempTokens, when non-nil, is used by InitiateUserOAuthFlow to mint a
+	// short-lived mcp_auth temp token and embed it in the returned auth-page
+	// URL as a fragment. Optional — when nil, the URL is returned without a
+	// fragment and the page works only for callers already authenticated to
+	// the dashboard.
+	tempTokens *temptoken.Service
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -44,6 +52,38 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 	return &OAuth2Provider{
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
+	}
+}
+
+// SetTempTokenService installs the temp-token service used by
+// InitiateUserOAuthFlow to mint the mcp_auth token embedded in the
+// auth-page URL fragment. Called by server startup once both services
+// have been constructed (the provider is built first by lib/config.go,
+// the service later by the HTTP transport).
+func (p *OAuth2Provider) SetTempTokenService(svc *temptoken.Service) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tempTokens = svc
+}
+
+// cleanupFlow deletes the flow row and any temp tokens minted for it. Called
+// on every terminal transition (success or any failure) so the auth-page
+// link stops working as soon as the work it authorized ends.
+//
+// Detached from the caller's context via WithoutCancel so a client cancellation
+// (e.g. the browser closing the tab after the upstream OAuth bounce) can't
+// short-circuit the deletes and leave the rows alive until the sweep. Mirrors
+// the pattern used by markExpiredIfPermanent in this file.
+func (p *OAuth2Provider) cleanupFlow(ctx context.Context, sessionID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := p.configStore.DeleteOauthUserSession(cleanupCtx, sessionID); err != nil {
+		logger.Warn("per-user OAuth flow row cleanup failed: session_id=%s err=%v", sessionID, err)
+	}
+	if p.tempTokens != nil {
+		if _, err := p.tempTokens.DeleteByResourceID(cleanupCtx, temptoken.MCPAuthScopeName, sessionID); err != nil {
+			logger.Warn("per-user OAuth temp-token cleanup failed: session_id=%s err=%v", sessionID, err)
+		}
 	}
 }
 
@@ -984,6 +1024,23 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// elsewhere in the dashboard UI.
 	frontendURL := strings.TrimSuffix(redirectURI, "/api/oauth/callback") + "/workspace/mcp-sessions/auth?flow=" + sessionID
 
+	// Mint a mcp_auth temp token bound to this flow's row ID and embed it in
+	// the URL as a fragment so a browser hitting the auth page without a
+	// dashboard session can still call the per-user flow endpoints. The
+	// fragment never leaves the browser (not in server logs, not in the
+	// upstream-OAuth Referer), unlike a query param.
+	if p.tempTokens != nil {
+		ttl := time.Until(expiresAt)
+		if ttl > 0 {
+			plaintext, mintErr := p.tempTokens.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
+			if mintErr != nil {
+				logger.Warn("Failed to mint mcp_auth temp token for flow %s: %v (link still usable for dashboard-authenticated callers)", sessionID, mintErr)
+			} else {
+				frontendURL = frontendURL + "#t=" + plaintext
+			}
+		}
+	}
+
 	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", sessionID, mcpClientID)
 
 	return &schemas.OAuth2FlowInitiation{
@@ -1012,7 +1069,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// dead rows. The UI sees 404 on flow-detail and renders "expired
 	// or already completed" — no audit trail to preserve here.
 	if time.Now().After(session.ExpiresAt) {
-		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("per-user oauth flow expired")
 	}
 
@@ -1022,7 +1079,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// (config row missing) is hidden.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, session.OauthConfigID)
 	if err != nil {
-		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("failed to load template oauth config: %w", err)
 	}
 	if templateConfig == nil {
@@ -1046,7 +1103,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		session.CodeVerifier,
 	)
 	if err != nil {
-		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("per-user token exchange failed: %w", err)
 	}
 
@@ -1082,7 +1139,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 			}
 		}
 		if tokenUserID == nil || *tokenUserID == "" {
-			_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+			p.cleanupFlow(ctx, session.ID)
 			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion (neither flow nor completer context)")
 		}
 		// Stamp the resolved user_id back on the flow for audit.
@@ -1090,7 +1147,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	case schemas.MCPAuthModeVK:
 		tokenVKID = session.VirtualKeyID
 		if tokenVKID == nil || *tokenVKID == "" {
-			_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+			p.cleanupFlow(ctx, session.ID)
 			return "", fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
 		}
 	case schemas.MCPAuthModeSession:
@@ -1132,16 +1189,13 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
 
-	// Token row is written; the flow row's purpose ends here. Delete it
-	// instead of marking 'authorized' — the token row is the durable
-	// record of the binding; the flow row is just the transient PKCE/
-	// state carrier. The UI shows "expired or already completed" on the
-	// resulting 404, which is the truthful read.
-	if err := p.configStore.DeleteOauthUserSession(ctx, session.ID); err != nil {
-		// Non-fatal: log but proceed. The token row is already created
-		// and usable; a lingering flow row is hygienic, not correctness.
-		logger.Warn("per-user OAuth flow row cleanup failed (token already created): session_id=%s err=%v", session.ID, err)
-	}
+	// Token row is written; the flow row's purpose ends here. cleanupFlow
+	// deletes both the flow row (transient PKCE/state carrier — the token
+	// row is the durable record now) and the mcp_auth temp token bound to
+	// it, so the auth-page link stops working immediately. The UI shows
+	// "expired or already completed" on the resulting 404, which is the
+	// truthful read.
+	p.cleanupFlow(ctx, session.ID)
 
 	logger.Debug("Per-user OAuth flow completed: session_id=%s, mcp_client_id=%s", session.ID, session.MCPClientID)
 

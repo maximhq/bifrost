@@ -11,6 +11,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -79,11 +80,12 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		// The OAuth state is the CSRF token — never log it raw; it could
 		// be replayed by anyone with log access while the flow is alive.
 		logger.Error("[oauth] per-user callback completion failed: err=%v", perUserErr)
-		ctx.Redirect("/workspace/mcp-sessions?error="+url.QueryEscape("OAuth authentication failed. Please try again."), fasthttp.StatusFound)
+		const userMsg = "OAuth authentication failed. Please try again."
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
 		return
 	}
 	if perUserErr == nil {
-		ctx.Redirect("/workspace/mcp-sessions?completed=1", fasthttp.StatusFound)
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true), fasthttp.StatusFound)
 		return
 	}
 
@@ -134,7 +136,29 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
 		return
 	}
-	ctx.Redirect("/workspace/mcp-sessions?error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
+	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
+}
+
+// perUserCallbackRedirect picks the post-callback destination for a per-user
+// flow based on whether the visitor has a valid dashboard session. Admins land
+// back on the sessions list (full chrome) with either ?completed=1 (success)
+// or ?error=... (failure). Anonymous temp-token visitors land on the public
+// MinimalShell pages (/auth-success or /auth-failed) which don't require a
+// cookie. This mirrors the model used by the temp-token-aware UI: keep admins
+// in the dashboard, route end users to chrome-less landings.
+func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool) string {
+	cookieToken := string(ctx.Request.Header.Cookie("token"))
+	authenticated := cookieToken != "" && validateSession(ctx, store, cookieToken)
+	if success {
+		if authenticated {
+			return "/workspace/mcp-sessions?completed=1"
+		}
+		return "/workspace/mcp-sessions/auth-success"
+	}
+	if authenticated {
+		return "/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg)
+	}
+	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
 }
 
 // getOAuthConfigStatus returns the current status of an OAuth config

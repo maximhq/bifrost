@@ -4443,6 +4443,64 @@ func (s *RDBConfigStore) FlushSessions(ctx context.Context) error {
 	return s.DB().WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.SessionsTable{}).Error
 }
 
+// CreateTempToken inserts a new temp_tokens row. The plaintext token must be
+// set on the struct; the BeforeSave hook populates token_hash and (when
+// encryption is enabled) encrypts the plaintext in place. The optional tx
+// lets callers fold this write into an existing transaction (mirrors the
+// pattern used by other mutating configstore methods).
+func (s *RDBConfigStore) CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 {
+		db = tx[0]
+	}
+	return db.WithContext(ctx).Create(token).Error
+}
+
+// GetTempTokenByHash retrieves a temp_tokens row by the SHA-256 hash of its
+// plaintext. Returns (nil, nil) when no row matches — callers should treat that
+// as "no such token" rather than an error.
+func (s *RDBConfigStore) GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error) {
+	var token tables.TempToken
+	err := s.DB().WithContext(ctx).First(&token, "token_hash = ?", tokenHash).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &token, nil
+}
+
+// DeleteTempTokensByResourceID hard-deletes every row matching (scope,
+// resource_id). Used by lifecycle owners (e.g. OAuth provider on flow
+// termination) to invalidate the link as soon as the work it authorized
+// completes. The (scope, resource_id) pair — not resource_id alone — keeps
+// future scopes that happen to reuse the same opaque ID untouched. The
+// optional tx lets callers fold the delete into an existing transaction.
+func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error) {
+	db := s.DB()
+	if len(tx) > 0 {
+		db = tx[0]
+	}
+	res := db.WithContext(ctx).
+		Where("scope = ? AND resource_id = ?", scope, resourceID).
+		Delete(&tables.TempToken{})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+// DeleteExpiredTempTokens hard-deletes rows whose expires_at is at or before
+// the given cutoff. Returns the number of rows deleted.
+func (s *RDBConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
+	res := s.DB().WithContext(ctx).Where("expires_at <= ?", before).Delete(&tables.TempToken{})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
 // ExecuteTransaction executes a transaction.
 func (s *RDBConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return s.DB().WithContext(ctx).Transaction(fn)
@@ -5098,4 +5156,3 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 	}
 	return result.RowsAffected, nil
 }
-
