@@ -591,6 +591,33 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	assert.False(t, found, "VK should not be found after delete")
 }
 
+func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 25.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-old", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	updated := *vk
+	updated.Value = "sk-bf-new"
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+
+	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, oldFound)
+	assert.Nil(t, oldVK)
+
+	newVK, newFound := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, newFound)
+	require.NotNil(t, newVK)
+	assert.Equal(t, "vk1", newVK.ID)
+	require.Len(t, newVK.Budgets, 1)
+	assert.Equal(t, 25.0, newVK.Budgets[0].CurrentUsage)
+}
+
 // TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests tests atomic rate limit usage updates
 func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	logger := NewMockLogger()
