@@ -3050,6 +3050,26 @@ func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, custome
 	return &team, nil
 }
 
+// GetTeamBySourceID retrieves a team by its source ID.
+func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return nil, ErrNotFound
+	}
+	var team tables.TableTeam
+	if err := s.DB().WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budgets").Preload("RateLimit").
+		Where("source_id = ?", sourceID).
+		First(&team).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &team, nil
+}
+
 // CreateTeam creates a new team in the database.
 func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
