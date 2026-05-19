@@ -2062,22 +2062,24 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 		case <-done:
-			// If context was also cancelled (race between done and ctx.Done),
-			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			// Race between done and ctx.Done: the streaming goroutine has reached its defer
+			// chain (Read has returned), and ctx is also cancelled. The body may already be
+			// at EOF and fasthttp may have released the underlying conn to the idle pool.
+			// We still attempt a close to unblock any pending drain in ReleaseStreamingResponse,
+			// but we set BifrostContextKeyConnectionClosed unconditionally (matching the
+			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
+			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					} else {
-						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
-					} else {
-						ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					}
-
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				}
 			}
 		}
