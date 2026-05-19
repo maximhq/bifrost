@@ -1,5 +1,6 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import NotAvailableBanner from "@/components/notAvailableBanner";
+import OnboardingWidget from "@/components/onboardingWidget";
 import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
@@ -49,6 +50,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 						<main className="custom-scrollbar content-container-inner relative mx-auto flex flex-col overflow-y-hidden p-4">
 							{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
 						</main>
+						{bifrostConfig?.is_db_connected && <OnboardingWidget />}
 					</div>
 				</SidebarProvider>
 			</CookiesProvider>
