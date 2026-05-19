@@ -127,6 +127,10 @@ type UpdateVirtualKeyRequest struct {
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
 }
 
+type BulkRotateVirtualKeysRequest struct {
+	IDs []string `json:"ids"`
+}
+
 // CreateBudgetRequest represents the request body for creating a budget
 type CreateBudgetRequest struct {
 	MaxLimit      float64 `json:"max_limit" validate:"required"`      // Maximum budget in dollars
@@ -287,8 +291,10 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
+	r.POST("/api/governance/virtual-keys/rotate", lib.ChainMiddlewares(h.rotateVirtualKeys, middlewares...))
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
+	r.POST("/api/governance/virtual-keys/{vk_id}/rotate", lib.ChainMiddlewares(h.rotateVirtualKey, middlewares...))
 	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 
 	// Team CRUD operations
@@ -1412,6 +1418,103 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		"message":     "Virtual key updated successfully",
 		"virtual_key": preloadedVk,
 	})
+}
+
+func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
+	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
+	if err != nil {
+		return nil, err
+	}
+	oldValue := vk.Value
+	vk.Value = governance.GenerateVirtualKey()
+	if vk.Value == oldValue {
+		return nil, fmt.Errorf("generated virtual key matched existing value")
+	}
+	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
+		return nil, err
+	}
+	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
+	if err != nil {
+		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
+	}
+	return preloadedVk, nil
+}
+
+// rotateVirtualKey handles POST /api/governance/virtual-keys/{vk_id}/rotate - Rotate only the virtual key value
+func (h *GovernanceHandler) rotateVirtualKey(ctx *fasthttp.RequestCtx) {
+	vkID := ctx.UserValue("vk_id").(string)
+	preloadedVk, err := h.rotateVirtualKeyByID(ctx, vkID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Virtual key not found")
+			return
+		}
+		logger.Error("failed to rotate virtual key: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to rotate virtual key: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message":     "Virtual key rotated successfully",
+		"virtual_key": preloadedVk,
+	})
+}
+
+// rotateVirtualKeys handles POST /api/governance/virtual-keys/rotate - Rotate multiple virtual key values
+func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
+	var req BulkRotateVirtualKeysRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if len(req.IDs) == 0 {
+		SendError(ctx, 400, "At least one virtual key ID is required")
+		return
+	}
+
+	seen := make(map[string]struct{}, len(req.IDs))
+	ids := make([]string, 0, len(req.IDs))
+	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			SendError(ctx, 400, "Virtual key ID cannot be empty")
+			return
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	rotated := make([]*configstoreTables.TableVirtualKey, 0, len(ids))
+	failures := make(map[string]string)
+	for _, id := range ids {
+		vk, err := h.rotateVirtualKeyByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				failures[id] = "virtual key not found"
+			} else {
+				failures[id] = err.Error()
+			}
+			logger.Error("failed to rotate virtual key %s: %v", id, err)
+			continue
+		}
+		rotated = append(rotated, vk)
+	}
+
+	response := map[string]interface{}{
+		"message":      "Virtual keys rotated successfully",
+		"virtual_keys": rotated,
+	}
+	if len(failures) > 0 {
+		response["errors"] = failures
+	}
+	if len(rotated) == 0 {
+		response["message"] = "Failed to rotate virtual keys"
+		SendJSONWithStatus(ctx, response, 500)
+		return
+	}
+	SendJSON(ctx, response)
 }
 
 // deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key

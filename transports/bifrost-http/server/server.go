@@ -358,6 +358,14 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return nil, err
 	}
+	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
+		for _, existingVK := range governanceData.VirtualKeys {
+			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
+				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value)
+				break
+			}
+		}
+	}
 	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
