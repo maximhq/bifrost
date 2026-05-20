@@ -120,25 +120,26 @@ func (bl BlackList) Validate() error {
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID                 string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
-	Name               string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
-	Value              EnvVar              `json:"value"`                          // The actual API key value
-	Models             WhiteList           `json:"models"`                         // List of models this key can access
-	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
-	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
-	Aliases            KeyAliases          `json:"aliases,omitempty"`              // Mapping of model identifiers to inference profiles
-	AzureKeyConfig     *AzureKeyConfig     `json:"azure_key_config,omitempty"`     // Azure-specific key configuration
-	VertexKeyConfig    *VertexKeyConfig    `json:"vertex_key_config,omitempty"`    // Vertex-specific key configuration
-	BedrockKeyConfig   *BedrockKeyConfig   `json:"bedrock_key_config,omitempty"`   // AWS Bedrock-specific key configuration
-	VLLMKeyConfig      *VLLMKeyConfig      `json:"vllm_key_config,omitempty"`      // vLLM-specific key configuration
-	ReplicateKeyConfig *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
-	OllamaKeyConfig    *OllamaKeyConfig    `json:"ollama_key_config,omitempty"`    // Ollama-specific key configuration
-	SGLKeyConfig       *SGLKeyConfig       `json:"sgl_key_config,omitempty"`       // SGLang-specific key configuration
-	Enabled            *bool               `json:"enabled,omitempty"`              // Whether the key is active (default:true)
-	UseForBatchAPI     *bool               `json:"use_for_batch_api,omitempty"`    // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
-	ConfigHash         string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
-	Status             KeyStatusType       `json:"status,omitempty"`               // Status of key
-	Description        string              `json:"description,omitempty"`          // Description of key
+	ID                      string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
+	Name                    string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
+	Value                   EnvVar              `json:"value"`                          // The actual API key value
+	Models                  WhiteList           `json:"models"`                         // List of models this key can access
+	BlacklistedModels       BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
+	Weight                  float64             `json:"weight"`                         // Weight for load balancing between multiple keys
+	Aliases                 KeyAliases          `json:"aliases,omitempty"`              // Mapping of model identifiers to inference profiles
+	AzureKeyConfig          *AzureKeyConfig     `json:"azure_key_config,omitempty"`     // Azure-specific key configuration
+	VertexKeyConfig         *VertexKeyConfig    `json:"vertex_key_config,omitempty"`    // Vertex-specific key configuration
+	BedrockKeyConfig        *BedrockKeyConfig   `json:"bedrock_key_config,omitempty"`   // AWS Bedrock-specific key configuration
+	VLLMKeyConfig           *VLLMKeyConfig      `json:"vllm_key_config,omitempty"`      // vLLM-specific key configuration
+	ReplicateKeyConfig      *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
+	OllamaKeyConfig         *OllamaKeyConfig    `json:"ollama_key_config,omitempty"`    // Ollama-specific key configuration
+	SGLKeyConfig            *SGLKeyConfig       `json:"sgl_key_config,omitempty"`       // SGLang-specific key configuration
+	Enabled                 *bool               `json:"enabled,omitempty"`              // Whether the key is active (default:true)
+	UseForBatchAPI          *bool               `json:"use_for_batch_api,omitempty"`    // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	RequestTimeoutInSeconds *int                `json:"request_timeout_in_seconds"`     // Optional request timeout override for this provider key
+	ConfigHash              string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
+	Status                  KeyStatusType       `json:"status,omitempty"`               // Status of key
+	Description             string              `json:"description,omitempty"`          // Description of key
 }
 
 type KeyAliases map[string]string

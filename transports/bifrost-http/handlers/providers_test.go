@@ -164,6 +164,24 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+func intPtr(v int) *int {
+	return &v
+}
+
+func TestValidateProviderKeyRequestTimeout(t *testing.T) {
+	if err := validateProviderKeyRequestTimeout(schemas.Key{}); err != nil {
+		t.Fatalf("expected nil timeout to be valid, got %v", err)
+	}
+
+	if err := validateProviderKeyRequestTimeout(schemas.Key{RequestTimeoutInSeconds: intPtr(1)}); err != nil {
+		t.Fatalf("expected positive timeout to be valid, got %v", err)
+	}
+
+	if err := validateProviderKeyRequestTimeout(schemas.Key{RequestTimeoutInSeconds: intPtr(0)}); err == nil {
+		t.Fatalf("expected zero timeout to be invalid")
+	}
+}
+
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 

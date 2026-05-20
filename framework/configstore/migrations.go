@@ -710,6 +710,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddKeyRequestTimeoutColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7523,6 +7526,33 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 		},
 		Rollback: func(tx *gorm.DB) error {
 			_ = tx.Migrator().DropIndex(&tables.TableTeam{}, "idx_governance_teams_name")
+			return nil
+		},
+	})
+}
+
+// migrationAddKeyRequestTimeoutColumn adds an optional per-provider-key request timeout override.
+func migrationAddKeyRequestTimeoutColumn(ctx context.Context, db *gorm.DB) error {
+	return RunSingleMigration(ctx, db, &migrator.Migration{
+		ID: "add_key_request_timeout_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "request_timeout_in_seconds") {
+				if err := mg.AddColumn(&tables.TableKey{}, "RequestTimeoutInSeconds"); err != nil {
+					return fmt.Errorf("failed to add request_timeout_in_seconds column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "request_timeout_in_seconds") {
+				if err := mg.DropColumn(&tables.TableKey{}, "request_timeout_in_seconds"); err != nil {
+					return fmt.Errorf("failed to drop request_timeout_in_seconds column: %w", err)
+				}
+			}
 			return nil
 		},
 	})

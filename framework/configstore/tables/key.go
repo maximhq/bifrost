@@ -73,6 +73,8 @@ type TableKey struct {
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
+	RequestTimeoutInSeconds *int `gorm:"column:request_timeout_in_seconds" json:"request_timeout_in_seconds"` // Optional request timeout override for this provider key
+
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
@@ -123,6 +125,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.UseForBatchAPI == nil {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
+	}
+	if k.RequestTimeoutInSeconds != nil && *k.RequestTimeoutInSeconds < 1 {
+		return fmt.Errorf("request_timeout_in_seconds must be at least 1")
 	}
 	// IMPORTANT: All *EnvVar fields assigned from provider config structs (AzureKeyConfig,
 	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
