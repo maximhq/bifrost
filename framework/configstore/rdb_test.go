@@ -42,8 +42,6 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptVersionMessage{},
 		&tables.TablePromptSession{},
 		&tables.TablePromptSessionMessage{},
-		&tables.TablePerUserOAuthPendingFlow{},
-		&tables.TablePerUserOAuthSession{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
 	)

@@ -27,7 +27,9 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
 			"This tool is generic and works with any set of servers connected at runtime. " +
-			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools."
+			"CALL THIS TOOL FIRST whenever the user references a server, tool, capability, or action that is not visible in your current tool list — connected MCP servers and their tools are NOT included in your top-level tool schema, so the only way to discover them is by calling listToolFiles. " +
+			"Examples that should trigger this tool: user names a server you don't recognize (e.g. 'localserver', 'mydb'), asks 'who am I on X', 'what can X do', 'does X have a tool for Y', or asks you to perform an action and you are unsure whether a matching tool exists. " +
+			"Do NOT tell the user a server or capability is unavailable until you have called listToolFiles and confirmed it is absent."
 	} else {
 		description = "Returns a tree structure listing all virtual .pyi stub files available for connected MCP servers, organized by individual tool. " +
 			"Each tool has a corresponding file (e.g., servers/<serverName>/<toolName>.pyi) that contains compact Python signatures for that specific tool. " +
@@ -38,7 +40,9 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
 			"This tool is generic and works with any set of servers connected at runtime. " +
-			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools."
+			"CALL THIS TOOL FIRST whenever the user references a server, tool, capability, or action that is not visible in your current tool list — connected MCP servers and their tools are NOT included in your top-level tool schema, so the only way to discover them is by calling listToolFiles. " +
+			"Examples that should trigger this tool: user names a server you don't recognize (e.g. 'localserver', 'mydb'), asks 'who am I on X', 'what can X do', 'does X have a tool for Y', or asks you to perform an action and you are unsure whether a matching tool exists. " +
+			"Do NOT tell the user a server or capability is unavailable until you have called listToolFiles and confirmed it is absent."
 	}
 
 	return schemas.ChatTool{

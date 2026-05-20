@@ -319,6 +319,26 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				return true
 			}
 		}
+		// Handle MCP session ID header (x-bf-mcp-session-id): a client-issued
+		// opaque identifier used for session-mode per-user OAuth flows. Any
+		// non-empty string the caller can re-present on subsequent /mcp calls.
+		// 255-char cap matches ParseSessionIDFromBaggage so both ingestion
+		// paths reject oversized lookup keys consistently.
+		if keyStr == "x-bf-mcp-session-id" {
+			if v := strings.TrimSpace(string(value)); v != "" {
+				if len(v) > 255 {
+					// Don't echo any of the value — x-bf-mcp-session-id is a
+					// re-presentable lookup key for session-mode OAuth; the
+					// length alone is enough for debugging.
+					if logger != nil {
+						logger.Warn("x-bf-mcp-session-id exceeds 255 chars, ignoring: length=%d (skipped last %d chars)", len(v), len(v)-255)
+					}
+					return true
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, v)
+			}
+			return true
+		}
 		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
@@ -599,11 +619,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		return true
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
-
-	// Extract per-user MCP OAuth user identifier from X-Bf-User-Id header
-	if mcpUserID := string(ctx.Request.Header.Peek("X-Bf-User-Id")); mcpUserID != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
-	}
 
 	// Build and set OAuth redirect URI for per-user OAuth flows. Bifrost is acting as
 	// the OAuth client to upstream MCP servers here, so use the client-side override.

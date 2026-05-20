@@ -1,3 +1,5 @@
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
@@ -7,6 +9,7 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { EnvVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -46,7 +49,6 @@ export default function MCPView() {
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
-		const serverURLChanged = !envVarEquals(localConfig.mcp_external_server_url, config.mcp_external_server_url);
 		const clientURLChanged = !envVarEquals(localConfig.mcp_external_client_url, config.mcp_external_client_url);
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
@@ -54,7 +56,6 @@ export default function MCPView() {
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
-			serverURLChanged ||
 			clientURLChanged
 		);
 	}, [config, localConfig]);
@@ -101,10 +102,6 @@ export default function MCPView() {
 			...prev,
 			mcp_disable_auto_tool_inject: checked,
 		}));
-	}, []);
-
-	const handleServerURLChange = useCallback((value: EnvVar) => {
-		setLocalConfig((prev) => ({ ...prev, mcp_external_server_url: value }));
 	}, []);
 
 	const handleClientURLChange = useCallback((value: EnvVar) => {
@@ -277,67 +274,48 @@ export default function MCPView() {
 						)}
 					</div>
 				</div>
-				{/* External Base URLs */}
-				<div className="space-y-4 rounded-sm border p-4">
-					<div className="space-y-0.5">
-						<h3 className="text-sm font-medium">External Base URLs</h3>
-						<p className="text-muted-foreground text-sm">
-							Override Bifrost's public base URL when it runs behind a reverse proxy. In most setups both URLs are the same —{" "}
-							<b>leave them blank to derive the URL</b> from the incoming <code className="text-xs">Host</code> header. Both fields support
-							env var syntax (e.g. <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
-						</p>
-					</div>
-
-					<div className="space-y-2">
-						<div className="space-y-0.5">
-							<label htmlFor="external-server-url" className="text-sm font-medium">
-								Server URL
-							</label>
-							<p className="text-muted-foreground text-sm">
-								Advertised in OAuth server metadata that <strong>downstream clients</strong> read about Bifrost — e.g.{" "}
-								<code className="text-xs">/.well-known/oauth-authorization-server</code> and the{" "}
-								<code className="text-xs">WWW-Authenticate</code> header on <code className="text-xs">/mcp</code>. Example: Claude Code
-								connects to <code className="text-xs">https://bifrost.example.com/mcp</code> and discovers the authorize/token endpoints
-								from this URL.
-							</p>
-						</div>
-						<EnvVarInput
-							id="external-server-url"
-							data-testid="mcp-external-server-url-input"
-							placeholder="https://bifrost.example.com or env.BIFROST_EXTERNAL_URL"
-							value={localConfig.mcp_external_server_url}
-							onChange={handleServerURLChange}
-							disabled={!hasSettingsUpdateAccess}
-						/>
-					</div>
-
-					<div className="space-y-2">
-						<div className="space-y-0.5">
+				{/* Advanced Settings — collapsed by default so people don't accidentally
+				    edit the redirect_uri, which would break already-authorized MCP clients. */}
+				<Accordion type="single" collapsible className="rounded-sm border px-4">
+					<AccordionItem value="advanced-settings" className="border-b-0">
+						<AccordionTrigger data-testid="mcp-settings-advanced-trigger">
+							<span className="text-sm font-medium">Advanced Settings</span>
+						</AccordionTrigger>
+						<AccordionContent className="space-y-2 pt-2">
 							<label htmlFor="external-client-url" className="text-sm font-medium">
-								Client URL
+								External Client URL
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Used as the <code className="text-xs">redirect_uri</code> Bifrost registers with <strong>upstream OAuth providers</strong>{" "}
-								when it acts as a client to an MCP server. Example: when a user connects an MCP server like Notion or Jira, this is the URL
-								Notion/Jira will redirect the browser to after login (<code className="text-xs">{"<URL>/api/oauth/callback"}</code>).
+								Override Bifrost's public base URL when it runs behind a reverse proxy.{" "}
+								<b>Leave blank to derive the URL</b> from the incoming <code className="text-xs">Host</code> header. Used as the{" "}
+								<code className="text-xs">redirect_uri</code> Bifrost registers with upstream OAuth providers when it acts as a client to an
+								MCP server (e.g. Notion or Jira redirect the browser to{" "}
+								<code className="text-xs">{"<URL>/api/oauth/callback"}</code> after login). Supports env var syntax (e.g.{" "}
+								<code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
 							</p>
-							<p className="text-muted-foreground mt-1 text-xs">
-								<strong>Heads up:</strong> changing this after MCP clients have already completed OAuth will break them. The upstream
-								provider locks the <code className="text-xs">redirect_uri</code> to whatever was registered initially, so existing clients
-								will fail with <em>&quot;Invalid redirect URI&quot;</em>. Clear the stored OAuth client credentials for affected MCP servers
-								and re-authorize so Bifrost re-runs Dynamic Client Registration with the new URL.
-							</p>
-						</div>
-						<EnvVarInput
-							id="external-client-url"
-							data-testid="mcp-external-client-url-input"
-							placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"
-							value={localConfig.mcp_external_client_url}
-							onChange={handleClientURLChange}
-							disabled={!hasSettingsUpdateAccess}
-						/>
-					</div>
-				</div>
+							<EnvVarInput
+								id="external-client-url"
+								data-testid="mcp-external-client-url-input"
+								placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"
+								value={localConfig.mcp_external_client_url}
+								onChange={handleClientURLChange}
+								disabled={!hasSettingsUpdateAccess}
+							/>
+							<Alert variant="warning">
+								<AlertTriangle className="size-4" />
+								<AlertTitle>Changing this URL can break existing MCP clients</AlertTitle>
+								<AlertDescription>
+									<p>
+										Upstream OAuth providers lock the <code className="text-xs">redirect_uri</code> to whatever was registered initially,
+										so MCP clients that already completed OAuth will fail with <em>&quot;Invalid redirect URI&quot;</em>. To recover,
+										clear the stored OAuth client credentials for the affected MCP servers and re-authorize so Bifrost re-runs Dynamic
+										Client Registration with the new URL.
+									</p>
+								</AlertDescription>
+							</Alert>
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
