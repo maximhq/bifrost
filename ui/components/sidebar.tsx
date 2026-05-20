@@ -623,6 +623,10 @@ export default function AppSidebar() {
     RbacResource.Observability,
     RbacOperation.View,
   );
+  const hasDashboardAccess = useRbac(
+    RbacResource.Dashboard,
+    RbacOperation.View,
+  );
   const hasModelProvidersAccess = useRbac(
     RbacResource.ModelProvider,
     RbacOperation.View,
@@ -721,7 +725,7 @@ export default function AppSidebar() {
             url: "/workspace/dashboard",
             icon: ChartColumnBig,
             description: "Dashboard",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasDashboardAccess,
           },
           {
             title: "LLM Logs",
@@ -1044,6 +1048,7 @@ export default function AppSidebar() {
       hasLogsAccess,
       hasAPIKeyAccess,
       hasObservabilityAccess,
+      hasDashboardAccess,
       hasModelProvidersAccess,
       hasMCPGatewayAccess,
       hasMCPToolGroupsAccess,
