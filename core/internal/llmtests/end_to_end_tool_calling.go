@@ -65,7 +65,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 				Input:    []schemas.ChatMessage{chatUserMessage},
 				Params: &schemas.ChatParameters{
 					Tools:               []schemas.ChatTool{*chatTool},
-					MaxCompletionTokens: bifrost.Ptr(150),
+					MaxCompletionTokens: bifrost.Ptr(500),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -182,7 +182,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 				Model:    testConfig.ChatModel,
 				Input:    chatConversationMessages,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(200),
+					MaxCompletionTokens: bifrost.Ptr(500),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -196,7 +196,7 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 				Model:    testConfig.ChatModel,
 				Input:    responsesConversationMessages,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(200),
+					MaxOutputTokens: bifrost.Ptr(500),
 				},
 			}
 			return client.ResponsesRequest(bfCtx, responsesReq)
