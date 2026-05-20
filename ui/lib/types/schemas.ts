@@ -1,4 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -416,7 +417,7 @@ export const proxyConfigSchema = z
 	.refine(
 		(data) => {
 			if ((data.type === "http" || data.type === "socks5") && data.url?.value?.trim()) {
-				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+				if (isRedacted(data.url.value)) {
 					return true;
 				}
 				try {
@@ -466,7 +467,7 @@ export const proxyFormConfigSchema = z
 		(data) => {
 			// URL must be valid format when provided and proxy type requires it
 			if ((data.type === "http" || data.type === "socks5") && data.url?.value && data.url.value.trim().length > 0) {
-				if (data.url.from_env || data.url.env_var?.startsWith("env.")) {
+				if (isRedacted(data.url.value)) {
 					return true;
 				}
 				try {
