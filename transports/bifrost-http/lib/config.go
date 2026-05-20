@@ -3004,31 +3004,24 @@ func ResolveFrameworkPricingConfig(
 	fileConfig *framework.FrameworkConfig,
 ) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
 	defaultPricingURL := modelcatalog.DefaultPricingURL
+	defaultModelParametersURL := modelcatalog.DefaultModelParametersURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 
 	// --- Phase 1: parse and validate file config ---
 
 	filePricingURL := (*string)(nil)
+	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
-	skipURLBackfill := false // prevent DB backfill of unresolved env references
+	skipURLBackfill := false              // prevent DB backfill of unresolved env references
+	skipModelParamsURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
 			raw := *fileConfig.Pricing.PricingURL
-			// Explicitly check for the "env." prefix before invoking the env lookup.
-			// This makes the substitution contract unambiguous: a URL that does not
-			// begin with "env." is always used verbatim, regardless of what
-			// envutils.ProcessEnvValue might do internally in the future.
 			if strings.HasPrefix(raw, "env.") {
 				resolvedURL, err := envutils.ProcessEnvValue(raw)
 				if err != nil {
-					// Named env variable not found — preserve the original "env.VAR"
-					// string so the downstream HTTP fetch fails visibly rather than
-					// silently falling back to the built-in default URL.
 					logger.Warn("pricing_url: env variable not found (%v); keeping original value %q", err, raw)
 					filePricingURL = fileConfig.Pricing.PricingURL
-					// Do NOT persist the unresolved "env.VAR" literal to DB.
-					// If we did, a later restart would read the literal from DB
-					// (which is authoritative) and never attempt env resolution again.
 					skipURLBackfill = true
 				} else {
 					filePricingURL = &resolvedURL
@@ -3037,14 +3030,32 @@ func ResolveFrameworkPricingConfig(
 				filePricingURL = &raw
 			}
 		}
+		if fileConfig.Pricing.ModelParametersURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.ModelParametersURL)
+			if raw == "" {
+				// Blank is treated as "not set"; fall back to default.
+			} else if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("model_parameters_url: env variable not found (%v); keeping original value %q", err, raw)
+					fileModelParametersURL = fileConfig.Pricing.ModelParametersURL
+					skipModelParamsURLBackfill = true
+				} else {
+					resolved := strings.TrimSpace(resolvedURL)
+					if resolved != "" {
+						fileModelParametersURL = &resolved
+					}
+				}
+			} else {
+				fileModelParametersURL = &raw
+			}
+		}
 		if fileConfig.Pricing.PricingSyncInterval != nil {
 			val := *fileConfig.Pricing.PricingSyncInterval
 			switch {
 			case val <= 0:
-				// Zero or negative values are meaningless for a sync eligibility threshold.
 				logger.Warn("pricing_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
-				// Accept but clamp to the schema-declared minimum of 3600 s (1 hour).
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
 				logger.Warn("pricing_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
 				fileSyncSeconds = &clamped
@@ -3057,11 +3068,16 @@ func ResolveFrameworkPricingConfig(
 	// --- Phase 2: apply file config over defaults ---
 
 	resolvedPricingURL := &defaultPricingURL
+	resolvedModelParametersURL := &defaultModelParametersURL
 	resolvedSyncSeconds := &defaultSyncSeconds
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
 		logger.Debug("pricing_url resolved from file")
+	}
+	if fileModelParametersURL != nil {
+		resolvedModelParametersURL = fileModelParametersURL
+		logger.Debug("model_parameters_url resolved from file")
 	}
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
@@ -3077,21 +3093,19 @@ func ResolveFrameworkPricingConfig(
 		if dbConfig.PricingURL != nil {
 			resolvedPricingURL = dbConfig.PricingURL
 		} else if !skipURLBackfill {
-			// DB row exists but URL field is NULL — backfill with resolved value.
-			// Skip backfill when the resolved URL is an unresolved env reference
-			// to prevent persisting "env.VAR" literals into the DB.
+			needsDBUpdate = true
+		}
+		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
+			resolvedModelParametersURL = dbConfig.ModelParametersURL
+		} else if !skipModelParamsURLBackfill {
 			needsDBUpdate = true
 		}
 		if dbConfig.PricingSyncInterval != nil {
 			val := *dbConfig.PricingSyncInterval
 			if val <= 0 {
-				// Corrupted or legacy zero written by the pre-fix bug.
-				// Ignore and backfill the DB with the correctly resolved value.
 				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
 				needsDBUpdate = true
 			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
-				// DB has a positive value below the minimum — clamp and backfill,
-				// consistent with the file-path validation in Phase 1.
 				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
 				resolvedSyncSeconds = &clamped
@@ -3103,22 +3117,18 @@ func ResolveFrameworkPricingConfig(
 				resolvedSyncSeconds = dbConfig.PricingSyncInterval
 			}
 		} else {
-			// DB row exists but interval field is NULL — backfill.
 			needsDBUpdate = true
 		}
 	}
 
 	// --- Phase 4: invariant assertion ---
-	//
-	// resolvedPricingURL and resolvedSyncSeconds are initialised to non-nil local
-	// variable addresses in Phase 2 and only ever reassigned from non-nil DB/file
-	// pointers. They cannot be nil here under any reachable code path.
-	// The checks below are a last-resort safety net for future refactors that
-	// might break that guarantee. If they fire, it is a programming error, not a
-	// runtime condition — hence the explicit "invariant violation" message.
 	if resolvedPricingURL == nil {
 		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
 		resolvedPricingURL = &defaultPricingURL
+	}
+	if resolvedModelParametersURL == nil {
+		logger.Warn("invariant violation: model_parameters_url resolved to nil — falling back to default %q", defaultModelParametersURL)
+		resolvedModelParametersURL = &defaultModelParametersURL
 	}
 	if resolvedSyncSeconds == nil {
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
@@ -3129,9 +3139,11 @@ func ResolveFrameworkPricingConfig(
 			ID:                  configID,
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
 		}, &modelcatalog.Config{
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
 		}, needsDBUpdate
 }
 

@@ -282,6 +282,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
+		if err != nil {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+			return
+		}
+	}
 
 	// Checking the pricing sync interval
 	if payload.FrameworkConfig.PricingSyncInterval != nil && *payload.FrameworkConfig.PricingSyncInterval <= 0 {
@@ -535,6 +550,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			ID:                  0,
 			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
 			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			ModelParametersURL:  bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
 		}
 	}
 	// Handling individual nil cases
@@ -543,6 +559,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if frameworkConfig.PricingSyncInterval == nil {
 		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
+	}
+	if frameworkConfig.ModelParametersURL == nil {
+		frameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -570,6 +589,31 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.ModelParametersURL != nil {
+		effectiveModelParamsURL := *payload.FrameworkConfig.ModelParametersURL
+		if effectiveModelParamsURL == "" {
+			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
+		}
+		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
+			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
+				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
+				if err != nil {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+					return
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+					return
+				}
+			}
+			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -582,6 +626,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			Pricing: &modelcatalog.Config{
 				PricingURL:          frameworkConfig.PricingURL,
 				PricingSyncInterval: &syncSeconds,
+				ModelParametersURL:  frameworkConfig.ModelParametersURL,
 			},
 		}
 		// Saving framework config

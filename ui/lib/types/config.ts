@@ -382,6 +382,7 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
 }
 
 // Auth config
