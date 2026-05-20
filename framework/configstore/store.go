@@ -258,6 +258,15 @@ type ConfigStore interface {
 	DeleteSession(ctx context.Context, token string) error
 	FlushSessions(ctx context.Context) error
 
+	// Temp token CRUD
+	CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error
+	GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error)
+	// DeleteTempTokensByResourceID removes every row matching (scope, resource_id).
+	// Used by lifecycle owners (e.g. OAuth provider on flow termination) to burn
+	// the link as soon as the work it authorized is finished.
+	DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error)
+	DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error)
+
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error

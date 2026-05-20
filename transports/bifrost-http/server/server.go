@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -136,7 +137,9 @@ type BifrostHTTPServer struct {
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
-	WSTicketStore     *handlers.WSTicketStore
+	WSTicketStore        *handlers.WSTicketStore
+	TempTokens           *temptoken.Service
+	TempTokenSweepWorker *temptoken.SweepWorker
 
 	wsPool *bfws.Pool
 }
@@ -1458,10 +1461,36 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.
 		// NewSignedWSTicketStore handles empty key by degrading to in-memory mode.
 		s.WSTicketStore = handlers.NewSignedWSTicketStore(encrypt.Key())
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore)
+		// Initialize the temp-token service and register all scopes owned by the
+		// handlers package. The service is the seam every "scoped, anonymous,
+		// browser-only" workflow plugs into (currently just the MCP per-user OAuth
+		// auth page
+		s.TempTokens = temptoken.NewService(s.Config.ConfigStore, temptoken.NewRegistry())
+		if regErr := handlers.RegisterTempTokenScopes(s.TempTokens); regErr != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+			return fmt.Errorf("failed to register temp token scopes: %v", regErr)
+		}
+		// Centralized janitor that reaps expired temp_tokens rows. Independent
+		// of the per-user OAuth sweep so any future scope (not just mcp_auth)
+		// benefits from the same cleanup loop without piggybacking on OAuth.
+		s.TempTokenSweepWorker = temptoken.NewSweepWorker(s.TempTokens, logger)
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Start(s.Ctx)
+		}
+		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
+		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
+		if s.Config.OAuthProvider != nil {
+			s.Config.OAuthProvider.SetTempTokenService(s.TempTokens)
+		}
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
 		if err != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+			if s.TempTokenSweepWorker != nil {
+				s.TempTokenSweepWorker.Stop()
+				s.TempTokenSweepWorker = nil
+			}
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -1479,6 +1508,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+		}
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Stop()
+			s.TempTokenSweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1509,6 +1542,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+		}
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Stop()
+			s.TempTokenSweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
@@ -1588,6 +1625,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.WSTicketStore != nil {
 				logger.Info("stopping ws ticket store...")
 				s.WSTicketStore.Stop()
+			}
+			if s.TempTokenSweepWorker != nil {
+				logger.Info("stopping temp-token sweep worker...")
+				s.TempTokenSweepWorker.Stop()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")
