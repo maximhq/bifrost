@@ -1239,6 +1239,16 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
+	// Gemini 2.5 and earlier reject function declarations sent together with
+	// responseMimeType "application/json" (structured output / JSON mode). That
+	// pairing is only supported on Gemini 3.x. Keep function calling working by
+	// dropping the JSON response-format hint for older models.
+	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+	if len(params.Tools) > 0 &&
+		config.ResponseMIMEType == "application/json" &&
+		!isGemini3Plus(model) {
+		config.ResponseMIMEType = ""
+	}
 	return config, nil
 }
 
