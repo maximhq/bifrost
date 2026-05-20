@@ -39060,7 +39060,7 @@
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "default": 20,
+              "default": 25,
               "maximum": 100
             }
           },
@@ -61450,6 +61450,8 @@
           }
         },
         "required": [
+          "customers",
+          "count",
           "total_count",
           "limit",
           "offset"

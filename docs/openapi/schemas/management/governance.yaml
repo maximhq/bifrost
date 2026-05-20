@@ -499,6 +499,8 @@ ListCustomersResponse:
   type: object
   description: List customers response
   required:
+    - customers
+    - count
     - total_count
     - limit
     - offset

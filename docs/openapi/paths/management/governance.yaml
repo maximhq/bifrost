@@ -369,6 +369,8 @@ customers:
           type: integer
           minimum: 1
           maximum: 100
+          default: 25
+          maximum: 100
           default: 20
       - name: offset
         in: query
