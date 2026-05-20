@@ -352,26 +352,33 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	})
 }
 
-// GetNodeUsageSince returns per-budget cost and per-rate-limit request/token usage
-// for a specific cluster node from a given timestamp onwards. Usage is attributed
-// to the exact budget and rate-limit IDs stored in each log entry, so callers get
-// correctly scoped breakdowns rather than a single aggregate.
-func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, since time.Time) (*NodeUsageAggregate, error) {
-	// Fetch only the columns needed for attribution. The row count is bounded by
-	// the ghost node's activity since its LastMessageAt, typically a small window.
+// GetNodeUsageAfter returns per-budget cost and per-rate-limit request/token usage
+// for a specific cluster node after a stable composite cursor. Timestamp alone is
+// not unique, so once a cursor has a log ID, same-timestamp rows with greater IDs
+// are included to avoid skipping late async log writes.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
 	type logRow struct {
-		Cost         float64 `gorm:"column:cost"`
-		TotalTokens  int64   `gorm:"column:total_tokens"`
-		BudgetIDs    *string `gorm:"column:budget_ids"`
-		RateLimitIDs *string `gorm:"column:rate_limit_ids"`
+		ID           string    `gorm:"column:id"`
+		Timestamp    time.Time `gorm:"column:timestamp"`
+		Cost         float64   `gorm:"column:cost"`
+		TotalTokens  int64     `gorm:"column:total_tokens"`
+		BudgetIDs    *string   `gorm:"column:budget_ids"`
+		RateLimitIDs *string   `gorm:"column:rate_limit_ids"`
 	}
 	var rows []logRow
 
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	query := s.db.WithContext(ctx).Model(&Log{}).
 		Where("cluster_node_id = ?", nodeID).
-		Where("timestamp >= ?", since).
-		Where("status = ?", "success").
-		Select("COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Where("status = ?", "success")
+	if cursor.LogID != "" {
+		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
+	} else {
+		query = query.Where("timestamp > ?", cursor.Timestamp)
+	}
+
+	err := query.
+		Select("id, timestamp, COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Order("timestamp ASC, id ASC").
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node usage aggregate: %w", err)
@@ -381,8 +388,12 @@ func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, sinc
 	rateLimitRequests := make(map[string]int64)
 	rateLimitTokens := make(map[string]int64)
 
+	maxCursor := cursor // preserve incoming cursor so zero rows don't rewind
 	for i := range rows {
 		row := &rows[i]
+		if row.Timestamp.After(maxCursor.Timestamp) || (row.Timestamp.Equal(maxCursor.Timestamp) && row.ID > maxCursor.LogID) {
+			maxCursor = NodeUsageCursor{Timestamp: row.Timestamp, LogID: row.ID}
+		}
 
 		// Attribute cost to each budget that governed this request.
 		if row.BudgetIDs != nil && *row.BudgetIDs != "" {
@@ -424,6 +435,10 @@ func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, sinc
 		BudgetCosts:       budgetCosts,
 		RateLimitRequests: rateLimitRequests,
 		RateLimitTokens:   rateLimitTokens,
+		RowCount:          len(rows),
+		MaxTimestamp:      maxCursor.Timestamp,
+		MaxLogID:          maxCursor.LogID,
+		NextCursor:        maxCursor,
 	}, nil
 }
 

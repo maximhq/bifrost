@@ -1697,7 +1697,7 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) 
           FROM batch
           WHERE mcp_tool_logs.ctid = batch.ctid
         `); err != nil {
-				return err
+					return err
 				}
 			} else {
 				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")
@@ -2490,6 +2490,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_cluster_node_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_usage ON logs(cluster_node_id, status, timestamp, id) WHERE cluster_node_id IS NOT NULL",
 	},
 }
 
