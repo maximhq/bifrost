@@ -1230,10 +1230,16 @@
                     "type": "boolean"
                   },
                   "team_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Assign this virtual key to a team (mutually exclusive with customer_id and access_profile_id)"
                   },
                   "customer_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Assign this virtual key to a customer (mutually exclusive with team_id and access_profile_id)"
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "description": "Assign this virtual key to an access profile template (mutually exclusive with team_id and customer_id; enterprise only)"
                   },
                   "rate_limit_id": {
                     "type": "string"
@@ -1267,6 +1273,13 @@
                       }
                     }
                   }
+                },
+                "not": {
+                  "anyOf": [
+                    { "required": ["team_id", "customer_id"] },
+                    { "required": ["team_id", "access_profile_id"] },
+                    { "required": ["customer_id", "access_profile_id"] }
+                  ]
                 },
                 "required": ["id", "name"]
               }
