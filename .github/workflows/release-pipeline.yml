@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_tests:
-        description: 'Skip all tests and jump directly to release (admin only)'
+        description: "Skip all tests and jump directly to release (admin only)"
         required: false
         type: boolean
         default: false
@@ -663,7 +663,7 @@ jobs:
           node-version: "25"
 
       - name: Install Newman
-        run: npm install -g newman newman-reporter-htmlextra
+        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Set up Docker Compose
         run: |
@@ -1029,7 +1029,7 @@ jobs:
           AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
@@ -1136,7 +1136,7 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -1261,7 +1261,7 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   # Prep: update dependencies, validate build, commit/push
@@ -1478,7 +1478,13 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
+    needs:
+      [
+        build-binaries-x86,
+        build-binaries-arm64,
+        detect-changes,
+        bifrost-http-prep,
+      ]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ubuntu-latest
     permissions:
@@ -1914,7 +1920,13 @@ jobs:
 
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
-    needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
+    needs:
+      [
+        check-skip,
+        detect-changes,
+        docker-build-ubi9-amd64,
+        docker-build-ubi9-arm64,
+      ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
     env:
