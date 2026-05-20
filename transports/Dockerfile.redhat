@@ -49,7 +49,7 @@ RUN go build \
 RUN test -f /app/main || (echo "Build failed" && exit 1)
   
 # --- Runtime Stage: Red Hat UBI 9 Minimal ---
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:b9b10f42d7eba7ad4a6d5ef26b7d34fdc892b2ffe59b8d0372ec884008569eb6
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:24650313873554b6ba16c1a1b6b9f9142604f6ab735113e1695faf2dd07fdede
 
 # Redeclared here so it is in scope for the LABEL instruction below.
 ARG VERSION=unknown
