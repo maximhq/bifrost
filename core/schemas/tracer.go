@@ -117,7 +117,7 @@ type Tracer interface {
 	// Returns the accumulated result. IsFinal will be true when the stream is complete.
 	// This method is used by plugins to access accumulated streaming data.
 	// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-	ProcessStreamingChunk(traceID string, isFinalChunk bool, result *BifrostResponse, err *BifrostError) *StreamAccumulatorResult
+	ProcessStreamingChunk(ctx *BifrostContext, traceID string, isFinalChunk bool, result *BifrostResponse, err *BifrostError) *StreamAccumulatorResult
 
 	// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
 	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
@@ -191,7 +191,7 @@ func (n *NoOpTracer) CreateStreamAccumulator(_ string, _ time.Time) {}
 func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
 
 // ProcessStreamingChunk returns nil.
-func (n *NoOpTracer) ProcessStreamingChunk(_ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {
+func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {
 	return nil
 }
 
