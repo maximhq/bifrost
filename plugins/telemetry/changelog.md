@@ -1,0 +1,2 @@
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
