@@ -10,21 +10,28 @@ import (
 
 // ResolvePerUserOAuthToken looks up the per-user OAuth access token for the given client.
 // If no token exists yet, it initiates an OAuth flow and returns an MCPUserOAuthRequiredError.
+//
+// Mode-strict: derives AuthMode from context state
+// and looks up exactly one identity column. No fallback chain.
 func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPClientState, oauth2Provider schemas.OAuth2Provider) (string, error) {
 	if oauth2Provider == nil {
 		return "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
 	}
 
-	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-	sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
+	mode := ctx.MCPAuthMode()
+	identity := identityForMCPAuthMode(ctx, mode)
 
-	// Optional X-Bf-User-Id header overrides user identity; if absent, falls back to virtual key
-	if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
-		userID = mcpUserID
+	if identity == "" {
+		// No identity column populated for the derived mode. We can neither
+		// look up an existing token nor mint a flow whose result would be
+		// findable on subsequent calls, so refuse early with actionable copy.
+		return "", fmt.Errorf(
+			"per-user OAuth for %s requires an identity: send a Virtual Key (x-bf-vk), authenticate as a user, or set x-bf-mcp-session-id to any opaque string you'll re-send on subsequent calls",
+			client.ExecutionConfig.Name,
+		)
 	}
 
-	accessToken, err := oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
+	accessToken, err := oauth2Provider.GetUserAccessTokenByMode(ctx, mode, identity, client.ExecutionConfig.ID)
 	// Both sentinels mean "this user must re-authenticate":
 	//   - ErrOAuth2TokenNotFound: row missing (never authed, or purged after permanent refresh failure)
 	//   - ErrOAuth2TokenExpired:  row present but tokens unusable (access expired + no refresh available)
@@ -33,15 +40,6 @@ func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPCl
 		return "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
 	}
 	if err != nil {
-		// In LLM gateway mode with no identity, an OAuth flow would produce an orphaned token.
-		isMCPGateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
-		if !isMCPGateway && userID == "" && virtualKeyID == "" {
-			return "", fmt.Errorf(
-				"per-user OAuth for %s requires a user identity: include X-Bf-User-Id or a Virtual Key in your request so the token can be linked to you",
-				client.ExecutionConfig.Name,
-			)
-		}
-
 		if client.ExecutionConfig.OauthConfigID == nil || *client.ExecutionConfig.OauthConfigID == "" {
 			return "", fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", client.ExecutionConfig.Name)
 		}
@@ -49,7 +47,7 @@ func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPCl
 		if redirectURI == "" {
 			return "", fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
 		}
-		flowInitiation, sessionID, flowErr := oauth2Provider.InitiateUserOAuthFlow(ctx, *client.ExecutionConfig.OauthConfigID, client.ExecutionConfig.ID, redirectURI)
+		flowInitiation, sessionID, flowErr := oauth2Provider.InitiateUserOAuthFlow(ctx, *client.ExecutionConfig.OauthConfigID, client.ExecutionConfig.ID, redirectURI, mode)
 		if flowErr != nil {
 			return "", fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", client.ExecutionConfig.Name, flowErr)
 		}
@@ -58,11 +56,38 @@ func ResolvePerUserOAuthToken(ctx *schemas.BifrostContext, client *schemas.MCPCl
 			MCPClientName: client.ExecutionConfig.Name,
 			AuthorizeURL:  flowInitiation.AuthorizeURL,
 			SessionID:     sessionID,
-			Message:       fmt.Sprintf("Authentication required for %s. Please visit the authorize URL to connect your account.", client.ExecutionConfig.Name),
+			// Include the URL in the message itself — plain-text clients
+			// (curl, basic SDK wrappers) won't parse extra_fields, and a
+			// "please visit the authorize URL" hint with no URL is
+			// useless to them. The URL is already exposed on the same
+			// response via extra_fields.mcp_auth_required.authorize_url,
+			// so embedding it here doesn't widen the surface.
+			Message: fmt.Sprintf("Authentication required for %s. Visit %s to connect your account.", client.ExecutionConfig.Name, flowInitiation.AuthorizeURL),
 		}
 	}
 
 	return accessToken, nil
+}
+
+// identityForMode returns the identity string to look up by, given the derived
+// mode. Mirrors the priority used by ctx.AuthMode(): UserID for user mode,
+// resolved VK ID for vk mode, session ID for session mode.
+func identityForMCPAuthMode(ctx *schemas.BifrostContext, mode schemas.MCPAuthMode) string {
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		if v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); v != "" {
+			return v
+		}
+	case schemas.MCPAuthModeVK:
+		if v, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); v != "" {
+			return v
+		}
+	case schemas.MCPAuthModeSession:
+		if v, _ := ctx.Value(schemas.BifrostContextKeyMCPSessionID).(string); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // BuildPerUserOAuthHeaders clones the provided headers and adds the Bearer token,

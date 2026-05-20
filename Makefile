@@ -66,7 +66,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner
 
 all: help
 
@@ -439,7 +439,9 @@ docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/conf
 	fi; \
 	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
-docs: ## Prepare local docs
+docs: ## Prepare local docs (bundles OpenAPI spec then starts Mintlify dev server)
+	@$(ECHO) "$(GREEN)Bundling OpenAPI spec...$(NC)"
+	@cd docs/openapi && python3 bundle.py
 	@$(ECHO) "$(GREEN)Preparing local docs...$(NC)"
 	@cd docs && npx --yes mintlify@latest dev
 
@@ -1502,6 +1504,28 @@ run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
 		$(ECHO) "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
 		cd tests/e2e && npx playwright test --headed; \
 	fi
+
+run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
+	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"
+	@BASH4="$${BIFROST_BASH:-}"; \
+	if [ -z "$$BASH4" ]; then \
+		for candidate in \
+			"$$(brew --prefix bash 2>/dev/null)/bin/bash" \
+			/opt/homebrew/bin/bash \
+			/usr/local/bin/bash \
+			"$$(command -v bash)"; do \
+			if [ -n "$$candidate" ] && [ -x "$$candidate" ] && "$$candidate" -c 'test "$${BASH_VERSINFO[0]}" -ge 4' >/dev/null 2>&1; then \
+				BASH4="$$candidate"; \
+				break; \
+			fi; \
+		done; \
+	fi; \
+	if [ -z "$$BASH4" ]; then \
+		$(ECHO) "$(RED)Error: run-e2e-api requires Bash 4.0+ for the API runner.$(NC)"; \
+		$(ECHO) "$(YELLOW)Install a newer Bash with 'brew install bash', or pass BIFROST_BASH=/path/to/bash.$(NC)"; \
+		exit 1; \
+	fi; \
+	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin

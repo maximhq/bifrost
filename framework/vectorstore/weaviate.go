@@ -491,7 +491,7 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 	}
 
 	if exists {
-		return nil // Schema already exists
+		return nil
 	}
 
 	// Create properties

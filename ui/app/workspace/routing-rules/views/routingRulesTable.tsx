@@ -29,6 +29,67 @@ import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from 
 import { useState } from "react";
 import { toast } from "sonner";
 
+function RoutingRuleActionsMenu({
+	rule,
+	canUpdate,
+	canDelete,
+	onEdit,
+	onDelete,
+}: {
+	rule: RoutingRule;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: (rule: RoutingRule) => void;
+	onDelete: (ruleId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for routing rule ${rule.name}`}
+					data-testid={`routing-rule-actions-${rule.id}-btn`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					className="cursor-pointer"
+					disabled={!canUpdate}
+					data-testid={`routing-rule-edit-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(rule);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					className="cursor-pointer"
+					disabled={!canDelete}
+					data-testid={`routing-rule-delete-${rule.id}-btn`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(rule.id);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
 interface RoutingRulesTableProps {
 	rules: RoutingRule[] | undefined;
 	totalCount: number;
@@ -192,46 +253,13 @@ export function RoutingRulesTable({
 									</TableCell>
 									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 										<div className="flex items-center justify-end">
-											<DropdownMenu>
-												<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-													<Button
-														variant="ghost"
-														size="icon"
-														className="h-8 w-8"
-														aria-label={`Actions for routing rule ${rule.name}`}
-														data-testid={`routing-rule-actions-${rule.id}-btn`}
-													>
-														<MoreHorizontal className="h-4 w-4" />
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem
-														className="cursor-pointer"
-														disabled={!canUpdate}
-														onClick={(e) => {
-															e.stopPropagation();
-															onEdit(rule);
-														}}
-														data-testid={`routing-rule-edit-${rule.id}-btn`}
-													>
-														<Edit className="h-4 w-4" />
-														Edit
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														variant="destructive"
-														className="cursor-pointer"
-														disabled={!canDelete}
-														onClick={(e) => {
-															e.stopPropagation();
-															setDeleteRuleId(rule.id);
-														}}
-														data-testid={`routing-rule-delete-${rule.id}-btn`}
-													>
-														<Trash2 className="h-4 w-4" />
-														Delete
-													</DropdownMenuItem>
-												</DropdownMenuContent>
-											</DropdownMenu>
+											<RoutingRuleActionsMenu
+												rule={rule}
+												canUpdate={canUpdate}
+												canDelete={canDelete}
+												onEdit={onEdit}
+												onDelete={setDeleteRuleId}
+											/>
 										</div>
 									</TableCell>
 								</TableRow>

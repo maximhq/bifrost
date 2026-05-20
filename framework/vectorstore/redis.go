@@ -44,10 +44,10 @@ type RedisConfig struct {
 	// Connection pool and timeout settings (passed directly to Redis client).
 	// All duration fields accept either a Go duration string (e.g. "5s", "500ms",
 	// "1m30s") or a plain integer nanosecond value for backward compatibility.
-	PoolSize        int             `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
-	MaxActiveConns  int             `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
-	MinIdleConns    int             `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
-	MaxIdleConns    int             `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
+	PoolSize        int              `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
+	MaxActiveConns  int              `json:"max_active_conns,omitempty"`   // Maximum number of active connections (optional)
+	MinIdleConns    int              `json:"min_idle_conns,omitempty"`     // Minimum number of idle connections (optional)
+	MaxIdleConns    int              `json:"max_idle_conns,omitempty"`     // Maximum number of idle connections (optional)
 	ConnMaxLifetime schemas.Duration `json:"conn_max_lifetime,omitempty"`  // Connection maximum lifetime (optional)
 	ConnMaxIdleTime schemas.Duration `json:"conn_max_idle_time,omitempty"` // Connection maximum idle time (optional)
 	DialTimeout     schemas.Duration `json:"dial_timeout,omitempty"`       // Timeout for socket connection (optional)
@@ -79,8 +79,18 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
 	if infoResult.Err() == nil {
+		ftInfo, ftInfoErr := s.client.FTInfo(ctx, namespace).Result()
+		if ftInfoErr != nil {
+			s.logger.Warn(fmt.Sprintf("could not inspect existing index %q for dimension validation (check skipped): %v", namespace, ftInfoErr))
+		} else {
+			for _, attr := range ftInfo.Attributes {
+				if strings.EqualFold(attr.Type, "VECTOR") && attr.Dim > 0 && attr.Dim != dimension {
+					return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, attr.Dim, dimension)
+				}
+			}
+		}
 		s.cacheNamespaceFieldTypes(namespace, properties)
-		return nil // Index already exists
+		return nil // Index already exists with matching dimension
 	}
 	if err := infoResult.Err(); err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
 		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)

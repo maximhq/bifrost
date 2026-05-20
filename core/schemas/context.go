@@ -299,6 +299,31 @@ func (bc *BifrostContext) Value(key any) any {
 	return bc.parent.Value(key)
 }
 
+// AuthMode derives the per-user OAuth lookup mode from current context state.
+// Priority: UserID > VirtualKey > session. Call this at token-lookup time, not
+// in middleware — the governance plugin can inject UserID (via VK→owner
+// resolution) after middleware runs, and the mode must reflect that.
+//
+// Returns MCPAuthModeNone when no identity column is populated (no user, no
+// VK, no session header), so callers that branch on the returned mode alone
+// cannot mistake an unauthenticated request for a session-mode caller.
+//
+// VK check uses BifrostContextKeyGovernanceVirtualKeyID (the resolved VK row
+// ID) rather than BifrostContextKeyVirtualKey (the raw header value) because
+// vk-mode token rows are keyed by the resolved VK ID.
+func (bc *BifrostContext) MCPAuthMode() MCPAuthMode {
+	if userID, ok := bc.Value(BifrostContextKeyUserID).(string); ok && userID != "" {
+		return MCPAuthModeUser
+	}
+	if vkID, ok := bc.Value(BifrostContextKeyGovernanceVirtualKeyID).(string); ok && vkID != "" {
+		return MCPAuthModeVK
+	}
+	if sid, ok := bc.Value(BifrostContextKeyMCPSessionID).(string); ok && sid != "" {
+		return MCPAuthModeSession
+	}
+	return MCPAuthModeNone
+}
+
 // SetValue sets a value in the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 // This is thread-safe and can be called concurrently.

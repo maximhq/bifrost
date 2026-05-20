@@ -762,10 +762,16 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.3",
-              "changelogs/cli-v0.10.2",
-              "changelogs/cli-v0.10.1",
-              "changelogs/cli-v0.10.0"
+              "changelogs/cli-v0.10.4",
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.3",
+                  "changelogs/cli-v0.10.2",
+                  "changelogs/cli-v0.10.1",
+                  "changelogs/cli-v0.10.0"
+                ]
+              }
             ]
           }
         ]

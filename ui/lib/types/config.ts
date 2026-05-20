@@ -382,6 +382,7 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
 }
 
 // Auth config
@@ -463,6 +464,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CompatConfig {
@@ -500,7 +502,6 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_server_url?: EnvVar;
 	mcp_external_client_url?: EnvVar;
 }
 

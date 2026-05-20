@@ -82,10 +82,6 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
-	// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
-	// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured
-	// (falls back to dynamic Host-header-based URL).
-	GetMCPExternalServerURL() string
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -354,6 +350,7 @@ type Config struct {
 
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
+	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
@@ -838,10 +835,6 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if client == nil {
 		return
-	}
-	if err := ValidateBaseURL(client.MCPExternalServerURL.GetValue()); err != nil {
-		logger.Warn("mcp_external_server_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
-		client.MCPExternalServerURL = nil
 	}
 	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
@@ -3007,31 +3000,25 @@ func ResolveFrameworkPricingConfig(
 	if value := strings.TrimSpace(os.Getenv(modelcatalog.PricingURLEnvVar)); value != "" {
 		defaultPricingURL = value
 	}
+	defaultModelParametersURL := modelcatalog.DefaultModelParametersURL
+	if value := strings.TrimSpace(os.Getenv(modelcatalog.ModelParametersURLEnvVar)); value != "" {
+		defaultModelParametersURL = value
+	}
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 
-	// --- Phase 1: parse and validate file config ---
-
 	filePricingURL := (*string)(nil)
+	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
+	skipModelParamsURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
 			raw := *fileConfig.Pricing.PricingURL
-			// Explicitly check for the "env." prefix before invoking the env lookup.
-			// This makes the substitution contract unambiguous: a URL that does not
-			// begin with "env." is always used verbatim, regardless of what
-			// envutils.ProcessEnvValue might do internally in the future.
 			if strings.HasPrefix(raw, "env.") {
 				resolvedURL, err := envutils.ProcessEnvValue(raw)
 				if err != nil {
-					// Named env variable not found — preserve the original "env.VAR"
-					// string so the downstream HTTP fetch fails visibly rather than
-					// silently falling back to the built-in default URL.
 					logger.Warn("pricing_url: env variable not found (%v); keeping original value %q", err, raw)
 					filePricingURL = fileConfig.Pricing.PricingURL
-					// Do NOT persist the unresolved "env.VAR" literal to DB.
-					// If we did, a later restart would read the literal from DB
-					// (which is authoritative) and never attempt env resolution again.
 					skipURLBackfill = true
 				} else {
 					filePricingURL = &resolvedURL
@@ -3040,14 +3027,32 @@ func ResolveFrameworkPricingConfig(
 				filePricingURL = &raw
 			}
 		}
+		if fileConfig.Pricing.ModelParametersURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.ModelParametersURL)
+			if raw == "" {
+				// Blank is treated as "not set"; fall back to default.
+			} else if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("model_parameters_url: env variable not found (%v); keeping original value %q", err, raw)
+					fileModelParametersURL = fileConfig.Pricing.ModelParametersURL
+					skipModelParamsURLBackfill = true
+				} else {
+					resolved := strings.TrimSpace(resolvedURL)
+					if resolved != "" {
+						fileModelParametersURL = &resolved
+					}
+				}
+			} else {
+				fileModelParametersURL = &raw
+			}
+		}
 		if fileConfig.Pricing.PricingSyncInterval != nil {
 			val := *fileConfig.Pricing.PricingSyncInterval
 			switch {
 			case val <= 0:
-				// Zero or negative values are meaningless for a sync eligibility threshold.
 				logger.Warn("pricing_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
-				// Accept but clamp to the schema-declared minimum of 3600 s (1 hour).
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
 				logger.Warn("pricing_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
 				fileSyncSeconds = &clamped
@@ -3060,81 +3065,135 @@ func ResolveFrameworkPricingConfig(
 	// --- Phase 2: apply file config over defaults ---
 
 	resolvedPricingURL := &defaultPricingURL
+	resolvedModelParametersURL := &defaultModelParametersURL
 	resolvedSyncSeconds := &defaultSyncSeconds
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
 		logger.Debug("pricing_url resolved from file")
 	}
+	if fileModelParametersURL != nil {
+		resolvedModelParametersURL = fileModelParametersURL
+		logger.Debug("model_parameters_url resolved from file")
+	}
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
 
-	// --- Phase 3: apply DB values over file/defaults (DB is authoritative) ---
+	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
 
 	needsDBUpdate := false
 	configID := uint(0)
+
+	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
+	hashPricingURL := filePricingURL
+	if skipURLBackfill {
+		hashPricingURL = nil
+	}
+	hashModelParametersURL := fileModelParametersURL
+	if skipModelParamsURLBackfill {
+		hashModelParametersURL = nil
+	}
+
+	fileHash := ""
+	if fileConfig != nil && fileConfig.Pricing != nil &&
+		(hashPricingURL != nil || hashModelParametersURL != nil || fileSyncSeconds != nil) {
+		h, err := configstore.GenerateFrameworkConfigHash(hashPricingURL, hashModelParametersURL, fileSyncSeconds)
+		if err != nil {
+			logger.Warn("failed to compute framework config hash: %v", err)
+		} else {
+			fileHash = h
+		}
+	}
+
+	storedHash := ""
+	if dbConfig != nil {
+		storedHash = dbConfig.ConfigHash
+	}
+	fileChanged := fileHash != "" && fileHash != storedHash
+
 	if dbConfig != nil {
 		configID = dbConfig.ID
+
 		if dbConfig.PricingURL != nil {
-			resolvedPricingURL = dbConfig.PricingURL
+			if fileChanged && filePricingURL != nil && !skipURLBackfill {
+				logger.Info("pricing_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedPricingURL = dbConfig.PricingURL
+			}
 		} else if !skipURLBackfill {
-			// DB row exists but URL field is NULL — backfill with resolved value.
-			// Skip backfill when the resolved URL is an unresolved env reference
-			// to prevent persisting "env.VAR" literals into the DB.
 			needsDBUpdate = true
 		}
+		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
+			if fileChanged && fileModelParametersURL != nil && !skipModelParamsURLBackfill {
+				logger.Info("model_parameters_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedModelParametersURL = dbConfig.ModelParametersURL
+			}
+		} else if !skipModelParamsURLBackfill {
+			needsDBUpdate = true
+		}
+
 		if dbConfig.PricingSyncInterval != nil {
 			val := *dbConfig.PricingSyncInterval
 			if val <= 0 {
-				// Corrupted or legacy zero written by the pre-fix bug.
-				// Ignore and backfill the DB with the correctly resolved value.
 				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
 				needsDBUpdate = true
 			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
-				// DB has a positive value below the minimum — clamp and backfill,
-				// consistent with the file-path validation in Phase 1.
-				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
-				resolvedSyncSeconds = &clamped
+				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds) — backfilling", val)
+				if !fileChanged || fileSyncSeconds == nil {
+					clamped := modelcatalog.MinimumPricingSyncIntervalSec
+					resolvedSyncSeconds = &clamped
+				}
+				needsDBUpdate = true
+			} else if fileChanged && fileSyncSeconds != nil {
+				logger.Info("pricing_sync_interval from config.json overrides DB (file hash changed): file=%d db=%d seconds — updating DB", *fileSyncSeconds, val)
 				needsDBUpdate = true
 			} else {
-				if fileSyncSeconds != nil && *fileSyncSeconds != *dbConfig.PricingSyncInterval {
-					logger.Info("pricing_sync_interval overridden by DB: file=%d db=%d seconds", *fileSyncSeconds, *dbConfig.PricingSyncInterval)
-				}
 				resolvedSyncSeconds = dbConfig.PricingSyncInterval
 			}
 		} else {
-			// DB row exists but interval field is NULL — backfill.
 			needsDBUpdate = true
 		}
 	}
 
-	// --- Phase 4: invariant assertion ---
-	//
-	// resolvedPricingURL and resolvedSyncSeconds are initialised to non-nil local
-	// variable addresses in Phase 2 and only ever reassigned from non-nil DB/file
-	// pointers. They cannot be nil here under any reachable code path.
-	// The checks below are a last-resort safety net for future refactors that
-	// might break that guarantee. If they fire, it is a programming error, not a
-	// runtime condition — hence the explicit "invariant violation" message.
+	// --- Phase 4: nil guard ---
 	if resolvedPricingURL == nil {
 		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
 		resolvedPricingURL = &defaultPricingURL
+	}
+	if resolvedModelParametersURL == nil {
+		logger.Warn("invariant violation: model_parameters_url resolved to nil — falling back to default %q", defaultModelParametersURL)
+		resolvedModelParametersURL = &defaultModelParametersURL
 	}
 	if resolvedSyncSeconds == nil {
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
 		resolvedSyncSeconds = &defaultSyncSeconds
 	}
 
+	// Only update the stored hash when the file actually changed; preserve the
+	// existing hash for correction-only DB updates (null backfill, corruption fix).
+	persistedHash := ""
+	if dbConfig != nil {
+		persistedHash = dbConfig.ConfigHash
+	}
+	if fileChanged {
+		persistedHash = fileHash
+	}
+
 	return &configstoreTables.TableFrameworkConfig{
 			ID:                  configID,
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
+			ConfigHash:          persistedHash,
 		}, &modelcatalog.Config{
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
 		}, needsDBUpdate
 }
 
@@ -3168,6 +3227,13 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
 	if config.TokenRefreshWorker != nil {
 		config.TokenRefreshWorker.Start(ctx)
+	}
+
+	// Start per-user OAuth sweep worker: expires stale pending flows and reaps
+	// long-orphaned token rows. Orphan retention defaults to 30 days.
+	config.OAuthSweepWorker = oauth2.NewPerUserOAuthSweepWorker(config.OAuthProvider, 30*24*time.Hour, logger)
+	if config.OAuthSweepWorker != nil {
+		config.OAuthSweepWorker.Start(ctx)
 	}
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
@@ -3457,13 +3523,6 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
-// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
-// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured.
-// Resolves env var references automatically.
-func (c *Config) GetMCPExternalServerURL() string {
-	return c.ClientConfig.MCPExternalServerURL.GetValue()
-}
-
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
@@ -3519,73 +3578,6 @@ func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
 	for _, client := range c.MCPConfig.ClientConfigs {
 		if client != nil && client.AllowOnAllVirtualKeys {
 			result[client.ID] = client.Name
-		}
-	}
-	return result
-}
-
-// GetPerUserOAuthMCPClients returns a map of clientID -> clientName for all MCP clients
-// that have AuthType set to "per_user_oauth". The returned map is a copy, safe for concurrent use.
-func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
-	c.muMCP.RLock()
-	defer c.muMCP.RUnlock()
-
-	if c.MCPConfig == nil {
-		return nil
-	}
-	result := make(map[string]string)
-	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && !client.Disabled {
-			result[client.ID] = client.Name
-		}
-	}
-	return result
-}
-
-// GetPerUserOAuthMCPClientsForVirtualKey returns a map of clientID -> clientName for
-// per_user_oauth MCP clients that the given VK is allowed to use. A client is included if:
-//   - AllowOnAllVirtualKeys is true, OR
-//   - The VK has an explicit entry in governance_virtual_key_mcp_configs for that client.
-//
-// If virtualKeyID is empty, all per-user OAuth clients are returned. If the config store
-// is unavailable or the VK lookup fails, only clients with AllowOnAllVirtualKeys=true are returned.
-func (c *Config) GetPerUserOAuthMCPClientsForVirtualKey(ctx context.Context, virtualKeyID string) map[string]string {
-	all := c.GetPerUserOAuthMCPClients()
-	if virtualKeyID == "" {
-		return all
-	}
-
-	// Build set of per-user OAuth clients that allow all virtual keys.
-	c.muMCP.RLock()
-	allowAll := make(map[string]string)
-	if c.MCPConfig != nil {
-		for _, client := range c.MCPConfig.ClientConfigs {
-			if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && client.AllowOnAllVirtualKeys {
-				allowAll[client.ID] = client.Name
-			}
-		}
-	}
-	c.muMCP.RUnlock()
-
-	if c.ConfigStore == nil {
-		return allowAll
-	}
-
-	// Get VK-specific MCP configs (with MCPClient preloaded so we have the string ClientID).
-	vkConfigs, err := c.ConfigStore.GetVirtualKeyMCPConfigs(ctx, virtualKeyID)
-	if err != nil {
-		// Fail closed: only return clients that are allowed on all virtual keys.
-		return allowAll
-	}
-	explicit := make(map[string]bool, len(vkConfigs))
-	for _, cfg := range vkConfigs {
-		explicit[cfg.MCPClient.ClientID] = true
-	}
-
-	result := make(map[string]string)
-	for clientID, clientName := range all {
-		if _, ok := allowAll[clientID]; ok || explicit[clientID] {
-			result[clientID] = clientName
 		}
 	}
 	return result
@@ -3705,6 +3697,9 @@ func (c *Config) Close(ctx context.Context) {
 	}
 	if c.TokenRefreshWorker != nil {
 		c.TokenRefreshWorker.Stop()
+	}
+	if c.OAuthSweepWorker != nil {
+		c.OAuthSweepWorker.Stop()
 	}
 	if c.KVStore != nil {
 		c.KVStore.Close()

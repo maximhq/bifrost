@@ -835,7 +835,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// responses need a DB write.
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest && !isFinalChunk && result != nil && bifrostErr == nil {
 		if tracer != nil && traceID != "" {
-			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
+			tracer.ProcessStreamingChunk(ctx, traceID, false, result, bifrostErr)
 		}
 		return result, bifrostErr, nil
 	}
@@ -895,7 +895,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			requestType != schemas.RealtimeRequest &&
 			tracer != nil &&
 			traceID != "" {
-			if accResult := tracer.ProcessStreamingChunk(traceID, true, result, bifrostErr); accResult != nil {
+			if accResult := tracer.ProcessStreamingChunk(ctx, traceID, true, result, bifrostErr); accResult != nil {
 				if streamResponse := convertToProcessedStreamResponse(accResult, requestType); streamResponse != nil {
 					p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
 				}
@@ -935,7 +935,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest {
 		var streamResponse *streaming.ProcessedStreamResponse
 		if tracer != nil && traceID != "" {
-			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
+			accResult := tracer.ProcessStreamingChunk(ctx, traceID, isFinalChunk, result, bifrostErr)
 			if accResult != nil {
 				streamResponse = convertToProcessedStreamResponse(accResult, requestType)
 			}

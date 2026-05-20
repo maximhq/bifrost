@@ -31,6 +31,57 @@ interface Props {
 	isKeyless?: boolean;
 }
 
+function ProviderKeyActionsMenu({
+	keyId,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	onEdit,
+	onDelete,
+}: {
+	keyId: string;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	onEdit: (keyId: string) => void;
+	onDelete: (keyId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild>
+				<Button onClick={(e) => e.stopPropagation()} variant="ghost">
+					<EllipsisIcon className="h-5 w-5" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(keyId);
+						setIsOpen(false);
+					}}
+					disabled={!hasUpdateAccess}
+				>
+					<PencilIcon className="mr-1 h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(keyId);
+						setIsOpen(false);
+					}}
+					disabled={!hasDeleteAccess}
+				>
+					<TrashIcon className="mr-1 h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
 export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
@@ -265,34 +316,13 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end space-x-2">
 												{hasUpdateProviderAccess || hasDeleteProviderAccess ? (
-													<DropdownMenu>
-														<DropdownMenuTrigger asChild>
-															<Button onClick={(e) => e.stopPropagation()} variant="ghost">
-																<EllipsisIcon className="h-5 w-5" />
-															</Button>
-														</DropdownMenuTrigger>
-														<DropdownMenuContent align="end">
-															<DropdownMenuItem
-																onClick={() => {
-																	setShowAddNewKeyDialog({ show: true, keyId: key.id });
-																}}
-																disabled={!hasUpdateProviderAccess}
-															>
-																<PencilIcon className="mr-1 h-4 w-4" />
-																Edit
-															</DropdownMenuItem>
-															<DropdownMenuItem
-																variant="destructive"
-																onClick={() => {
-																	setShowDeleteKeyDialog({ show: true, keyId: key.id });
-																}}
-																disabled={!hasDeleteProviderAccess}
-															>
-																<TrashIcon className="mr-1 h-4 w-4" />
-																Delete
-															</DropdownMenuItem>
-														</DropdownMenuContent>
-													</DropdownMenu>
+													<ProviderKeyActionsMenu
+														keyId={key.id}
+														hasUpdateAccess={hasUpdateProviderAccess}
+														hasDeleteAccess={hasDeleteProviderAccess}
+														onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+														onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+													/>
 												) : null}
 											</div>
 										</TableCell>

@@ -934,6 +934,26 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	req.TableMCPClient.ToolsToExecute = resolvedToolsToExecute
 	req.TableMCPClient.ToolsToAutoExecute = resolvedToolsToAutoExecute
 	dbUpdateRecord := req.TableMCPClient
+	// Rebind persisted discovered tool keys (and inner Function.Name) to the current
+	// client name so a restart restores them under the right prefix.
+	if oldDBConfig != nil && len(oldDBConfig.DiscoveredTools) > 0 {
+		newPrefix := req.TableMCPClient.Name + "-"
+		migrated := make(map[string]schemas.ChatTool, len(oldDBConfig.DiscoveredTools))
+		for oldKey, tool := range oldDBConfig.DiscoveredTools {
+			newKey := oldKey
+			if _, suffix, ok := strings.Cut(oldKey, "-"); ok {
+				newKey = newPrefix + suffix
+			}
+			if tool.Function != nil {
+				fn := *tool.Function
+				fn.Name = newKey
+				tool.Function = &fn
+			}
+			migrated[newKey] = tool
+		}
+		dbUpdateRecord.DiscoveredTools = migrated
+		dbUpdateRecord.DiscoveredToolNameMapping = oldDBConfig.DiscoveredToolNameMapping
+	}
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
@@ -986,6 +1006,25 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
 		return
+	}
+
+	// Reload every VK currently referencing this MCP client so the governance
+	// cache's preloaded MCPClient relation picks up the rename / tool / header
+	// changes. The VK-assignment-change block below does its own targeted
+	// reload, but only fires when req.VKConfigs != nil — a name-only update
+	// otherwise leaves every cached VK pointing at the old MCPClient.Name and
+	// the per-VK allowlist check rejects tool calls under the new prefix.
+	if h.store.ConfigStore != nil && h.governanceManager != nil {
+		assignedVKs, listErr := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, oldDBConfig.ID)
+		if listErr != nil {
+			logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s after update: %v", id, listErr))
+		} else {
+			for _, av := range assignedVKs {
+				if _, err := h.governanceManager.ReloadVirtualKey(ctx, av.VirtualKeyID); err != nil {
+					logger.Error(fmt.Sprintf("failed to reload virtual key %s after MCP client update: %v", av.VirtualKeyID, err))
+				}
+			}
+		}
 	}
 
 	// Manage VK assignments if vk_configs was provided

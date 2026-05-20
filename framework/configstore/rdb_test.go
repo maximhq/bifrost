@@ -42,8 +42,6 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptVersionMessage{},
 		&tables.TablePromptSession{},
 		&tables.TablePromptSessionMessage{},
-		&tables.TablePerUserOAuthPendingFlow{},
-		&tables.TablePerUserOAuthSession{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
 	)
@@ -870,6 +868,123 @@ func TestUpdateClientConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.EnableLogging != nil && *result.EnableLogging)
 	assert.Equal(t, 100, result.InitialPoolSize)
+}
+
+func TestUpdateClientMetadata(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding_dismissed": true,
+		"theme":                "dark",
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"theme": "light",
+		"stale": nil,
+	})
+	require.NoError(t, err)
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+	assert.Equal(t, "light", metadata["theme"])
+	assert.NotContains(t, metadata, "stale")
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{"theme": nil})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, metadata, "theme")
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+
+	// Nested objects must be merged recursively (RFC 7386), not replaced
+	// wholesale, so sibling keys survive a partial nested patch.
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"dismissed": true, "step": "a"},
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"step": "b"},
+	})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	onboarding, ok := metadata["onboarding"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, onboarding["dismissed"], "sibling key must survive nested patch")
+	assert.Equal(t, "b", onboarding["step"])
+
+	// A nil nested value deletes just that nested key.
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"dismissed": nil},
+	})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	onboarding, ok = metadata["onboarding"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, onboarding, "dismissed")
+	assert.Equal(t, "b", onboarding["step"])
+}
+
+func TestUpdateClientMetadataRequiresClientConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	var count int64
+	err = store.DB().WithContext(ctx).Model(&tables.TableClientConfig{}).Count(&count).Error
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestUpdateClientConfigPreservesMetadata(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true})
+	require.NoError(t, err)
+
+	err = store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      200,
+		LogRetentionDays:     60,
+		MaxRequestBodySizeMB: 100,
+	})
+	require.NoError(t, err)
+
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 200, config.InitialPoolSize)
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
 
 // =============================================================================

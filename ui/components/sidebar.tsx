@@ -49,22 +49,27 @@ import {
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import {
-	Sidebar,
-	SidebarContent,
-	SidebarGroup,
-	SidebarGroupContent,
-	SidebarHeader,
-	SidebarMenu,
-	SidebarMenuButton,
-	SidebarMenuItem,
-	SidebarMenuSub,
-	SidebarMenuSubButton,
-	SidebarMenuSubItem,
-	useSidebar,
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
+import {
+  useGetCoreConfigQuery,
+  useGetLatestReleaseQuery,
+  useGetVersionQuery,
+  useLogoutMutation,
+} from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -87,49 +92,49 @@ const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
-	<svg
-		className={className}
-		fill="currentColor"
-		fillRule="evenodd"
-		height="1em"
-		style={{ flex: "none", lineHeight: 1 }}
-		viewBox="0 0 24 24"
-		width="1em"
-		xmlns="http://www.w3.org/2000/svg"
-		aria-label="MCP clients icon"
-	>
-		<title>MCP clients icon</title>
-		<path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
-		<path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" />
-	</svg>
+  <svg
+    className={className}
+    fill="currentColor"
+    fillRule="evenodd"
+    height="1em"
+    style={{ flex: "none", lineHeight: 1 }}
+    viewBox="0 0 24 24"
+    width="1em"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-label="MCP clients icon"
+  >
+    <title>MCP clients icon</title>
+    <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
+    <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" />
+  </svg>
 );
 
 // Main navigation items
 
 // External links
 const externalLinks = [
-	{
-		title: "Discord Server",
-		url: "https://discord.gg/exN5KAydbU",
-		icon: DiscordLogoIcon,
-	},
-	{
-		title: "GitHub Repository",
-		url: "https://github.com/maximhq/bifrost",
-		icon: GithubLogoIcon,
-	},
-	{
-		title: "Report a bug",
-		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-		icon: BugIcon,
-		strokeWidth: 1.5,
-	},
-	{
-		title: "Full Documentation",
-		url: "https://docs.getbifrost.ai",
-		icon: BooksIcon,
-		strokeWidth: 1,
-	},
+  {
+    title: "Discord Server",
+    url: "https://discord.gg/exN5KAydbU",
+    icon: DiscordLogoIcon,
+  },
+  {
+    title: "GitHub Repository",
+    url: "https://github.com/maximhq/bifrost",
+    icon: GithubLogoIcon,
+  },
+  {
+    title: "Report a bug",
+    url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
+    icon: BugIcon,
+    strokeWidth: 1.5,
+  },
+  {
+    title: "Full Documentation",
+    url: "https://docs.getbifrost.ai",
+    icon: BooksIcon,
+    strokeWidth: 1,
+  },
 ];
 
 // Base promotional card (memoized outside component to prevent recreation)
@@ -159,20 +164,20 @@ const productionSetupHelpCard = {
 
 // Sidebar item interface
 interface SidebarItem {
-	title: string;
-	url: string;
-	icon: React.ComponentType<{ className?: string }>;
-	description: string;
-	isAllowed?: boolean;
-	hasAccess: boolean;
-	subItems?: SidebarItem[];
-	tag?: string;
-	isExternal?: boolean;
-	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
+  title: string;
+  url: string;
+  icon: React.ComponentType<{ className?: string }>;
+  description: string;
+  isAllowed?: boolean;
+  hasAccess: boolean;
+  subItems?: SidebarItem[];
+  tag?: string;
+  isExternal?: boolean;
+  queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
 
 const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
-	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
+  return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
 };
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
@@ -184,29 +189,29 @@ const TimeFilterPages = new Set([
 ]);
 
 const SidebarItemView = ({
-	item,
-	isActive,
-	isExternal,
-	isWebSocketConnected,
-	isExpanded,
-	onToggle,
-	pathname,
-	search,
-	isSidebarCollapsed,
-	expandSidebar,
-	highlightedUrl,
+  item,
+  isActive,
+  isExternal,
+  isWebSocketConnected,
+  isExpanded,
+  onToggle,
+  pathname,
+  search,
+  isSidebarCollapsed,
+  expandSidebar,
+  highlightedUrl,
 }: {
-	item: SidebarItem;
-	isActive: boolean;
-	isExternal?: boolean;
-	isWebSocketConnected: boolean;
-	isExpanded?: boolean;
-	onToggle?: () => void;
-	pathname: string;
-	search: string;
-	isSidebarCollapsed: boolean;
-	expandSidebar: () => void;
-	highlightedUrl?: string;
+  item: SidebarItem;
+  isActive: boolean;
+  isExternal?: boolean;
+  isWebSocketConnected: boolean;
+  isExpanded?: boolean;
+  onToggle?: () => void;
+  pathname: string;
+  search: string;
+  isSidebarCollapsed: boolean;
+  expandSidebar: () => void;
+  highlightedUrl?: string;
 }) => {
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -238,23 +243,23 @@ const SidebarItemView = ({
       return isRouteMatch(subItem.url);
     });
 
-	const handleClick = (e: React.MouseEvent) => {
-		if (hasSubItems && item.hasAccess) {
-			e.preventDefault();
-			// If sidebar is collapsed, expand it first then toggle the submenu
-			if (isSidebarCollapsed) {
-				expandSidebar();
-				// Small delay to allow sidebar to expand before toggling submenu
-				setTimeout(() => {
-					if (onToggle) onToggle();
-				}, 100);
-			} else if (onToggle) {
-				onToggle();
-			}
-		}
-	};
+  const handleClick = (e: React.MouseEvent) => {
+    if (hasSubItems && item.hasAccess) {
+      e.preventDefault();
+      // If sidebar is collapsed, expand it first then toggle the submenu
+      if (isSidebarCollapsed) {
+        expandSidebar();
+        // Small delay to allow sidebar to expand before toggling submenu
+        setTimeout(() => {
+          if (onToggle) onToggle();
+        }, 100);
+      } else if (onToggle) {
+        onToggle();
+      }
+    }
+  };
 
-	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
+  const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
   const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
     isHighlighted
@@ -266,30 +271,42 @@ const SidebarItemView = ({
           : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
   } `;
 
-	const innerContent = (
-		<div className="flex w-full items-center justify-between">
-			<div className="flex w-full items-center gap-2">
-				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
-					{item.title}
-				</span>
-				{item.tag && (
-					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
-						{item.tag}
-					</Badge>
-				)}
-			</div>
-			{hasSubItems && (
-				<ChevronRight
-					className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
-				/>
-			)}
-			{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
-				<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-			)}
-			{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
-		</div>
-	);
+  const innerContent = (
+    <div className="flex w-full items-center justify-between">
+      <div className="flex w-full items-center gap-2">
+        <item.icon
+          className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`}
+        />
+        <span
+          className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+        >
+          {item.title}
+        </span>
+        {item.tag && (
+          <Badge
+            variant="secondary"
+            className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden"
+          >
+            {item.tag}
+          </Badge>
+        )}
+      </div>
+      {hasSubItems && (
+        <ChevronRight
+          className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
+        />
+      )}
+      {!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
+        <div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+      )}
+      {isExternal && (
+        <ArrowUpRight
+          className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden"
+          size={16}
+        />
+      )}
+    </div>
+  );
 
   // Render strategy:
   //   - Items with sub-items: <button> (toggle, not navigation)
@@ -541,41 +558,41 @@ const SidebarItemView = ({
 
 // Helper function to compare semantic versions
 const compareVersions = (v1: string, v2: string): number => {
-	// Remove 'v' prefix if present
-	const cleanV1 = v1.startsWith("v") ? v1.slice(1) : v1;
-	const cleanV2 = v2.startsWith("v") ? v2.slice(1) : v2;
+  // Remove 'v' prefix if present
+  const cleanV1 = v1.startsWith("v") ? v1.slice(1) : v1;
+  const cleanV2 = v2.startsWith("v") ? v2.slice(1) : v2;
 
-	// Split into main version and prerelease
-	const [mainV1, prereleaseV1] = cleanV1.split("-");
-	const [mainV2, prereleaseV2] = cleanV2.split("-");
+  // Split into main version and prerelease
+  const [mainV1, prereleaseV1] = cleanV1.split("-");
+  const [mainV2, prereleaseV2] = cleanV2.split("-");
 
-	// Compare main version numbers (major.minor.patch)
-	const partsV1 = mainV1.split(".").map(Number);
-	const partsV2 = mainV2.split(".").map(Number);
+  // Compare main version numbers (major.minor.patch)
+  const partsV1 = mainV1.split(".").map(Number);
+  const partsV2 = mainV2.split(".").map(Number);
 
-	for (let i = 0; i < Math.max(partsV1.length, partsV2.length); i++) {
-		const num1 = partsV1[i] || 0;
-		const num2 = partsV2[i] || 0;
+  for (let i = 0; i < Math.max(partsV1.length, partsV2.length); i++) {
+    const num1 = partsV1[i] || 0;
+    const num2 = partsV2[i] || 0;
 
-		if (num1 > num2) return 1;
-		if (num1 < num2) return -1;
-	}
+    if (num1 > num2) return 1;
+    if (num1 < num2) return -1;
+  }
 
-	// If main versions are equal, check prerelease
-	// Version without prerelease is higher than version with prerelease
-	if (!prereleaseV1 && prereleaseV2) return 1;
-	if (prereleaseV1 && !prereleaseV2) return -1;
+  // If main versions are equal, check prerelease
+  // Version without prerelease is higher than version with prerelease
+  if (!prereleaseV1 && prereleaseV2) return 1;
+  if (prereleaseV1 && !prereleaseV2) return -1;
 
-	// Both have prereleases, compare them
-	if (prereleaseV1 && prereleaseV2) {
-		// Extract prerelease number (e.g., "prerelease1" -> 1)
-		const prereleaseNum1 = parseInt(prereleaseV1.replace(/\D/g, "")) || 0;
-		const prereleaseNum2 = parseInt(prereleaseV2.replace(/\D/g, "")) || 0;
+  // Both have prereleases, compare them
+  if (prereleaseV1 && prereleaseV2) {
+    // Extract prerelease number (e.g., "prerelease1" -> 1)
+    const prereleaseNum1 = parseInt(prereleaseV1.replace(/\D/g, "")) || 0;
+    const prereleaseNum2 = parseInt(prereleaseV2.replace(/\D/g, "")) || 0;
 
-		if (prereleaseNum1 > prereleaseNum2) return 1;
-		if (prereleaseNum1 < prereleaseNum2) return -1;
-	}
-	return 0;
+    if (prereleaseNum1 > prereleaseNum2) return 1;
+    if (prereleaseNum1 < prereleaseNum2) return -1;
+  }
+  return 0;
 };
 
 export default function AppSidebar() {
@@ -604,6 +621,10 @@ export default function AppSidebar() {
   const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
   const hasObservabilityAccess = useRbac(
     RbacResource.Observability,
+    RbacOperation.View,
+  );
+  const hasDashboardAccess = useRbac(
+    RbacResource.Dashboard,
     RbacOperation.View,
   );
   const hasModelProvidersAccess = useRbac(
@@ -704,7 +725,7 @@ export default function AppSidebar() {
             url: "/workspace/dashboard",
             icon: ChartColumnBig,
             description: "Dashboard",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasDashboardAccess,
           },
           {
             title: "LLM Logs",
@@ -808,6 +829,13 @@ export default function AppSidebar() {
             description: "Tool Groups",
             hasAccess: hasMCPToolGroupsAccess,
           },
+					{
+						title: "Auth Sessions",
+						url: "/workspace/mcp-sessions",
+						icon: KeyRound,
+						description: "Per-user OAuth sessions",
+						hasAccess: hasMCPGatewayAccess,
+					},
           {
             title: "MCP Settings",
             url: "/workspace/mcp-settings",
@@ -1027,6 +1055,7 @@ export default function AppSidebar() {
       hasLogsAccess,
       hasAPIKeyAccess,
       hasObservabilityAccess,
+      hasDashboardAccess,
       hasModelProvidersAccess,
       hasMCPGatewayAccess,
       hasMCPToolGroupsAccess,
@@ -1071,69 +1100,71 @@ export default function AppSidebar() {
       .filter(Boolean) as SidebarItem[];
   }, [items]);
 
-	const filteredItems: SidebarItem[] = useMemo(() => {
-		const query = searchQuery.trim().toLowerCase();
-		if (!query) return accessibleItems;
+  const filteredItems: SidebarItem[] = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return accessibleItems;
 
-		return accessibleItems
-			.map((item) => {
-				const parentMatches = item.title.toLowerCase().includes(query);
-				if (parentMatches) return item;
+    return accessibleItems
+      .map((item) => {
+        const parentMatches = item.title.toLowerCase().includes(query);
+        if (parentMatches) return item;
 
-				if (item.subItems) {
-					const matchingSubItems = item.subItems.filter((sub) => sub.title.toLowerCase().includes(query));
-					if (matchingSubItems.length > 0) {
-						return { ...item, subItems: matchingSubItems };
-					}
-				}
-				return null;
-			})
-			.filter(Boolean) as SidebarItem[];
-	}, [accessibleItems, searchQuery]);
+        if (item.subItems) {
+          const matchingSubItems = item.subItems.filter((sub) =>
+            sub.title.toLowerCase().includes(query),
+          );
+          if (matchingSubItems.length > 0) {
+            return { ...item, subItems: matchingSubItems };
+          }
+        }
+        return null;
+      })
+      .filter(Boolean) as SidebarItem[];
+  }, [accessibleItems, searchQuery]);
 
-	const { data: version } = useGetVersionQuery();
-	const { resolvedTheme } = useTheme();
-	const [logout] = useLogoutMutation();
+  const { data: version } = useGetVersionQuery();
+  const { resolvedTheme } = useTheme();
+  const [logout] = useLogoutMutation();
 
-	// Get user info from localStorage (for enterprise SCIM OAuth)
-	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
+  // Get user info from localStorage (for enterprise SCIM OAuth)
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
 
-	useEffect(() => {
-		if (IS_ENTERPRISE) {
-			const info = getUserInfo();
-			setUserInfo(info);
-		}
-	}, []);
+  useEffect(() => {
+    if (IS_ENTERPRISE) {
+      const info = getUserInfo();
+      setUserInfo(info);
+    }
+  }, []);
 
-	const showNewReleaseBanner = useMemo(() => {
-		if (IS_ENTERPRISE) return false;
-		if (latestRelease && version) {
-			return compareVersions(latestRelease.name, version) > 0;
-		}
-		return false;
-	}, [latestRelease, version]);
-	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
+  const showNewReleaseBanner = useMemo(() => {
+    if (IS_ENTERPRISE) return false;
+    if (latestRelease && version) {
+      return compareVersions(latestRelease.name, version) > 0;
+    }
+    return false;
+  }, [latestRelease, version]);
+  const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
-	useEffect(() => {
-		setMounted(true);
-	}, []);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
-	// Auto-expand items when their subitems are active
-	useEffect(() => {
-		const newExpandedItems = new Set<string>();
-		const isRouteMatch = (url: string) => {
-			if (url === "/workspace/custom-pricing") return pathname === url;
-			return pathname.startsWith(url);
-		};
-		items.forEach((item) => {
-			if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
-				newExpandedItems.add(item.title);
-			}
-		});
-		if (newExpandedItems.size > 0) {
-			setExpandedItems((prev) => new Set([...prev, ...newExpandedItems]));
-		}
-	}, [pathname, items]);
+  // Auto-expand items when their subitems are active
+  useEffect(() => {
+    const newExpandedItems = new Set<string>();
+    const isRouteMatch = (url: string) => {
+      if (url === "/workspace/custom-pricing") return pathname === url;
+      return pathname.startsWith(url);
+    };
+    items.forEach((item) => {
+      if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
+        newExpandedItems.add(item.title);
+      }
+    });
+    if (newExpandedItems.size > 0) {
+      setExpandedItems((prev) => new Set([...prev, ...newExpandedItems]));
+    }
+  }, [pathname, items]);
 
   // Auto-expand parents when search matches their subItems
   useEffect(() => {
@@ -1160,17 +1191,17 @@ export default function AppSidebar() {
     }
   }, [searchQuery, items]);
 
-	// Cmd+K to focus search input
-	useEffect(() => {
-		const handleKeyDown = (event: KeyboardEvent) => {
-			if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
-				event.preventDefault();
-				searchInputRef.current?.focus();
-			}
-		};
-		window.addEventListener("keydown", handleKeyDown);
-		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, []);
+  // Cmd+K to focus search input
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Flat list of navigable items for keyboard navigation
   const navigableItems = useMemo(() => {
@@ -1242,28 +1273,28 @@ export default function AppSidebar() {
     [navigableItems, focusedIndex, navigate],
   );
 
-	// Auto-scroll focused item into view
-	useEffect(() => {
-		if (focusedIndex < 0) return;
-		const url = navigableItems[focusedIndex]?.url;
-		if (!url) return;
-		const el = document.querySelector(`[data-nav-url="${url}"]`);
-		el?.scrollIntoView({ block: "nearest" });
-	}, [focusedIndex, navigableItems]);
+  // Auto-scroll focused item into view
+  useEffect(() => {
+    if (focusedIndex < 0) return;
+    const url = navigableItems[focusedIndex]?.url;
+    if (!url) return;
+    const el = document.querySelector(`[data-nav-url="${url}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [focusedIndex, navigableItems]);
 
-	const toggleItem = (title: string) => {
-		setExpandedItems((prev) => {
-			const next = new Set(prev);
-			if (next.has(title)) {
-				next.delete(title);
-			} else {
-				next.add(title);
-			}
-			return next;
-		});
-	};
+  const toggleItem = (title: string) => {
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) {
+        next.delete(title);
+      } else {
+        next.add(title);
+      }
+      return next;
+    });
+  };
 
-	const configExceptions = ["/workspace/config/logging"];
+  const configExceptions = ["/workspace/config/logging"];
 
   const isActiveRoute = (url: string) => {
     if (url === "/" && pathname === "/") return true;
@@ -1291,10 +1322,13 @@ export default function AppSidebar() {
       ? "/bifrost-icon-dark.webp"
       : "/bifrost-icon.webp";
 
-	const { isConnected: isWebSocketConnected } = useWebSocket();
+  const { isConnected: isWebSocketConnected } = useWebSocket();
 
-	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.webp" : "/images/new-release-image.webp";
+  // New release image - based on theme
+  const newReleaseImage =
+    mounted && resolvedTheme === "dark"
+      ? "/images/new-release-image-dark.webp"
+      : "/images/new-release-image.webp";
 
   // Memoize promo cards array to prevent duplicates and unnecessary re-renders
   const promoCards = useMemo(() => {
@@ -1352,12 +1386,12 @@ export default function AppSidebar() {
     mounted,
   ]);
 
-	// Reset areCardsEmpty when promoCards changes
-	useEffect(() => {
-		if (promoCards.length > 0) {
-			setAreCardsEmpty(false);
-		}
-	}, [promoCards]);
+  // Reset areCardsEmpty when promoCards changes
+  useEffect(() => {
+    if (promoCards.length > 0) {
+      setAreCardsEmpty(false);
+    }
+  }, [promoCards]);
 
   const hasPromoCards = promoCards.length > 0 && !areCardsEmpty;
   // When cards are present: 13rem (header 3rem + bottom section ~10rem)
@@ -1366,36 +1400,36 @@ export default function AppSidebar() {
     ? "h-[calc(100vh-13rem)]"
     : "h-[calc(100vh-8rem)]";
 
-	const handleCardsEmpty = () => {
-		setAreCardsEmpty(true);
-	};
+  const handleCardsEmpty = () => {
+    setAreCardsEmpty(true);
+  };
 
-	const handlePromoDismiss = useCallback(
-		(cardId: string) => {
-			if (cardId === "production-setup") {
-				const expiryDate = new Date();
-				expiryDate.setDate(expiryDate.getDate() + 7);
-				setCookie(PRODUCTION_SETUP_DISMISSED_COOKIE, "true", {
-					path: "/",
-					expires: expiryDate,
-				});
-			}
-		},
-		[setCookie],
-	);
+  const handlePromoDismiss = useCallback(
+    (cardId: string) => {
+      if (cardId === "production-setup") {
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 7);
+        setCookie(PRODUCTION_SETUP_DISMISSED_COOKIE, "true", {
+          path: "/",
+          expires: expiryDate,
+        });
+      }
+    },
+    [setCookie],
+  );
 
-	const handleLogout = async () => {
-		try {
-			setUserPopoverOpen(false);
-			await logout().unwrap();
-			navigate("/login");
-		} catch {
-			// Even if logout fails on server, redirect to login
-			navigate("/login");
-		}
-	};
+  const handleLogout = async () => {
+    try {
+      setUserPopoverOpen(false);
+      await logout().unwrap();
+      navigate("/login");
+    } catch {
+      // Even if logout fails on server, redirect to login
+      navigate("/login");
+    }
+  };
 
-	const { state: sidebarState, toggleSidebar } = useSidebar();
+  const { state: sidebarState, toggleSidebar } = useSidebar();
 
   return (
     <Sidebar

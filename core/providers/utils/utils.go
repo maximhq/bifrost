@@ -2049,6 +2049,9 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 		defer close(closed)
 		select {
 		case <-ctx.Done():
+			if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+				return
+			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
 				if err := closer.Close(); err != nil {
@@ -2070,6 +2073,9 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
 			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
+				if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+					return
+				}
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
@@ -2156,7 +2162,14 @@ type idleTimeoutReader struct {
 // ErrStreamIdleTimeout so callers do not need per-handler error checks.
 // Returns the wrapped reader and a cleanup function that MUST be called (via defer)
 // when streaming is complete, to stop the timer and prevent premature closure.
-func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
+//
+// ctx is used to set BifrostContextKeyConnectionClosed when the timer fires.
+// This prevents ReleaseStreamingResponse from calling fasthttp.ReleaseResponse a
+// second time after the idle-timeout callback already invoked closeFunc via
+// CloseWithError — a double invocation that would call hc.ReleaseConn on a
+// zeroed clientConn, placing a nil net.Conn into the HostClient pool and
+// causing a nil-pointer panic in the next request's ParseNetConn call.
+func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration, ctx *schemas.BifrostContext) (io.Reader, func()) {
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
@@ -2168,6 +2181,9 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	r.timer = time.AfterFunc(timeout, func() {
 		r.once.Do(func() {
 			r.fired.Store(true)
+			if ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+			}
 			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
@@ -2433,9 +2449,8 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}
-		// Always release the response to prevent leaks, even after a panic
-		fasthttp.ReleaseResponse(resp)
 	}
+	fasthttp.ReleaseResponse(resp)
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.

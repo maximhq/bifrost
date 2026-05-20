@@ -98,6 +98,10 @@
       "description": "Asynchronous job submission and retrieval endpoints"
     },
     {
+      "name": "Realtime",
+      "description": "Realtime WebSocket and WebRTC endpoints"
+    },
+    {
       "name": "OpenAI Integration",
       "description": "OpenAI-compatible API endpoints (/openai/*)"
     },
@@ -1538,6 +1542,62 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "createResponseWebSocket",
+        "summary": "Responses API over WebSocket",
+        "description": "Upgrades the connection to a WebSocket and runs the OpenAI Responses API\nin WebSocket Mode. Clients send `response.create` events on the socket and\nreceive streamed events through the standard inference pipeline (PreLLMHook,\nkey selection, provider call, PostLLMHook).\n\nAuth is identical to the HTTP POST variant — Bearer/Basic/Virtual Key/API Key\nmay be supplied as request headers on the upgrade request. The OpenAI SDK can\nalso pass an API key via the `openai-insecure-api-key.<key>` WebSocket\nsubprotocol.\n\nThis GET endpoint shares its path with the POST inference endpoint; route\nselection is based on the `Upgrade: websocket` request header.\n",
+        "tags": [
+          "Responses"
+        ],
+        "parameters": [
+          {
+            "name": "Upgrade",
+            "in": "header",
+            "required": true,
+            "description": "Must be `websocket`",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "websocket"
+              ]
+            }
+          },
+          {
+            "name": "Sec-WebSocket-Protocol",
+            "in": "header",
+            "required": false,
+            "description": "Optional WebSocket subprotocol. Use `openai-insecure-api-key.<key>` to\nauthenticate when headers cannot be supplied by the client.\n",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols — WebSocket upgrade succeeded"
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "429": {
+            "description": "Maximum concurrent WebSocket connections reached"
           }
         },
         "security": [
@@ -8242,6 +8302,306 @@
         ]
       }
     },
+    "/v1/realtime": {
+      "get": {
+        "operationId": "connectRealtime",
+        "summary": "Realtime API WebSocket",
+        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
+        "tags": [
+          "Realtime"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "description": "Provider model identifier in `provider/model` form (e.g. `openai/gpt-4o-realtime-preview`).\nEither `model` or `deployment` must be supplied; requests with neither (or both) are rejected with HTTP 400 before the WebSocket upgrade completes.\n",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deployment",
+            "in": "query",
+            "required": false,
+            "description": "Azure deployment name (for Azure-style routes).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Upgrade",
+            "in": "header",
+            "required": true,
+            "description": "Must be `websocket`",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "websocket"
+              ]
+            }
+          },
+          {
+            "name": "Sec-WebSocket-Protocol",
+            "in": "header",
+            "required": false,
+            "description": "Optional WebSocket subprotocol. Use `openai-insecure-api-key.<key>` to\nauthenticate when headers cannot be supplied by the client.\n",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols — WebSocket upgrade succeeded"
+          },
+          "400": {
+            "description": "Invalid model/provider or unsupported realtime configuration"
+          },
+          "401": {
+            "description": "Authentication failed"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/realtime/calls": {
+      "post": {
+        "operationId": "createRealtimeCall",
+        "summary": "Realtime WebRTC SDP exchange",
+        "description": "Negotiates a WebRTC peer connection with the realtime provider on behalf of\nthe client. Implements the OpenAI GA `/realtime/calls` contract: the request\nbody is `multipart/form-data` with `sdp` (client SDP offer) and `session`\n(JSON session description containing `model`).\n\nBifrost forwards the offer to the upstream provider, returns the upstream\nSDP answer to the client, and pipes RTP media between the two peers for the\nlifetime of the session.\n\nInference auth applies (Bearer/Basic/Virtual Key/API Key).\n",
+        "tags": [
+          "Realtime"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "sdp",
+                  "session"
+                ],
+                "properties": {
+                  "sdp": {
+                    "type": "string",
+                    "description": "Client-generated SDP offer"
+                  },
+                  "session": {
+                    "type": "string",
+                    "description": "JSON-encoded session descriptor. `session.model` is required and\nmust be in `provider/model` form.\n"
+                  }
+                }
+              }
+            },
+            "application/sdp": {
+              "schema": {
+                "type": "string",
+                "description": "Legacy raw-SDP format (beta). When using this content type, supply\nthe model via the `?model=` query parameter instead of the session\nJSON. Used by older OpenAI SDKs.\n"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SDP answer from the upstream realtime provider",
+            "content": {
+              "application/sdp": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "502": {
+            "description": "Upstream provider rejected the SDP exchange"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/realtime/client_secrets": {
+      "post": {
+        "operationId": "createRealtimeClientSecret",
+        "summary": "Mint a realtime ephemeral client secret",
+        "description": "Calls the upstream realtime provider's `client_secrets` endpoint to mint a\nshort-lived ephemeral token (e.g. for browser-based WebRTC clients).\nBifrost selects a provider key, evaluates governance, and proxies the\nresponse. The returned token is cached and mapped to the originating\nvirtual key for downstream attribution.\n\nRequest body must be JSON. `session.model` (or top-level `model`) must use\n`provider/model` form.\n",
+        "tags": [
+          "Realtime"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Provider-specific realtime client-secret payload (passthrough)."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream client-secret response (provider passthrough)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Provider-specific response body"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/realtime/sessions": {
+      "post": {
+        "operationId": "createRealtimeSession",
+        "summary": "Mint a realtime session (legacy alias)",
+        "description": "Legacy alias for the realtime client-secret minting endpoint. Behaves\nidentically to `createRealtimeClientSecret` but uses the `sessions` route\nshape; provided for compatibility with older OpenAI Realtime client\nlibraries.\n",
+        "tags": [
+          "Realtime"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Provider-specific realtime session payload (passthrough)."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upstream session response (provider passthrough)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Provider-specific response body"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/openai/v1/chat/completions": {
       "post": {
         "operationId": "openaiCreateChatCompletion",
@@ -10239,6 +10599,61 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "openaiResponsesWebSocket",
+        "summary": "WebSocket Responses (OpenAI alias)",
+        "description": "WebSocket upgrade endpoint for the Responses API. Mirrors the canonical\n`GET /v1/responses` WS endpoint; the OpenAI-prefixed path is selected\nwhen the request includes an `Upgrade: websocket` header.\nAuthentication accepts the same headers as the inference HTTP surface\nplus the `openai-insecure-api-key.<key>` subprotocol fallback.\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "Upgrade",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "websocket"
+              ]
+            }
+          },
+          {
+            "name": "Sec-WebSocket-Protocol",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional subprotocol; supports `openai-insecure-api-key.<key>` for\nSDK-style auth.\n"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket connection established."
+          },
+          "401": {
+            "description": "Unauthorized."
+          },
+          "429": {
+            "description": "Maximum concurrent WebSocket connections reached."
           }
         },
         "security": [
@@ -14634,6 +15049,770 @@
         ]
       }
     },
+    "/openai/v1/videos": {
+      "post": {
+        "operationId": "openaiCreateVideo",
+        "summary": "Create a video generation",
+        "description": "Submits a video generation job using OpenAI's Videos API.\nThe request is multipart/form-data and may include reference images.\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "prompt",
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Video model identifier (e.g. `sora-1.0`)."
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Natural-language description of the requested video."
+                  },
+                  "size": {
+                    "type": "string",
+                    "description": "Output resolution (e.g. `1024x1024`)."
+                  },
+                  "seconds": {
+                    "type": "integer",
+                    "description": "Target duration in seconds."
+                  },
+                  "input_reference": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Optional reference image used to seed generation."
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "OpenAI video generation job payload."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "openaiListVideos",
+        "summary": "List video generations",
+        "description": "Lists previously submitted video generation jobs.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "OpenAI video list payload."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/videos/{video_id}": {
+      "get": {
+        "operationId": "openaiRetrieveVideo",
+        "summary": "Retrieve a video generation",
+        "description": "Returns metadata for a previously submitted video generation job.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Video not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "openaiDeleteVideo",
+        "summary": "Delete a video generation",
+        "description": "Deletes a previously generated video.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Video not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/videos/{video_id}/content": {
+      "get": {
+        "operationId": "openaiDownloadVideo",
+        "summary": "Download generated video content",
+        "description": "Streams the binary video bytes for a completed generation job.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw video bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Video not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/videos/{video_id}/remix": {
+      "post": {
+        "operationId": "openaiRemixVideo",
+        "summary": "Remix an existing video",
+        "description": "Creates a new generation by remixing a prior video with new prompt parameters.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "OpenAI video-remix request payload."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/realtime": {
+      "get": {
+        "operationId": "openaiRealtimeWebSocket",
+        "summary": "WebSocket Realtime (OpenAI alias)",
+        "description": "OpenAI-prefixed alias of `GET /v1/realtime`. WebSocket upgrade endpoint\nfor OpenAI Realtime; selects the model via the `model` query parameter\n(Azure GA) or `deployment` (preview).\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deployment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Upgrade",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "websocket"
+              ]
+            }
+          },
+          {
+            "name": "Sec-WebSocket-Protocol",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket connection established."
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/realtime/calls": {
+      "post": {
+        "operationId": "openaiRealtimeCall",
+        "summary": "WebRTC Realtime SDP exchange (OpenAI alias)",
+        "description": "OpenAI-prefixed alias of `POST /v1/realtime/calls`. Performs the WebRTC\nSDP exchange for OpenAI Realtime calls. Accepts either multipart form\ndata with `sdp` + `session` parts (GA) or a raw SDP body (legacy).\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sdp": {
+                    "type": "string",
+                    "description": "WebRTC offer SDP."
+                  },
+                  "session": {
+                    "type": "string",
+                    "description": "JSON-encoded session configuration."
+                  }
+                }
+              }
+            },
+            "application/sdp": {
+              "schema": {
+                "type": "string",
+                "description": "Raw WebRTC offer SDP (legacy form)."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "WebRTC answer SDP.",
+            "content": {
+              "application/sdp": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/realtime/client_secrets": {
+      "post": {
+        "operationId": "openaiRealtimeClientSecret",
+        "summary": "Create realtime client secret (OpenAI alias)",
+        "description": "OpenAI-prefixed alias of `POST /v1/realtime/client_secrets`. Mints an\nephemeral client secret used to authorize a downstream Realtime client.\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "OpenAI client-secret request payload."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ephemeral client secret payload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/realtime/sessions": {
+      "post": {
+        "operationId": "openaiRealtimeSession",
+        "summary": "Create realtime session (OpenAI alias)",
+        "description": "OpenAI-prefixed alias of `POST /v1/realtime/sessions`. Creates a\npre-configured realtime session that can be joined by clients.\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "OpenAI realtime session configuration."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Realtime session payload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/anthropic/v1/messages": {
       "post": {
         "operationId": "anthropicCreateMessage",
@@ -14673,6 +15852,224 @@
               "default": 3600
             },
             "description": "Override the default result TTL in seconds. Results expire after this duration from completion time."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicMessageResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "message_start",
+                        "content_block_start",
+                        "content_block_delta",
+                        "content_block_stop",
+                        "message_delta",
+                        "message_stop",
+                        "ping",
+                        "error"
+                      ]
+                    },
+                    "message": {
+                      "$ref": "#/components/schemas/AnthropicMessageResponse"
+                    },
+                    "index": {
+                      "type": "integer"
+                    },
+                    "content_block": {
+                      "$ref": "#/components/schemas/AnthropicContentBlock"
+                    },
+                    "delta": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "text_delta",
+                            "input_json_delta",
+                            "thinking_delta",
+                            "signature_delta"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "partial_json": {
+                          "type": "string"
+                        },
+                        "thinking": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "stop_reason": {
+                          "type": "string"
+                        },
+                        "stop_sequence": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_read_input_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_creation": {
+                          "type": "object",
+                          "properties": {
+                            "ephemeral_5m_input_tokens": {
+                              "type": "integer"
+                            },
+                            "ephemeral_1h_input_tokens": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/anthropic/v1/messages/{path}": {
+      "post": {
+        "operationId": "anthropicCreateMessageWildcard",
+        "summary": "Create message (Anthropic format) - wildcard",
+        "description": "Handles extended messages API paths.\n",
+        "tags": [
+          "Anthropic Integration"
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Extended path"
           }
         ],
         "requestBody": {
@@ -17805,6 +19202,847 @@
         ]
       }
     },
+    "/genai/v1beta/batches": {
+      "get": {
+        "operationId": "geminiListBatches",
+        "summary": "List batch jobs (Gemini format)",
+        "description": "Lists batch jobs in Gemini format. Supports `pageSize` / `pageToken` pagination.",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/batches/{batch_id}": {
+      "get": {
+        "operationId": "geminiRetrieveBatch",
+        "summary": "Retrieve a batch job (Gemini format)",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Batch not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "geminiCancelBatch",
+        "summary": "Cancel a batch job (Gemini format)",
+        "description": "Cancels a batch job. Gemini conventionally sends the request as\n`/v1beta/batches/{batch_id}:cancel`; the router matches the `:cancel`\nsuffix into the `batch_id` path parameter.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Batch identifier, optionally with a `:cancel` action suffix."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Batch not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "geminiDeleteBatch",
+        "summary": "Delete a batch job (Gemini format)",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response (empty object on Gemini).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Batch not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/cachedContents": {
+      "post": {
+        "operationId": "geminiCreateCachedContent",
+        "summary": "Create cached content (Gemini format)",
+        "description": "Creates a cached content entry that can be re-used across subsequent\ngenerate-content calls to reduce repeated prefix tokens.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override. Defaults to `gemini`. Use `vertex` to route to Vertex."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Gemini model identifier (e.g. `gemini-1.5-pro`). The `models/` prefix is stripped."
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "systemInstruction": {
+                    "type": "object",
+                    "description": "System instruction content.",
+                    "additionalProperties": true
+                  },
+                  "contents": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "toolConfig": {},
+                  "ttl": {
+                    "type": "string",
+                    "description": "TTL in protobuf duration format (e.g. `3600s`)."
+                  },
+                  "expireTime": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "geminiListCachedContents",
+        "summary": "List cached content entries (Gemini format)",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/cachedContents/{cached_id}": {
+      "get": {
+        "operationId": "geminiRetrieveCachedContent",
+        "summary": "Retrieve cached content (Gemini format)",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "cached_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cached content not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "geminiUpdateCachedContent",
+        "summary": "Update cached content (Gemini format)",
+        "description": "Updates the TTL or expiration time of a cached content entry. Only\n`ttl` or `expireTime` may be modified.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "cached_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ttl": {
+                    "type": "string",
+                    "description": "TTL in protobuf duration format."
+                  },
+                  "expireTime": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "geminiDeleteCachedContent",
+        "summary": "Delete cached content (Gemini format)",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "cached_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deletion accepted. Returns an empty JSON object (`{}`), mirroring Gemini's native delete response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cached content not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1/rank": {
+      "post": {
+        "operationId": "vertexRank",
+        "summary": "Rerank documents (Vertex Rank)",
+        "description": "Reranks records using Google Vertex AI's Ranking API. The request body\nfollows the Vertex `rankRecords` schema.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Vertex ranking model identifier."
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "records": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "topN": {
+                    "type": "integer"
+                  },
+                  "ignoreRecordDetailsInResponse": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/models/{model}/operations/{operation_id}": {
+      "get": {
+        "operationId": "geminiRetrieveVideoOperation",
+        "summary": "Retrieve video generation operation (Gemini format)",
+        "description": "Polls the status of a long-running video generation operation produced\nby `models/{model}:generateVideos`. The Gemini SDK appends the\noperation name as a wildcard path segment. If the operation name\ncontains `/`, it must be percent-encoded in the request path (for\nexample, `%2F`) to remain conformant with OpenAPI 3.x path-parameter\nsemantics.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Video model identifier (e.g. `veo-3.1-generate-preview`)."
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Operation name. If it contains `/`, it must be percent-encoded in the request path (for example, `%2F`)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation status payload (Gemini video generation response).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/bedrock/model/{modelId}/converse": {
       "post": {
         "operationId": "bedrockConverse",
@@ -18211,13 +20449,125 @@
         ]
       }
     },
-    "/bedrock/model-invocation-jobs": {
+    "/bedrock/model/{modelId}/count-tokens": {
+      "post": {
+        "operationId": "bedrockCountTokens",
+        "summary": "Count tokens (Bedrock format)",
+        "description": "Counts tokens for a Converse-style request using AWS Bedrock format.\nThe request body must include `input.converse` with a complete Converse\npayload; only Converse-shaped input is supported.\n",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bedrock model identifier (e.g. `anthropic.claude-3-5-sonnet-20240620-v1:0`)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "input"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "required": [
+                      "converse"
+                    ],
+                    "properties": {
+                      "converse": {
+                        "description": "Converse-shaped request used to compute the token count.",
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "inputTokens": {
+                      "type": "integer",
+                      "description": "Number of input tokens that would be billed for this request."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BedrockError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BedrockError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/bedrock/model-invocation-job": {
       "post": {
         "operationId": "bedrockCreateBatchJob",
         "summary": "Create batch inference job (Bedrock format)",
-        "description": "Creates a batch inference job using AWS Bedrock format.\n",
+        "description": "Creates a batch inference job using AWS Bedrock format.\nRoutes to native Bedrock by default; set `x-model-provider` to route the\njob to another provider (`openai`, `gemini`, etc.).\n",
         "tags": [
           "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override for cross-provider batch routing."
+          }
         ],
         "requestBody": {
           "required": true,
@@ -18275,7 +20625,9 @@
             "ApiKeyAuth": []
           }
         ]
-      },
+      }
+    },
+    "/bedrock/model-invocation-jobs": {
       "get": {
         "operationId": "bedrockListBatchJobs",
         "summary": "List batch inference jobs (Bedrock format)",
@@ -18327,6 +20679,15 @@
               "type": "string"
             },
             "description": "Filter by job name containing this string"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override for cross-provider batch routing."
           }
         ],
         "responses": {
@@ -18417,7 +20778,7 @@
         ]
       }
     },
-    "/bedrock/model-invocation-jobs/{jobIdentifier}": {
+    "/bedrock/model-invocation-job/{job_arn}": {
       "get": {
         "operationId": "bedrockRetrieveBatchJob",
         "summary": "Retrieve batch inference job (Bedrock format)",
@@ -18427,13 +20788,22 @@
         ],
         "parameters": [
           {
-            "name": "jobIdentifier",
+            "name": "job_arn",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "Job identifier"
+            "description": "Bedrock job ARN (URL-encoded). For non-Bedrock providers, the\n`arn:aws:bedrock:us-east-1:444444444444:batch:` prefix is stripped\nautomatically before routing.\n"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override for cross-provider batch routing."
           }
         ],
         "responses": {
@@ -18484,23 +20854,32 @@
         ]
       }
     },
-    "/bedrock/model-invocation-jobs/{jobIdentifier}/stop": {
+    "/bedrock/model-invocation-job/{job_arn}/stop": {
       "post": {
         "operationId": "bedrockCancelBatchJob",
         "summary": "Cancel batch inference job (Bedrock format)",
-        "description": "Cancels a batch inference job using AWS Bedrock format.\n",
+        "description": "Stops a batch inference job using AWS Bedrock format.\n",
         "tags": [
           "Bedrock Integration"
         ],
         "parameters": [
           {
-            "name": "jobIdentifier",
+            "name": "job_arn",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "Job identifier to cancel"
+            "description": "Bedrock job ARN to stop (URL-encoded). For non-Bedrock providers, the\n`arn:aws:bedrock:us-east-1:444444444444:batch:` prefix is stripped\nautomatically before routing.\n"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override for cross-provider batch routing."
           }
         ],
         "responses": {
@@ -18538,6 +20917,375 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BedrockError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/bedrock/files/{bucket}": {
+      "get": {
+        "operationId": "bedrockS3ListObjects",
+        "summary": "S3-compatible ListObjectsV2",
+        "description": "Lists objects in a bucket using S3 ListObjectsV2 semantics. Supports\nthe `prefix` and `max-keys` query parameters used by boto3.\n",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bucket name."
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter keys by prefix."
+          },
+          {
+            "name": "max-keys",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Maximum number of keys to return."
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override; defaults to `bedrock`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ListObjectsV2 result (S3 XML or JSON, depending on provider).",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error returned as S3 XML.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/bedrock/files/{bucket}/{key}": {
+      "put": {
+        "operationId": "bedrockS3PutObject",
+        "summary": "S3-compatible PutObject",
+        "description": "Uploads an object to the Bifrost file store using S3 PutObject semantics.\nThe response is empty with an `ETag` header, mirroring native S3.\n",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bucket name."
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Object key. Supports `/`-separated nested keys (`{key:*}` wildcard)."
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override; defaults to `bedrock`."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "Raw object bytes."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Object stored. Empty body with `ETag` response header."
+          },
+          "500": {
+            "description": "Internal error returned as S3 XML.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "bedrockS3GetObject",
+        "summary": "S3-compatible GetObject",
+        "description": "Retrieves raw object bytes from the Bifrost file store.",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bucket name."
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Object key (`{key:*}` wildcard)."
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override; defaults to `bedrock`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw object content.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Object not found (S3 XML error).",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "head": {
+        "operationId": "bedrockS3HeadObject",
+        "summary": "S3-compatible HeadObject",
+        "description": "Returns S3 metadata headers (ETag, Content-Length, etc.) without a body.\n",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bucket name."
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Object key (`{key:*}` wildcard)."
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override; defaults to `bedrock`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Empty body with object metadata headers."
+          },
+          "404": {
+            "description": "Object not found (empty body)."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "bedrockS3DeleteObject",
+        "summary": "S3-compatible DeleteObject",
+        "description": "Deletes an object from the Bifrost file store.",
+        "tags": [
+          "Bedrock Integration"
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Bucket name."
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Object key (`{key:*}` wildcard)."
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional provider override; defaults to `bedrock`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object deleted. Empty body."
+          },
+          "500": {
+            "description": "Internal error returned as S3 XML.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -19026,6 +21774,151 @@
         ]
       }
     },
+    "/cohere/v2/rerank": {
+      "post": {
+        "operationId": "cohereRerank",
+        "summary": "Rerank documents (Cohere format)",
+        "description": "Reranks a list of documents against a query using Cohere's v2 Rerank\nAPI. The request body matches Cohere's native format.\n",
+        "tags": [
+          "Cohere Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model",
+                  "query",
+                  "documents"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Cohere rerank model identifier (e.g. `rerank-english-v3.0`)."
+                  },
+                  "query": {
+                    "type": "string",
+                    "description": "Query string to rank documents against."
+                  },
+                  "documents": {
+                    "type": "array",
+                    "description": "Documents to rerank. Strings or objects with a `text` field.",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "text"
+                          ],
+                          "properties": {
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": true
+                        }
+                      ]
+                    }
+                  },
+                  "top_n": {
+                    "type": "integer",
+                    "description": "Return only the top N reranked results."
+                  },
+                  "return_documents": {
+                    "type": "boolean",
+                    "description": "Include the original document text in the response."
+                  },
+                  "max_tokens_per_doc": {
+                    "type": "integer",
+                    "description": "Truncate each document to this token limit before ranking."
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "relevance_score": {
+                            "type": "number"
+                          },
+                          "document": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/cohere/v1/tokenize": {
       "post": {
         "operationId": "cohereTokenize",
@@ -19071,6 +21964,1536 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CohereError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/chat/completions": {
+      "post": {
+        "operationId": "cursorChatCompletions",
+        "summary": "Cursor hybrid chat completions",
+        "description": "Accepts Cursor's hybrid chat-completions payload (which is structurally\na Responses API request with `input` blocks) and returns a chat-\ncompletions-shaped response (`choices` + `delta` chunks for streams).\nRoutes the request through the Responses pipeline internally.\n",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIResponsesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "Streaming chat completion response (SSE format)",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "finish_reason": {
+                            "type": "string"
+                          },
+                          "log_probs": {
+                            "type": "object",
+                            "properties": {
+                              "content": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    },
+                                    "top_logprobs": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "bytes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "integer"
+                                            }
+                                          },
+                                          "logprob": {
+                                            "type": "number"
+                                          },
+                                          "token": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "refusal": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              },
+                              "text_offset": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              },
+                              "token_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                }
+                              },
+                              "tokens": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "top_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "For text completions"
+                          },
+                          "message": {
+                            "$ref": "#/components/schemas/ChatMessage",
+                            "description": "For non-streaming chat completions"
+                          },
+                          "delta": {
+                            "type": "object",
+                            "properties": {
+                              "role": {
+                                "type": "string"
+                              },
+                              "content": {
+                                "type": "string"
+                              },
+                              "refusal": {
+                                "type": "string"
+                              },
+                              "audio": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "data": {
+                                    "type": "string"
+                                  },
+                                  "expires_at": {
+                                    "type": "integer"
+                                  },
+                                  "transcript": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "reasoning": {
+                                "type": "string"
+                              },
+                              "reasoning_details": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "index": {
+                                      "type": "integer"
+                                    },
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "reasoning.summary",
+                                        "reasoning.encrypted",
+                                        "reasoning.text"
+                                      ]
+                                    },
+                                    "summary": {
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    },
+                                    "signature": {
+                                      "type": "string"
+                                    },
+                                    "data": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              },
+                              "tool_calls": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "function"
+                                  ],
+                                  "properties": {
+                                    "index": {
+                                      "type": "integer"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "function": {
+                                      "type": "object",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string"
+                                        },
+                                        "arguments": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "description": "For streaming chat completions"
+                          }
+                        }
+                      }
+                    },
+                    "created": {
+                      "type": "integer"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string"
+                    },
+                    "usage": {
+                      "$ref": "#/components/schemas/BifrostLLMUsage"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/models": {
+      "get": {
+        "operationId": "cursorListModels",
+        "summary": "List models (Cursor)",
+        "description": "Lists available models, returning the OpenAI `/v1/models` shape.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/complete": {
+      "post": {
+        "operationId": "cursorAnthropicComplete",
+        "summary": "Anthropic complete (Cursor mount)",
+        "description": "Cursor mount of the legacy Anthropic `POST /v1/complete` endpoint.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicTextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "completion"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "completion": {
+                      "type": "string"
+                    },
+                    "stop_reason": {
+                      "type": "string",
+                      "enum": [
+                        "stop_sequence",
+                        "max_tokens",
+                        null
+                      ]
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Number of input tokens used"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Number of output tokens generated"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/messages": {
+      "post": {
+        "operationId": "cursorAnthropicMessages",
+        "summary": "Anthropic messages (Cursor mount)",
+        "description": "Cursor mount of `POST /anthropic/v1/messages`. Same request/response shape and streaming behaviour.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicMessageResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "message_start",
+                        "content_block_start",
+                        "content_block_delta",
+                        "content_block_stop",
+                        "message_delta",
+                        "message_stop",
+                        "ping",
+                        "error"
+                      ]
+                    },
+                    "message": {
+                      "$ref": "#/components/schemas/AnthropicMessageResponse"
+                    },
+                    "index": {
+                      "type": "integer"
+                    },
+                    "content_block": {
+                      "$ref": "#/components/schemas/AnthropicContentBlock"
+                    },
+                    "delta": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "text_delta",
+                            "input_json_delta",
+                            "thinking_delta",
+                            "signature_delta"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "partial_json": {
+                          "type": "string"
+                        },
+                        "thinking": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "stop_reason": {
+                          "type": "string"
+                        },
+                        "stop_sequence": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_read_input_tokens": {
+                          "type": "integer"
+                        },
+                        "cache_creation": {
+                          "type": "object",
+                          "properties": {
+                            "ephemeral_5m_input_tokens": {
+                              "type": "integer"
+                            },
+                            "ephemeral_1h_input_tokens": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/messages/{path}": {
+      "post": {
+        "operationId": "cursorAnthropicMessagesWildcard",
+        "summary": "Anthropic messages — wildcard (Cursor mount)",
+        "description": "Cursor mount of the Anthropic messages wildcard (`POST /anthropic/v1/messages/{path}`).\nRoutes extended Anthropic messages endpoints (e.g. batches, count tokens)\nthrough Cursor.\n",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicMessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "default": "error"
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "description": "Error type (e.g., invalid_request_error, api_error)"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Error message"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/messages/count_tokens": {
+      "post": {
+        "operationId": "cursorAnthropicCountTokens",
+        "summary": "Anthropic count tokens (Cursor mount)",
+        "description": "Cursor mount of `POST /anthropic/v1/messages/count_tokens`.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1beta/models": {
+      "get": {
+        "operationId": "cursorGeminiListModels",
+        "summary": "Gemini list models (Cursor mount)",
+        "description": "Cursor mount of `GET /genai/v1beta/models`.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1beta/models/{model}": {
+      "post": {
+        "operationId": "cursorGeminiModelAction",
+        "summary": "Gemini model action (Cursor mount)",
+        "description": "Cursor mount of Gemini's wildcard generate-content/embed/count-tokens/\npredict endpoints. The `model` path parameter includes the action\nsuffix (e.g. `gemini-pro:generateContent`).\n",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Model name optionally followed by an action suffix."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeminiGenerationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeminiGenerationResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1beta/models/{model}/operations/{operation_id}": {
+      "get": {
+        "operationId": "cursorGeminiRetrieveVideoOperation",
+        "summary": "Gemini video operation polling (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/rank": {
+      "post": {
+        "operationId": "cursorVertexRank",
+        "summary": "Vertex rank (Cursor mount)",
+        "description": "Cursor mount of `POST /genai/v1/rank` — Vertex AI ranking.",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/model/{modelId}/converse": {
+      "post": {
+        "operationId": "cursorBedrockConverse",
+        "summary": "Bedrock converse (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BedrockConverseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BedrockConverseResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/model/{modelId}/converse-stream": {
+      "post": {
+        "operationId": "cursorBedrockConverseStream",
+        "summary": "Bedrock converse stream (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BedrockConverseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AWS event stream of converse chunks.",
+            "content": {
+              "application/vnd.amazon.eventstream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/model/{modelId}/invoke": {
+      "post": {
+        "operationId": "cursorBedrockInvoke",
+        "summary": "Bedrock invoke (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bedrock invoke response (raw model output).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/model/{modelId}/invoke-with-response-stream": {
+      "post": {
+        "operationId": "cursorBedrockInvokeStream",
+        "summary": "Bedrock invoke-with-response-stream (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AWS event stream of invoke chunks.",
+            "content": {
+              "application/vnd.amazon.eventstream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/rerank": {
+      "post": {
+        "operationId": "cursorBedrockRerank",
+        "summary": "Bedrock rerank (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/model/{modelId}/count-tokens": {
+      "post": {
+        "operationId": "cursorBedrockCountTokens",
+        "summary": "Bedrock count tokens (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "converse": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "inputTokens": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v2/chat": {
+      "post": {
+        "operationId": "cursorCohereChat",
+        "summary": "Cohere chat (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v2/embed": {
+      "post": {
+        "operationId": "cursorCohereEmbed",
+        "summary": "Cohere embed (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v2/rerank": {
+      "post": {
+        "operationId": "cursorCohereRerank",
+        "summary": "Cohere rerank (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/cursor/v1/tokenize": {
+      "post": {
+        "operationId": "cursorCohereTokenize",
+        "summary": "Cohere tokenize (Cursor mount)",
+        "tags": [
+          "Cursor Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
                 }
               }
             }
@@ -29212,6 +33635,107 @@
         }
       }
     },
+    "/api/users/email/{email}/virtual-keys": {
+      "get": {
+        "operationId": "getUserVirtualKeysByEmail",
+        "summary": "Get user's virtual keys by email",
+        "description": "**Enterprise only.**\nReturns all virtual keys associated with a user, looked up by email address. Returns an empty `virtual_keys` array when the user exists but has no virtual keys assigned. Intended for MDM and credential-helper integrations that need to resolve a user's keys without knowing their internal ID.\n",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "description": "URL-encoded email address of the user",
+            "schema": {
+              "type": "string",
+              "format": "email"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string",
+                      "description": "Internal ID of the resolved user"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "Email address of the resolved user"
+                    },
+                    "virtual_keys": {
+                      "type": "array",
+                      "description": "Virtual keys assigned to this user",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Virtual key ID"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "Virtual key display name"
+                          },
+                          "value": {
+                            "type": "string",
+                            "description": "Virtual key token value"
+                          },
+                          "is_active": {
+                            "type": "boolean",
+                            "nullable": true,
+                            "description": "Whether the virtual key is currently active"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/teams": {
       "get": {
         "operationId": "listTeams",
@@ -31142,6 +35666,47 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/builtins": {
+      "get": {
+        "operationId": "listBuiltinPlugins",
+        "summary": "List built-in plugin names",
+        "description": "Returns the canonical list of built-in plugin names available in this Bifrost build.\nUse this to discover which plugins can be enabled without supplying a custom binary.\n",
+        "tags": [
+          "Plugins"
+        ],
+        "responses": {
+          "200": {
+            "description": "Built-in plugin names retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "plugins": {
+                      "type": "array",
+                      "description": "Canonical names of built-in plugins",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -36114,6 +40679,221 @@
         }
       }
     },
+    "/api/logs/sessions/{session_id}": {
+      "get": {
+        "operationId": "getLogSessionById",
+        "summary": "Get logs for a session",
+        "description": "Returns the paginated logs belonging to a single parent-request session\n(grouped by `parent_request_id`). Sorted ascending by timestamp by default.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "Parent request ID identifying the session",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of logs to return (default 200, max 200)",
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of logs to skip",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order (default `asc`)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session logs retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Paginated logs for a single parent-request session",
+                  "properties": {
+                    "session_id": {
+                      "type": "string"
+                    },
+                    "logs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LogEntry"
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "description": "Pagination metadata. Session logs are always sorted by timestamp; the `sort_by` field is not configurable.",
+                      "properties": {
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "offset": {
+                          "type": "integer"
+                        },
+                        "order": {
+                          "type": "string",
+                          "enum": [
+                            "asc",
+                            "desc"
+                          ]
+                        },
+                        "total_count": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Total number of items matching the query"
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Total log count for this session"
+                    },
+                    "returned_count": {
+                      "type": "integer",
+                      "description": "Number of logs returned in this response"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/sessions/{session_id}/summary": {
+      "get": {
+        "operationId": "getLogSessionSummaryById",
+        "summary": "Get aggregate totals for a session",
+        "description": "Returns aggregate request count, token usage, cost, and duration for a single session.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "Parent request ID identifying the session",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session summary retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Aggregate totals for a single parent-request session",
+                  "properties": {
+                    "session_id": {
+                      "type": "string"
+                    },
+                    "count": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "total_cost": {
+                      "type": "number"
+                    },
+                    "total_tokens": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "started_at": {
+                      "type": "string",
+                      "description": "Timestamp of the first log in the session (RFC3339 nanos)"
+                    },
+                    "latest_at": {
+                      "type": "string",
+                      "description": "Timestamp of the most recent log in the session (RFC3339 nanos)"
+                    },
+                    "duration_ms": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs/stats": {
       "get": {
         "operationId": "getLogsStats",
@@ -38145,6 +42925,794 @@
         }
       }
     },
+    "/api/logs/histogram/cost/by-dimension": {
+      "get": {
+        "operationId": "getLogsDimensionCostHistogram",
+        "summary": "Get cost histogram by dimension",
+        "description": "Returns time-bucketed cost data grouped by an arbitrary dimension\n(`provider`, `team_id`, `customer_id`, `user_id`, `business_unit_id`).\nThe dimension is supplied via the required `dimension` query parameter.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "query",
+            "required": true,
+            "description": "Grouping dimension",
+            "schema": {
+              "type": "string",
+              "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+              "enum": [
+                "provider",
+                "team_id",
+                "customer_id",
+                "user_id",
+                "business_unit_id"
+              ]
+            }
+          },
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dimension cost histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Dimension-grouped cost histogram result",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed cost data grouped by an arbitrary dimension",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "total_cost": {
+                            "type": "number"
+                          },
+                          "by_dimension": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "number"
+                            },
+                            "description": "Cost breakdown keyed by the dimension value"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "dimension": {
+                      "type": "string",
+                      "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+                      "enum": [
+                        "provider",
+                        "team_id",
+                        "customer_id",
+                        "user_id",
+                        "business_unit_id"
+                      ]
+                    },
+                    "dimension_values": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/histogram/tokens/by-dimension": {
+      "get": {
+        "operationId": "getLogsDimensionTokenHistogram",
+        "summary": "Get token histogram by dimension",
+        "description": "Returns time-bucketed token usage grouped by an arbitrary dimension.\nSee `getLogsDimensionCostHistogram` for the list of supported dimensions.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "query",
+            "required": true,
+            "description": "Grouping dimension",
+            "schema": {
+              "type": "string",
+              "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+              "enum": [
+                "provider",
+                "team_id",
+                "customer_id",
+                "user_id",
+                "business_unit_id"
+              ]
+            }
+          },
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dimension token histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Dimension-grouped token histogram result",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed token usage grouped by an arbitrary dimension",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "by_dimension": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "object",
+                              "description": "Token statistics for a single dimension value",
+                              "properties": {
+                                "prompt_tokens": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                },
+                                "completion_tokens": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                },
+                                "total_tokens": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "dimension": {
+                      "type": "string",
+                      "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+                      "enum": [
+                        "provider",
+                        "team_id",
+                        "customer_id",
+                        "user_id",
+                        "business_unit_id"
+                      ]
+                    },
+                    "dimension_values": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/histogram/latency/by-dimension": {
+      "get": {
+        "operationId": "getLogsDimensionLatencyHistogram",
+        "summary": "Get latency histogram by dimension",
+        "description": "Returns time-bucketed latency percentiles (avg, p90, p95, p99) grouped by\nan arbitrary dimension.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "query",
+            "required": true,
+            "description": "Grouping dimension",
+            "schema": {
+              "type": "string",
+              "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+              "enum": [
+                "provider",
+                "team_id",
+                "customer_id",
+                "user_id",
+                "business_unit_id"
+              ]
+            }
+          },
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dimension latency histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Dimension-grouped latency histogram result",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed latency data grouped by an arbitrary dimension",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "by_dimension": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "object",
+                              "description": "Latency statistics for a single dimension value",
+                              "properties": {
+                                "avg_latency": {
+                                  "type": "number"
+                                },
+                                "p90_latency": {
+                                  "type": "number"
+                                },
+                                "p95_latency": {
+                                  "type": "number"
+                                },
+                                "p99_latency": {
+                                  "type": "number"
+                                },
+                                "total_requests": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "dimension": {
+                      "type": "string",
+                      "description": "Grouping dimension for dimension-aware histograms. Used by the\n`/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.\n",
+                      "enum": [
+                        "provider",
+                        "team_id",
+                        "customer_id",
+                        "user_id",
+                        "business_unit_id"
+                      ]
+                    },
+                    "dimension_values": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs/dropped": {
       "get": {
         "operationId": "getDroppedRequests",
@@ -38224,6 +43792,265 @@
                       "description": "Available routing engine types (routing-rule, governance, loadbalancing)"
                     }
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/rankings": {
+      "get": {
+        "operationId": "getModelRankings",
+        "summary": "Get model usage rankings",
+        "description": "Returns models ranked by usage with trend percentages versus the previous\ncomparable period. Accepts the same filter parameters as the histogram\nendpoints.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model rankings retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Models ranked by usage with trend comparison",
+                  "properties": {
+                    "rankings": {
+                      "type": "array",
+                      "items": {
+                        "allOf": [
+                          {
+                            "type": "object",
+                            "description": "Aggregated stats for a single model over the query period",
+                            "properties": {
+                              "model": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "total_requests": {
+                                "type": "integer",
+                                "format": "int64"
+                              },
+                              "success_count": {
+                                "type": "integer",
+                                "format": "int64"
+                              },
+                              "success_rate": {
+                                "type": "number"
+                              },
+                              "total_tokens": {
+                                "type": "integer",
+                                "format": "int64"
+                              },
+                              "total_cost": {
+                                "type": "number"
+                              },
+                              "avg_latency": {
+                                "type": "number"
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "trend": {
+                                "type": "object",
+                                "description": "Percentage change versus the previous comparable period",
+                                "properties": {
+                                  "has_previous_period": {
+                                    "type": "boolean"
+                                  },
+                                  "requests_trend": {
+                                    "type": "number"
+                                  },
+                                  "tokens_trend": {
+                                    "type": "number"
+                                  },
+                                  "cost_trend": {
+                                    "type": "number"
+                                  },
+                                  "latency_trend": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -38550,28 +44377,6 @@
                           "type": "integer",
                           "format": "int64",
                           "description": "Total number of items matching the query"
-                        }
-                      }
-                    },
-                    "stats": {
-                      "type": "object",
-                      "description": "MCP tool log statistics",
-                      "properties": {
-                        "total_executions": {
-                          "type": "integer",
-                          "description": "Total number of tool executions"
-                        },
-                        "success_rate": {
-                          "type": "number",
-                          "description": "Success rate percentage"
-                        },
-                        "average_latency": {
-                          "type": "number",
-                          "description": "Average execution latency in milliseconds"
-                        },
-                        "total_cost": {
-                          "type": "number",
-                          "description": "Total cost in dollars for all executions"
                         }
                       }
                     },
@@ -39013,6 +44818,461 @@
                       "description": "All unique virtual keys"
                     }
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp-logs/histogram": {
+      "get": {
+        "operationId": "getMCPLogsHistogram",
+        "summary": "Get MCP tool call volume histogram",
+        "description": "Returns time-bucketed MCP tool call volume with success/error breakdown.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of tool names to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of server labels to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "llm_request_ids",
+            "in": "query",
+            "description": "Comma-separated list of LLM request IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in tool arguments and results",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed MCP tool call volume histogram",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed MCP tool call volume",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "count": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "success": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "error": {
+                            "type": "integer",
+                            "format": "int64"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp-logs/histogram/cost": {
+      "get": {
+        "operationId": "getMCPLogsCostHistogram",
+        "summary": "Get MCP cost histogram",
+        "description": "Returns time-bucketed MCP tool call cost data.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of tool names to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of server labels to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "llm_request_ids",
+            "in": "query",
+            "description": "Comma-separated list of LLM request IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in tool arguments and results",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP cost histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed MCP cost histogram",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed MCP cost data",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "total_cost": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp-logs/histogram/top-tools": {
+      "get": {
+        "operationId": "getMCPLogsTopTools",
+        "summary": "Get top MCP tools by call count",
+        "description": "Returns the top 10 MCP tools by call count, with cost totals.",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of tool names to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of server labels to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "llm_request_ids",
+            "in": "query",
+            "description": "Comma-separated list of LLM request IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in tool arguments and results",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP top tools retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Top MCP tools by call count (limit 10)",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Aggregated stats for a single MCP tool",
+                        "properties": {
+                          "tool_name": {
+                            "type": "string"
+                          },
+                          "count": {
+                            "type": "integer",
+                            "format": "int64"
+                          },
+                          "cost": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }

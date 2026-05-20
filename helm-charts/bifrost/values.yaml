@@ -256,6 +256,8 @@ bifrost:
     pricing:
       # Custom pricing URL for model cost data
       pricingUrl: "https://getbifrost.ai/datasheet"
+      # Custom model parameters URL
+      modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
 

@@ -460,6 +460,14 @@ func (m *MockConfigStore) GetClientConfig(ctx context.Context) (*configstore.Cli
 	return m.clientConfig, nil
 }
 
+func (m *MockConfigStore) GetClientMetadata(ctx context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (m *MockConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
+	return nil
+}
+
 // Provider config
 func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers = providers
@@ -981,6 +989,23 @@ func (m *MockConfigStore) DeleteSession(ctx context.Context, token string) error
 	return nil
 }
 
+// Temp token
+func (m *MockConfigStore) CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
+
 // Model pricing
 func (m *MockConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error) {
 	return nil, nil
@@ -1194,15 +1219,11 @@ func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
-	return nil, nil
-}
-
 func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
 
@@ -1215,11 +1236,7 @@ func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *t
 }
 
 // Per-user OAuth token CRUD
-func (m *MockConfigStore) GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
 	return nil, nil
 }
 
@@ -1235,85 +1252,36 @@ func (m *MockConfigStore) DeleteOauthUserToken(ctx context.Context, id string) e
 	return nil
 }
 
-func (m *MockConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error {
+func (m *MockConfigStore) DeleteOauthUserSession(ctx context.Context, id string) error {
 	return nil
 }
 
-// Per-user OAuth Authorization Server CRUD
-func (m *MockConfigStore) GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error) {
+func (m *MockConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error {
-	return nil
-}
-
-func (m *MockConfigStore) GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error) {
+func (m *MockConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error) {
+func (m *MockConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
-	return nil
+func (m *MockConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error) {
+	return 0, nil
 }
 
-func (m *MockConfigStore) UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
-	return nil
-}
-
-func (m *MockConfigStore) DeletePerUserOAuthSession(ctx context.Context, id string) error {
-	return nil
-}
-
-func (m *MockConfigStore) GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
-	return nil
-}
-
-func (m *MockConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
-	return nil
-}
-
-func (m *MockConfigStore) GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
-	return nil
-}
-
-func (m *MockConfigStore) UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
-	return nil
-}
-
-func (m *MockConfigStore) DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error {
-	return nil
-}
-
-func (m *MockConfigStore) ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error) {
-	return 1, nil
-}
-
-func (m *MockConfigStore) GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error {
-	return nil
-}
-
-func (m *MockConfigStore) FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error) {
-	return 1, nil
+func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
 }
 
 // Routing rules
@@ -16173,16 +16141,20 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	initTestLogger()
 	defaultURL := modelcatalog.DefaultPricingURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
 	dbSyncSeconds := int64((6 * time.Hour).Seconds())
 
-	t.Run("db values take precedence", func(t *testing.T) {
+	t.Run("file values override db when no stored hash exists", func(t *testing.T) {
+		// DB has values but no ConfigHash — first time file is applied; file wins.
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                  7,
 			PricingURL:          &dbURL,
 			PricingSyncInterval: &dbSyncSeconds,
+			ModelParametersURL:  &defaultModelParamsURL,
+			ConfigHash:          "",
 		}
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -16192,12 +16164,196 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		}
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
-		require.False(t, needsDBUpdate)
+		require.True(t, needsDBUpdate)
 		require.Equal(t, uint(7), normalizedTable.ID)
+		require.Equal(t, fileURL, *normalizedTable.PricingURL)
+		require.Equal(t, fileSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, fileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, fileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		// Returned row must carry the new file hash so future restarts can compare.
+		require.NotEmpty(t, normalizedTable.ConfigHash)
+	})
+
+	t.Run("db wins when file hash matches stored hash (user edited via UI)", func(t *testing.T) {
+		// File is unchanged since last write. User may have edited DB via UI.
+		// DB should take precedence so UI edits are respected.
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &defaultModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		uiEditedURL := "https://ui-edited.example.com/pricing.json"
+		uiEditedSync := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  8,
+			PricingURL:          &uiEditedURL,
+			PricingSyncInterval: &uiEditedSync,
+			ModelParametersURL:  &defaultModelParamsURL,
+			ConfigHash:          storedHash, // hash of last file-applied values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,
+				ModelParametersURL:  &defaultModelParamsURL,
+				PricingSyncInterval: &fileSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate) // file unchanged; DB wins
+		require.Equal(t, uint(8), normalizedTable.ID)
+		require.Equal(t, uiEditedURL, *normalizedTable.PricingURL)
+		require.Equal(t, uiEditedSync, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, uiEditedURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, uiEditedSync, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("file values override db when file changes after ui edit", func(t *testing.T) {
+		// DB has UI-edited values. File has changed. File wins and DB is updated.
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &defaultModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		uiEditedURL := "https://ui-edited.example.com/pricing.json"
+		uiEditedSync := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  9,
+			PricingURL:          &uiEditedURL,
+			ModelParametersURL:  &defaultModelParamsURL,
+			PricingSyncInterval: &uiEditedSync,
+			ConfigHash:          storedHash, // hash of OLD file values
+		}
+		newFileURL := "https://new-file.example.com/pricing.json"
+		newFileSyncSeconds := int64((48 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &newFileURL,
+				ModelParametersURL:  &defaultModelParamsURL,
+				PricingSyncInterval: &newFileSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(9), normalizedTable.ID)
+		require.Equal(t, newFileURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newFileSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, newFileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+		require.Equal(t, newFileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("file model parameters url overrides db when file changes after ui edit", func(t *testing.T) {
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, &defaultModelParamsURL, nil)
+		require.NoError(t, err)
+		uiEditedModelParamsURL := "https://ui-edited.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  10,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &uiEditedModelParamsURL,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          storedHash,
+		}
+		newFileModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				ModelParametersURL: &newFileModelParamsURL,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(10), normalizedTable.ID)
 		require.Equal(t, dbURL, *normalizedTable.PricingURL)
+		require.Equal(t, newFileModelParamsURL, *normalizedTable.ModelParametersURL)
 		require.Equal(t, dbSyncSeconds, *normalizedTable.PricingSyncInterval)
 		require.Equal(t, dbURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, newFileModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
 		require.Equal(t, dbSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.NotEqual(t, storedHash, normalizedTable.ConfigHash)
+	})
+
+	t.Run("unresolved model parameters env does not block pricing file change", func(t *testing.T) {
+		oldFileURL := "https://old-file.example.com/pricing.json"
+		missingModelParamsEnv := "env.BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&oldFileURL, &missingModelParamsEnv, nil)
+		require.NoError(t, err)
+		prev, existed := os.LookupEnv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		os.Unsetenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
+
+		dbModelParamsURL := "https://db.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  11,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &dbModelParamsURL,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          storedHash,
+		}
+		newFileURL := "https://new-file.example.com/pricing.json"
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:         &newFileURL,
+				ModelParametersURL: &missingModelParamsEnv,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(11), normalizedTable.ID)
+		require.Equal(t, newFileURL, *normalizedTable.PricingURL)
+		require.Equal(t, dbModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, dbSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, newFileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, dbModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+		require.Equal(t, dbSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.NotEqual(t, storedHash, normalizedTable.ConfigHash)
+	})
+
+	t.Run("unresolved pricing env does not block other file changes", func(t *testing.T) {
+		missingPricingEnv := "env.BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ"
+		oldModelParamsURL := "https://old-file.example.com/model-parameters.json"
+		oldSyncSeconds := int64((12 * time.Hour).Seconds())
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&missingPricingEnv, &oldModelParamsURL, &oldSyncSeconds)
+		require.NoError(t, err)
+		prev, existed := os.LookupEnv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ")
+		os.Unsetenv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
+
+		dbModelParamsURL := "https://db.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  12,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &dbModelParamsURL,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          storedHash,
+		}
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		newSyncSeconds := int64((48 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &missingPricingEnv,
+				ModelParametersURL:  &newModelParamsURL,
+				PricingSyncInterval: &newSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(12), normalizedTable.ID)
+		require.Equal(t, dbURL, *normalizedTable.PricingURL)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, dbURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, newModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+		require.Equal(t, newSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.NotEqual(t, storedHash, normalizedTable.ConfigHash)
 	})
 
 	t.Run("fallback to file when db fields are missing", func(t *testing.T) {
@@ -16226,8 +16382,10 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
 		require.False(t, needsDBUpdate)
 		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
 		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
 	})
 
@@ -16238,7 +16396,21 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
 		require.False(t, needsDBUpdate)
 		require.Equal(t, envURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedTable.ModelParametersURL)
 		require.Equal(t, envURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("fallback default model parameters url uses env override", func(t *testing.T) {
+		envURL := "https://env-default.example.com/model-parameters.json"
+		t.Setenv(modelcatalog.ModelParametersURLEnvVar, envURL)
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
+		require.Equal(t, envURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, envURL, *normalizedModelCatalog.ModelParametersURL)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {
@@ -16382,9 +16554,11 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			require.NotNil(t, tableOut, "TableFrameworkConfig must never be nil")
 			require.NotNil(t, tableOut.PricingURL, "PricingURL must never be nil")
 			require.NotNil(t, tableOut.PricingSyncInterval, "PricingSyncInterval must never be nil")
+			require.NotNil(t, tableOut.ModelParametersURL, "ModelParametersURL must never be nil")
 			require.NotNil(t, catalogOut, "modelcatalog.Config must never be nil")
 			require.NotNil(t, catalogOut.PricingURL, "Config.PricingURL must never be nil")
 			require.NotNil(t, catalogOut.PricingSyncInterval, "Config.PricingSyncInterval must never be nil")
+			require.NotNil(t, catalogOut.ModelParametersURL, "Config.ModelParametersURL must never be nil")
 		}
 	})
 

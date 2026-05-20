@@ -71,6 +71,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		pricingURL = *config.PricingURL
 	}
 	modelParametersURL := defaultModelParametersURL()
+	if config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		modelParametersURL = *config.ModelParametersURL
+	}
 	syncInterval := DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -275,6 +278,9 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 		mc.pricingURL = *config.PricingURL
 	}
 	mc.modelParametersURL = defaultModelParametersURL()
+	if config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		mc.modelParametersURL = *config.ModelParametersURL
+	}
 
 	mc.syncInterval = DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
