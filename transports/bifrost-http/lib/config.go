@@ -3012,7 +3012,7 @@ func ResolveFrameworkPricingConfig(
 	filePricingURL := (*string)(nil)
 	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
-	skipURLBackfill := false              // prevent DB backfill of unresolved env references
+	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
@@ -3084,14 +3084,38 @@ func ResolveFrameworkPricingConfig(
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
 
-	// --- Phase 3: apply DB values over file/defaults (DB is authoritative) ---
+	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
 
 	needsDBUpdate := false
 	configID := uint(0)
+
+	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
+	fileHash := ""
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil) {
+		h, err := configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
+		if err != nil {
+			logger.Warn("failed to compute framework config hash: %v", err)
+		} else {
+			fileHash = h
+		}
+	}
+
+	storedHash := ""
+	if dbConfig != nil {
+		storedHash = dbConfig.ConfigHash
+	}
+	fileChanged := fileHash != "" && fileHash != storedHash
+
 	if dbConfig != nil {
 		configID = dbConfig.ID
+
 		if dbConfig.PricingURL != nil {
-			resolvedPricingURL = dbConfig.PricingURL
+			if fileChanged && filePricingURL != nil {
+				logger.Info("pricing_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedPricingURL = dbConfig.PricingURL
+			}
 		} else if !skipURLBackfill {
 			needsDBUpdate = true
 		}
@@ -3100,20 +3124,23 @@ func ResolveFrameworkPricingConfig(
 		} else if !skipModelParamsURLBackfill {
 			needsDBUpdate = true
 		}
+
 		if dbConfig.PricingSyncInterval != nil {
 			val := *dbConfig.PricingSyncInterval
 			if val <= 0 {
 				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
 				needsDBUpdate = true
 			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
-				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
-				resolvedSyncSeconds = &clamped
+				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds) — backfilling", val)
+				if !fileChanged || fileSyncSeconds == nil {
+					clamped := modelcatalog.MinimumPricingSyncIntervalSec
+					resolvedSyncSeconds = &clamped
+				}
+				needsDBUpdate = true
+			} else if fileChanged && fileSyncSeconds != nil {
+				logger.Info("pricing_sync_interval from config.json overrides DB (file hash changed): file=%d db=%d seconds — updating DB", *fileSyncSeconds, val)
 				needsDBUpdate = true
 			} else {
-				if fileSyncSeconds != nil && *fileSyncSeconds != *dbConfig.PricingSyncInterval {
-					logger.Info("pricing_sync_interval overridden by DB: file=%d db=%d seconds", *fileSyncSeconds, *dbConfig.PricingSyncInterval)
-				}
 				resolvedSyncSeconds = dbConfig.PricingSyncInterval
 			}
 		} else {
@@ -3121,7 +3148,7 @@ func ResolveFrameworkPricingConfig(
 		}
 	}
 
-	// --- Phase 4: invariant assertion ---
+	// --- Phase 4: nil guard ---
 	if resolvedPricingURL == nil {
 		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
 		resolvedPricingURL = &defaultPricingURL
@@ -3135,11 +3162,22 @@ func ResolveFrameworkPricingConfig(
 		resolvedSyncSeconds = &defaultSyncSeconds
 	}
 
+	// Only update the stored hash when the file actually changed; preserve the
+	// existing hash for correction-only DB updates (null backfill, corruption fix).
+	persistedHash := ""
+	if dbConfig != nil {
+		persistedHash = dbConfig.ConfigHash
+	}
+	if fileChanged {
+		persistedHash = fileHash
+	}
+
 	return &configstoreTables.TableFrameworkConfig{
 			ID:                  configID,
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
 			ModelParametersURL:  resolvedModelParametersURL,
+			ConfigHash:          persistedHash,
 		}, &modelcatalog.Config{
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
