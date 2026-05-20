@@ -1248,6 +1248,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		config.ResponseMIMEType == "application/json" &&
 		!isGemini3Plus(model) {
 		config.ResponseMIMEType = ""
+		config.ResponseJSONSchema = nil
 	}
 	return config, nil
 }
