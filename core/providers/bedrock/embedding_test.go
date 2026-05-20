@@ -132,11 +132,6 @@ func TestDetermineEmbeddingModelType(t *testing.T) {
 			wantType: "titan",
 		},
 		{
-			name:     "nova multimodal embeddings model",
-			model:    "amazon.nova-2-multimodal-embeddings-v1:0",
-			wantType: "titan",
-		},
-		{
 			name:     "cohere embed model",
 			model:    "cohere.embed-english-v3",
 			wantType: "cohere",

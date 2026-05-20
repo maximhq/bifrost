@@ -189,8 +189,6 @@ func DetermineEmbeddingModelType(model string) (string, error) {
 		return "cohere", nil
 	case strings.Contains(model, "amazon.titan-embed-image"):
 		return "titan", nil
-	case strings.Contains(model, "amazon.nova-2-multimodal-embeddings"):
-		return "titan", nil
 	default:
 		return "", fmt.Errorf("unsupported embedding model: %s", model)
 	}
