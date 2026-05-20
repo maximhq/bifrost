@@ -75,6 +75,7 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
+	r.POST("/api/config/metadata", lib.ChainMiddlewares(h.updateMetadata, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
@@ -190,8 +191,46 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else if restartConfig != nil {
 			mapConfig["restart_required"] = restartConfig
 		}
+		// Fetching UI/admin metadata blob (onboarding_dismissed, etc.).
+		// This is a free-form key/value store that bypasses config.json sync.
+		if metadata, err := h.store.ConfigStore.GetClientMetadata(ctx); err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				logger.Warn("failed to get client metadata from store: %v", err)
+			}
+		} else if len(metadata) > 0 {
+			mapConfig["metadata"] = metadata
+		}
 	}
 	SendJSON(ctx, mapConfig)
+}
+
+// updateMetadata handles POST /api/config/metadata - merges a JSON object of
+// key/value pairs into the ClientConfig metadata blob. Keys with a nil value
+// are removed. Intended for UI/admin preferences (onboarding state, dismissed
+// tooltips, etc.) and is auth-gated by the same middleware as the rest of /api/config.
+func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(ctx.PostBody(), &patch); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	if len(patch) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
+		return
+	}
+	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"success": true})
 }
 
 // updateConfig updates the core configuration settings.
