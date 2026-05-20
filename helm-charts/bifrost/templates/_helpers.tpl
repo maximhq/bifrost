@@ -334,6 +334,9 @@ false
 {{- if .Values.bifrost.framework.pricing.pricingUrl }}
 {{- $_ := set $pricing "pricing_url" .Values.bifrost.framework.pricing.pricingUrl }}
 {{- end }}
+{{- if .Values.bifrost.framework.pricing.modelParametersUrl }}
+{{- $_ := set $pricing "model_parameters_url" .Values.bifrost.framework.pricing.modelParametersUrl }}
+{{- end }}
 {{- if .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- $_ := set $pricing "pricing_sync_interval" .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- end }}
