@@ -40,6 +40,67 @@ const toTestIdPart = (value: string) =>
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-|-$/g, "");
 
+function ModelLimitActionsMenu({
+	config,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	onEdit,
+	onDelete,
+}: {
+	config: ModelConfig;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	onEdit: (config: ModelConfig) => void;
+	onDelete: (configId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for model limit ${config.model_name}`}
+					data-testid={`model-limit-button-actions-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					className="cursor-pointer"
+					disabled={!hasUpdateAccess}
+					data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(config);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					className="cursor-pointer"
+					disabled={!hasDeleteAccess}
+					data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(config.id);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
 	totalCount: number;
@@ -371,46 +432,13 @@ export default function ModelLimitsTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center justify-end">
-													<DropdownMenu>
-														<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-															<Button
-																variant="ghost"
-																size="icon"
-																className="h-8 w-8"
-																aria-label={`Actions for model limit ${config.model_name}`}
-																data-testid={`model-limit-button-actions-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
-															>
-																<MoreHorizontal className="h-4 w-4" />
-															</Button>
-														</DropdownMenuTrigger>
-														<DropdownMenuContent align="end">
-															<DropdownMenuItem
-																className="cursor-pointer"
-																disabled={!hasUpdateAccess}
-																onClick={(e) => {
-																	e.stopPropagation();
-																	handleEditModelLimit(config);
-																}}
-																data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
-															>
-																<Edit className="h-4 w-4" />
-																Edit
-															</DropdownMenuItem>
-															<DropdownMenuItem
-																variant="destructive"
-																className="cursor-pointer"
-																disabled={!hasDeleteAccess}
-																onClick={(e) => {
-																	e.stopPropagation();
-																	setDeleteModelConfigId(config.id);
-																}}
-																data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
-															>
-																<Trash2 className="h-4 w-4" />
-																Delete
-															</DropdownMenuItem>
-														</DropdownMenuContent>
-													</DropdownMenu>
+													<ModelLimitActionsMenu
+														config={config}
+														hasUpdateAccess={hasUpdateAccess}
+														hasDeleteAccess={hasDeleteAccess}
+														onEdit={handleEditModelLimit}
+														onDelete={setDeleteModelConfigId}
+													/>
 												</div>
 											</TableCell>
 										</TableRow>

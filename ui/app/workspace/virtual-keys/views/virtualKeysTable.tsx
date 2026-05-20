@@ -168,12 +168,13 @@ function VKActionsMenu({
 	onEdit: (vk: VirtualKey) => void;
 	onDelete: (vkId: string) => void;
 }) {
+	const [isOpen, setIsOpen] = useState(false);
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
 		<>
-			<DropdownMenu>
+			<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 				<DropdownMenuTrigger asChild>
 					<Button
 						variant="ghost"
@@ -193,6 +194,7 @@ function VKActionsMenu({
 						onSelect={(e) => {
 							e.preventDefault();
 							onEdit(vk);
+							setIsOpen(false);
 						}}
 					>
 						<Edit className="h-4 w-4" />
@@ -207,6 +209,7 @@ function VKActionsMenu({
 						onSelect={(e) => {
 							e.preventDefault();
 							setDeleteOpen(true);
+							setIsOpen(false);
 						}}
 					>
 						<Trash2 className="h-4 w-4" />

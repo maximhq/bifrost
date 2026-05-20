@@ -44,8 +44,10 @@ interface CustomerActionsMenuProps {
 }
 
 function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete }: CustomerActionsMenuProps) {
+	const [isOpen, setIsOpen] = useState(false);
+
 	return (
-		<DropdownMenu>
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild>
 				<Button
 					variant="ghost"
@@ -63,9 +65,10 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				<DropdownMenuItem
 					disabled={!canUpdate}
 					data-testid={`customer-button-edit-${customer.id}`}
-					onClick={(e) => {
-						e.stopPropagation();
+					onSelect={(e) => {
+						e.preventDefault();
 						onEdit(customer);
+						setIsOpen(false);
 					}}
 				>
 					<Edit className="h-4 w-4" />
@@ -75,9 +78,10 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					variant="destructive"
 					disabled={!canDelete}
 					data-testid={`customer-button-delete-${customer.id}`}
-					onClick={(e) => {
-						e.stopPropagation();
+					onSelect={(e) => {
+						e.preventDefault();
 						onDelete(customer);
+						setIsOpen(false);
 					}}
 				>
 					<Trash2 className="h-4 w-4" />

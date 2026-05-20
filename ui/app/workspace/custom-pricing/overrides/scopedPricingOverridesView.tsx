@@ -32,6 +32,61 @@ import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
 
+function PricingOverrideActionsMenu({
+	row,
+	onEdit,
+	onDelete,
+}: {
+	row: PricingOverride;
+	onEdit: (row: PricingOverride) => void;
+	onDelete: (row: PricingOverride) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Actions for pricing override ${row.name || row.id}`}
+					data-testid={`pricing-override-actions-btn-${row.id}`}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					data-testid={`pricing-override-edit-btn-${row.id}`}
+					className="cursor-pointer"
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(row);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					data-testid={`pricing-override-delete-btn-${row.id}`}
+					variant="destructive"
+					className="cursor-pointer"
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(row);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
 type ScopeFilter = "all" | PricingOverrideScopeKind;
 
 function parseScopeKind(value: string | null): ScopeFilter {
@@ -314,44 +369,11 @@ export default function ScopedPricingOverridesView() {
 										<TableCell>{row.pattern}</TableCell>
 										<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 											<div className="flex items-center justify-end">
-												<DropdownMenu>
-													<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-														<Button
-															variant="ghost"
-															size="icon"
-															className="h-8 w-8"
-															aria-label={`Actions for pricing override ${row.name || row.id}`}
-															data-testid={`pricing-override-actions-btn-${row.id}`}
-														>
-															<MoreHorizontal className="h-4 w-4" />
-														</Button>
-													</DropdownMenuTrigger>
-													<DropdownMenuContent align="end">
-														<DropdownMenuItem
-															data-testid={`pricing-override-edit-btn-${row.id}`}
-															className="cursor-pointer"
-															onClick={(event) => {
-																event.stopPropagation();
-																openEditDrawer(row);
-															}}
-														>
-															<Edit className="h-4 w-4" />
-															Edit
-														</DropdownMenuItem>
-														<DropdownMenuItem
-															data-testid={`pricing-override-delete-btn-${row.id}`}
-															variant="destructive"
-															className="cursor-pointer"
-															onClick={(event) => {
-																event.stopPropagation();
-																setDeleteTarget(row);
-															}}
-														>
-															<Trash2 className="h-4 w-4" />
-															Delete
-														</DropdownMenuItem>
-													</DropdownMenuContent>
-												</DropdownMenu>
+												<PricingOverrideActionsMenu
+													row={row}
+													onEdit={openEditDrawer}
+													onDelete={setDeleteTarget}
+												/>
 											</div>
 										</TableCell>
 									</TableRow>
