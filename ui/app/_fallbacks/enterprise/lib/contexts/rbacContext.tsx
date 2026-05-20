@@ -11,6 +11,7 @@ export enum RbacResource {
 	Users = "Users",
 	Logs = "Logs",
 	Observability = "Observability",
+	Dashboard = "Dashboard",
 	VirtualKeys = "VirtualKeys",
 	ModelProvider = "ModelProvider",
 	Plugins = "Plugins",
