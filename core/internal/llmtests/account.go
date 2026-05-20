@@ -767,7 +767,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,

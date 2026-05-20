@@ -2049,6 +2049,9 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 		defer close(closed)
 		select {
 		case <-ctx.Done():
+			if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+				return
+			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
 				if err := closer.Close(); err != nil {
@@ -2070,6 +2073,9 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 			// ctx.Done branch above) so ReleaseStreamingResponse skips a second CloseWithError.
 			// A second close against an already-pooled conn nil-derefs in fasthttp's connsCleaner.
 			if ctx.Err() != nil {
+				if connClosed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+					return
+				}
 				if closer, ok := bodyStream.(io.Closer); ok {
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))

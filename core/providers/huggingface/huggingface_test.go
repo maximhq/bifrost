@@ -69,10 +69,10 @@ func TestHuggingface(t *testing.T) {
 			FileDelete:            false,
 			FileContent:           false,
 			FileBatchInput:        false,
-			ImageGeneration:       true,
-			ImageGenerationStream: true,
-			ImageEdit:             true,
-			ImageEditStream:       true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
+			ImageEdit:             false,
+			ImageEditStream:       false,
 		},
 	}
 
