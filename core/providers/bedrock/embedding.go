@@ -14,17 +14,21 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
 
-	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0 {
-		return nil, fmt.Errorf("no input text provided for embedding")
+	hasText := bifrostReq.Input != nil && (bifrostReq.Input.Text != nil || len(bifrostReq.Input.Texts) > 0)
+	var hasImage bool
+	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+		_, hasImage = bifrostReq.Params.ExtraParams["inputImage"]
+	}
+	if !hasText && !hasImage {
+		return nil, fmt.Errorf("no input text or image provided for embedding")
 	}
 
 	titanReq := &BedrockTitanEmbeddingRequest{}
 
-	// Set input text
-	if bifrostReq.Input.Text != nil {
+	// Set input text only when text is actually present; image-only requests omit this field
+	if bifrostReq.Input != nil && bifrostReq.Input.Text != nil {
 		titanReq.InputText = *bifrostReq.Input.Text
-	} else if len(bifrostReq.Input.Texts) > 0 {
+	} else if bifrostReq.Input != nil && len(bifrostReq.Input.Texts) > 0 {
 		var embeddingText string
 		for _, text := range bifrostReq.Input.Texts {
 			embeddingText += text + " \n"
@@ -39,13 +43,30 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 				titanReq.Normalize = &b
 			}
 		}
-		// Forward remaining extra params (excluding normalize which is now a first-class field)
+
+		// Lift inputImage into typed field for guaranteed wire-format inclusion
+		// (does not depend on BifrostContextKeyPassthroughExtraParams).
+		var inputImageLifted bool
+		if img, ok := bifrostReq.Params.ExtraParams["inputImage"]; ok {
+			if s, ok := img.(string); ok {
+				titanReq.InputImage = s
+				inputImageLifted = true
+			}
+		}
+
+		// Forward remaining extra params, excluding fields now represented as
+		// first-class struct fields. Only exclude inputImage when it was actually
+		// lifted (string case); non-string values stay in ExtraParams for passthrough.
 		if len(bifrostReq.Params.ExtraParams) > 0 {
 			extra := make(map[string]interface{})
 			for k, v := range bifrostReq.Params.ExtraParams {
-				if k != "normalize" {
-					extra[k] = v
+				if k == "normalize" {
+					continue
 				}
+				if k == "inputImage" && inputImageLifted {
+					continue
+				}
+				extra[k] = v
 			}
 			if len(extra) > 0 {
 				titanReq.ExtraParams = extra
@@ -166,6 +187,10 @@ func DetermineEmbeddingModelType(model string) (string, error) {
 		return "titan", nil
 	case strings.Contains(model, "cohere.embed"):
 		return "cohere", nil
+	case strings.Contains(model, "amazon.titan-embed-image"):
+		return "titan", nil
+	case strings.Contains(model, "amazon.nova-2-multimodal-embeddings"):
+		return "titan", nil
 	default:
 		return "", fmt.Errorf("unsupported embedding model: %s", model)
 	}
@@ -189,7 +214,7 @@ func (r *BedrockCohereEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.
 			Float   [][]float32 `json:"float"`
 			Base64  []string    `json:"base64"`
 			Int8    [][]int8    `json:"int8"`
-			Uint8   [][]int32   `json:"uint8"`  // int32 avoids []byte→base64 JSON issue
+			Uint8   [][]int32   `json:"uint8"` // int32 avoids []byte→base64 JSON issue
 			Binary  [][]int8    `json:"binary"`
 			Ubinary [][]int32   `json:"ubinary"` // int32 avoids []byte→base64 JSON issue
 		}
