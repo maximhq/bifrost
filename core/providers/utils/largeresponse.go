@@ -334,7 +334,7 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 	reader, releaseGzip := DecompressStreamBody(resp)
 
 	// Wrap reader with idle timeout to detect stalled streams.
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx))
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
 
 	// Wire cancellation to the raw fasthttp body. On a mid-stream client disconnect this fires
 	// wce.CloseWithError(ctx.Err()) to unblock the transport's Read and sets
