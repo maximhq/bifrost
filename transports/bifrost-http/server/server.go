@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -136,7 +137,9 @@ type BifrostHTTPServer struct {
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
-	WSTicketStore     *handlers.WSTicketStore
+	WSTicketStore        *handlers.WSTicketStore
+	TempTokens           *temptoken.Service
+	TempTokenSweepWorker *temptoken.SweepWorker
 
 	wsPool *bfws.Pool
 }
@@ -357,6 +360,14 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
 		return nil, err
+	}
+	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
+		for _, existingVK := range governanceData.VirtualKeys {
+			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
+				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value)
+				break
+			}
+		}
 	}
 	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
@@ -1113,11 +1124,18 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
 	}
-	var cacheHandler *handlers.CacheHandler
-	semanticCachePlugin, _ := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
-	if semanticCachePlugin != nil {
-		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin)
-	}
+	// Resolve the semantic_cache plugin per request so plugin reloads via
+	// /api/plugins are honored — the previous boot-time capture left stale
+	// references and (worse) skipped route registration entirely when the
+	// plugin wasn't in config.json at startup, causing 405 on all cache-clear
+	// endpoints for the process lifetime.
+	cacheHandler := handlers.NewCacheHandler(func() handlers.CacheClearer {
+		p, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
+		if err != nil || p == nil {
+			return nil
+		}
+		return p
+	})
 	var promptsReloader handlers.PromptCacheReloader
 	if promptsPlugin, err := lib.FindPluginAs[handlers.PromptCacheReloader](s.Config, s.getPromptsPluginName()); err == nil && promptsPlugin != nil {
 		promptsReloader = promptsPlugin
@@ -1136,23 +1154,19 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
+	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, promptsReloader)
+	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
-	// OAuth metadata + per-user OAuth endpoints (no auth middleware — must be publicly accessible)
-	oauthMetadataHandler := handlers.NewOAuthMetadataHandler(s.Config)
-	oauthMetadataHandler.RegisterRoutes(s.Router)
-	perUserOAuthHandler := handlers.NewPerUserOAuthHandler(s.Config)
-	perUserOAuthHandler.RegisterRoutes(s.Router)
-	consentHandler := handlers.NewConsentHandler(s.Config)
-	consentHandler.RegisterRoutes(s.Router)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
@@ -1162,8 +1176,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if promptsHandler != nil {
 		promptsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
-	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(s.Router, middlewares...)
+	cacheHandler.RegisterRoutes(s.Router, middlewares...)
+	if featureFlagsHandler != nil {
+		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1446,10 +1461,36 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.
 		// NewSignedWSTicketStore handles empty key by degrading to in-memory mode.
 		s.WSTicketStore = handlers.NewSignedWSTicketStore(encrypt.Key())
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore)
+		// Initialize the temp-token service and register all scopes owned by the
+		// handlers package. The service is the seam every "scoped, anonymous,
+		// browser-only" workflow plugs into (currently just the MCP per-user OAuth
+		// auth page
+		s.TempTokens = temptoken.NewService(s.Config.ConfigStore, temptoken.NewRegistry())
+		if regErr := handlers.RegisterTempTokenScopes(s.TempTokens); regErr != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+			return fmt.Errorf("failed to register temp token scopes: %v", regErr)
+		}
+		// Centralized janitor that reaps expired temp_tokens rows. Independent
+		// of the per-user OAuth sweep so any future scope (not just mcp_auth)
+		// benefits from the same cleanup loop without piggybacking on OAuth.
+		s.TempTokenSweepWorker = temptoken.NewSweepWorker(s.TempTokens, logger)
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Start(s.Ctx)
+		}
+		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
+		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
+		if s.Config.OAuthProvider != nil {
+			s.Config.OAuthProvider.SetTempTokenService(s.TempTokens)
+		}
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
 		if err != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+			if s.TempTokenSweepWorker != nil {
+				s.TempTokenSweepWorker.Stop()
+				s.TempTokenSweepWorker = nil
+			}
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -1467,6 +1508,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+		}
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Stop()
+			s.TempTokenSweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1497,6 +1542,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
+		}
+		if s.TempTokenSweepWorker != nil {
+			s.TempTokenSweepWorker.Stop()
+			s.TempTokenSweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
@@ -1576,6 +1625,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.WSTicketStore != nil {
 				logger.Info("stopping ws ticket store...")
 				s.WSTicketStore.Stop()
+			}
+			if s.TempTokenSweepWorker != nil {
+				logger.Info("stopping temp-token sweep worker...")
+				s.TempTokenSweepWorker.Stop()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

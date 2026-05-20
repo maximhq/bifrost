@@ -10,6 +10,7 @@ import {
   ChevronsLeftRightEllipsis,
   Construction,
   DatabaseZap,
+  Flag,
   FlaskConical,
   FolderGit,
   Globe,
@@ -38,10 +39,14 @@ import {
   UserRoundCheck,
   Users,
   Wallet,
-  WalletCards
+  WalletCards,
 } from "lucide-react";
 
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import {
   Sidebar,
@@ -68,7 +73,11 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
-import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import {
+  BooksIcon,
+  DiscordLogoIcon,
+  GithubLogoIcon,
+} from "@phosphor-icons/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -134,7 +143,8 @@ const productionSetupHelpCard = {
   title: "Need help with production setup?",
   description: (
     <>
-      We offer help with production setup including custom integrations and dedicated support.
+      We offer help with production setup including custom integrations and
+      dedicated support.
       <br />
       <br />
       Book a demo with our team{" "}
@@ -172,7 +182,7 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TIME_FILTER_PAGES = new Set([
+const TimeFilterPages = new Set([
   "/workspace/dashboard",
   "/workspace/logs",
   "/workspace/mcp-logs",
@@ -221,7 +231,8 @@ const SidebarItemView = ({
       if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
     };
   }, []);
-  const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
+  const hasSubItems =
+    "subItems" in item && item.subItems && item.subItems.length > 0;
   const isRouteMatch = (url: string) => {
     if (url === "/workspace/custom-pricing") return pathname === url;
     return pathname.startsWith(url);
@@ -250,14 +261,15 @@ const SidebarItemView = ({
 
   const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-    ? "bg-sidebar-accent text-accent-foreground border-primary/20"
-    : isActive || isAnySubItemActive
-      ? "bg-sidebar-accent text-primary border-primary/20"
-      : item.hasAccess
-        ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-        : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-    } `;
+  const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+    isHighlighted
+      ? "bg-sidebar-accent text-accent-foreground border-primary/20"
+      : isActive || isAnySubItemActive
+        ? "bg-sidebar-accent text-primary border-primary/20"
+        : item.hasAccess
+          ? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+          : "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+  } `;
 
   const innerContent = (
     <div className="flex w-full items-center justify-between">
@@ -314,19 +326,31 @@ const SidebarItemView = ({
     );
   } else if (!item.hasAccess) {
     menuButton = (
-      <SidebarMenuButton tooltip={item.title} data-nav-url={item.url} className={buttonClassName}>
+      <SidebarMenuButton
+        tooltip={item.title}
+        data-nav-url={item.url}
+        className={buttonClassName}
+      >
         {innerContent}
       </SidebarMenuButton>
     );
   } else if (isExternal) {
     menuButton = (
-      <SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+      <SidebarMenuButton
+        asChild
+        tooltip={item.title}
+        className={buttonClassName}
+      >
         <a
           href={item.url}
           target="_blank"
           rel="noopener noreferrer"
           data-nav-url={item.url}
-          onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+          onClick={
+            isSidebarCollapsed
+              ? (e: React.MouseEvent) => e.stopPropagation()
+              : undefined
+          }
         >
           {innerContent}
         </a>
@@ -334,12 +358,20 @@ const SidebarItemView = ({
     );
   } else {
     menuButton = (
-      <SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+      <SidebarMenuButton
+        asChild
+        tooltip={item.title}
+        className={buttonClassName}
+      >
         <Link
           to={item.url as any}
           preload="intent"
           data-nav-url={item.url}
-          onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+          onClick={
+            isSidebarCollapsed
+              ? (e: React.MouseEvent) => e.stopPropagation()
+              : undefined
+          }
         >
           {innerContent}
         </Link>
@@ -351,8 +383,14 @@ const SidebarItemView = ({
     <SidebarMenuItem key={item.title}>
       {isSidebarCollapsed && hasSubItems ? (
         <Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-          <PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
-            <div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>{menuButton}</div>
+          <PopoverTrigger
+            asChild
+            onMouseEnter={openFlyout}
+            onMouseLeave={closeFlyout}
+          >
+            <div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>
+              {menuButton}
+            </div>
           </PopoverTrigger>
           <PopoverContent
             side="right"
@@ -363,14 +401,14 @@ const SidebarItemView = ({
             onMouseLeave={closeFlyout}
             data-testid={`sidebar-flyout-content-${slug(item.title)}`}
           >
-            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+            <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">
               {item.title}
             </div>
             {item.subItems?.map((subItem) => {
               const href = getSidebarItemHref(subItem);
               const isSubItemActive = subItem.queryParam
                 ? pathname === subItem.url
-                : pathname.startsWith(subItem.url);
+                : isRouteMatch(subItem.url);
               const SubItemIcon = subItem.icon;
               const subSlug = slug(subItem.title);
               const inner = (
@@ -381,12 +419,15 @@ const SidebarItemView = ({
                     />
                   )}
                   <span
-                    className={`text-sm ${isSubItemActive ? "font-medium text-primary" : "text-slate-500 dark:text-zinc-400"}`}
+                    className={`text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}
                   >
                     {subItem.title}
                   </span>
                   {subItem.tag && (
-                    <Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+                    <Badge
+                      variant="secondary"
+                      className="text-muted-foreground ml-auto text-xs"
+                    >
                       {subItem.tag}
                     </Badge>
                   )}
@@ -401,7 +442,7 @@ const SidebarItemView = ({
                   {subItem.hasAccess === false ? (
                     <div
                       data-testid={`sidebar-subitem-disabled-${subSlug}`}
-                      className="flex h-7 cursor-not-allowed items-center rounded-sm px-2 text-muted-foreground hover:bg-destructive/5"
+                      className="text-muted-foreground hover:bg-destructive/5 flex h-7 cursor-not-allowed items-center rounded-sm px-2"
                     >
                       {inner}
                     </div>
@@ -428,7 +469,10 @@ const SidebarItemView = ({
           {item.subItems?.map((subItem: SidebarItem) => {
             const baseHref = getSidebarItemHref(subItem);
             const subItemHref = (() => {
-              if (TIME_FILTER_PAGES.has(subItem.url) && TIME_FILTER_PAGES.has(pathname)) {
+              if (
+                TimeFilterPages.has(subItem.url) &&
+                TimeFilterPages.has(pathname)
+              ) {
                 const currentParams = new URLSearchParams(search);
                 const startTime = currentParams.get("start_time");
                 const endTime = currentParams.get("end_time");
@@ -452,14 +496,15 @@ const SidebarItemView = ({
               ? subItemHref.startsWith(highlightedUrl)
               : false;
             const SubItemIcon = subItem.icon;
-            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-              ? "bg-sidebar-accent text-accent-foreground"
-              : isSubItemActive
-                ? "bg-sidebar-accent text-primary font-medium"
-                : subItem.hasAccess === false
-                  ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-                  : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-              }`;
+            const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+              isSubItemHighlighted
+                ? "bg-sidebar-accent text-accent-foreground"
+                : isSubItemActive
+                  ? "bg-sidebar-accent text-primary font-medium"
+                  : subItem.hasAccess === false
+                    ? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+                    : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+            }`;
             const subInner = (
               <div className="flex w-full items-center gap-2">
                 {SubItemIcon && (
@@ -467,11 +512,16 @@ const SidebarItemView = ({
                     className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`}
                   />
                 )}
-                <span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>
+                <span
+                  className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}
+                >
                   {subItem.title}
                 </span>
                 {subItem.tag && (
-                  <Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+                  <Badge
+                    variant="secondary"
+                    className="text-muted-foreground ml-auto text-xs"
+                  >
                     {subItem.tag}
                   </Badge>
                 )}
@@ -480,12 +530,19 @@ const SidebarItemView = ({
             return (
               <SidebarMenuSubItem key={subItem.title}>
                 {subItem.hasAccess === false ? (
-                  <SidebarMenuSubButton data-nav-url={subItemHref} className={subItemClassName}>
+                  <SidebarMenuSubButton
+                    data-nav-url={subItemHref}
+                    className={subItemClassName}
+                  >
                     {subInner}
                   </SidebarMenuSubButton>
                 ) : (
                   <SidebarMenuSubButton asChild className={subItemClassName}>
-                    <Link to={subItemHref as any} preload="intent" data-nav-url={subItemHref}>
+                    <Link
+                      to={subItemHref as any}
+                      preload="intent"
+                      data-nav-url={subItemHref}
+                    >
                       {subInner}
                     </Link>
                   </SidebarMenuSubButton>
@@ -544,7 +601,10 @@ export default function AppSidebar() {
   const tsNavigate = useNavigate();
   // Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
   // strictly typed, but our sidebar items come from a runtime config).
-  const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
+  const navigate = useCallback(
+    (url: string) => tsNavigate({ to: url as string }),
+    [tsNavigate],
+  );
   const [mounted, setMounted] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -553,38 +613,92 @@ export default function AppSidebar() {
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
-  const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
+  const isProductionSetupDismissed =
+    !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
   const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
     skip: !mounted, // Only fetch after component is mounted
   });
   const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
-  const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
-  const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
-  const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
-  const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
+  const hasObservabilityAccess = useRbac(
+    RbacResource.Observability,
+    RbacOperation.View,
+  );
+  const hasDashboardAccess = useRbac(
+    RbacResource.Dashboard,
+    RbacOperation.View,
+  );
+  const hasModelProvidersAccess = useRbac(
+    RbacResource.ModelProvider,
+    RbacOperation.View,
+  );
+  const hasMCPGatewayAccess = useRbac(
+    RbacResource.MCPGateway,
+    RbacOperation.View,
+  );
+  const hasMCPToolGroupsAccess = useRbac(
+    RbacResource.MCPToolGroups,
+    RbacOperation.View,
+  );
   const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
   const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
   const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
-  const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
-  const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
-  const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+  const hasUserProvisioningAccess = useRbac(
+    RbacResource.UserProvisioning,
+    RbacOperation.View,
+  );
+  const hasAuditLogsAccess = useRbac(
+    RbacResource.AuditLogs,
+    RbacOperation.View,
+  );
+  const hasCustomersAccess = useRbac(
+    RbacResource.Customers,
+    RbacOperation.View,
+  );
   const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
-  const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+  const hasBusinessUnitsAccess = useRbac(
+    RbacResource.UserProvisioning,
+    RbacOperation.View,
+  );
   const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
-  const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
-  const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-  const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
+  const hasVirtualKeysAccess = useRbac(
+    RbacResource.VirtualKeys,
+    RbacOperation.View,
+  );
+  const hasGovernanceLegacyAccess = useRbac(
+    RbacResource.Governance,
+    RbacOperation.View,
+  );
+  const hasRoutingRulesAccess = useRbac(
+    RbacResource.RoutingRules,
+    RbacOperation.View,
+  );
   const hasGuardrailsProvidersAccess = useRbac(
     RbacResource.GuardrailsProviders,
     RbacOperation.View,
   );
-  const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
-  const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
-  const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
+  const hasGuardrailsConfigAccess = useRbac(
+    RbacResource.GuardrailsConfig,
+    RbacOperation.View,
+  );
+  const hasClusterConfigAccess = useRbac(
+    RbacResource.Cluster,
+    RbacOperation.View,
+  );
+  const isAdaptiveRoutingAllowed = useRbac(
+    RbacResource.AdaptiveRouter,
+    RbacOperation.View,
+  );
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+  const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
   const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
-  const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
-  const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+  const hasPromptRepositoryAccess = useRbac(
+    RbacResource.PromptRepository,
+    RbacOperation.View,
+  );
+  const hasAccessProfilesAccess = useRbac(
+    RbacResource.AccessProfiles,
+    RbacOperation.View,
+  );
   const hasAnyGovernanceAccess =
     hasVirtualKeysAccess ||
     hasTeamsAccess ||
@@ -611,7 +725,7 @@ export default function AppSidebar() {
             url: "/workspace/dashboard",
             icon: ChartColumnBig,
             description: "Dashboard",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasDashboardAccess,
           },
           {
             title: "LLM Logs",
@@ -715,6 +829,13 @@ export default function AppSidebar() {
             description: "Tool Groups",
             hasAccess: hasMCPToolGroupsAccess,
           },
+					{
+						title: "Auth Sessions",
+						url: "/workspace/mcp-sessions",
+						icon: KeyRound,
+						description: "Per-user OAuth sessions",
+						hasAccess: hasMCPGatewayAccess,
+					},
           {
             title: "MCP Settings",
             url: "/workspace/mcp-settings",
@@ -842,14 +963,14 @@ export default function AppSidebar() {
       },
       ...(isDbConnected
         ? [
-          {
-            title: "Prompt Repository",
-            url: "/workspace/prompt-repo",
-            icon: FolderGit,
-            description: "Prompt repository",
-            hasAccess: hasPromptRepositoryAccess,
-          },
-        ]
+            {
+              title: "Prompt Repository",
+              url: "/workspace/prompt-repo",
+              icon: FolderGit,
+              description: "Prompt repository",
+              hasAccess: hasPromptRepositoryAccess,
+            },
+          ]
         : []),
       {
         title: "Evals",
@@ -864,7 +985,8 @@ export default function AppSidebar() {
         url: "/workspace/config",
         icon: Settings2Icon,
         description: "Bifrost settings",
-        hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
+        hasAccess:
+          hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
         subItems: [
           {
             title: "Client Settings",
@@ -896,14 +1018,14 @@ export default function AppSidebar() {
           },
           ...(IS_ENTERPRISE
             ? [
-              {
-                title: "Proxy",
-                url: "/workspace/config/proxy",
-                icon: Globe,
-                description: "Proxy configuration",
-                hasAccess: hasSettingsAccess,
-              },
-            ]
+                {
+                  title: "Proxy",
+                  url: "/workspace/config/proxy",
+                  icon: Globe,
+                  description: "Proxy configuration",
+                  hasAccess: hasSettingsAccess,
+                },
+              ]
             : []),
           {
             title: "API Keys",
@@ -919,17 +1041,26 @@ export default function AppSidebar() {
             description: "Performance tuning settings",
             hasAccess: hasSettingsAccess,
           },
+          {
+            title: "Feature Flags",
+            url: "/workspace/config/feature-flags",
+            icon: Flag,
+            description: "Toggle feature flags",
+            hasAccess: hasFeatureFlagsAccess,
+          },
         ],
       },
     ],
     [
-        hasLogsAccess,
-        hasObservabilityAccess,
-        hasModelProvidersAccess,
-        hasMCPGatewayAccess,
-        hasMCPToolGroupsAccess,
-        hasMCPLogsAccess,
-        hasPluginsAccess,
+      hasLogsAccess,
+      hasAPIKeyAccess,
+      hasObservabilityAccess,
+      hasDashboardAccess,
+      hasModelProvidersAccess,
+      hasMCPGatewayAccess,
+      hasMCPToolGroupsAccess,
+      hasMCPLogsAccess,
+      hasPluginsAccess,
       hasUsersAccess,
       hasUserProvisioningAccess,
       hasAuditLogsAccess,
@@ -957,7 +1088,9 @@ export default function AppSidebar() {
       .map((item) => {
         const hadSubItems = !!item.subItems?.length;
         if (hadSubItems) {
-          const visibleSubItems = item.subItems!.filter((sub) => sub.hasAccess !== false);
+          const visibleSubItems = item.subItems!.filter(
+            (sub) => sub.hasAccess !== false,
+          );
           if (visibleSubItems.length === 0) return null;
           return { ...item, subItems: visibleSubItems, hasAccess: true };
         }
@@ -1042,7 +1175,9 @@ export default function AppSidebar() {
       if (!item.subItems?.length) return;
       const parentMatches = item.title.toLowerCase().includes(query);
       if (parentMatches) return;
-      const hasMatchingChild = item.subItems.some((sub) => sub.title.toLowerCase().includes(query));
+      const hasMatchingChild = item.subItems.some((sub) =>
+        sub.title.toLowerCase().includes(query),
+      );
       if (hasMatchingChild) {
         toExpand.add(item.title);
       }
@@ -1078,7 +1213,8 @@ export default function AppSidebar() {
     }[] = [];
     for (const item of filteredItems) {
       if (item.isExternal) {
-        if (item.hasAccess) result.push({ title: item.title, url: item.url, isExternal: true });
+        if (item.hasAccess)
+          result.push({ title: item.title, url: item.url, isExternal: true });
         continue;
       }
       const hasSubItems = item.subItems && item.subItems.length > 0;
@@ -1108,7 +1244,9 @@ export default function AppSidebar() {
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setFocusedIndex((prev) => Math.min(prev + 1, navigableItems.length - 1));
+        setFocusedIndex((prev) =>
+          Math.min(prev + 1, navigableItems.length - 1),
+        );
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setFocusedIndex((prev) => Math.max(prev - 1, 0));
@@ -1163,7 +1301,10 @@ export default function AppSidebar() {
     // Avoid double-highlighting with "/workspace/custom-pricing/overrides"
     if (url === "/workspace/custom-pricing") return pathname === url;
     if (url !== "/" && pathname.startsWith(url)) {
-      if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
+      if (
+        url === "/workspace/config" &&
+        configExceptions.some((e) => pathname.startsWith(e))
+      ) {
         return false;
       }
       return true;
@@ -1173,9 +1314,13 @@ export default function AppSidebar() {
 
   // Always render the light theme version for SSR to avoid hydration mismatch
   const logoSrc =
-    mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
+    mounted && resolvedTheme === "dark"
+      ? "/bifrost-logo-dark.webp"
+      : "/bifrost-logo.webp";
   const iconSrc =
-    mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.webp" : "/bifrost-icon.webp";
+    mounted && resolvedTheme === "dark"
+      ? "/bifrost-icon-dark.webp"
+      : "/bifrost-icon.webp";
 
   const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -1209,7 +1354,11 @@ export default function AppSidebar() {
         title: `${latestRelease.name} is now available.`,
         description: (
           <div className="flex h-full flex-col gap-2">
-            <img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
+            <img
+              src={newReleaseImage}
+              alt="Bifrost"
+              className="h-[95px] rounded-md object-cover"
+            />
             <a
               href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
               target="_blank"
@@ -1247,7 +1396,9 @@ export default function AppSidebar() {
   const hasPromoCards = promoCards.length > 0 && !areCardsEmpty;
   // When cards are present: 13rem (header 3rem + bottom section ~10rem)
   // When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
-  const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
+  const sidebarGroupHeight = hasPromoCards
+    ? "h-[calc(100vh-13rem)]"
+    : "h-[calc(100vh-8rem)]";
 
   const handleCardsEmpty = () => {
     setAreCardsEmpty(true);
@@ -1281,12 +1432,24 @@ export default function AppSidebar() {
   const { state: sidebarState, toggleSidebar } = useSidebar();
 
   return (
-    <Sidebar collapsible="icon" className="overflow-y-clip border-none bg-transparent">
+    <Sidebar
+      collapsible="icon"
+      className="overflow-y-clip border-none bg-transparent"
+    >
       <SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
         {/* Expanded state: horizontal layout */}
         <div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
-          <Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
-            <img className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+          <Link
+            to="/workspace/logs"
+            className="group flex items-center gap-2 pl-2"
+          >
+            <img
+              className="h-[22px] w-auto"
+              src={logoSrc}
+              alt="Bifrost"
+              width={70}
+              height={70}
+            />
           </Link>
           <button
             onClick={toggleSidebar}
@@ -1330,20 +1493,28 @@ export default function AppSidebar() {
             className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-transparent"
           />
           <kbd className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 flex -translate-y-1/2 gap-0.5 text-[10px]">
-            <span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">⌘</span>
-            <span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">K</span>
+            <span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">
+              ⌘
+            </span>
+            <span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">
+              K
+            </span>
           </kbd>
         </div>
       </div>
       <SidebarContent className="overflow-hidden pb-4">
-        <SidebarGroup className={`custom-scrollbar ${sidebarGroupHeight} overflow-scroll`}>
+        <SidebarGroup
+          className={`custom-scrollbar ${sidebarGroupHeight} overflow-scroll`}
+        >
           <SidebarGroupContent>
             <SidebarMenu className="space-y-0.5">
               {filteredItems.map((item) => {
                 const isActive = isActiveRoute(item.url);
 
                 const highlightedUrl =
-                  focusedIndex >= 0 ? navigableItems[focusedIndex]?.url : undefined;
+                  focusedIndex >= 0
+                    ? navigableItems[focusedIndex]?.url
+                    : undefined;
                 return (
                   <SidebarItemView
                     key={item.title}
@@ -1374,28 +1545,34 @@ export default function AppSidebar() {
           </div>
           <div className="flex flex-row">
             <div className="mx-auto flex flex-row gap-4 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
-              {externalLinks.map((item, index) => (
-                <a
-                  key={index}
-                  href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group flex w-full items-center justify-between"
-                  title={item.title}
-                >
-                  <div className="flex items-center space-x-3">
-                    <item.icon
-                      className="hover:text-primary text-muted-foreground h-5 w-5"
-                      size={22}
-                      weight="regular"
-                      strokeWidth={item.strokeWidth}
-                    />
-                  </div>
-                </a>
-              ))}
+              {sidebarState !== "collapsed" &&
+                externalLinks.map((item, index) => (
+                  <a
+                    key={index}
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group flex w-full items-center justify-between"
+                    title={item.title}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <item.icon
+                        className="hover:text-primary text-muted-foreground h-5 w-5"
+                        size={22}
+                        weight="regular"
+                        strokeWidth={item.strokeWidth}
+                      />
+                    </div>
+                  </a>
+                ))}
               <ThemeToggle />
-              {IS_ENTERPRISE && userInfo && (userInfo.name || userInfo.email) ? (
-                <Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
+              {IS_ENTERPRISE &&
+              userInfo &&
+              (userInfo.name || userInfo.email) ? (
+                <Popover
+                  open={userPopoverOpen}
+                  onOpenChange={setUserPopoverOpen}
+                >
                   <PopoverTrigger asChild>
                     <button
                       className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
@@ -1449,7 +1626,7 @@ export default function AppSidebar() {
                   onClick={toggleSidebar}
                   type="button"
                   data-testid="sidebar-expand-btn"
-                  className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center justify-center rounded-md transition-colors cursor-pointer"
+                  className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
                   aria-label="Expand sidebar"
                 >
                   <PanelLeftOpen className="h-4 w-4" />

@@ -316,8 +316,6 @@ SearchMCPLogsResponse:
           type: integer
           format: int64
           description: Total number of items matching the query
-    stats:
-      $ref: '#/MCPToolLogStats'
     has_logs:
       type: boolean
       description: Whether any logs exist in the system
@@ -827,3 +825,325 @@ ProviderLatencyHistogramResult:
       type: array
       items:
         type: string
+
+HistogramDimension:
+  type: string
+  description: |
+    Grouping dimension for dimension-aware histograms. Used by the
+    `/api/logs/histogram/{cost,tokens,latency}/by-dimension` endpoints.
+  enum:
+    - provider
+    - team_id
+    - customer_id
+    - user_id
+    - business_unit_id
+
+DimensionCostHistogramBucket:
+  type: object
+  description: Time-bucketed cost data grouped by an arbitrary dimension
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    total_cost:
+      type: number
+    by_dimension:
+      type: object
+      additionalProperties:
+        type: number
+      description: Cost breakdown keyed by the dimension value
+
+DimensionCostHistogramResult:
+  type: object
+  description: Dimension-grouped cost histogram result
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/DimensionCostHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    dimension:
+      $ref: '#/HistogramDimension'
+    dimension_values:
+      type: array
+      items:
+        type: string
+
+DimensionTokenStats:
+  type: object
+  description: Token statistics for a single dimension value
+  properties:
+    prompt_tokens:
+      type: integer
+      format: int64
+    completion_tokens:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+
+DimensionTokenHistogramBucket:
+  type: object
+  description: Time-bucketed token usage grouped by an arbitrary dimension
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_dimension:
+      type: object
+      additionalProperties:
+        $ref: '#/DimensionTokenStats'
+
+DimensionTokenHistogramResult:
+  type: object
+  description: Dimension-grouped token histogram result
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/DimensionTokenHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    dimension:
+      $ref: '#/HistogramDimension'
+    dimension_values:
+      type: array
+      items:
+        type: string
+
+DimensionLatencyStats:
+  type: object
+  description: Latency statistics for a single dimension value
+  properties:
+    avg_latency:
+      type: number
+    p90_latency:
+      type: number
+    p95_latency:
+      type: number
+    p99_latency:
+      type: number
+    total_requests:
+      type: integer
+      format: int64
+
+DimensionLatencyHistogramBucket:
+  type: object
+  description: Time-bucketed latency data grouped by an arbitrary dimension
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_dimension:
+      type: object
+      additionalProperties:
+        $ref: '#/DimensionLatencyStats'
+
+DimensionLatencyHistogramResult:
+  type: object
+  description: Dimension-grouped latency histogram result
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/DimensionLatencyHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    dimension:
+      $ref: '#/HistogramDimension'
+    dimension_values:
+      type: array
+      items:
+        type: string
+
+SessionDetailResult:
+  type: object
+  description: Paginated logs for a single parent-request session
+  properties:
+    session_id:
+      type: string
+    logs:
+      type: array
+      items:
+        $ref: '#/LogEntry'
+    pagination:
+      type: object
+      description: Pagination metadata. Session logs are always sorted by timestamp; the `sort_by` field is not configurable.
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        order:
+          type: string
+          enum: [asc, desc]
+        total_count:
+          type: integer
+          format: int64
+          description: Total number of items matching the query
+    count:
+      type: integer
+      format: int64
+      description: Total log count for this session
+    returned_count:
+      type: integer
+      description: Number of logs returned in this response
+    has_more:
+      type: boolean
+
+SessionSummaryResult:
+  type: object
+  description: Aggregate totals for a single parent-request session
+  properties:
+    session_id:
+      type: string
+    count:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+    total_tokens:
+      type: integer
+      format: int64
+    started_at:
+      type: string
+      description: Timestamp of the first log in the session (RFC3339 nanos)
+    latest_at:
+      type: string
+      description: Timestamp of the most recent log in the session (RFC3339 nanos)
+    duration_ms:
+      type: integer
+      format: int64
+
+ModelRankingEntry:
+  type: object
+  description: Aggregated stats for a single model over the query period
+  properties:
+    model:
+      type: string
+    provider:
+      type: string
+    total_requests:
+      type: integer
+      format: int64
+    success_count:
+      type: integer
+      format: int64
+    success_rate:
+      type: number
+    total_tokens:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+    avg_latency:
+      type: number
+
+ModelRankingTrend:
+  type: object
+  description: Percentage change versus the previous comparable period
+  properties:
+    has_previous_period:
+      type: boolean
+    requests_trend:
+      type: number
+    tokens_trend:
+      type: number
+    cost_trend:
+      type: number
+    latency_trend:
+      type: number
+
+ModelRankingWithTrend:
+  allOf:
+    - $ref: '#/ModelRankingEntry'
+    - type: object
+      properties:
+        trend:
+          $ref: '#/ModelRankingTrend'
+
+ModelRankingResult:
+  type: object
+  description: Models ranked by usage with trend comparison
+  properties:
+    rankings:
+      type: array
+      items:
+        $ref: '#/ModelRankingWithTrend'
+
+MCPHistogramBucket:
+  type: object
+  description: Time-bucketed MCP tool call volume
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    count:
+      type: integer
+      format: int64
+    success:
+      type: integer
+      format: int64
+    error:
+      type: integer
+      format: int64
+
+MCPHistogramResult:
+  type: object
+  description: Time-bucketed MCP tool call volume histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/MCPHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+MCPCostHistogramBucket:
+  type: object
+  description: Time-bucketed MCP cost data
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    total_cost:
+      type: number
+
+MCPCostHistogramResult:
+  type: object
+  description: Time-bucketed MCP cost histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/MCPCostHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+MCPTopToolResult:
+  type: object
+  description: Aggregated stats for a single MCP tool
+  properties:
+    tool_name:
+      type: string
+    count:
+      type: integer
+      format: int64
+    cost:
+      type: number
+
+MCPTopToolsResult:
+  type: object
+  description: Top MCP tools by call count (limit 10)
+  properties:
+    tools:
+      type: array
+      items:
+        $ref: '#/MCPTopToolResult'

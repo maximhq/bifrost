@@ -75,6 +75,7 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
+	r.POST("/api/config/metadata", lib.ChainMiddlewares(h.updateMetadata, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
@@ -190,8 +191,46 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else if restartConfig != nil {
 			mapConfig["restart_required"] = restartConfig
 		}
+		// Fetching UI/admin metadata blob (onboarding_dismissed, etc.).
+		// This is a free-form key/value store that bypasses config.json sync.
+		if metadata, err := h.store.ConfigStore.GetClientMetadata(ctx); err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				logger.Warn("failed to get client metadata from store: %v", err)
+			}
+		} else if len(metadata) > 0 {
+			mapConfig["metadata"] = metadata
+		}
 	}
 	SendJSON(ctx, mapConfig)
+}
+
+// updateMetadata handles POST /api/config/metadata - merges a JSON object of
+// key/value pairs into the ClientConfig metadata blob. Keys with a nil value
+// are removed. Intended for UI/admin preferences (onboarding state, dismissed
+// tooltips, etc.) and is auth-gated by the same middleware as the rest of /api/config.
+func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(ctx.PostBody(), &patch); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	if len(patch) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
+		return
+	}
+	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"success": true})
 }
 
 // updateConfig updates the core configuration settings.
@@ -218,10 +257,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
 	// plugin reload, in-memory MCP config) before persisting, so a late
 	// rejection would leave the process in a partially-updated state.
-	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalServerURL.GetValue()); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_server_url %v", err))
-		return
-	}
 	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
 		return
@@ -240,6 +275,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if resp.StatusCode != http.StatusOK {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			return
+		}
+	}
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
+		if err != nil {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
 			return
 		}
 	}
@@ -442,7 +492,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
-	updatedConfig.MCPExternalServerURL = payload.ClientConfig.MCPExternalServerURL
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
 	// Handle HeaderFilterConfig changes
@@ -496,6 +545,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			ID:                  0,
 			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
 			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			ModelParametersURL:  bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
 		}
 	}
 	// Handling individual nil cases
@@ -504,6 +554,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if frameworkConfig.PricingSyncInterval == nil {
 		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
+	}
+	if frameworkConfig.ModelParametersURL == nil {
+		frameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -531,6 +584,31 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.ModelParametersURL != nil {
+		effectiveModelParamsURL := *payload.FrameworkConfig.ModelParametersURL
+		if effectiveModelParamsURL == "" {
+			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
+		}
+		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
+			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
+				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
+				if err != nil {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+					return
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+					return
+				}
+			}
+			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -543,6 +621,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			Pricing: &modelcatalog.Config{
 				PricingURL:          frameworkConfig.PricingURL,
 				PricingSyncInterval: &syncSeconds,
+				ModelParametersURL:  frameworkConfig.ModelParametersURL,
 			},
 		}
 		// Saving framework config

@@ -382,6 +382,7 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
 }
 
 // Auth config
@@ -446,6 +447,13 @@ export interface RestartRequiredConfig {
 }
 
 // Bifrost Config
+export type PluginSpanFilterMode = "include" | "exclude";
+
+export interface PluginSpanFilter {
+	mode: PluginSpanFilterMode;
+	plugins: string[];
+}
+
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
@@ -456,6 +464,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CompatConfig {
@@ -493,7 +502,6 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_server_url?: EnvVar;
 	mcp_external_client_url?: EnvVar;
 }
 
@@ -527,12 +535,14 @@ export const DefaultCoreConfig: CoreConfig = {
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
-	ttl_seconds: number;
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
 }

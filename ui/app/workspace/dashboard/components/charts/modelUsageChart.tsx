@@ -1,4 +1,5 @@
 import type { ModelHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -46,13 +47,8 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 							return (
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span
-											className="h-2 w-2 rounded-full"
-											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-										/>
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
-											{isOther ? OTHER_SERIES_LABEL : model}
-										</span>
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : model}</span>
 									</span>
 									<span className="font-medium">{total.toLocaleString()}</span>
 								</div>
@@ -166,8 +162,8 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -225,8 +221,8 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>

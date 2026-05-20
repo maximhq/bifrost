@@ -491,7 +491,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -767,7 +767,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,

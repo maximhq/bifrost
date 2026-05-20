@@ -54,14 +54,14 @@ export default function ModelCatalogView() {
 						() =>
 							[
 								p.name,
-								{ 
-									total_requests: 0, 
-									success_rate: 0, 
-									user_facing_success_rate: 0, 
-									average_latency: 0, 
-									user_facing_total_requests:0,
-									total_tokens: 0, 
-									total_cost: 0 
+								{
+									total_requests: 0,
+									success_rate: 0,
+									user_facing_success_rate: 0,
+									average_latency: 0,
+									user_facing_total_requests: 0,
+									total_tokens: 0,
+									total_cost: 0,
 								},
 							] as const,
 					),

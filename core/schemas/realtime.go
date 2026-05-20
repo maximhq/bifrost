@@ -181,7 +181,7 @@ type RealtimeSessionRoute struct {
 type RealtimeProvider interface {
 	SupportsRealtimeAPI() bool
 	RealtimeWebSocketURL(key Key, model string) string
-	RealtimeHeaders(key Key) map[string]string
+	RealtimeHeaders(ctx *BifrostContext, key Key) (map[string]string, *BifrostError)
 	// SupportsRealtimeWebRTC reports whether the provider supports WebRTC SDP exchange.
 	SupportsRealtimeWebRTC() bool
 	// ExchangeRealtimeWebRTCSDP performs the provider-specific SDP signaling exchange.

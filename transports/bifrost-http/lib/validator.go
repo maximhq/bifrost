@@ -16,8 +16,8 @@ import (
 // localSchemaCandidates lists paths (relative to CWD) where config.schema.json may be found
 // when running from a source checkout. Checked in order before falling back to the remote URL.
 var localSchemaCandidates = []string{
-	"config.schema.json",         // running from transports/
-	"../config.schema.json",      // running from transports/bifrost-http/
+	"config.schema.json",            // running from transports/
+	"../config.schema.json",         // running from transports/bifrost-http/
 	"transports/config.schema.json", // running from repo root
 }
 

@@ -20,6 +20,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	AccessProfileID                    uint // When set, return VKs attached to this access profile template
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)
@@ -92,10 +93,20 @@ type ConfigStore interface {
 	// Client config CRUD
 	UpdateClientConfig(ctx context.Context, config *ClientConfig) error
 	GetClientConfig(ctx context.Context) (*ClientConfig, error)
+	// Client config metadata (UI/admin preferences blob — bypasses config.json sync)
+	GetClientMetadata(ctx context.Context) (map[string]any, error)
+	UpdateClientMetadata(ctx context.Context, patch map[string]any) error
 
 	// Framework config CRUD
 	UpdateFrameworkConfig(ctx context.Context, config *tables.TableFrameworkConfig) error
 	GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error)
+
+	// Feature flag overrides: list + upsert. Flags themselves are
+	// code-declared (via featureflags.Register); only the toggle state
+	// lives here. There is intentionally no Delete: removing a flag means
+	// removing its Register() call in code.
+	ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error)
+	UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error
 
 	// Provider config CRUD
 	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
@@ -174,6 +185,7 @@ type ConfigStore interface {
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
+	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	DeleteTeam(ctx context.Context, id string) error
@@ -246,6 +258,15 @@ type ConfigStore interface {
 	DeleteSession(ctx context.Context, token string) error
 	FlushSessions(ctx context.Context) error
 
+	// Temp token CRUD
+	CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error
+	GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error)
+	// DeleteTempTokensByResourceID removes every row matching (scope, resource_id).
+	// Used by lifecycle owners (e.g. OAuth provider on flow termination) to burn
+	// the link as soon as the work it authorized is finished.
+	DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error)
+	DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error)
+
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
@@ -312,52 +333,59 @@ type ConfigStore interface {
 
 	// Per-user OAuth session CRUD
 	GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error)
-	GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
 	ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
-	GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error)
+	// GetOauthUserSessionByModeIdentityAndMCPClient returns the canonical flow
+	// row for an (identity, mcp_client) binding. Used at flow-init time as the
+	// single source of truth: reauth updates this row in place rather than
+	// inserting a new one. Returns (nil, nil) when no row exists.
+	GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error)
 	CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
 	UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
 
 	// Per-user OAuth token CRUD
-	GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error)
-	GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error)
+	// GetOauthUserTokenByMode looks up the active token row keyed by a single
+	// identity dimension. Filters status='active'. identity is the user ID for
+	// AuthModeUser, the VK row ID for AuthModeVK, and the session ID for
+	// AuthModeSession.
+	GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error)
 	CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
 	UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
 	DeleteOauthUserToken(ctx context.Context, id string) error
-	DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error
-
-	// Per-user OAuth Authorization Server CRUD (Bifrost as OAuth server)
-	GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error)
-	CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error
-	GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error)
-	GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error)
-	CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
-	UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
-	DeletePerUserOAuthSession(ctx context.Context, id string) error
-	GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
-	ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
-	CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
-	UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
-
-	// Per-user OAuth consent flow (pending flows before code issuance)
-	GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error)
-	CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
-	UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
-	DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error
-	// ConsumePerUserOAuthPendingFlow atomically deletes a pending flow and returns the number of
-	// rows affected. Returns 0 if the flow was already consumed by a concurrent request.
-	ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error)
-	// FinalizePerUserOAuthConsent atomically consumes a pending flow, creates the session,
-	// and creates the authorization code in a single transaction. Returns (0, nil) if the
-	// flow was already consumed by a concurrent request.
-	FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error)
-	// GetOauthUserTokensByGatewaySessionID returns all upstream tokens linked to a gateway session ID.
-	// Used during consent submit to discover which MCPs the user authenticated with.
-	// Queries tokens via upstream sessions matching the given gateway session ID.
-	GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error)
-	// TransferOauthUserTokensFromGatewaySession migrates upstream tokens from all flow proxy sessions
-	// (identified by gateway_session_id) to the real Bifrost session token, and sets VirtualKeyID/UserID on each record.
-	TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error
+	// DeleteOauthUserSession hard-deletes a single flow row by primary key.
+	// Used by CompleteUserOAuthFlow on terminal transitions so completed,
+	// failed, and expired-at-completion flows don't accumulate. The UI
+	// treats 404 on flow-detail as "expired or completed".
+	DeleteOauthUserSession(ctx context.Context, id string) error
+	// DeleteOauthUserSessionsByModeIdentityAndMCPClient hard-deletes any flow
+	// rows matching the given identity column + MCP client. Used by revoke
+	// across all auth modes so subsequent OAuth init starts from a clean slate.
+	DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
+	// MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth'
+	// on a single token row. Called by the refresh-failure path when
+	// the upstream credential is permanently rejected: the row stays
+	// (preserves audit + binding for re-auth), but is filtered from
+	// active lookups so the next inference triggers a fresh OAuth
+	// flow that upserts the row back to 'active'.
+	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// GetOauthUserTokenByID looks up a single token row by primary key.
+	// Returns nil, nil when not found.
+	GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error)
+	// ListAllOauthUserTokens returns every token row regardless of status.
+	// The sessions UI renders all three states (active / orphaned /
+	// needs_reauth) with distinct affordances, so hiding any of them only
+	// breaks the user's ability to act on rows that need their attention.
+	// Runtime token lookups apply their own status='active' filter and don't
+	// go through this method.
+	ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error)
+	// ListAllPendingOauthUserSessions returns all pending OAuth flow rows.
+	// Companion to ListAllOauthUserTokens for the admin view.
+	ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error)
+	// DeleteExpiredOauthUserSessions hard-deletes pending OAuth flow rows
+	// whose ExpiresAt has passed. Returns the number of rows removed.
+	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
+	// DeleteOrphanedOauthUserTokens hard-deletes token rows where status='orphaned'
+	// and updated_at is older than olderThan. Returns the number of rows removed.
+	DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
@@ -372,7 +400,7 @@ type ConfigStore interface {
 	// Prompt Repository - Prompts
 	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
 	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
-	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error
 	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
 	DeletePrompt(ctx context.Context, id string) error
 
@@ -394,6 +422,12 @@ type ConfigStore interface {
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
+
+	// ScopedDB returns the underlying DB bound to ctx with any
+	// QueryScope on ctx pre-applied. Use this in read paths that
+	// should respect caller-driven row visibility; use DB().WithContext(ctx)
+	// for writes and internal lookups that must bypass scoping.
+	ScopedDB(ctx context.Context) *gorm.DB
 
 	// RunMigration opens a throwaway *gorm.DB against the same
 	// backing database, invokes fn with it, and closes the connection. Use

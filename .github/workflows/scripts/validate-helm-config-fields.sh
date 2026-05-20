@@ -637,7 +637,6 @@ bifrost:
         cache_by_model: true
         cache_by_provider: false
         exclude_system_prompt: true
-        cleanup_on_shutdown: true
         vector_store_namespace: "bifrost-cache"
     otel:
       enabled: true
@@ -710,7 +709,6 @@ assert_field_value 'plugins: semantic_cache conversation_history_threshold' '.pl
 assert_field_value 'plugins: semantic_cache cache_by_model' '.plugins.[4].config.cache_by_model' 'true'
 assert_field_value 'plugins: semantic_cache cache_by_provider' '.plugins.[4].config.cache_by_provider' 'false'
 assert_field_value 'plugins: semantic_cache exclude_system_prompt' '.plugins.[4].config.exclude_system_prompt' 'true'
-assert_field_value 'plugins: semantic_cache cleanup_on_shutdown' '.plugins.[4].config.cleanup_on_shutdown' 'true'
 assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4].config.vector_store_namespace' '"bifrost-cache"'
 
 # OTEL plugin
@@ -871,7 +869,7 @@ assert_field_value 'cluster_config.discovery.k8s_label_selector' '.cluster_confi
 # Gap 7: Cluster region
 assert_field_value 'cluster_config.region' '.cluster_config.region' '"us-east-1"'
 
-# SCIM - Okta
+# SCIM - Okta (baseline + attribute mappings)
 cat > "$TMPDIR/values-scim-okta.yaml" << 'VALS'
 image:
   tag: v1.0.0
@@ -888,6 +886,18 @@ bifrost:
       userIdField: "sub"
       teamIdsField: "groups"
       rolesField: "roles"
+      attributeRoleMappings:
+        - attribute: "groups"
+          value: "bifrost-admins"
+          role: "admin"
+      attributeTeamMappings:
+        - attribute: "groups"
+          value: "*"
+          team: ""
+      attributeBusinessUnitMappings:
+        - attribute: "department"
+          value: "platform"
+          business_unit: "Platform"
 VALS
 
 render_config "$TMPDIR/values-scim-okta.yaml"
@@ -896,7 +906,14 @@ assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
 assert_field 'scim_config.config' '.scim_config.config'
 assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
 assert_field 'scim_config.config.clientSecret' '.scim_config.config.clientSecret'
-# SCIM - Entra
+assert_field_value 'scim_config (okta) attributeRoleMappings[0].attribute' '.scim_config.config.attributeRoleMappings.[0].attribute' '"groups"'
+assert_field_value 'scim_config (okta) attributeRoleMappings[0].value' '.scim_config.config.attributeRoleMappings.[0].value' '"bifrost-admins"'
+assert_field_value 'scim_config (okta) attributeRoleMappings[0].role' '.scim_config.config.attributeRoleMappings.[0].role' '"admin"'
+assert_field_value 'scim_config (okta) attributeTeamMappings[0].attribute' '.scim_config.config.attributeTeamMappings.[0].attribute' '"groups"'
+assert_field_value 'scim_config (okta) attributeTeamMappings[0].value' '.scim_config.config.attributeTeamMappings.[0].value' '"*"'
+assert_field_value 'scim_config (okta) attributeBusinessUnitMappings[0].business_unit' '.scim_config.config.attributeBusinessUnitMappings.[0].business_unit' '"Platform"'
+
+# SCIM - Entra (baseline + attribute mappings)
 cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
   tag: v1.0.0
@@ -913,6 +930,18 @@ bifrost:
       userIdField: "oid"
       teamIdsField: "groups"
       rolesField: "roles"
+      attributeRoleMappings:
+        - attribute: "roles"
+          value: "BifrostAdmin"
+          role: "admin"
+      attributeTeamMappings:
+        - attribute: "groups"
+          value: "11111111-2222-3333-4444-555555555555"
+          team: "platform-team"
+      attributeBusinessUnitMappings:
+        - attribute: "department"
+          value: "Platform"
+          business_unit: "Platform BU"
 VALS
 
 render_config "$TMPDIR/values-scim-entra.yaml"
@@ -921,6 +950,131 @@ assert_field 'scim_config (entra) config' '.scim_config.config'
 assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
 assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
 assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
+assert_field_value 'scim_config (entra) attributeRoleMappings[0].role' '.scim_config.config.attributeRoleMappings.[0].role' '"admin"'
+assert_field_value 'scim_config (entra) attributeTeamMappings[0].team' '.scim_config.config.attributeTeamMappings.[0].team' '"platform-team"'
+assert_field_value 'scim_config (entra) attributeBusinessUnitMappings[0].business_unit' '.scim_config.config.attributeBusinessUnitMappings.[0].business_unit' '"Platform BU"'
+
+# SCIM - Keycloak (baseline + attribute mappings)
+cat > "$TMPDIR/values-scim-keycloak.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  scim:
+    enabled: true
+    provider: "keycloak"
+    config:
+      serverUrl: "https://keycloak.example.com"
+      realm: "bifrost-prod"
+      clientId: "bifrost"
+      clientSecret: "kc-secret"
+      audience: "bifrost"
+      userIdField: "sub"
+      teamIdsField: "groups"
+      rolesField: "roles"
+      attributeRoleMappings:
+        - attribute: "realm_access.roles"
+          value: "bifrost-admin"
+          role: "admin"
+      attributeTeamMappings:
+        - attribute: "groups"
+          value: "platform"
+          team: "platform-team"
+      attributeBusinessUnitMappings:
+        - attribute: "department"
+          value: "platform"
+          business_unit: "Platform"
+VALS
+
+render_config "$TMPDIR/values-scim-keycloak.yaml"
+assert_field_value 'scim_config (keycloak) provider' '.scim_config.provider' '"keycloak"'
+assert_field_value 'scim_config (keycloak) serverUrl' '.scim_config.config.serverUrl' '"https://keycloak.example.com"'
+assert_field_value 'scim_config (keycloak) realm' '.scim_config.config.realm' '"bifrost-prod"'
+assert_field_value 'scim_config (keycloak) attributeRoleMappings[0].attribute' '.scim_config.config.attributeRoleMappings.[0].attribute' '"realm_access.roles"'
+assert_field_value 'scim_config (keycloak) attributeRoleMappings[0].role' '.scim_config.config.attributeRoleMappings.[0].role' '"admin"'
+assert_field_value 'scim_config (keycloak) attributeTeamMappings[0].team' '.scim_config.config.attributeTeamMappings.[0].team' '"platform-team"'
+assert_field_value 'scim_config (keycloak) attributeBusinessUnitMappings[0].business_unit' '.scim_config.config.attributeBusinessUnitMappings.[0].business_unit' '"Platform"'
+
+# SCIM - Zitadel (baseline + attribute mappings)
+cat > "$TMPDIR/values-scim-zitadel.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  scim:
+    enabled: true
+    provider: "zitadel"
+    config:
+      domain: "my-instance.zitadel.cloud"
+      clientId: "zitadel-client-id"
+      clientSecret: "zitadel-secret"
+      projectId: "project-uuid"
+      audience: "zitadel-client-id"
+      serviceAccountClientId: "sa-client-id"
+      serviceAccountClientSecret: "sa-client-secret"
+      teamIdsField: "groups"
+      attributeRoleMappings:
+        - attribute: "urn:zitadel:iam:org:project:roles"
+          value: "admin"
+          role: "admin"
+      attributeTeamMappings:
+        - attribute: "groups"
+          value: "platform"
+          team: "platform-team"
+      attributeBusinessUnitMappings:
+        - attribute: "department"
+          value: "Engineering"
+          business_unit: "Engineering"
+VALS
+
+render_config "$TMPDIR/values-scim-zitadel.yaml"
+assert_field_value 'scim_config (zitadel) provider' '.scim_config.provider' '"zitadel"'
+assert_field_value 'scim_config (zitadel) domain' '.scim_config.config.domain' '"my-instance.zitadel.cloud"'
+assert_field 'scim_config (zitadel) clientId' '.scim_config.config.clientId'
+assert_field 'scim_config (zitadel) serviceAccountClientId' '.scim_config.config.serviceAccountClientId'
+assert_field_value 'scim_config (zitadel) attributeRoleMappings[0].attribute' '.scim_config.config.attributeRoleMappings.[0].attribute' '"urn:zitadel:iam:org:project:roles"'
+assert_field_value 'scim_config (zitadel) attributeRoleMappings[0].role' '.scim_config.config.attributeRoleMappings.[0].role' '"admin"'
+assert_field_value 'scim_config (zitadel) attributeTeamMappings[0].team' '.scim_config.config.attributeTeamMappings.[0].team' '"platform-team"'
+assert_field_value 'scim_config (zitadel) attributeBusinessUnitMappings[0].business_unit' '.scim_config.config.attributeBusinessUnitMappings.[0].business_unit' '"Engineering"'
+
+# SCIM - Google Workspace (baseline + attribute mappings)
+cat > "$TMPDIR/values-scim-google.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  scim:
+    enabled: true
+    provider: "google"
+    config:
+      domain: "example.com"
+      clientId: "google-client-id"
+      clientSecret: "google-secret"
+      credentialMode: "env"
+      serviceAccountEnvVar: "env.GOOGLE_SA_JSON"
+      adminEmail: "admin@example.com"
+      audience: "google-client-id"
+      teamIdsField: "groups"
+      attributeRoleMappings:
+        - attribute: "groups"
+          value: "bifrost-admins@example.com"
+          role: "admin"
+      attributeTeamMappings:
+        - attribute: "groups"
+          value: "*"
+          team: ""
+      attributeBusinessUnitMappings:
+        - attribute: "department"
+          value: "Engineering"
+          business_unit: "Engineering"
+VALS
+
+render_config "$TMPDIR/values-scim-google.yaml"
+assert_field_value 'scim_config (google) provider' '.scim_config.provider' '"google"'
+assert_field_value 'scim_config (google) domain' '.scim_config.config.domain' '"example.com"'
+assert_field_value 'scim_config (google) credentialMode' '.scim_config.config.credentialMode' '"env"'
+assert_field 'scim_config (google) serviceAccountEnvVar' '.scim_config.config.serviceAccountEnvVar'
+assert_field 'scim_config (google) adminEmail' '.scim_config.config.adminEmail'
+assert_field_value 'scim_config (google) attributeRoleMappings[0].role' '.scim_config.config.attributeRoleMappings.[0].role' '"admin"'
+assert_field_value 'scim_config (google) attributeTeamMappings[0].value' '.scim_config.config.attributeTeamMappings.[0].value' '"*"'
+assert_field_value 'scim_config (google) attributeBusinessUnitMappings[0].business_unit' '.scim_config.config.attributeBusinessUnitMappings.[0].business_unit' '"Engineering"'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'

@@ -1,11 +1,11 @@
 import type { ProviderTokenHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
 	CHART_COLORS,
 	formatFullTimestamp,
 	formatTimestamp,
-	formatTokens,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
@@ -35,20 +35,15 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 			<div className="space-y-1 text-sm">
 				{displayProviders.map((provider: string, idx: number) => {
 					const isOther = provider === OTHER_SERIES_KEY;
-					const tokens = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : (data.by_provider?.[provider]?.total_tokens || 0);
+					const tokens = isOther ? (data[OTHER_SERIES_KEY] ?? 0) : data.by_provider?.[provider]?.total_tokens || 0;
 					if (tokens === 0) return null;
 					return (
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span
-									className="h-2 w-2 rounded-full"
-									style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-								/>
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
-									{isOther ? OTHER_SERIES_LABEL : provider}
-								</span>
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : provider}</span>
 							</span>
-							<span className="font-medium">{formatTokens(tokens)}</span>
+							<span className="font-medium">{formatCompactNumber(tokens)}</span>
 						</div>
 					);
 				})}
@@ -75,18 +70,18 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
 						<span className="text-zinc-600 dark:text-zinc-400">Input</span>
 					</span>
-					<span className="font-medium">{formatTokens(stats.prompt_tokens || 0)}</span>
+					<span className="font-medium">{formatCompactNumber(stats.prompt_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
 						<span className="text-zinc-600 dark:text-zinc-400">Output</span>
 					</span>
-					<span className="font-medium">{formatTokens(stats.completion_tokens || 0)}</span>
+					<span className="font-medium">{formatCompactNumber(stats.completion_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
 					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
-					<span className="font-medium">{formatTokens(stats.total_tokens || 0)}</span>
+					<span className="font-medium">{formatCompactNumber(stats.total_tokens || 0)}</span>
 				</div>
 			</div>
 		</div>
@@ -132,9 +127,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 				}
 				providers.forEach((provider, idx) => {
 					item[`provider_${idx}`] =
-						provider === OTHER_SERIES_KEY
-							? (item[OTHER_SERIES_KEY] ?? 0)
-							: (bucket.by_provider?.[provider]?.total_tokens ?? 0);
+						provider === OTHER_SERIES_KEY ? (item[OTHER_SERIES_KEY] ?? 0) : (bucket.by_provider?.[provider]?.total_tokens ?? 0);
 				});
 			}
 
@@ -174,7 +167,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -202,7 +195,10 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<AllProvidersTooltip displayProviders={displayProviders} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										isAnimationActive={false}
@@ -236,7 +232,7 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>

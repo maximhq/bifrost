@@ -9,10 +9,11 @@ import (
 
 // TestStreamingCacheBasicFunctionality tests streaming response caching
 func TestStreamingCacheBasicFunctionality(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-stream-value")
+	ctx := CreateContextWithCacheKey(t, "test-stream-value")
 
 	// Create a test streaming request
 	testRequest := CreateStreamingChatRequest(
@@ -27,7 +28,7 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 	start1 := time.Now()
 	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	var responses1 []schemas.BifrostChatResponse
@@ -115,10 +116,11 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 
 // TestStreamingVsNonStreaming tests that streaming and non-streaming requests are cached separately
 func TestStreamingVsNonStreaming(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("stream-vs-non-test")
+	ctx := CreateContextWithCacheKey(t, "stream-vs-non-test")
 
 	prompt := "What is the meaning of life?"
 
@@ -127,7 +129,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 	nonStreamRequest := CreateBasicChatRequest(prompt, 0.5, 50)
 	nonStreamResponse, err1 := setup.Client.ChatCompletionRequest(ctx, nonStreamRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	WaitForCache(setup.Plugin)
@@ -184,10 +186,11 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 
 // TestStreamingChunkOrdering tests that cached streaming responses maintain proper chunk ordering
 func TestStreamingChunkOrdering(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("chunk-order-test")
+	ctx := CreateContextWithCacheKey(t, "chunk-order-test")
 
 	// Request that should generate multiple chunks
 	testRequest := CreateStreamingChatRequest(
@@ -199,7 +202,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 	t.Log("Making first streaming request to establish cache...")
 	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	var originalChunks []schemas.BifrostChatResponse
@@ -213,6 +216,9 @@ func TestStreamingChunkOrdering(t *testing.T) {
 	}
 
 	if len(originalChunks) < 2 {
+		// Stream chunking is at the provider's discretion — under load OpenAI
+		// occasionally bundles a short reply into a single delivered chunk.
+		// Ordering is not testable in that case; skip rather than fail.
 		t.Skipf("Need at least 2 chunks to test ordering, got %d", len(originalChunks))
 	}
 
@@ -273,10 +279,11 @@ func TestStreamingChunkOrdering(t *testing.T) {
 
 // TestSpeechSynthesisStreaming tests speech synthesis streaming caching
 func TestSpeechSynthesisStreaming(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("speech-stream-test")
+	ctx := CreateContextWithCacheKey(t, "speech-stream-test")
 
 	// Create speech synthesis request
 	speechRequest := CreateSpeechRequest(
@@ -290,7 +297,7 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil {

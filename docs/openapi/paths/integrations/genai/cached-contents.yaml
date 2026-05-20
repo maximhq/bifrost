@@ -1,0 +1,238 @@
+# Google GenAI (Gemini) - Cached Contents API
+
+cached-contents:
+  post:
+    operationId: geminiCreateCachedContent
+    summary: Create cached content (Gemini format)
+    description: |
+      Creates a cached content entry that can be re-used across subsequent
+      generate-content calls to reduce repeated prefix tokens.
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override. Defaults to `gemini`. Use `vertex` to route to Vertex.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - model
+            properties:
+              model:
+                type: string
+                description: Gemini model identifier (e.g. `gemini-1.5-pro`). The `models/` prefix is stripped.
+              displayName:
+                type: string
+              systemInstruction:
+                type: object
+                description: System instruction content.
+                additionalProperties: true
+              contents:
+                type: array
+                items: {}
+              tools:
+                type: array
+                items: {}
+              toolConfig: {}
+              ttl:
+                type: string
+                description: TTL in protobuf duration format (e.g. `3600s`).
+              expireTime:
+                type: string
+                format: date-time
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  get:
+    operationId: geminiListCachedContents
+    summary: List cached content entries (Gemini format)
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+    - name: pageToken
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+cached-contents-by-id:
+  get:
+    operationId: geminiRetrieveCachedContent
+    summary: Retrieve cached content (Gemini format)
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: cached_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '404':
+        description: Cached content not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  patch:
+    operationId: geminiUpdateCachedContent
+    summary: Update cached content (Gemini format)
+    description: |
+      Updates the TTL or expiration time of a cached content entry. Only
+      `ttl` or `expireTime` may be modified.
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: cached_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ttl:
+                type: string
+                description: TTL in protobuf duration format.
+              expireTime:
+                type: string
+                format: date-time
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: geminiDeleteCachedContent
+    summary: Delete cached content (Gemini format)
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: cached_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Deletion accepted. Returns an empty JSON object (`{}`), mirroring Gemini's native delete response.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '404':
+        description: Cached content not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

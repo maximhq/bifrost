@@ -2,6 +2,7 @@ package tables
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ type TableTeam struct {
 	Name        string  `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"` // A team can belong to a customer
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	SourceID    *string `gorm:"type:varchar(255);uniqueIndex" json:"source_id,omitempty"`
 
 	// Relationships
 	Customer    *TableCustomer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -32,6 +34,8 @@ type TableTeam struct {
 	Claims       *string        `gorm:"type:text" json:"-"`
 	ParsedClaims map[string]any `gorm:"-" json:"claims"`
 
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -45,6 +49,14 @@ func (TableTeam) TableName() string { return "governance_teams" }
 
 // BeforeSave hook for TableTeam to serialize JSON fields
 func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
+	if t.SourceID != nil {
+		v := strings.TrimSpace(*t.SourceID)
+		if v == "" {
+			t.SourceID = nil
+		} else {
+			*t.SourceID = v
+		}
+	}
 	if t.ParsedProfile != nil {
 		data, err := json.Marshal(t.ParsedProfile)
 		if err != nil {
@@ -75,7 +87,10 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterFind hook for TableTeam to deserialize JSON fields
+// AfterFind hook for TableTeam to deserialize JSON fields and propagate
+// calendar_aligned down to owned budgets / rate_limit. The reset path reads
+// the stamped value off the budget / rate_limit; the governance store's
+// Update*InMemory paths re-stamp on every team update.
 func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 	if t.Profile != nil {
 		if err := json.Unmarshal([]byte(*t.Profile), &t.ParsedProfile); err != nil {
@@ -91,6 +106,12 @@ func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(*t.Claims), &t.ParsedClaims); err != nil {
 			return err
 		}
+	}
+	for i := range t.Budgets {
+		t.Budgets[i].IsCalendarAligned = t.CalendarAligned
+	}
+	if t.RateLimit != nil {
+		t.RateLimit.IsCalendarAligned = t.CalendarAligned
 	}
 	return nil
 }

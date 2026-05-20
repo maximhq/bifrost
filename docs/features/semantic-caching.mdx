@@ -169,7 +169,9 @@ bifrostConfig := schemas.BifrostConfig{
 **Cache Settings**:
 - **TTL (seconds)**: How long cached responses are kept (default: 300 s).
 - **Similarity Threshold**: Cosine similarity cutoff for a cache hit (0–1, default: 0.8).
-- **Dimension**: Vector dimension matching your embedding model (e.g. 1536 for `text-embedding-3-small`).
+- **Dimension**: Vector size produced by the embedding model — must match the model exactly. Common values: `1536` for OpenAI `text-embedding-3-small`, `3072` for `text-embedding-3-large`, `768` for many Cohere/Voyage models. Use `1` only in direct-only mode (no provider).
+
+> **Heads up**: a vector store namespace can only hold vectors of *one* dimension. Whenever you change the embedding **provider**, **model**, or **dimension**, make sure the new dimension still matches what the model produces — otherwise writes to the existing namespace will fail and reads will silently miss. The namespace is **not** recreated automatically; either point `vector_store_namespace` at a fresh name or drop the existing class/index in your vector store before saving.
 
 **Conversation Settings**:
 - **Conversation History Threshold**: Skip caching when the conversation has more than this many messages (default: 3).
@@ -196,7 +198,6 @@ bifrostConfig := schemas.BifrostConfig{
         "embedding_model": "text-embedding-3-small",
         "dimension": 1536,
         
-        "cleanup_on_shutdown": true,
         "ttl": "5m",
         "threshold": 0.8,
         
@@ -279,7 +280,6 @@ bifrost:
       config:
         dimension: 1
         ttl: "5m"
-        cleanup_on_shutdown: true
         cache_by_model: true
         cache_by_provider: true
 ```
@@ -297,7 +297,6 @@ bifrost:
       "config": {
         "dimension": 1,
         "ttl": "5m",
-        "cleanup_on_shutdown": true,
         "cache_by_model": true,
         "cache_by_provider": true
       }
@@ -612,6 +611,7 @@ Example HTTP Response:
   "extra_fields": {
     "cache_debug": {
       "cache_hit": false,
+      "cache_id": "550e8500-e29b-41d4-a725-446655440001",
       "provider_used": "openai",
       "model_used": "gpt-4o-mini",
       "input_tokens": 20
@@ -620,22 +620,21 @@ Example HTTP Response:
 }
 ```
 
-
-These variables allow you to detect cached responses and get the cache entry ID needed for clearing specific entries.
+`cache_debug` is populated on both hits and misses. `cache_id` is the storage ID of the entry — use it to invalidate the entry later. The embedding-related fields (`provider_used`, `model_used`, `input_tokens`) are only present when semantic search actually ran.
 
 ### Clear Specific Cache Entry
 
-Use the request ID from cached responses to clear specific entries:
+Use the `cache_id` from `cache_debug` to clear a specific entry:
 
 <Tabs group="cache-clear">
 
 <Tab title="Go SDK">
 
 ```go
-// Clear specific entry by request ID
-err := plugin.ClearCacheForRequestID("550e8400-e29b-41d4-a716-446655440000")
+// Clear specific entry by cache ID (read from response.ExtraFields.CacheDebug.CacheID)
+err := plugin.ClearCacheForCacheID("550e8500-e29b-41d4-a725-446655440001")
 
-// Clear all entries for a cache key  
+// Clear all entries for a cache key
 err := plugin.ClearCacheForKey("support-session-456")
 ```
 
@@ -644,8 +643,8 @@ err := plugin.ClearCacheForKey("support-session-456")
 <Tab title="HTTP API">
 
 ```bash
-# Clear specific cached entry by request ID
-curl -X DELETE http://localhost:8080/api/cache/clear/550e8400-e29b-41d4-a716-446655440000
+# Clear specific cached entry by cache ID
+curl -X DELETE http://localhost:8080/api/cache/clear/550e8500-e29b-41d4-a725-446655440001
 
 # Clear all entries for a cache key
 curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
@@ -665,16 +664,15 @@ The semantic cache automatically handles cleanup to prevent storage bloat:
 - **Namespace Isolation**: Each Bifrost instance uses isolated vector store namespaces to prevent conflicts
 
 **Manual Cleanup Options:**
-- Clear specific entries by request ID (see examples above)
+- Clear specific entries by cache ID (see examples above)
 - Clear all entries for a cache key
 - Restart Bifrost to clear all cache data
 
 <Warning>
-The semantic cache namespace and all its cache entries are deleted when Bifrost client shuts down **only if `cleanup_on_shutdown` is set to `true`**. By default (`cleanup_on_shutdown: false`), cache data persists between restarts. DO NOT use the plugin's namespace for external purposes.
-</Warning>
+**Dimension / Provider / Model Changes**: A vector store namespace can only hold vectors of **one** dimension. If you change `dimension` (or switch to an embedding `provider`/`model` that produces a different vector size), the existing namespace is **not** recreated automatically — `CreateNamespace` is a no-op when the class/collection already exists. Subsequent writes will fail (vector-size mismatch) and reads will silently miss. Before saving the change, either:
 
-<Warning>
-**Dimension Changes**: If you update the `dimension` config, the existing namespace will contain data with mixed dimensions, causing retrieval issues. To avoid this, either use a different `vector_store_namespace` or set `cleanup_on_shutdown: true` before restarting.
+- point `vector_store_namespace` at a fresh name, or
+- drop the existing class/index in your vector store, or
 </Warning>
 
 ---

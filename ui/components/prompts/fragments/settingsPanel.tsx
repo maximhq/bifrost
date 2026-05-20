@@ -6,6 +6,7 @@ import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProviderLabel } from "@/lib/constants/logs";
+import { Input } from "@/components/ui/input";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
@@ -29,6 +30,9 @@ export function SettingsPanel() {
 		setApiKeyId,
 		variables,
 		setVariables,
+		customHeaders,
+		setCustomHeaders,
+		requiredHeaders,
 		selectedPromptId,
 	} = usePromptContext();
 
@@ -210,6 +214,34 @@ export function SettingsPanel() {
 									<>
 										<Separator />
 										<VariablesTableView variables={variables} onChange={setVariables} />
+									</>
+								)}
+
+								{requiredHeaders.length > 0 && (
+									<>
+										<Separator />
+										<div className="flex flex-col gap-2" data-testid="settings-required-headers">
+											<Label className="text-muted-foreground text-xs font-medium uppercase">Required Headers</Label>
+											<p className="text-muted-foreground text-xs">
+												These headers are required by the server. Provide a value for each to send requests from the playground.
+											</p>
+											<div className="flex flex-col gap-2">
+												{requiredHeaders.map((name) => (
+													<div key={name} className="flex items-center gap-2">
+														<Label htmlFor={`required-header-${name}`} className="w-40 shrink-0 truncate font-mono text-xs">
+															{name}
+														</Label>
+														<Input
+															id={`required-header-${name}`}
+															value={customHeaders[name] ?? ""}
+															onChange={(e) => setCustomHeaders((prev) => ({ ...prev, [name]: e.target.value }))}
+															placeholder="value"
+															className="h-8 flex-1"
+														/>
+													</div>
+												))}
+											</div>
+										</div>
 									</>
 								)}
 

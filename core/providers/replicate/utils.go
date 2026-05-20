@@ -110,7 +110,7 @@ func listenToReplicateStreamURL(
 	fasthttp.ReleaseRequest(req)
 
 	if err != nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -134,7 +134,7 @@ func listenToReplicateStreamURL(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, nil, parseReplicateError(resp.Body(), resp.StatusCode())
 	}
 

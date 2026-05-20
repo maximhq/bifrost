@@ -132,6 +132,7 @@ type ProviderFeatureSupport struct {
 	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
+	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -149,6 +150,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
+		ServiceTier: true,
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -183,7 +185,9 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
-		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		WebSearch:     true,
+		CodeExecution: true,
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the
 		// provider_feature_support_test.go assertion, but NEITHER B-header
@@ -202,6 +206,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
+		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -218,6 +223,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		RedactThinking:      true,
 		EagerInputStreaming: true,
 		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
+		ServiceTier: true,
 	},
 }
 
@@ -1200,18 +1206,18 @@ const (
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer        AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch       AnthropicToolName = "web_search"
-	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
-	AnthropicToolNameBash            AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameComputer   AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch   AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash       AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
 	// AnthropicToolNameTextEditorLegacy is the name required for text_editor_20250124
 	// and text_editor_20250429. Newer text_editor_20250728+ use AnthropicToolNameTextEditor.
 	AnthropicToolNameTextEditorLegacy AnthropicToolName = "str_replace_editor"
-	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory          AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameCodeExecution    AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory           AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
 )
 
 type AnthropicToolComputerUse struct {

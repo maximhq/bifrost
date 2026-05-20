@@ -8,6 +8,7 @@ export interface ExecutionConfig {
 	modelParams: ModelParams;
 	apiKeyId: string;
 	variables?: VariableMap;
+	customHeaders?: Record<string, string>;
 }
 
 function getBaseUrl() {
@@ -54,6 +55,21 @@ export async function executePrompt(
 				headers["Authorization"] = `Bearer ${config.apiKeyId}`;
 			} else {
 				headers["x-bf-api-key-id"] = config.apiKeyId;
+			}
+		}
+		if (config.customHeaders) {
+			// System headers we set above; custom headers must not overwrite them — doing
+			// so would break JSON parsing (Content-Type) or silently swap auth credentials.
+			const reserved = new Set(["content-type", "authorization", "x-bf-api-key-id"]);
+			for (const [name, value] of Object.entries(config.customHeaders)) {
+				const trimmedName = name.trim();
+				const trimmedValue = value.trim();
+				if (!trimmedName || !trimmedValue) continue;
+				if (reserved.has(trimmedName.toLowerCase())) {
+					console.warn(`Ignoring custom header "${trimmedName}" — reserved by the playground.`);
+					continue;
+				}
+				headers[trimmedName] = trimmedValue;
 			}
 		}
 

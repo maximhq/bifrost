@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -47,27 +46,30 @@ func getVectorStoreTestCases() []VectorStoreTestCase {
 	}
 }
 
-// getDefaultTestConfig returns the default test configuration
+// getDefaultTestConfig returns the default test configuration. Mirrors the
+// defaults Init applies, which matters for unit tests that construct Plugin
+// directly without going through Init.
 func getDefaultTestConfig() *Config {
 	return &Config{
-		Provider:          schemas.OpenAI,
-		EmbeddingModel:    "text-embedding-3-small",
-		Dimension:         1536,
-		Threshold:         0.8,
-		CleanUpOnShutdown: true,
+		Provider:                     schemas.OpenAI,
+		EmbeddingModel:               "text-embedding-3-small",
+		Dimension:                    1536,
+		Threshold:                    0.8,
+		ConversationHistoryThreshold: DefaultConversationHistoryThreshold,
 	}
 }
 
 // TestSemanticCache_AllVectorStores_BasicFlow tests the basic cache flow across all vector stores
 func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(CacheKey, "test-"+strings.ToLower(tc.Name)+"-basic")
+			ctx := newBaseTestContext()
+			ctx.SetValue(CacheKey, keyForTest(t, "test-"+strings.ToLower(tc.Name)+"-basic"))
 
 			// Test request
 			request := &schemas.BifrostRequest{
@@ -146,8 +148,8 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 			// Second request - should be a cache hit
 			t.Logf("[%s] Testing second identical request (expecting cache hit)...", tc.Name)
 
-			ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx2.SetValue(CacheKey, "test-"+strings.ToLower(tc.Name)+"-basic")
+			ctx2 := newBaseTestContext()
+			ctx2.SetValue(CacheKey, keyForTest(t, "test-"+strings.ToLower(tc.Name)+"-basic"))
 
 			_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 			if err != nil {
@@ -170,6 +172,7 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_DirectHashMatch tests direct hash matching across all vector stores
 func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			skipIfNoAPIKey(t, tc.StoreType)
@@ -181,7 +184,7 @@ func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 			testRunID := uuid.New().String()[:8]
 			cacheKey := "test-" + strings.ToLower(tc.Name) + "-direct-" + testRunID
 
-			ctx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+			ctx := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 
 			testRequest := CreateBasicChatRequest("Direct hash test for "+tc.Name+" "+testRunID, 0.7, 50)
 
@@ -196,7 +199,7 @@ func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 			WaitForCache(setup.Plugin)
 
 			// Second request with direct-only cache type
-			ctx2 := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+			ctx2 := CreateContextWithCacheKeyAndType(t, cacheKey, CacheTypeDirect)
 
 			t.Logf("[%s] Making second request with CacheTypeDirect...", tc.Name)
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -212,6 +215,7 @@ func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_NamespaceIsolation tests that different cache keys are isolated
 func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			skipIfNoAPIKey(t, tc.StoreType)
@@ -225,7 +229,7 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 			cacheKey2 := "test-" + strings.ToLower(tc.Name) + "-namespace-2-" + testRunID
 
 			// Cache with first key
-			ctx1 := CreateContextWithCacheKey(cacheKey1)
+			ctx1 := CreateContextWithCacheKey(t, cacheKey1)
 			testRequest := CreateBasicChatRequest("Namespace isolation test for "+tc.Name+" "+testRunID, 0.7, 50)
 
 			t.Logf("[%s] Making request with cache key 1...", tc.Name)
@@ -239,7 +243,7 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 			WaitForCache(setup.Plugin)
 
 			// Try with different cache key - should miss
-			ctx2 := CreateContextWithCacheKey(cacheKey2)
+			ctx2 := CreateContextWithCacheKey(t, cacheKey2)
 
 			t.Logf("[%s] Making same request with different cache key (expecting miss)...", tc.Name)
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -251,7 +255,7 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2})
 
 			// Try with original key - should hit
-			ctx3 := CreateContextWithCacheKey(cacheKey1)
+			ctx3 := CreateContextWithCacheKey(t, cacheKey1)
 
 			t.Logf("[%s] Making same request with original cache key (expecting hit)...", tc.Name)
 			response3, err3 := setup.Client.ChatCompletionRequest(ctx3, testRequest)
@@ -267,14 +271,15 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_ParameterFiltering tests that different parameters don't share cache
 func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
+	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			skipIfNoAPIKey(t, tc.StoreType)
 			setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), tc.StoreType)
 			defer setup.Cleanup()
 
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(CacheKey, "test-"+strings.ToLower(tc.Name)+"-params")
+			ctx := newBaseTestContext()
+			ctx.SetValue(CacheKey, keyForTest(t, "test-"+strings.ToLower(tc.Name)+"-params"))
 
 			// First request with temperature=0.7
 			request1 := &schemas.BifrostRequest{
@@ -342,8 +347,8 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 			// Second request with different temperature - should be cache miss
 			t.Logf("[%s] Testing second request with temperature=0.5 (expecting cache miss)...", tc.Name)
 
-			ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx2.SetValue(CacheKey, "test-"+strings.ToLower(tc.Name)+"-params")
+			ctx2 := newBaseTestContext()
+			ctx2.SetValue(CacheKey, keyForTest(t, "test-"+strings.ToLower(tc.Name)+"-params"))
 
 			request2 := &schemas.BifrostRequest{
 				RequestType: schemas.ChatCompletionRequest,
@@ -381,6 +386,7 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 
 // TestSemanticCache_AllVectorStores_EmbeddingRequest tests embedding request caching across all vector stores
 func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
+	t.Parallel()
 	for _, tc := range getVectorStoreTestCases() {
 		t.Run(tc.Name, func(t *testing.T) {
 			skipIfNoAPIKey(t, tc.StoreType)
@@ -395,7 +401,7 @@ func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
 			embeddingRequest := CreateEmbeddingRequest([]string{"Test embedding with " + tc.Name + " " + testRunID})
 
 			// Cache first request
-			ctx1 := CreateContextWithCacheKey(cacheKey)
+			ctx1 := CreateContextWithCacheKey(t, cacheKey)
 			t.Logf("[%s] Making first embedding request...", tc.Name)
 			response1, err1 := setup.Client.EmbeddingRequest(ctx1, embeddingRequest)
 			if err1 != nil {
@@ -407,7 +413,7 @@ func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
 			WaitForCache(setup.Plugin)
 
 			// Second request - should be cache hit
-			ctx2 := CreateContextWithCacheKey(cacheKey)
+			ctx2 := CreateContextWithCacheKey(t, cacheKey)
 			t.Logf("[%s] Making second embedding request (expecting cache hit)...", tc.Name)
 			response2, err2 := setup.Client.EmbeddingRequest(ctx2, embeddingRequest)
 			if err2 != nil {

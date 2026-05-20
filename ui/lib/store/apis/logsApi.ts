@@ -68,6 +68,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.cache_hit_types && filters.cache_hit_types.length > 0) {
+		params.cache_hit_types = filters.cache_hit_types.join(",");
+	}
 	if (filters.content_search) params.content_search = filters.content_search;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");
@@ -308,14 +311,20 @@ export const logsApi = baseApi.injectEndpoints({
 				business_units?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
-			{ dimensions?: string[] } | void
+			{ dimensions?: string[]; q?: string } | void
 		>({
 			query: (arg) => {
 				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
-				if (!dims || dims.length === 0) return "/logs/filterdata";
-				// Sort to keep the cache key stable regardless of caller-side ordering.
-				const sorted = [...dims].sort().join(",");
-				return `/logs/filterdata?dimensions=${encodeURIComponent(sorted)}`;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
 			},
 			providesTags: ["Logs"],
 		}),

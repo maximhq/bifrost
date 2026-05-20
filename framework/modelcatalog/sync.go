@@ -395,7 +395,7 @@ func (mc *ModelCatalog) applyModelParameters(paramsData map[string]json.RawMessa
 		}
 		if err := json.Unmarshal(rawData, &p); err == nil && (p.MaxOutputTokens != nil || parsed.VertexMultiRegionOnly != nil) {
 			modelParamsEntries[model] = providerUtils.ModelParams{
-				MaxOutputTokens:        p.MaxOutputTokens,
+				MaxOutputTokens:         p.MaxOutputTokens,
 				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
 			}
 		}
@@ -477,7 +477,7 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[string]json.RawMessage, error) {
 	client := &http.Client{}
 	client.Timeout = DefaultModelParametersTimeout
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, DefaultModelParametersURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mc.getModelParametersURL(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}

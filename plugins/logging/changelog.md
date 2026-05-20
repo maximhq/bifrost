@@ -1,0 +1,5 @@
+- feat: cluster-aware log metadata and per-node usage aggregation (#3590)
+- feat: `limit` and `query` params on filter data endpoints for server-side search and pagination (#3567)
+- feat: enrich realtime routing, logging, cost, and session tracking (#3335)
+- fix: VK and provider-key level pricing overrides for streaming (#3421)
+- chore: dependency and AWS SDK security updates (#3461)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -16,9 +17,9 @@ import (
 )
 
 type PluginsLoader interface {
+	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
-	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 }
 
 // PluginsHandler is the handler for the plugins API
@@ -57,6 +58,7 @@ type UpdatePluginRequest struct {
 // RegisterRoutes registers the routes for the PluginsHandler
 func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/plugins", lib.ChainMiddlewares(h.getPlugins, middlewares...))
+	r.GET("/api/plugins/builtins", lib.ChainMiddlewares(h.getBuiltinPlugins, middlewares...))
 	r.GET("/api/plugins/{name}", lib.ChainMiddlewares(h.getPlugin, middlewares...))
 	r.POST("/api/plugins", lib.ChainMiddlewares(h.createPlugin, middlewares...))
 	r.PUT("/api/plugins/{name}", lib.ChainMiddlewares(h.updatePlugin, middlewares...))
@@ -103,6 +105,13 @@ func (h *PluginsHandler) buildPluginResponse(ctx context.Context, plugin *config
 		Order:      plugin.Order,
 		Status:     pluginStatus,
 	}
+}
+
+// getBuiltinPlugins returns the canonical list of built-in plugin names
+func (h *PluginsHandler) getBuiltinPlugins(ctx *fasthttp.RequestCtx) {
+	SendJSON(ctx, map[string]any{
+		"plugins": lib.GetBuiltinPluginNames(),
+	})
 }
 
 // getPlugins gets all plugins
@@ -226,7 +235,10 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
 	}
-	SendJSON(ctx, plugin)
+	// Return the same shape as list/create/update — with runtime status
+	// merged in — so the UI doesn't see an empty status when refetching a
+	// single plugin via useGetPluginQuery.
+	SendJSON(ctx, h.buildPluginResponse(ctx, plugin))
 }
 
 // createPlugin creates a new plugin
@@ -341,8 +353,9 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	var plugin *configstoreTables.TablePlugin
 	var err error
-	// Check if plugin exists
-	_, err = h.configStore.GetPlugin(ctx, name)
+	// Fetch the existing plugin to enable config merging below.
+	var existingPlugin *configstoreTables.TablePlugin
+	existingPlugin, err = h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		// If doesn't exist, create it
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -392,11 +405,21 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
 	}
+	// Merge incoming config over the existing DB config so fields unknown to the
+	// calling form (e.g. plugin_span_filter set by a separate UI sheet) are not wiped.
+	mergedConfig := request.Config
+	if existingPlugin != nil {
+		if existingCfg, ok := existingPlugin.Config.(map[string]any); ok && len(existingCfg) > 0 {
+			mergedConfig = make(map[string]any, len(existingCfg)+len(request.Config))
+			maps.Copy(mergedConfig, existingCfg)
+			maps.Copy(mergedConfig, request.Config)
+		}
+	}
 	// Updating the plugin
 	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:      name,
 		Enabled:   request.Enabled,
-		Config:    request.Config,
+		Config:    mergedConfig,
 		Path:      request.Path,
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
@@ -418,7 +441,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config, request.Placement, request.Order); err != nil {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
 			logger.Error("failed to load plugin: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
 			return

@@ -392,7 +392,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -448,7 +448,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -524,6 +524,11 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               },
               "virtual_key_count": {
                 "type": "integer",
@@ -1440,10 +1445,6 @@
                       "type": "string",
                       "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean",
-                      "description": "Clean up cache on shutdown (default: false)"
-                    },
                     "ttl": {
                       "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
                       "oneOf": [
@@ -1612,6 +1613,22 @@
                     "insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
+                    },
+                    "plugin_span_filter": {
+                      "type": "object",
+                      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": ["include", "exclude"]
+                        },
+                        "plugins": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      },
+                      "required": ["mode", "plugins"],
+                      "additionalProperties": false
                     }
                   },
                   "required": ["collector_url", "trace_type", "protocol"],
@@ -1698,10 +1715,40 @@
     },
     "access_profiles": {
       "$ref": "#/$defs/access_profiles"
+    },
+    "feature_flags": {
+      "$ref": "#/$defs/feature_flags_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "feature_flags_config": {
+      "type": "object",
+      "description": "Boot-time overrides for feature flags. Flags themselves are declared in code via featureflags.Register; this block only sets initial values. Anything set here is rendered as locked in the UI - operators must edit the config (or Helm values) to change it.",
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "description": "Boolean value or a string: either 'env.NAME' for env-var indirection, or a literal boolean (true / false / 1 / 0 / yes / no / on / off, case-insensitive).",
+                "oneOf": [
+                  { "type": "boolean" },
+                  {
+                    "type": "string",
+                    "pattern": "^(env\\.[A-Za-z_][A-Za-z0-9_]*|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[01]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])$"
+                  }
+                ]
+              }
+            },
+            "required": ["enabled"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "routing_target": {
       "type": "object",
       "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
@@ -1951,6 +1998,12 @@
           "default": 86400,
           "optional": true,
           "minimum": 3600
+        },
+        "model_parameters_url": {
+          "type": "string",
+          "description": "Model parameters URL",
+          "optional": true,
+          "format": "uri"
         }
       },
       "additionalProperties": false
@@ -3202,6 +3255,12 @@
           "type": "boolean",
           "description": "Use TLS for connection (optional)",
           "default": false
+        },
+        "max_recv_msg_size_mb": {
+          "type": "integer",
+          "description": "gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as base64-encoded image generation responses.",
+          "minimum": 1,
+          "default": 64
         }
       },
       "required": ["host"],
@@ -3268,6 +3327,12 @@
         "enabled": {
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["mesh", "broker"],
+          "default": "mesh",
+          "description": "Clustering mode. 'mesh' (default) is peer-to-peer via memberlist gossip. 'broker' routes all cluster traffic through a central broker process, for platforms without peer-to-peer connectivity (e.g. Cloud Run)."
         },
         "region": {
           "type": "string",
@@ -3414,6 +3479,32 @@
             }
           },
           "required": ["type"],
+          "additionalProperties": false
+        },
+        "broker": {
+          "type": "object",
+          "description": "Broker settings, used when type is 'broker'",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "host:port of the broker that nodes dial"
+            },
+            "tls": {
+              "type": "boolean",
+              "description": "Whether to dial the broker over TLS"
+            },
+            "auth_token": {
+              "type": "string",
+              "description": "Optional shared secret sent on connect"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the broker process serves on (default: 50051)"
+            }
+          },
+          "required": ["address"],
           "additionalProperties": false
         }
       },
@@ -3766,7 +3857,12 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for rule execution"
+                "description": "Timeout in seconds for rule execution"
+              },
+              "max_turns_to_send": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
               },
               "provider_config_ids": {
                 "type": "array",
@@ -3805,7 +3901,7 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for provider execution"
+                "description": "Timeout in seconds for provider execution"
               },
               "config": {
                 "type": "object",
@@ -3840,6 +3936,11 @@
         "reset_duration": {
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id", "max_limit", "reset_duration"],
@@ -3867,6 +3968,11 @@
         "request_reset_duration": {
           "type": "string",
           "description": "Request reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id"],
@@ -3904,6 +4010,11 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
+          "default": false
         },
         "provider_configs": {
           "type": "array",

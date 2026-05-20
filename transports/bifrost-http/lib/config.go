@@ -29,6 +29,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
+	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -81,10 +82,6 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
-	// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
-	// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured
-	// (falls back to dynamic Host-header-based URL).
-	GetMCPExternalServerURL() string
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -111,16 +108,26 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// BuiltinPluginNames is the canonical list of built-in plugin names.
+// It is the single source of truth — update here when adding or removing a built-in plugin.
+var builtinPluginNames = []string{
+	telemetry.PluginName,
+	prompts.PluginName,
+	logging.PluginName,
+	governance.PluginName,
+	otel.PluginName,
+	semanticcache.PluginName,
+	compat.PluginName,
+	maxim.PluginName,
+}
+
+func GetBuiltinPluginNames() []string {
+	return slices.Clone(builtinPluginNames)
+}
+
 // IsBuiltinPlugin checks if a plugin is a built-in plugin
 func IsBuiltinPlugin(name string) bool {
-	return name == telemetry.PluginName ||
-		name == prompts.PluginName ||
-		name == logging.PluginName ||
-		name == governance.PluginName ||
-		name == compat.PluginName ||
-		name == maxim.PluginName ||
-		name == semanticcache.PluginName ||
-		name == otel.PluginName
+	return slices.Contains(builtinPluginNames, name)
 }
 
 // pluginOrderInfo stores ordering metadata for a plugin.
@@ -151,6 +158,63 @@ type ConfigData struct {
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+}
+
+// FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
+// boot overrides. Values declared here win over DB overrides and are
+// rendered as "locked" in the UI so operators must edit config.json (or
+// re-deploy Helm) to change them.
+type FeatureFlagsFileConfig struct {
+	Flags map[string]FeatureFlagFileValue `json:"flags"`
+}
+
+// FeatureFlagFileValue accepts either a JSON literal bool or a string. The
+// string form supports the same "env.NAME" indirection used elsewhere in
+// config.json (encryption_key, provider creds), so Helm can flip flags via
+// container env vars without re-templating the JSON. Recognized truthy
+// string values are "true", "1", "yes", "on" (case-insensitive); anything
+// else parses as false.
+type FeatureFlagFileValue struct {
+	Enabled bool `json:"enabled"`
+}
+
+// UnmarshalJSON accepts {"enabled": true} (literal bool), {"enabled": "true"}
+// (string literal), or {"enabled": "env.BIFROST_FOO"} (env-var indirection).
+// The string form is critical for Helm because chart values are stringly
+// typed when sourced from env vars.
+func (v *FeatureFlagFileValue) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Enabled json.RawMessage `json:"enabled"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Enabled) == 0 {
+		return nil
+	}
+	// Literal bool path.
+	var asBool bool
+	if err := json.Unmarshal(raw.Enabled, &asBool); err == nil {
+		v.Enabled = asBool
+		return nil
+	}
+	// String path: literal "true"/"false" or "env.X" indirection.
+	var asStr string
+	if err := json.Unmarshal(raw.Enabled, &asStr); err != nil {
+		return fmt.Errorf("feature flag enabled: must be bool or string, got %s", string(raw.Enabled))
+	}
+	resolved := asStr
+	if envKey, ok := strings.CutPrefix(asStr, "env."); ok {
+		resolved = os.Getenv(envKey)
+	}
+	switch strings.ToLower(strings.TrimSpace(resolved)) {
+	case "true", "1", "yes", "on":
+		v.Enabled = true
+	default:
+		v.Enabled = false
+	}
+	return nil
 }
 
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
@@ -172,6 +236,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -189,6 +254,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
+	cd.FeatureFlags = temp.FeatureFlags
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -284,11 +350,18 @@ type Config struct {
 
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
+	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
 	// Shared in-memory kvstore for transport-level protocol coordination.
 	KVStore *kvstore.Store
+
+	// Process-wide feature flag store. Flags are code-declared via
+	// featureflags.Register; this struct holds the effective state with
+	// layered overrides (DB then file). May be wired with a SyncDelegate
+	// by enterprise for cluster-wide gossip.
+	FeatureFlags *featureflags.Store
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -408,6 +481,54 @@ func applyV1Compat(configData *ConfigData) {
 	}
 }
 
+// promoteDeprecatedCalendarAligned lifts the legacy per-budget / per-rate-limit
+// calendar_aligned input to the owning VK or Team. Owner wins if already true;
+// otherwise OR across descendants (own budgets/rate-limit + every provider
+// config's budgets/rate-limit). Inner pointers are always cleared. Mirrors the
+// enterprise promoteDeprecatedAccessProfileCalendarAligned at the access
+// profile level. Runs on every load regardless of config version
+func promoteDeprecatedCalendarAligned(configData *ConfigData) {
+	if configData == nil || configData.Governance == nil {
+		return
+	}
+	for i := range configData.Governance.VirtualKeys {
+		vk := &configData.Governance.VirtualKeys[i]
+		promoteCalendarAligned(&vk.CalendarAligned, vk.Budgets, vk.RateLimit)
+		for j := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[j]
+			promoteCalendarAligned(&vk.CalendarAligned, pc.Budgets, pc.RateLimit)
+		}
+	}
+	for i := range configData.Governance.Teams {
+		team := &configData.Governance.Teams[i]
+		promoteCalendarAligned(&team.CalendarAligned, team.Budgets, team.RateLimit)
+	}
+}
+
+// promoteCalendarAligned ORs each child's legacy calendar_aligned input into
+// the owner's flag and clears the child field. Treats a nil child pointer as
+// "not set" — only explicit true contributes.
+func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	for i := range budgets {
+		if budgets[i].CalendarAlignedInput != nil && *budgets[i].CalendarAlignedInput {
+			*owner = true
+		}
+		budgets[i].CalendarAlignedInput = nil
+	}
+	if rateLimit != nil && rateLimit.CalendarAlignedInput != nil {
+		if *rateLimit.CalendarAlignedInput {
+			*owner = true
+		}
+		rateLimit.CalendarAlignedInput = nil
+	}
+}
+
+// registerFeatureFlags registers feature flags from the config store into the global flag registry.
+func registerFeatureFlags(_ context.Context) error {
+	// No feature flags to register
+	return nil
+}
+
 // LoadConfig loads initial configuration from a JSON config file into memory
 // with full preprocessing including environment variable resolution and key config parsing.
 // All processing is done upfront to ensure zero latency when retrieving data.
@@ -431,6 +552,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		configPath: configFilePath,
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
+	}
+	// Register feature flags before any file/DB-driven init so the
+	// registry is populated even when config.json is absent. initFeatureFlags
+	// (called below) hydrates DB overrides and applies file overrides; both
+	// depend on the registry being populated to surface flags correctly.
+	if err := registerFeatureFlags(ctx); err != nil {
+		logger.Error("failed to register feature flags: %v", err)
 	}
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
@@ -494,6 +622,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
+		// owning VK / Team. Independent of config version — the deprecation
+		// predates the v1/v2 allow-list split.
+		promoteDeprecatedCalendarAligned(&configData)
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
@@ -511,6 +643,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 3. KV store
 	if err := initKVStore(config); err != nil {
+		return nil, err
+	}
+	// 3a. Feature flags (after ConfigStore from initStores, before handlers)
+	if err := initFeatureFlags(ctx, config, &configData); err != nil {
 		return nil, err
 	}
 	// 4. Client config (store → file → defaults)
@@ -699,10 +835,6 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if client == nil {
 		return
-	}
-	if err := ValidateBaseURL(client.MCPExternalServerURL.GetValue()); err != nil {
-		logger.Warn("mcp_external_server_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
-		client.MCPExternalServerURL = nil
 	}
 	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
@@ -2865,31 +2997,22 @@ func ResolveFrameworkPricingConfig(
 	fileConfig *framework.FrameworkConfig,
 ) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
 	defaultPricingURL := modelcatalog.DefaultPricingURL
+	defaultModelParametersURL := modelcatalog.DefaultModelParametersURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 
-	// --- Phase 1: parse and validate file config ---
-
 	filePricingURL := (*string)(nil)
+	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
+	skipModelParamsURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
 			raw := *fileConfig.Pricing.PricingURL
-			// Explicitly check for the "env." prefix before invoking the env lookup.
-			// This makes the substitution contract unambiguous: a URL that does not
-			// begin with "env." is always used verbatim, regardless of what
-			// envutils.ProcessEnvValue might do internally in the future.
 			if strings.HasPrefix(raw, "env.") {
 				resolvedURL, err := envutils.ProcessEnvValue(raw)
 				if err != nil {
-					// Named env variable not found — preserve the original "env.VAR"
-					// string so the downstream HTTP fetch fails visibly rather than
-					// silently falling back to the built-in default URL.
 					logger.Warn("pricing_url: env variable not found (%v); keeping original value %q", err, raw)
 					filePricingURL = fileConfig.Pricing.PricingURL
-					// Do NOT persist the unresolved "env.VAR" literal to DB.
-					// If we did, a later restart would read the literal from DB
-					// (which is authoritative) and never attempt env resolution again.
 					skipURLBackfill = true
 				} else {
 					filePricingURL = &resolvedURL
@@ -2898,14 +3021,32 @@ func ResolveFrameworkPricingConfig(
 				filePricingURL = &raw
 			}
 		}
+		if fileConfig.Pricing.ModelParametersURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.ModelParametersURL)
+			if raw == "" {
+				// Blank is treated as "not set"; fall back to default.
+			} else if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("model_parameters_url: env variable not found (%v); keeping original value %q", err, raw)
+					fileModelParametersURL = fileConfig.Pricing.ModelParametersURL
+					skipModelParamsURLBackfill = true
+				} else {
+					resolved := strings.TrimSpace(resolvedURL)
+					if resolved != "" {
+						fileModelParametersURL = &resolved
+					}
+				}
+			} else {
+				fileModelParametersURL = &raw
+			}
+		}
 		if fileConfig.Pricing.PricingSyncInterval != nil {
 			val := *fileConfig.Pricing.PricingSyncInterval
 			switch {
 			case val <= 0:
-				// Zero or negative values are meaningless for a sync eligibility threshold.
 				logger.Warn("pricing_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
-				// Accept but clamp to the schema-declared minimum of 3600 s (1 hour).
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
 				logger.Warn("pricing_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
 				fileSyncSeconds = &clamped
@@ -2918,81 +3059,120 @@ func ResolveFrameworkPricingConfig(
 	// --- Phase 2: apply file config over defaults ---
 
 	resolvedPricingURL := &defaultPricingURL
+	resolvedModelParametersURL := &defaultModelParametersURL
 	resolvedSyncSeconds := &defaultSyncSeconds
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
 		logger.Debug("pricing_url resolved from file")
 	}
+	if fileModelParametersURL != nil {
+		resolvedModelParametersURL = fileModelParametersURL
+		logger.Debug("model_parameters_url resolved from file")
+	}
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
 
-	// --- Phase 3: apply DB values over file/defaults (DB is authoritative) ---
+	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
 
 	needsDBUpdate := false
 	configID := uint(0)
+
+	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
+	fileHash := ""
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil) {
+		h, err := configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
+		if err != nil {
+			logger.Warn("failed to compute framework config hash: %v", err)
+		} else {
+			fileHash = h
+		}
+	}
+
+	storedHash := ""
+	if dbConfig != nil {
+		storedHash = dbConfig.ConfigHash
+	}
+	fileChanged := fileHash != "" && fileHash != storedHash
+
 	if dbConfig != nil {
 		configID = dbConfig.ID
+
 		if dbConfig.PricingURL != nil {
-			resolvedPricingURL = dbConfig.PricingURL
+			if fileChanged && filePricingURL != nil {
+				logger.Info("pricing_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedPricingURL = dbConfig.PricingURL
+			}
 		} else if !skipURLBackfill {
-			// DB row exists but URL field is NULL — backfill with resolved value.
-			// Skip backfill when the resolved URL is an unresolved env reference
-			// to prevent persisting "env.VAR" literals into the DB.
 			needsDBUpdate = true
 		}
+		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
+			resolvedModelParametersURL = dbConfig.ModelParametersURL
+		} else if !skipModelParamsURLBackfill {
+			needsDBUpdate = true
+		}
+
 		if dbConfig.PricingSyncInterval != nil {
 			val := *dbConfig.PricingSyncInterval
 			if val <= 0 {
-				// Corrupted or legacy zero written by the pre-fix bug.
-				// Ignore and backfill the DB with the correctly resolved value.
 				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
 				needsDBUpdate = true
 			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
-				// DB has a positive value below the minimum — clamp and backfill,
-				// consistent with the file-path validation in Phase 1.
-				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
-				resolvedSyncSeconds = &clamped
+				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds) — backfilling", val)
+				if !fileChanged || fileSyncSeconds == nil {
+					clamped := modelcatalog.MinimumPricingSyncIntervalSec
+					resolvedSyncSeconds = &clamped
+				}
+				needsDBUpdate = true
+			} else if fileChanged && fileSyncSeconds != nil {
+				logger.Info("pricing_sync_interval from config.json overrides DB (file hash changed): file=%d db=%d seconds — updating DB", *fileSyncSeconds, val)
 				needsDBUpdate = true
 			} else {
-				if fileSyncSeconds != nil && *fileSyncSeconds != *dbConfig.PricingSyncInterval {
-					logger.Info("pricing_sync_interval overridden by DB: file=%d db=%d seconds", *fileSyncSeconds, *dbConfig.PricingSyncInterval)
-				}
 				resolvedSyncSeconds = dbConfig.PricingSyncInterval
 			}
 		} else {
-			// DB row exists but interval field is NULL — backfill.
 			needsDBUpdate = true
 		}
 	}
 
-	// --- Phase 4: invariant assertion ---
-	//
-	// resolvedPricingURL and resolvedSyncSeconds are initialised to non-nil local
-	// variable addresses in Phase 2 and only ever reassigned from non-nil DB/file
-	// pointers. They cannot be nil here under any reachable code path.
-	// The checks below are a last-resort safety net for future refactors that
-	// might break that guarantee. If they fire, it is a programming error, not a
-	// runtime condition — hence the explicit "invariant violation" message.
+	// --- Phase 4: nil guard ---
 	if resolvedPricingURL == nil {
 		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
 		resolvedPricingURL = &defaultPricingURL
+	}
+	if resolvedModelParametersURL == nil {
+		logger.Warn("invariant violation: model_parameters_url resolved to nil — falling back to default %q", defaultModelParametersURL)
+		resolvedModelParametersURL = &defaultModelParametersURL
 	}
 	if resolvedSyncSeconds == nil {
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
 		resolvedSyncSeconds = &defaultSyncSeconds
 	}
 
+	// Only update the stored hash when the file actually changed; preserve the
+	// existing hash for correction-only DB updates (null backfill, corruption fix).
+	persistedHash := ""
+	if dbConfig != nil {
+		persistedHash = dbConfig.ConfigHash
+	}
+	if fileChanged {
+		persistedHash = fileHash
+	}
+
 	return &configstoreTables.TableFrameworkConfig{
 			ID:                  configID,
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
+			ConfigHash:          persistedHash,
 		}, &modelcatalog.Config{
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
+			ModelParametersURL:  resolvedModelParametersURL,
 		}, needsDBUpdate
 }
 
@@ -3026,6 +3206,13 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
 	if config.TokenRefreshWorker != nil {
 		config.TokenRefreshWorker.Start(ctx)
+	}
+
+	// Start per-user OAuth sweep worker: expires stale pending flows and reaps
+	// long-orphaned token rows. Orphan retention defaults to 30 days.
+	config.OAuthSweepWorker = oauth2.NewPerUserOAuthSweepWorker(config.OAuthProvider, 30*24*time.Hour, logger)
+	if config.OAuthSweepWorker != nil {
+		config.OAuthSweepWorker.Start(ctx)
 	}
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
@@ -3315,13 +3502,6 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
-// GetMCPExternalServerURL returns the configured external base URL for OAuth server-side
-// metadata (.well-known endpoints, WWW-Authenticate header), or empty string if not configured.
-// Resolves env var references automatically.
-func (c *Config) GetMCPExternalServerURL() string {
-	return c.ClientConfig.MCPExternalServerURL.GetValue()
-}
-
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
@@ -3377,73 +3557,6 @@ func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
 	for _, client := range c.MCPConfig.ClientConfigs {
 		if client != nil && client.AllowOnAllVirtualKeys {
 			result[client.ID] = client.Name
-		}
-	}
-	return result
-}
-
-// GetPerUserOAuthMCPClients returns a map of clientID -> clientName for all MCP clients
-// that have AuthType set to "per_user_oauth". The returned map is a copy, safe for concurrent use.
-func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
-	c.muMCP.RLock()
-	defer c.muMCP.RUnlock()
-
-	if c.MCPConfig == nil {
-		return nil
-	}
-	result := make(map[string]string)
-	for _, client := range c.MCPConfig.ClientConfigs {
-		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && !client.Disabled {
-			result[client.ID] = client.Name
-		}
-	}
-	return result
-}
-
-// GetPerUserOAuthMCPClientsForVirtualKey returns a map of clientID -> clientName for
-// per_user_oauth MCP clients that the given VK is allowed to use. A client is included if:
-//   - AllowOnAllVirtualKeys is true, OR
-//   - The VK has an explicit entry in governance_virtual_key_mcp_configs for that client.
-//
-// If virtualKeyID is empty, all per-user OAuth clients are returned. If the config store
-// is unavailable or the VK lookup fails, only clients with AllowOnAllVirtualKeys=true are returned.
-func (c *Config) GetPerUserOAuthMCPClientsForVirtualKey(ctx context.Context, virtualKeyID string) map[string]string {
-	all := c.GetPerUserOAuthMCPClients()
-	if virtualKeyID == "" {
-		return all
-	}
-
-	// Build set of per-user OAuth clients that allow all virtual keys.
-	c.muMCP.RLock()
-	allowAll := make(map[string]string)
-	if c.MCPConfig != nil {
-		for _, client := range c.MCPConfig.ClientConfigs {
-			if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && client.AllowOnAllVirtualKeys {
-				allowAll[client.ID] = client.Name
-			}
-		}
-	}
-	c.muMCP.RUnlock()
-
-	if c.ConfigStore == nil {
-		return allowAll
-	}
-
-	// Get VK-specific MCP configs (with MCPClient preloaded so we have the string ClientID).
-	vkConfigs, err := c.ConfigStore.GetVirtualKeyMCPConfigs(ctx, virtualKeyID)
-	if err != nil {
-		// Fail closed: only return clients that are allowed on all virtual keys.
-		return allowAll
-	}
-	explicit := make(map[string]bool, len(vkConfigs))
-	for _, cfg := range vkConfigs {
-		explicit[cfg.MCPClient.ClientID] = true
-	}
-
-	result := make(map[string]string)
-	for clientID, clientName := range all {
-		if _, ok := allowAll[clientID]; ok || explicit[clientID] {
-			result[clientID] = clientName
 		}
 	}
 	return result
@@ -3564,6 +3677,9 @@ func (c *Config) Close(ctx context.Context) {
 	if c.TokenRefreshWorker != nil {
 		c.TokenRefreshWorker.Stop()
 	}
+	if c.OAuthSweepWorker != nil {
+		c.OAuthSweepWorker.Stop()
+	}
 	if c.KVStore != nil {
 		c.KVStore.Close()
 	}
@@ -3576,6 +3692,50 @@ func (c *Config) Close(ctx context.Context) {
 	if c.VectorStore != nil {
 		c.VectorStore.Close(ctx, "")
 	}
+}
+
+// initFeatureFlags constructs the feature flag store and applies overrides
+// in precedence order: DB first (Hydrate), then config.json file (ApplyFile,
+// which marks the entry as locked so it cannot be toggled via the UI).
+// Errors from configstore are logged and ignored so a transient DB hiccup
+// at boot does not block startup; the store falls back to defaults +
+// file overrides.
+func initFeatureFlags(ctx context.Context, config *Config, configData *ConfigData) error {
+	// Type-assert to bool so a stored `false` (or non-bool / missing key)
+	// resolves to OSS mode rather than the misleading "any non-nil = true"
+	// behavior of the previous `!= nil` check. The schemas comment for this
+	// context key declares it as bool, so the assertion is the documented
+	// shape; the comma-ok zero-value handles the unset path cleanly.
+	isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool)
+	store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+	if err != nil {
+		return fmt.Errorf("failed to initialize feature flags: %w", err)
+	}
+	config.FeatureFlags = store
+
+	if config.ConfigStore != nil {
+		rows, err := config.ConfigStore.ListFeatureFlags(ctx)
+		if err != nil {
+			logger.Warn("[featureflags] hydrate from configstore failed: %v", err)
+		} else {
+			hydration := make([]featureflags.HydrationRow, 0, len(rows))
+			for _, row := range rows {
+				hydration = append(hydration, featureflags.HydrationRow{
+					ID:        row.ID,
+					Enabled:   row.Enabled,
+					UpdatedAt: row.UpdatedAt,
+				})
+			}
+			store.Hydrate(hydration)
+		}
+	}
+
+	if configData != nil && configData.FeatureFlags != nil {
+		for id, val := range configData.FeatureFlags.Flags {
+			store.ApplyFile(id, val.Enabled)
+		}
+	}
+	return nil
 }
 
 // initKVStore initializes the kvstore for the config

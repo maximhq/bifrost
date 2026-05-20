@@ -80,7 +80,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			Model:    testConfig.ChatModel,
 			Input:    messages,
 			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(150),
+				MaxCompletionTokens: bifrost.Ptr(1000),
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}
@@ -311,7 +311,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				Model:    testConfig.ChatModel,
 				Input:    messages,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(150),
+					MaxCompletionTokens: bifrost.Ptr(1000),
 					Tools:               []schemas.ChatTool{*tool},
 				},
 				Fallbacks: testConfig.Fallbacks,

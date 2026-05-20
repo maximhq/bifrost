@@ -132,6 +132,41 @@ func (bc *BifrostContext) WithValue(key any, value any) *BifrostContext {
 	return bc
 }
 
+// Root returns the underlying root BifrostContext. For root contexts this is
+// the receiver itself; for plugin-scoped contexts it is the underlying root
+// that scoped Value/SetValue calls delegate to.
+//
+// PLUGIN AUTHORS: capture Root() synchronously inside Pre/PostLLMHook (or
+// any other hook) when you need to write to the context from a goroutine
+// that outlives the hook. The plugin-scoped *BifrostContext passed into your
+// hook is reclaimed by an internal sync.Pool the moment the hook returns —
+// any later SetValue/Value call on it lands in detached storage that nobody
+// downstream can read (and can leak into a future pool reuse). The root,
+// in contrast, lives for the entire request, so a pointer captured here is
+// safe to use for the lifetime of the request even after your hook returns.
+//
+// Example:
+//
+//	func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req ...) (...) {
+//	    rootCtx := ctx.Root() // capture before the scope is released
+//	    go func() {
+//	        // ... long-running work that produces stream chunks ...
+//	        rootCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+//	    }()
+//	    return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
+//	}
+func (bc *BifrostContext) Root() *BifrostContext {
+	// Unwrap the full delegation chain. A scoped context can in principle be
+	// derived from another scoped context (e.g. nested plugin scopes), and
+	// stopping at the first valueDelegate would return an intermediate pooled
+	// scope — which loses the async-safety guarantee as soon as that
+	// intermediate scope is released.
+	for bc != nil && bc.valueDelegate != nil {
+		bc = bc.valueDelegate
+	}
+	return bc
+}
+
 // BlockRestrictedWrites returns true if restricted writes are blocked.
 func (bc *BifrostContext) BlockRestrictedWrites() {
 	bc.blockRestrictedWrites.Store(true)
@@ -262,6 +297,31 @@ func (bc *BifrostContext) Value(key any) any {
 	}
 
 	return bc.parent.Value(key)
+}
+
+// AuthMode derives the per-user OAuth lookup mode from current context state.
+// Priority: UserID > VirtualKey > session. Call this at token-lookup time, not
+// in middleware — the governance plugin can inject UserID (via VK→owner
+// resolution) after middleware runs, and the mode must reflect that.
+//
+// Returns MCPAuthModeNone when no identity column is populated (no user, no
+// VK, no session header), so callers that branch on the returned mode alone
+// cannot mistake an unauthenticated request for a session-mode caller.
+//
+// VK check uses BifrostContextKeyGovernanceVirtualKeyID (the resolved VK row
+// ID) rather than BifrostContextKeyVirtualKey (the raw header value) because
+// vk-mode token rows are keyed by the resolved VK ID.
+func (bc *BifrostContext) MCPAuthMode() MCPAuthMode {
+	if userID, ok := bc.Value(BifrostContextKeyUserID).(string); ok && userID != "" {
+		return MCPAuthModeUser
+	}
+	if vkID, ok := bc.Value(BifrostContextKeyGovernanceVirtualKeyID).(string); ok && vkID != "" {
+		return MCPAuthModeVK
+	}
+	if sid, ok := bc.Value(BifrostContextKeyMCPSessionID).(string); ok && sid != "" {
+		return MCPAuthModeSession
+	}
+	return MCPAuthModeNone
 }
 
 // SetValue sets a value in the internal userValues map.

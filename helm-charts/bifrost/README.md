@@ -4,9 +4,31 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.14
+**Latest Version:** 2.1.17
 
 ## Changelog
+
+### 2.1.17
+
+- Added `max_turns_to_send` to guardrail rules. The integer caps how many historical conversation turns are sent to the guardrail provider on apply; the latest message is always included on top, and `0` (default) sends all turns. Wired into `values.schema.json`, `config.schema.json`, and `templates/_helpers.tpl` so it renders into `guardrails_config.guardrail_rules[].max_turns_to_send`.
+- Extended SCIM/SSO support so attribute mappings work for every supported provider, not just Keycloak:
+  - Added `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` to `bifrost.scim.config` for the Okta and Entra (Azure AD) provider branches. Previously these fields were rejected by `additionalProperties: false` even though the enterprise runtime renders them into `config.json`.
+  - Tightened the existing Keycloak mapping items from the placeholder `{type: object}` to a strict shape (`attribute`, `value`, plus `role`/`team`/`business_unit`, `additionalProperties: false`) so typos surface at `helm template` time. The same strict item shape is applied to Okta, Entra, Zitadel, and Google.
+  - Added two more SCIM providers to the schema enum and provided full config blocks for them: `zitadel` (`domain`, `clientId`, optional `clientSecret`/`projectId`/`audience`, plus service-account fields for Management API access) and `google` (Google Workspace OIDC with `domain`, `clientId`, `credentialMode`, service-account sources, and `adminEmail` for domain-wide delegation).
+  - Added matching `helm template`-time validation in `_helpers.tpl` for Zitadel (requires `domain`, `clientId`) and Google Workspace (requires `domain`, `clientId`).
+  - Documented every new field as commented examples under `bifrost.scim.config` in `values.yaml`.
+
+### 2.1.16
+
+- Widened `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` in `values.schema.json` from `integer` to `["integer", "string"]` so a Go duration string like `"30s"` or `"2m"` is accepted alongside the legacy bare integer. Updated the description to clarify "integer = seconds, string = Go duration" and recommend the string form, and changed the default from `30` to `"30s"`.
+- Updated the `values.yaml` example to use `toolExecutionTimeout: "30s"` instead of `toolExecutionTimeout: 30`, matching the new recommended form.
+- Paired with the upstream runtime fix (PR #3432) that reinterprets bare integers on this field as seconds rather than nanoseconds, and includes `mcp.tool_manager_config` in the client config hash so file-level changes survive the hash-based reconciliation pipeline on restart.
+
+### 2.1.15
+
+- Added `storage.logsStore.matviewRefreshInterval` to `values.yaml` and `values.schema.json`, letting operators control how often PostgreSQL materialized views are refreshed in the logs store (e.g. `"30s"`, `"5m"`, `"1h"`; minimum `5s`).
+- Wired `matviewRefreshInterval` through `_helpers.tpl` so it renders into the generated PostgreSQL `logs_store.matview_refresh_interval` field when set, and is omitted when not.
+- Bumped `appVersion` from `1.5.0-prerelease7` to `1.5.0` (first chart release pinned to the stable `1.5.0` app image).
 
 ### 2.1.14
 

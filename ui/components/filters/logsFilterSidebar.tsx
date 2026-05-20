@@ -8,7 +8,7 @@ import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } fr
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "logs-filter-sidebar-collapsed";
@@ -115,6 +115,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -185,7 +186,6 @@ function FilterSection({
 }) {
 	const [open, setOpen] = useState(defaultOpen);
 
-	// Force open when defaultOpen flips to true (e.g. a filter in this section becomes active)
 	useEffect(() => {
 		if (defaultOpen) setOpen(true);
 	}, [defaultOpen]);
@@ -257,6 +257,8 @@ function SearchableCheckboxList({
 	inputRef,
 	testIdPrefix,
 	allowCustom = false,
+	onSearch,
+	fetching,
 }: {
 	items: { key: string; label: string }[];
 	isSelected: (key: string) => boolean;
@@ -264,11 +266,9 @@ function SearchableCheckboxList({
 	placeholder?: string;
 	inputRef?: Ref<HTMLInputElement>;
 	testIdPrefix?: string;
-	// When true, lets users add the typed search string as a filter value if it
-	// doesn't exactly match any existing item. Only safe for filters where the
-	// stored value equals the displayed string (models, aliases, stop reasons) —
-	// not for ID-backed filters where the visible label is a name.
 	allowCustom?: boolean;
+	onSearch?: (query: string) => void;
+	fetching?: boolean;
 }) {
 	const [query, setQuery] = useState("");
 	const normalized = query.trim().toLowerCase();
@@ -276,6 +276,14 @@ function SearchableCheckboxList({
 	const trimmed = query.trim();
 	const hasExactMatch = trimmed !== "" && items.some((item) => item.label.toLowerCase() === trimmed.toLowerCase());
 	const showAddCustom = allowCustom && trimmed !== "" && !hasExactMatch;
+
+	useEffect(() => {
+		if (!onSearch) return;
+		const timer = setTimeout(() => {
+			onSearch(query.trim());
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [query, onSearch]);
 
 	const commitCustom = () => {
 		if (!showAddCustom) return;
@@ -285,7 +293,12 @@ function SearchableCheckboxList({
 
 	return (
 		<>
-			<div className="border-b">
+			<div className="relative border-b">
+				{fetching ? (
+					<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
+				) : (
+					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				)}
 				<Input
 					ref={inputRef}
 					value={query}
@@ -297,7 +310,7 @@ function SearchableCheckboxList({
 						}
 					}}
 					placeholder={placeholder}
-					className="h-8 border-0 text-xs"
+					className="h-8 border-0 pl-8 text-xs"
 					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
 				/>
 			</div>
@@ -364,10 +377,13 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 	const hasActive = (filters.stop_reasons || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["stop_reasons"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["stop_reasons"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableStopReasons = filterData?.stop_reasons || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableStopReasons);
@@ -396,6 +412,8 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 					const next = current.includes(reason) ? current.filter((r) => r !== reason) : [...current, reason];
 					onFiltersChange({ ...filters, stop_reasons: next });
 				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
 			/>
 		</FilterSection>
@@ -476,13 +494,14 @@ function ModelsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 	const hasActive = (filters.models || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["models"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["models"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableModels = filterData?.models || [];
-	// Merge selected-but-unavailable values so user-typed custom models still
-	// render with a checkbox they can untick.
 	const items = useMemo(() => {
 		const seen = new Set(availableModels);
 		const extras = (filters.models || []).filter((m) => !seen.has(m));
@@ -510,6 +529,8 @@ function ModelsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 					const next = current.includes(model) ? current.filter((m) => m !== model) : [...current, model];
 					onFiltersChange({ ...filters, models: next });
 				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="models-filter"
 			/>
 		</FilterSection>
@@ -524,10 +545,13 @@ function AliasesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = (filters.aliases || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["aliases"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["aliases"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableAliases = filterData?.aliases || [];
 	const items = useMemo(() => {
 		const seen = new Set(availableAliases);
@@ -556,6 +580,8 @@ function AliasesFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					const next = current.includes(alias) ? current.filter((a) => a !== alias) : [...current, alias];
 					onFiltersChange({ ...filters, aliases: next });
 				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="aliases-filter"
 			/>
 		</FilterSection>
@@ -570,10 +596,13 @@ function SelectedKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const hasActive = (filters.selected_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["selected_keys"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["selected_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableSelectedKeys), [availableSelectedKeys]);
 
@@ -609,6 +638,8 @@ function SelectedKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				items={dedup(availableSelectedKeys).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="selected-keys-filter"
 			/>
 		</FilterSection>
@@ -623,10 +654,13 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 	const hasActive = (filters.virtual_key_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["virtual_keys"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["virtual_keys"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const nameToIds = useMemo(() => groupByName(availableVirtualKeys), [availableVirtualKeys]);
 
@@ -662,6 +696,8 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 				items={dedup(availableVirtualKeys).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="virtual-keys-filter"
 			/>
 		</FilterSection>
@@ -676,10 +712,13 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 	const hasActive = (filters.routing_engine_used || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["routing_engines"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_engines"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableRoutingEngines = filterData?.routing_engines || [];
 
 	if (!isUninitialized && !isLoading && availableRoutingEngines.length === 0 && !hasActive && !opened) return null;
@@ -706,6 +745,8 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 					onFiltersChange({ ...filters, routing_engine_used: next });
 				}}
 				testIdPrefix="routing-engines-filter"
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 			/>
 		</FilterSection>
 	);
@@ -719,10 +760,13 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 	const hasActive = (filters.routing_rule_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["routing_rules"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["routing_rules"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
 	const availableRoutingRules = filterData?.routing_rules || [];
 	const nameToIds = useMemo(() => groupByName(availableRoutingRules), [availableRoutingRules]);
 
@@ -758,6 +802,8 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				items={dedup(availableRoutingRules).map((name) => ({ key: name, label: name }))}
 				isSelected={isSelected}
 				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
 				testIdPrefix="routing-rules-filter"
 			/>
 		</FilterSection>
@@ -772,14 +818,17 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 	const hasActive = !!filters.parent_request_id;
 	return (
 		<FilterSection title="Session" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
-			<Input
-				value={filters.parent_request_id || ""}
-				onChange={(e) => onFiltersChange({ ...filters, parent_request_id: e.target.value })}
-				placeholder="Parent request ID"
-				className="h-8 border-0 text-sm"
-				data-testid="session-filter-input"
-				autoFocus
-			/>
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.parent_request_id || ""}
+					onChange={(e) => onFiltersChange({ ...filters, parent_request_id: e.target.value })}
+					placeholder="Parent request ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="session-filter-input"
+					autoFocus
+				/>
+			</div>
 		</FilterSection>
 	);
 }
@@ -789,15 +838,47 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 // ---------------------------------------------------------------------------
 
 function UserFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
-	const hasActive = !!filters.user_ids?.length;
+	const hasActive = (filters.user_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["users"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableUsers = filterData?.users || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableUsers.map((u) => u.id));
+		const extras = (filters.user_ids || []).filter((id) => !seen.has(id));
+		return [...availableUsers.map((u) => ({ key: u.id, label: u.name || u.id })), ...extras.map((id) => ({ key: id, label: id }))];
+	}, [availableUsers, filters.user_ids]);
+
+	if (!isUninitialized && !isLoading && availableUsers.length === 0 && !hasActive && !opened) return null;
+
 	return (
-		<FilterSection title="User" defaultOpen={defaultOpen || hasActive} testId="user-filter-toggle">
-			<Input
-				value={filters.user_ids?.[0] || ""}
-				onChange={(e) => onFiltersChange({ ...filters, user_ids: e.target.value ? [e.target.value] : [] })}
-				placeholder="User ID"
-				className="h-8 border-0 text-sm"
-				data-testid="user-id-filter-input"
+		<FilterSection
+			title="User"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="user-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a user"
+				items={items}
+				allowCustom
+				isSelected={(id) => (filters.user_ids || []).includes(id)}
+				onToggle={(id) => {
+					const current = filters.user_ids || [];
+					const next = current.includes(id) ? current.filter((u) => u !== id) : [...current, id];
+					onFiltersChange({ ...filters, user_ids: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="user-filter"
 			/>
 		</FilterSection>
 	);
@@ -822,16 +903,56 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 }
 
 // ---------------------------------------------------------------------------
+// LocalCachingFilter – filter by semantic-cache hit type (direct / semantic)
+// ---------------------------------------------------------------------------
+
+const LocalCachingOptions: { key: string; label: string }[] = [
+	{ key: "direct", label: "Direct cache" },
+	{ key: "semantic", label: "Semantic cache" },
+];
+
+function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.cache_hit_types || []).length > 0;
+	return (
+		<FilterSection title="Local Caching" defaultOpen={defaultOpen || hasActive} testId="local-caching-filter-toggle">
+			{LocalCachingOptions.map((option) => (
+				<CheckboxFilterItem
+					key={option.key}
+					label={option.label}
+					checked={(filters.cache_hit_types || []).includes(option.key)}
+					onCheckedChange={() => {
+						const current = filters.cache_hit_types || [];
+						const next = current.includes(option.key) ? current.filter((t) => t !== option.key) : [...current, option.key];
+						onFiltersChange({ ...filters, cache_hit_types: next });
+					}}
+					testId={`local-caching-filter-checkbox-${option.key}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // MetadataFilters – fetches metadata keys internally
 // ---------------------------------------------------------------------------
 
 function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.metadata_filters && Object.keys(filters.metadata_filters).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
-	const { data: filterData, isUninitialized, isLoading } = useGetAvailableFilterDataQuery(
-		{ dimensions: ["metadata_keys"] },
-		{ skip: !opened && !hasActive },
-	);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [debouncedQuery, setDebouncedQuery] = useState("");
+
+	useEffect(() => {
+		const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+		return () => clearTimeout(timer);
+	}, [searchQuery]);
+
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["metadata_keys"], q: debouncedQuery || undefined }, { skip: !opened && !hasActive });
 	const availableMetadataKeys = filterData?.metadata_keys || {};
 	const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
 
@@ -852,7 +973,7 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	);
 
 	const entries = Object.entries(availableMetadataKeys);
-	const isEmpty = !isUninitialized && !isLoading && entries.length === 0 && !hasActive;
+	const isEmpty = !isUninitialized && !isLoading && entries.length === 0 && !hasActive && !searchQuery;
 
 	return (
 		<FilterSection
@@ -865,48 +986,67 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 			{isEmpty ? (
 				<div className="text-muted-foreground px-3 py-2 text-xs">No metadata keys</div>
 			) : (
-				entries.map(([metadataKey, values]) => (
-					<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
-						<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
-						{values.map((value: string) => (
-							<CheckboxFilterItem
-								key={value}
-								label={value}
-								checked={filters.metadata_filters?.[metadataKey] === value}
-								onCheckedChange={() => {
-									const currentValue = filters.metadata_filters?.[metadataKey];
-									handleChange(metadataKey, currentValue === value ? undefined : value);
-								}}
-								testId={`metadata-${metadataKey}-filter-checkbox-${value}`}
-							/>
-						))}
-						<div className="px-3 py-2.5">
-							<Input
-								className="placeholder:text-muted-foreground h-7 w-full rounded border bg-transparent px-2 text-sm"
-								placeholder="Custom value..."
-								value={
-									customInputs[metadataKey] ??
-									(filters.metadata_filters?.[metadataKey] && !values.includes(filters.metadata_filters[metadataKey])
-										? filters.metadata_filters[metadataKey]
-										: "")
-								}
-								onChange={(e) => {
-									const newVal = e.target.value;
-									setCustomInputs((prev) => ({ ...prev, [metadataKey]: newVal }));
-									if (newVal === "" && filters.metadata_filters?.[metadataKey]) {
-										handleChange(metadataKey, undefined);
-									}
-								}}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && customInputs[metadataKey]?.trim()) {
-										handleChange(metadataKey, customInputs[metadataKey].trim());
-									}
-								}}
-								data-testid={`metadata-${metadataKey}-filter-custom-input`}
-							/>
-						</div>
+				<>
+					<div className="relative border-b">
+						{isFetching ? (
+							<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
+						) : (
+							<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+						)}
+						<Input
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							placeholder="Search metadata..."
+							className="h-8 border-0 pl-8 text-xs"
+							data-testid="metadata-search-input"
+						/>
 					</div>
-				))
+					{entries.length === 0 && !isFetching && (
+						<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
+					)}
+					{entries.map(([metadataKey, values]) => (
+						<div key={metadataKey} data-testid={`metadata-${metadataKey}-filter-group`}>
+							<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{metadataKey}</div>
+							{values.map((value: string) => (
+								<CheckboxFilterItem
+									key={value}
+									label={value}
+									checked={filters.metadata_filters?.[metadataKey] === value}
+									onCheckedChange={() => {
+										const currentValue = filters.metadata_filters?.[metadataKey];
+										handleChange(metadataKey, currentValue === value ? undefined : value);
+									}}
+									testId={`metadata-${metadataKey}-filter-checkbox-${value}`}
+								/>
+							))}
+							<div className="px-3 py-2.5">
+								<Input
+									className="placeholder:text-muted-foreground h-7 w-full rounded border bg-transparent px-2 text-sm"
+									placeholder="Custom value..."
+									value={
+										customInputs[metadataKey] ??
+										(filters.metadata_filters?.[metadataKey] && !values.includes(filters.metadata_filters[metadataKey])
+											? filters.metadata_filters[metadataKey]
+											: "")
+									}
+									onChange={(e) => {
+										const newVal = e.target.value;
+										setCustomInputs((prev) => ({ ...prev, [metadataKey]: newVal }));
+										if (newVal === "" && filters.metadata_filters?.[metadataKey]) {
+											handleChange(metadataKey, undefined);
+										}
+									}}
+									onKeyDown={(e) => {
+										if (e.key === "Enter" && customInputs[metadataKey]?.trim()) {
+											handleChange(metadataKey, customInputs[metadataKey].trim());
+										}
+									}}
+									data-testid={`metadata-${metadataKey}-filter-custom-input`}
+								/>
+							</div>
+						</div>
+					))}
+				</>
 			)}
 		</FilterSection>
 	);

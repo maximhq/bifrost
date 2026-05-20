@@ -1,4 +1,5 @@
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -8,23 +9,31 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { resetDurationLabels } from "@/lib/constants/governance";
-import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
+import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import {
+	getErrorMessage,
+	useBulkRotateVirtualKeysMutation,
+	useDeleteVirtualKeyMutation,
+	useLazyGetVirtualKeysQuery,
+	useUpdateVirtualKeyMutation,
+} from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -37,12 +46,14 @@ import {
 	Eye,
 	EyeOff,
 	Loader2,
+	MoreHorizontal,
 	Plus,
+	RotateCcw,
 	Search,
 	ShieldCheck,
 	Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
@@ -53,7 +64,7 @@ const formatResetDuration = (duration: string) => resetDurationLabels[duration] 
 
 type ExportScope = "current_page" | "all";
 
-function virtualKeysToCSV(vks: VirtualKey[]): string {
+function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, string> = {}): string {
 	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
@@ -65,7 +76,13 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				vk.rate_limit?.request_max_limit &&
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
 		const status = vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive";
-		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
+		const assignedTo = vk.team
+			? `Team: ${vk.team.name}`
+			: vk.customer
+				? `Customer: ${vk.customer.name}`
+				: vk.access_profile_id
+					? `Access Profile: ${accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}`
+					: "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
@@ -100,7 +117,7 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 					</span>
 					<span className="text-muted-foreground text-xs">
 						Resets {formatResetDuration(b.reset_duration)}
-						{vk.calendar_aligned && " (calendar)"}
+						{vk.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
 					</span>
 				</div>
 			))}
@@ -110,99 +127,120 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 
 function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
 	const { displayRateLimit } = useVirtualKeyUsage(vk);
-	return <RateLimitDisplay rateLimits={displayRateLimit} />;
+	return <RateLimitDisplay rateLimits={displayRateLimit} calendarAligned={vk.calendar_aligned} />;
 }
 
-// Status badge derives exhaustion from the same AP-backed source as the budget/rate-limit cells
-// so managed keys don't show "Active" next to an exhausted-looking bar.
-function VKStatusBadge({ vk }: { vk: VirtualKey }) {
-	const { isExhausted } = useVirtualKeyUsage(vk);
-	return (
-		<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
-			{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
-		</Badge>
-	);
-}
-
-// Per-row delete button. Calls useVirtualKeyUsage (same cached query as the budget/
-// rate-limit cells — RTK dedupes) to detect managed-by-AP VKs and swap the normal
-// delete AlertDialog for a disabled button + tooltip so users aren't lured into a
-// confirm-then-403 loop.
-function VKDeleteButton({
+function VKActiveSwitch({
 	vk,
-	hasDeleteAccess,
-	isDeleting,
-	onDelete,
+	hasUpdateAccess,
+	onToggle,
 }: {
 	vk: VirtualKey;
-	hasDeleteAccess: boolean;
-	isDeleting: boolean;
-	onDelete: (vkId: string) => void;
+	hasUpdateAccess: boolean;
+	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
 	const { isManagedByProfile } = useVirtualKeyUsage(vk);
 
-	if (isManagedByProfile) {
-		return (
-			<TooltipProvider>
-				<Tooltip delayDuration={300}>
-					<TooltipTrigger asChild>
-						<span className="inline-block cursor-not-allowed">
-							<Button
-								variant="ghost"
-								size="sm"
-								className="text-destructive border-destructive/30"
-								disabled
-								data-testid={`vk-delete-btn-${vk.name}`}
-							>
-								<Trash2 className="h-4 w-4" />
-							</Button>
-						</span>
-					</TooltipTrigger>
-					<TooltipContent side="top" className="max-w-[260px]">
-						<p className="text-xs">
-							This virtual key is managed by an access profile and can&apos;t be deleted here. Detach the profile from the user or delete it
-							from the access profile settings.
-						</p>
-					</TooltipContent>
-				</Tooltip>
-			</TooltipProvider>
-		);
-	}
+	return (
+		<Switch
+			checked={vk.is_active}
+			disabled={!hasUpdateAccess || isManagedByProfile}
+			aria-label={`${vk.is_active ? "Disable" : "Enable"} virtual key ${vk.name}`}
+			data-testid={`vk-active-switch-${vk.name}`}
+			title={isManagedByProfile ? "This virtual key is managed by an access profile." : undefined}
+			onAsyncCheckedChange={(checked) => onToggle(vk, checked)}
+		/>
+	);
+}
+
+function VKActionsMenu({
+	vk,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	isDeleting,
+	onEdit,
+	onDelete,
+}: {
+	vk: VirtualKey;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	isDeleting: boolean;
+	onEdit: (vk: VirtualKey) => void;
+	onDelete: (vkId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
-		<AlertDialog>
-			<AlertDialogTrigger asChild>
-				<Button
-					variant="ghost"
-					size="sm"
-					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
-					onClick={(e) => e.stopPropagation()}
-					disabled={!hasDeleteAccess}
-					data-testid={`vk-delete-btn-${vk.name}`}
-				>
-					<Trash2 className="h-4 w-4" />
-				</Button>
-			</AlertDialogTrigger>
-			<AlertDialogContent>
-				<AlertDialogHeader>
-					<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
-					<AlertDialogDescription>
-						Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot be undone.
-					</AlertDialogDescription>
-				</AlertDialogHeader>
-				<AlertDialogFooter>
-					<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
-					<AlertDialogAction
-						onClick={() => onDelete(vk.id)}
-						disabled={isDeleting}
-						className="bg-destructive hover:bg-destructive/90"
-						data-testid={`vk-delete-confirm-${vk.name}`}
+		<>
+			<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+				<DropdownMenuTrigger asChild>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-8 w-8"
+						aria-label="Virtual key actions"
+						data-testid={`vk-actions-btn-${vk.name}`}
 					>
-						{isDeleting ? "Deleting..." : "Delete"}
-					</AlertDialogAction>
-				</AlertDialogFooter>
-			</AlertDialogContent>
-		</AlertDialog>
+						<MoreHorizontal className="h-4 w-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={!hasUpdateAccess}
+						data-testid={`vk-edit-btn-${vk.name}`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onEdit(vk);
+							setIsOpen(false);
+						}}
+					>
+						<Edit className="h-4 w-4" />
+						Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						disabled={!hasDeleteAccess || isManagedByProfile}
+						data-testid={`vk-delete-btn-${vk.name}`}
+						title={isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined}
+						onSelect={(e) => {
+							e.preventDefault();
+							setDeleteOpen(true);
+							setIsOpen(false);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to delete &quot;
+							{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}
+							&quot;? This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => onDelete(vk.id)}
+							disabled={isDeleting}
+							className="bg-destructive hover:bg-destructive/90"
+							data-testid={`vk-delete-confirm-${vk.name}`}
+						>
+							{isDeleting ? "Deleting..." : "Delete"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
 	);
 }
 
@@ -253,7 +291,18 @@ export default function VirtualKeysTable({
 	const [showExportDialog, setShowExportDialog] = useState(false);
 	const [exportScope, setExportScope] = useState<ExportScope>("current_page");
 	const [exportMaxLimit, setExportMaxLimit] = useState("");
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [showBulkRotateDialog, setShowBulkRotateDialog] = useState(false);
 	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery();
+
+	const { data: accessProfilesData } = useGetAccessProfilesQuery({ limit: 100 });
+	const accessProfileNames = useMemo(() => {
+		const map: Record<number, string> = {};
+		for (const ap of accessProfilesData?.access_profiles ?? []) {
+			map[ap.id] = ap.name;
+		}
+		return map;
+	}, [accessProfilesData]);
 
 	// Derive objects from props so they stay in sync with RTK cache updates
 	const editingVirtualKey = useMemo(
@@ -270,6 +319,48 @@ export default function VirtualKeysTable({
 	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete);
 
 	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
+	const [updateVirtualKey] = useUpdateVirtualKeyMutation();
+	const [bulkRotateVirtualKeys, { isLoading: isBulkRotating }] = useBulkRotateVirtualKeysMutation();
+
+	const visibleIds = useMemo(() => virtualKeys.map((vk) => vk.id), [virtualKeys]);
+	const selectedVisibleIds = useMemo(() => visibleIds.filter((id) => selectedIds.has(id)), [selectedIds, visibleIds]);
+	const selectedCount = selectedIds.size;
+	const allVisibleSelected = visibleIds.length > 0 && selectedVisibleIds.length === visibleIds.length;
+	const someVisibleSelected = selectedVisibleIds.length > 0 && selectedVisibleIds.length < visibleIds.length;
+
+	useEffect(() => {
+		setSelectedIds((prev) => {
+			const visible = new Set(visibleIds);
+			const next = new Set([...prev].filter((id) => visible.has(id)));
+			return next.size === prev.size ? prev : next;
+		});
+	}, [visibleIds]);
+
+	const toggleSelectAllVisible = (checked: boolean) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			for (const id of visibleIds) {
+				if (checked) {
+					next.add(id);
+				} else {
+					next.delete(id);
+				}
+			}
+			return next;
+		});
+	};
+
+	const toggleSelectVirtualKey = (vkId: string, checked: boolean) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (checked) {
+				next.add(vkId);
+			} else {
+				next.delete(vkId);
+			}
+			return next;
+		});
+	};
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -280,13 +371,59 @@ export default function VirtualKeysTable({
 		}
 	};
 
+	const handleToggleActive = async (vk: VirtualKey, checked: boolean) => {
+		try {
+			await updateVirtualKey({
+				vkId: vk.id,
+				data: { is_active: checked },
+			}).unwrap();
+			toast.success(`Virtual key ${checked ? "enabled" : "disabled"}`);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+			throw error;
+		}
+	};
+
+	const handleBulkRotate = async () => {
+		const ids = Array.from(selectedIds);
+		if (ids.length === 0) return;
+
+		try {
+			const result = await bulkRotateVirtualKeys({ ids }).unwrap();
+			const rotatedIds = new Set(result.virtual_keys.map((vk) => vk.id));
+			setSelectedIds((prev) => {
+				const next = new Set(prev);
+				for (const id of rotatedIds) {
+					next.delete(id);
+				}
+				return next;
+			});
+			setRevealedKeys((prev) => {
+				const next = new Set(prev);
+				for (const id of rotatedIds) {
+					next.delete(id);
+				}
+				return next;
+			});
+			setShowBulkRotateDialog(false);
+
+			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			if (failureCount > 0) {
+				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
+			} else {
+				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+			}
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
 	const handleAddVirtualKey = () => {
 		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
 
-	const handleEditVirtualKey = (vk: VirtualKey, e: React.MouseEvent) => {
-		e.stopPropagation(); // Prevent row click
+	const handleEditVirtualKey = (vk: VirtualKey) => {
 		setEditingVirtualKeyId(vk.id);
 		setShowVirtualKeySheet(true);
 	};
@@ -340,7 +477,7 @@ export default function VirtualKeysTable({
 
 	const handleExportCSV = async () => {
 		if (exportScope === "current_page") {
-			downloadCSV(virtualKeysToCSV(virtualKeys));
+			downloadCSV(virtualKeysToCSV(virtualKeys, accessProfileNames));
 			toast.success(`Exported ${virtualKeys.length} virtual keys`);
 			setShowExportDialog(false);
 			return;
@@ -362,7 +499,7 @@ export default function VirtualKeysTable({
 				export: true,
 			}).unwrap();
 
-			downloadCSV(virtualKeysToCSV(result.virtual_keys));
+			downloadCSV(virtualKeysToCSV(result.virtual_keys, accessProfileNames));
 			toast.success(`Exported ${result.virtual_keys.length} virtual keys`);
 			setShowExportDialog(false);
 		} catch (error) {
@@ -386,7 +523,6 @@ export default function VirtualKeysTable({
 			</Button>
 		);
 	};
-
 
 	// True empty state: no VKs at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -512,6 +648,29 @@ export default function VirtualKeysTable({
 				</DialogContent>
 			</Dialog>
 
+			<AlertDialog open={showBulkRotateDialog} onOpenChange={setShowBulkRotateDialog}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Rotate selected virtual keys?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
+							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values will stop working
+							immediately.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid="vk-bulk-rotate-cancel-btn">Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={handleBulkRotate}
+							disabled={isBulkRotating || selectedCount === 0}
+							data-testid="vk-bulk-rotate-confirm-btn"
+						>
+							{isBulkRotating ? "Rotating..." : "Rotate Selected"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
@@ -519,6 +678,17 @@ export default function VirtualKeysTable({
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
 					</div>
 					<div className="flex items-center gap-2">
+						{selectedCount > 0 && (
+							<Button
+								variant="outline"
+								onClick={() => setShowBulkRotateDialog(true)}
+								disabled={!hasUpdateAccess || isBulkRotating}
+								data-testid="vk-bulk-rotate-btn"
+							>
+								<RotateCcw className="h-4 w-4" />
+								Rotate selected ({selectedCount})
+							</Button>
+						)}
 						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
 							<Download className="h-4 w-4" />
 							Export CSV
@@ -549,7 +719,7 @@ export default function VirtualKeysTable({
 						value={customerFilter || null}
 						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
 						placeholder="All Customers"
-						className="w-[180px] h-9"
+						className="h-9 w-[180px]"
 					/>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
 					<ComboboxSelect
@@ -558,14 +728,22 @@ export default function VirtualKeysTable({
 						value={teamFilter || null}
 						onValueChange={(val) => onTeamFilterChange(val ?? "")}
 						placeholder="All Teams"
-						className="w-[180px] h-9"
+						className="h-9 w-[180px]"
 					/>
 				</div>
 
 				<div className="rounded-sm border">
-					<Table className="table-fixed w-full" data-testid="vk-table">
+					<Table className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
+								<TableHead className="w-[48px]">
+									<Checkbox
+										checked={allVisibleSelected || (someVisibleSelected ? "indeterminate" : false)}
+										onCheckedChange={(checked) => toggleSelectAllVisible(checked === true)}
+										aria-label="Select all virtual keys on this page"
+										data-testid="vk-select-all-checkbox"
+									/>
+								</TableHead>
 								<TableHead className="w-[250px]">
 									<SortableHeader column="name" label="Name" />
 								</TableHead>
@@ -578,13 +756,13 @@ export default function VirtualKeysTable({
 								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className="w-[110px] text-right"></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{virtualKeys.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={7} className="h-24 text-center">
+									<TableCell colSpan={8} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching virtual keys found.</span>
 									</TableCell>
 								</TableRow>
@@ -596,19 +774,35 @@ export default function VirtualKeysTable({
 										<TableRow
 											key={vk.id}
 											data-testid={`vk-row-${vk.name}`}
-											className="hover:bg-muted/50 cursor-pointer transition-colors"
+											className="group hover:bg-muted/50 cursor-pointer transition-colors"
 											onClick={() => handleRowClick(vk)}
 										>
+											<TableCell onClick={(e) => e.stopPropagation()}>
+												<Checkbox
+													checked={selectedIds.has(vk.id)}
+													onCheckedChange={(checked) => toggleSelectVirtualKey(vk.id, checked === true)}
+													aria-label={`Select virtual key ${vk.name}`}
+													data-testid={`vk-select-checkbox-${vk.name}`}
+												/>
+											</TableCell>
 											<TableCell className="max-w-[200px]">
 												<div className="truncate font-medium">{vk.name}</div>
 											</TableCell>
 											<TableCell>
 												{vk.team ? (
-													<Badge variant="outline" className="max-w-full truncate text-left block">Team: {vk.team.name}</Badge>
+													<Badge variant="outline" className="block max-w-full truncate text-left">
+														Team: {vk.team.name}
+													</Badge>
 												) : vk.customer ? (
-													<Badge variant="outline" className="max-w-full truncate text-left block">Customer: {vk.customer.name}</Badge>
+													<Badge variant="outline" className="block max-w-full truncate text-left">
+														Customer: {vk.customer.name}
+													</Badge>
+												) : vk.access_profile_id ? (
+													<Badge variant="outline" className="block max-w-full truncate text-left">
+														AP: {accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}
+													</Badge>
 												) : (
-													<span className="text-muted-foreground text-sm truncate max-w-full text-left">-</span>
+													<span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
@@ -642,22 +836,21 @@ export default function VirtualKeysTable({
 											<TableCell>
 												<VKRateLimitCell vk={vk} />
 											</TableCell>
-											<TableCell>
-												<VKStatusBadge vk={vk} />
+											<TableCell onClick={(e) => e.stopPropagation()}>
+												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 											</TableCell>
-											<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-2">
-													<Button
-														variant="ghost"
-														size="sm"
-														onClick={(e) => handleEditVirtualKey(vk, e)}
-														disabled={!hasUpdateAccess}
-														data-testid={`vk-edit-btn-${vk.name}`}
-													>
-														<Edit className="h-4 w-4" />
-													</Button>
-													<VKDeleteButton vk={vk} hasDeleteAccess={hasDeleteAccess} isDeleting={isDeleting} onDelete={handleDelete} />
-												</div>
+											<TableCell
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												onClick={(e) => e.stopPropagation()}
+											>
+												<VKActionsMenu
+													vk={vk}
+													hasUpdateAccess={hasUpdateAccess}
+													hasDeleteAccess={hasDeleteAccess}
+													isDeleting={isDeleting}
+													onEdit={handleEditVirtualKey}
+													onDelete={handleDelete}
+												/>
 											</TableCell>
 										</TableRow>
 									);

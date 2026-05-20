@@ -388,6 +388,7 @@
             "pages": [
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai"
             ]

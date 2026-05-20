@@ -31,12 +31,19 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
 
 			// Convert tool choice to tool config
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
 
 		// Handle extra parameters
@@ -274,6 +281,11 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 
+	if response.UsageMetadata != nil && response.UsageMetadata.ServiceTier != "" {
+		tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+		bifrostResp.ServiceTier = &tier
+	}
+
 	return bifrostResp
 }
 
@@ -492,6 +504,10 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+		if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			streamResponse.ServiceTier = &tier
+		}
 	}
 
 	return streamResponse, nil, isLastChunk

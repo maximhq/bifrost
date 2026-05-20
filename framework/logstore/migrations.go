@@ -324,6 +324,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddStopReasonColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSafeJsonbFunction(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddDACColumnsToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddClusterGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
@@ -2457,6 +2466,31 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_stop_reason",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
 	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_user_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_id ON mcp_tool_logs(user_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_team_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_team_id ON mcp_tool_logs(team_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_customer_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_customer_id ON mcp_tool_logs(customer_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_business_unit_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_business_unit_id ON mcp_tool_logs(business_unit_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -3035,6 +3069,168 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddSafeJsonbFunction installs a PL/pgSQL helper that the
+// /api/logs list query uses to extract the last element of input_history /
+// responses_input_history without aborting the whole query on a single bad row.
+//
+// The previous inline guard (`left(btrim(x),1)='['`) only checked the first
+// character before casting to jsonb. Any row that looked array-shaped but
+// contained malformed JSON (unterminated structures, trailing commas, unpaired
+// UTF-16 surrogates, etc.) would fail the cast with 22P02 / 22P05 and abort the
+// entire list response. The helper wraps the cast in an EXCEPTION block and
+// returns the raw TEXT on any parse failure.
+//
+// Postgres-only; SQLite is guarded inline in listSelectColumns via json_valid().
+func migrationAddSafeJsonbFunction(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_safe_jsonb_function",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			const stmt = `
+CREATE OR REPLACE FUNCTION bifrost_safe_jsonb(t text) RETURNS text
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    j jsonb;
+BEGIN
+    IF t IS NULL OR t = '' OR t = '[]' THEN
+        RETURN t;
+    END IF;
+    IF left(btrim(t), 1) <> '[' THEN
+        RETURN t;
+    END IF;
+    BEGIN
+        j := t::jsonb;
+    EXCEPTION WHEN invalid_text_representation OR untranslatable_character THEN
+        RETURN t;
+    END;
+    IF jsonb_typeof(j) <> 'array' OR jsonb_array_length(j) = 0 THEN
+        RETURN t;
+    END IF;
+    RETURN jsonb_build_array(j->-1)::text;
+END;
+$$;`
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to create bifrost_safe_jsonb: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP FUNCTION IF EXISTS bifrost_safe_jsonb(text)").Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding bifrost_safe_jsonb function: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddDACColumnsToMCPToolLogs adds user_id, team_id, customer_id,
+// and business_unit_id columns to mcp_tool_logs so DAC scope can apply the
+// same ownership predicates it does on the logs table. The columns are
+// nullable; pre-existing rows stay NULL and the DAC resolver fails closed
+// for non-admin principals against them.
+//
+// Indexes are built CONCURRENTLY by ensurePerformanceIndexes (entries appended
+// to performanceIndexes) so adding them does not block writes on a populated
+// table.
+func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_dac_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			for _, col := range []string{"user_id", "team_id", "customer_id", "business_unit_id"} {
+				if !mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.AddColumn(&MCPToolLog{}, col); err != nil {
+						return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, col := range []string{"business_unit_id", "customer_id", "team_id", "user_id"} {
+				if mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.DropColumn(&MCPToolLog{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding DAC columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddClusterGovernanceColumns adds cluster_node_id, budget_ids, and rate_limit_ids
+// columns to the logs table for node usage recovery in clustered deployments.
+func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_cluster_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "cluster_node_id") {
+				if err := migrator.AddColumn(&Log{}, "cluster_node_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "budget_ids") {
+				if err := migrator.AddColumn(&Log{}, "budget_ids"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "rate_limit_ids") {
+				if err := migrator.AddColumn(&Log{}, "rate_limit_ids"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "cluster_node_id") {
+				if err := migrator.DropColumn(&Log{}, "cluster_node_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "budget_ids") {
+				if err := migrator.DropColumn(&Log{}, "budget_ids"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "rate_limit_ids") {
+				if err := migrator.DropColumn(&Log{}, "rate_limit_ids"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding cluster governance columns: %s", err.Error())
 	}
 	return nil
 }

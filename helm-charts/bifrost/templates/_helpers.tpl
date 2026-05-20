@@ -334,6 +334,9 @@ false
 {{- if .Values.bifrost.framework.pricing.pricingUrl }}
 {{- $_ := set $pricing "pricing_url" .Values.bifrost.framework.pricing.pricingUrl }}
 {{- end }}
+{{- if .Values.bifrost.framework.pricing.modelParametersUrl }}
+{{- $_ := set $pricing "model_parameters_url" .Values.bifrost.framework.pricing.modelParametersUrl }}
+{{- end }}
 {{- if .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- $_ := set $pricing "pricing_sync_interval" .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- end }}
@@ -647,6 +650,7 @@ false
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
+{{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1100,9 +1104,6 @@ false
 {{- if hasKey $inputConfig "exclude_system_prompt" }}
 {{- $_ := set $scConfig "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
 {{- end }}
-{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
-{{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
-{{- end }}
 {{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
 {{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
@@ -1253,6 +1254,21 @@ false
 {{- $_ := set $config "websocket" $ws }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.featureFlags }}
+{{- $flags := dict }}
+{{- range $name, $cfg := .Values.bifrost.featureFlags }}
+{{- if not (kindIs "map" $cfg) }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s must be an object with an 'enabled' field." $name) }}
+{{- end }}
+{{- if not (hasKey $cfg "enabled") }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s.enabled is required." $name) }}
+{{- end }}
+{{- $_ := set $flags $name (dict "enabled" $cfg.enabled) }}
+{{- end }}
+{{- if $flags }}
+{{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
+{{- end }}
+{{- end }}
 {{- $config | toJson }}
 {{- end }}
 
@@ -1376,6 +1392,22 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "zitadel" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "google" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -353,6 +353,20 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	return params
 }
 
+// mapGeminiServiceTierToBifrost converts a Gemini ServiceTier to an OpenAI-compatible BifrostServiceTier.
+func mapGeminiServiceTierToBifrost(tier ServiceTier) schemas.BifrostServiceTier {
+	switch tier {
+	case ServiceTierStandard:
+		return schemas.BifrostServiceTierDefault
+	case ServiceTierFlex:
+		return schemas.BifrostServiceTierFlex
+	case ServiceTierPriority:
+		return schemas.BifrostServiceTierPriority
+	default:
+		return schemas.BifrostServiceTierAuto
+	}
+}
+
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
 func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{
@@ -1225,11 +1239,36 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
+	// Gemini 2.5 and earlier reject function declarations sent together with
+	// responseMimeType "application/json" (structured output / JSON mode). That
+	// pairing is only supported on Gemini 3.x. Keep function calling working by
+	// dropping the JSON response-format hint for older models.
+	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+	if len(params.Tools) > 0 &&
+		config.ResponseMIMEType == "application/json" &&
+		!isGemini3Plus(model) {
+		config.ResponseMIMEType = ""
+		config.ResponseJSONSchema = nil
+	}
 	return config, nil
 }
 
+// mapBifrostServiceTierToGemini converts a BifrostServiceTier to a Gemini ServiceTier.
+func mapBifrostServiceTierToGemini(tier schemas.BifrostServiceTier) ServiceTier {
+	switch tier {
+	case schemas.BifrostServiceTierDefault:
+		return ServiceTierStandard
+	case schemas.BifrostServiceTierFlex:
+		return ServiceTierFlex
+	case schemas.BifrostServiceTierPriority:
+		return ServiceTierPriority
+	default:
+		return ServiceTierUnspecified
+	}
+}
+
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
-func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
+func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) ([]Tool, error) {
 	geminiTool := Tool{}
 
 	for _, tool := range bifrostTools {
@@ -1241,7 +1280,11 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
 				Name: tool.Function.Name,
 			}
 			if tool.Function.Parameters != nil {
-				fd.Parameters = convertFunctionParametersToSchema(*tool.Function.Parameters)
+				raw, err := providerUtils.MarshalSorted(tool.Function.Parameters)
+				if err != nil {
+					return nil, fmt.Errorf("marshal tool %q parameters: %w", tool.Function.Name, err)
+				}
+				fd.ParametersJSONSchema = json.RawMessage(raw)
 			}
 			if tool.Function.Description != nil {
 				fd.Description = *tool.Function.Description
@@ -1251,9 +1294,9 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
 	}
 
 	if len(geminiTool.FunctionDeclarations) > 0 {
-		return []Tool{geminiTool}
+		return []Tool{geminiTool}, nil
 	}
-	return []Tool{}
+	return []Tool{}, nil
 }
 
 // convertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema
@@ -1782,7 +1825,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		if len(pendingToolResponseParts) > 0 && !isToolResponse {
 			contents = append(contents, Content{
 				Parts: pendingToolResponseParts,
-				Role:  "model", // Tool responses use "model" role in Gemini
+				Role:  "user", // Function responses use "user" role in Gemini
 			})
 			pendingToolResponseParts = nil
 		}
@@ -1856,7 +1899,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			if i == len(messages)-1 && len(pendingToolResponseParts) > 0 {
 				contents = append(contents, Content{
 					Parts: pendingToolResponseParts,
-					Role:  "model",
+					Role:  "user",
 				})
 				pendingToolResponseParts = nil
 			}
