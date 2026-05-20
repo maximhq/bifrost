@@ -1562,7 +1562,7 @@
       "get": {
         "operationId": "createResponseWebSocket",
         "summary": "Responses API over WebSocket",
-        "description": "Upgrades the connection to a WebSocket and runs the OpenAI Responses API\nin WebSocket Mode. Clients send `response.create` events on the socket and\nreceive streamed events through the standard inference pipeline (PreLLMHook,\nkey selection, provider call, PostLLMHook).\n\nAuth is identical to the HTTP POST variant — Bearer/Basic/Virtual Key/API Key\nmay be supplied as request headers on the upgrade request. The OpenAI SDK can\nalso pass an API key via the `openai-insecure-api-key.<key>` WebSocket\nsubprotocol.\n\nThis GET endpoint shares its path with the POST inference endpoint; route\nselection is based on the `Upgrade: websocket` request header.\n",
+        "description": "Upgrades the connection to a WebSocket and runs the OpenAI Responses API\nin WebSocket Mode. Clients send `response.create` events on the socket and\nreceive streamed events through the standard inference pipeline (PreLLMHook,\nkey selection, provider call, PostLLMHook).\n\nAuth is identical to the HTTP POST variant \u2014 Bearer/Basic/Virtual Key/API Key\nmay be supplied as request headers on the upgrade request. The OpenAI SDK can\nalso pass an API key via the `openai-insecure-api-key.<key>` WebSocket\nsubprotocol.\n\nThis GET endpoint shares its path with the POST inference endpoint; route\nselection is based on the `Upgrade: websocket` request header.\n",
         "tags": [
           "Responses"
         ],
@@ -1591,7 +1591,7 @@
         ],
         "responses": {
           "101": {
-            "description": "Switching Protocols — WebSocket upgrade succeeded"
+            "description": "Switching Protocols \u2014 WebSocket upgrade succeeded"
           },
           "401": {
             "description": "Authentication failed"
@@ -8306,7 +8306,7 @@
       "get": {
         "operationId": "connectRealtime",
         "summary": "Realtime API WebSocket",
-        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
+        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies \u2014 Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
         "tags": [
           "Realtime"
         ],
@@ -8353,7 +8353,7 @@
         ],
         "responses": {
           "101": {
-            "description": "Switching Protocols — WebSocket upgrade succeeded"
+            "description": "Switching Protocols \u2014 WebSocket upgrade succeeded"
           },
           "400": {
             "description": "Invalid model/provider or unsupported realtime configuration"
@@ -22630,7 +22630,7 @@
     "/cursor/v1/messages/{path}": {
       "post": {
         "operationId": "cursorAnthropicMessagesWildcard",
-        "summary": "Anthropic messages — wildcard (Cursor mount)",
+        "summary": "Anthropic messages \u2014 wildcard (Cursor mount)",
         "description": "Cursor mount of the Anthropic messages wildcard (`POST /anthropic/v1/messages/{path}`).\nRoutes extended Anthropic messages endpoints (e.g. batches, count tokens)\nthrough Cursor.\n",
         "tags": [
           "Cursor Integration"
@@ -22940,7 +22940,7 @@
       "post": {
         "operationId": "cursorVertexRank",
         "summary": "Vertex rank (Cursor mount)",
-        "description": "Cursor mount of `POST /genai/v1/rank` — Vertex AI ranking.",
+        "description": "Cursor mount of `POST /genai/v1/rank` \u2014 Vertex AI ranking.",
         "tags": [
           "Cursor Integration"
         ],
@@ -36280,7 +36280,7 @@
                       "name": "get_weather",
                       "role": "tool",
                       "tool_call_id": "call_123",
-                      "content": "The weather in San Francisco is 72°F and sunny."
+                      "content": "The weather in San Francisco is 72\u00b0F and sunny."
                     }
                   },
                   "responses": {
@@ -36293,7 +36293,7 @@
                       "call_id": "call_123",
                       "name": "get_weather",
                       "arguments": "{\"location\": \"San Francisco\"}",
-                      "content": "The weather in San Francisco is 72°F and sunny."
+                      "content": "The weather in San Francisco is 72\u00b0F and sunny."
                     }
                   }
                 }
@@ -37894,7 +37894,7 @@
       "get": {
         "operationId": "getConsentMCPsPage",
         "summary": "Consent MCP services page",
-        "description": "Renders the MCP services connection screen. Shows all per-user OAuth MCP servers\navailable on the user's Virtual Key (or all servers if no VK was selected).\nEach service shows a \"Connect\" link or a \"Connected ✓\" badge.\n\nRequires the `__bifrost_flow_secret` browser-binding cookie.\n",
+        "description": "Renders the MCP services connection screen. Shows all per-user OAuth MCP servers\navailable on the user's Virtual Key (or all servers if no VK was selected).\nEach service shows a \"Connect\" link or a \"Connected \u2713\" badge.\n\nRequires the `__bifrost_flow_secret` browser-binding cookie.\n",
         "tags": [
           "Per-User OAuth",
           "Consent Flow"
@@ -39051,6 +39051,33 @@
             "schema": {
               "type": "boolean",
               "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of customers to return",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of customers to skip for pagination",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Search string to filter customers by name or ID",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -48178,7 +48205,7 @@
       "delete": {
         "operationId": "clearCacheByCacheId",
         "summary": "Clear cache entry by cache ID",
-        "description": "Deletes a single cache entry by its storage ID. Read the cache ID from\n`extra_fields.cache_debug.cache_id` on a prior response — it is populated\non both cache hits and cache misses.\n",
+        "description": "Deletes a single cache entry by its storage ID. Read the cache ID from\n`extra_fields.cache_debug.cache_id` on a prior response \u2014 it is populated\non both cache hits and cache misses.\n",
         "tags": [
           "Cache"
         ],
@@ -61406,6 +61433,18 @@
           },
           "count": {
             "type": "integer"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Total number of customers matching the query (before pagination)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of customers returned (matches request limit param)"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Number of customers skipped (matches request offset param)"
           }
         }
       },
