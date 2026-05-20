@@ -488,6 +488,10 @@
                   "type": "string",
                   "description": "Custom pricing URL (optional, can be empty)"
                 },
+                "modelParametersUrl": {
+                  "type": "string",
+                  "description": "Custom model parameters URL (optional, can be empty)"
+                },
                 "pricingSyncInterval": {
                   "type": "integer",
                   "description": "Pricing sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
