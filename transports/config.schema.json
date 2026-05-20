@@ -3255,6 +3255,12 @@
           "type": "boolean",
           "description": "Use TLS for connection (optional)",
           "default": false
+        },
+        "max_recv_msg_size_mb": {
+          "type": "integer",
+          "description": "gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as base64-encoded image generation responses.",
+          "minimum": 1,
+          "default": 64
         }
       },
       "required": ["host"],

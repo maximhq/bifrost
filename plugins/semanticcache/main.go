@@ -423,7 +423,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		// semantic-only path — otherwise a misconfigured plugin wastes one
 		// generateEmbedding round-trip per request before failing downstream.
 		if !canDoSemanticSearch {
-			plugin.setZeroVectorIfRequired(state)
+			plugin.setPlaceholderVectorIfRequired(state)
 		} else {
 			shortCircuit, err := plugin.performSemanticSearch(ctx, state, req, cacheKey, paramsHash)
 			if err != nil {
@@ -442,7 +442,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		// direct-only entries onto the same point in vector space, so a
 		// semantic search across cache types under the same cache_key/params
 		// could surface them. params_hash filtering is the actual isolation.
-		plugin.setZeroVectorIfRequired(state)
+		plugin.setPlaceholderVectorIfRequired(state)
 	}
 
 	return req, nil, nil
@@ -481,13 +481,18 @@ func (plugin *Plugin) resolveCacheTypes(ctx *schemas.BifrostContext) (direct boo
 	return
 }
 
-// setZeroVectorIfRequired writes a zero embedding placeholder when the store
-// mandates a vector per entry. See PreLLMHook for the isolation caveat.
-func (plugin *Plugin) setZeroVectorIfRequired(state *cacheState) {
+// setPlaceholderVectorIfRequired writes a fixed unit-vector placeholder when
+// the store mandates a non-zero vector per entry (e.g. Pinecone rejects
+// all-zero vectors). The first element is set to 1 so the vector satisfies
+// that constraint. All direct-cache entries share the same placeholder, so
+// isolation is provided entirely by params_hash filtering — not proximity.
+func (plugin *Plugin) setPlaceholderVectorIfRequired(state *cacheState) {
 	if !plugin.store.RequiresVectors() || plugin.config.Dimension <= 0 {
 		return
 	}
-	state.Embeddings = make([]float32, plugin.config.Dimension)
+	vec := make([]float32, plugin.config.Dimension)
+	vec[0] = 1.0
+	state.Embeddings = vec
 }
 
 // PostLLMHook caches the upstream response keyed by the storageID resolved
