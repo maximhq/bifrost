@@ -544,7 +544,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			defer releaseGzip()
 
 			// Wrap reader with idle timeout to detect stalled streams.
-			reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+			reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 			defer stopIdleTimeout()
 
 			// Setup cancellation handler to close the raw network stream on ctx cancellation,
