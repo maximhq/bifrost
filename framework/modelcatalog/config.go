@@ -26,4 +26,5 @@ const (
 type Config struct {
 	PricingURL          *string `json:"pricing_url,omitempty"`
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
+	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
 }

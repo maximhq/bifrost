@@ -16181,6 +16181,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	initTestLogger()
 	defaultURL := modelcatalog.DefaultPricingURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
@@ -16191,6 +16192,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			ID:                  7,
 			PricingURL:          &dbURL,
 			PricingSyncInterval: &dbSyncSeconds,
+			ModelParametersURL:  &defaultModelParamsURL,
 		}
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -16380,9 +16382,11 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			require.NotNil(t, tableOut, "TableFrameworkConfig must never be nil")
 			require.NotNil(t, tableOut.PricingURL, "PricingURL must never be nil")
 			require.NotNil(t, tableOut.PricingSyncInterval, "PricingSyncInterval must never be nil")
+			require.NotNil(t, tableOut.ModelParametersURL, "ModelParametersURL must never be nil")
 			require.NotNil(t, catalogOut, "modelcatalog.Config must never be nil")
 			require.NotNil(t, catalogOut.PricingURL, "Config.PricingURL must never be nil")
 			require.NotNil(t, catalogOut.PricingSyncInterval, "Config.PricingSyncInterval must never be nil")
+			require.NotNil(t, catalogOut.ModelParametersURL, "Config.ModelParametersURL must never be nil")
 		}
 	})
 

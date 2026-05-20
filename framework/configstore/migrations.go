@@ -755,6 +755,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
   if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelParametersURLColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddClientConfigMetadataColumn(ctx, db); err != nil {
 		return err
 	}
@@ -7797,6 +7800,34 @@ func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_parameters_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableFrameworkConfig{}, "model_parameters_url") {
+				if err := mig.AddColumn(&tables.TableFrameworkConfig{}, "ModelParametersURL"); err != nil {
+					return fmt.Errorf("failed to add model_parameters_url column to framework_configs: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableFrameworkConfig{}, "model_parameters_url") {
+				return mig.DropColumn(&tables.TableFrameworkConfig{}, "model_parameters_url")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_parameters_url_column migration: %s", err.Error())
 	}
 	return nil
 }
