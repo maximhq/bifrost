@@ -10,7 +10,8 @@ import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetPro
 import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cacheConfigSchema } from "@/lib/types/schemas";
-import { Loader2 } from "lucide-react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { CircleCheck, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -208,7 +209,10 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			<div className="rounded-lg border p-4">
 				<div className="flex items-center justify-between space-x-2">
 					<div className="flex-1 space-y-0.5">
-						<label htmlFor="enable-caching" className="text-sm font-medium">
+						<label htmlFor="enable-caching" className="text-sm font-medium flex items-center gap-2">
+							{isSemanticCacheEnabled && isVectorStoreEnabled && (
+								<CircleCheck className="text-green-600 h-4 w-4 flex-shrink-0" aria-hidden="true" />
+							)}
 							Enable Semantic Caching
 						</label>
 						<p className="text-muted-foreground text-sm">

@@ -1774,31 +1774,77 @@ func (s *RDBConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore
 		}
 		return nil, err
 	}
-	return &vectorstore.Config{
-		Enabled: vectorStoreTableConfig.Enabled,
-		Config:  vectorStoreTableConfig.Config,
-		Type:    vectorstore.VectorStoreType(vectorStoreTableConfig.Type),
-	}, nil
+	if vectorStoreTableConfig.Config == nil || *vectorStoreTableConfig.Config == "" {
+		return &vectorstore.Config{
+			Enabled: vectorStoreTableConfig.Enabled,
+			Type:    vectorstore.VectorStoreType(vectorStoreTableConfig.Type),
+		}, nil
+	}
+	// The DB stores the inner config (e.g. RedisConfig) as JSON separately from
+	// the Type and Enabled columns. Reconstruct the wrapper JSON so that
+	// vectorstore.Config.UnmarshalJSON can dispatch by type.
+	wrapperJSON, err := json.Marshal(map[string]any{
+		"enabled": vectorStoreTableConfig.Enabled,
+		"type":    vectorStoreTableConfig.Type,
+		"config":  json.RawMessage(*vectorStoreTableConfig.Config),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build vector store config wrapper: %w", err)
+	}
+	var vsConfig vectorstore.Config
+	if err := json.Unmarshal(wrapperJSON, &vsConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal vector store config: %w", err)
+	}
+	return &vsConfig, nil
 }
 
 // UpdateVectorStoreConfig updates the vector store configuration in the database.
 func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error {
 	return s.DB().Transaction(func(tx *gorm.DB) error {
-		// Delete existing cache config
-		if err := tx.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableVectorStoreConfig{}).Error; err != nil {
+		return s.saveVectorStoreConfigInTx(tx, ctx, config)
+	})
+}
+
+// saveVectorStoreConfigInTx saves the vector store configuration within an existing transaction.
+// It preserves TTLSeconds, CacheByModel, and CacheByProvider if an existing record is found.
+func (s *RDBConfigStore) saveVectorStoreConfigInTx(tx *gorm.DB, ctx context.Context, config *vectorstore.Config) error {
+	jsonConfig, err := marshalToStringPtr(config.Config)
+	if err != nil {
+		return err
+	}
+	var existing tables.TableVectorStoreConfig
+	err = tx.WithContext(ctx).First(&existing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	record := &tables.TableVectorStoreConfig{
+		ID:              existing.ID,
+		TTLSeconds:      existing.TTLSeconds,
+		CacheByModel:    existing.CacheByModel,
+		CacheByProvider: existing.CacheByProvider,
+		Type:            string(config.Type),
+		Enabled:         config.Enabled,
+		Config:          jsonConfig,
+		CreatedAt:       existing.CreatedAt,
+	}
+	return tx.WithContext(ctx).Save(record).Error
+}
+
+// UpdateVectorStoreConfigAndSetRestart atomically updates the vector store configuration
+// and sets the restart required flag in a single database transaction.
+func (s *RDBConfigStore) UpdateVectorStoreConfigAndSetRestart(ctx context.Context, config *vectorstore.Config, restart *tables.RestartRequiredConfig) error {
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		if err := s.saveVectorStoreConfigInTx(tx, ctx, config); err != nil {
 			return err
 		}
-		jsonConfig, err := marshalToStringPtr(config.Config)
+		restartJSON, err := json.Marshal(restart)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to marshal restart required config: %w", err)
 		}
-		record := &tables.TableVectorStoreConfig{
-			Type:    string(config.Type),
-			Enabled: config.Enabled,
-			Config:  jsonConfig,
-		}
-		// Create new cache config
-		return tx.WithContext(ctx).Create(record).Error
+		return tx.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+			Key:   tables.ConfigRestartRequiredKey,
+			Value: string(restartJSON),
+		}).Error
 	})
 }
 

@@ -183,6 +183,11 @@ export function isRedacted(value: string): boolean {
 		return true;
 	}
 
+	// Check for literal "<redacted>" string
+	if (value === "<redacted>") {
+		return true;
+	}
+
 	return false;
 }
 

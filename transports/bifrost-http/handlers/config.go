@@ -19,6 +19,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -79,6 +80,8 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
 	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
+	r.GET("/api/cache/config", lib.ChainMiddlewares(h.getVectorStoreConfig, middlewares...))
+	r.PUT("/api/cache/config", lib.ChainMiddlewares(h.updateVectorStoreConfig, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
@@ -927,4 +930,76 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	}
 
 	return nil
+}
+
+// getVectorStoreConfig handles GET /api/cache/config
+// Returns the current vector store configuration with sensitive fields redacted.
+func (h *ConfigHandler) getVectorStoreConfig(ctx *fasthttp.RequestCtx) {
+	config, err := h.store.GetVectorStoreConfigRedacted(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get vector store config: %v", err))
+		return
+	}
+	if config == nil {
+		SendJSON(ctx, map[string]any{
+			"enabled": false,
+			"type":    "",
+			"config":  nil,
+		})
+		return
+	}
+	SendJSON(ctx, config)
+}
+
+// updateVectorStoreConfig handles PUT /api/cache/config
+// Persists a new vector store configuration and marks restart as required.
+func (h *ConfigHandler) updateVectorStoreConfig(ctx *fasthttp.RequestCtx) {
+	var req vectorstore.Config
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	if req.Type == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "vector store type is required")
+		return
+	}
+
+	// Validate the type is supported regardless of enabled state
+	switch req.Type {
+	case vectorstore.VectorStoreTypeRedis,
+		vectorstore.VectorStoreTypeWeaviate,
+		vectorstore.VectorStoreTypeQdrant,
+		vectorstore.VectorStoreTypePinecone:
+		// valid
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("unsupported vector store type: %s", req.Type))
+		return
+	}
+
+	// Preserve redacted secrets by merging with the existing stored config
+	if h.store.ConfigStore != nil {
+		existing, err := h.store.ConfigStore.GetVectorStoreConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing vector store config: %v", err))
+			return
+		}
+		req.MergeRedactedSecrets(existing)
+	}
+
+	if err := req.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.store.UpdateVectorStoreConfigAndReinit(ctx, &req); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update vector store config: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"success":          true,
+		"restart_required": true,
+		"restart_reason":   "Vector store configuration changed. Restart Bifrost to apply.",
+	})
 }

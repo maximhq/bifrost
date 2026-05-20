@@ -125,6 +125,7 @@ type ConfigStore interface {
 
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
+	UpdateVectorStoreConfigAndSetRestart(ctx context.Context, config *vectorstore.Config, restart *tables.RestartRequiredConfig) error
 	GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error)
 
 	// Logs store config CRUD

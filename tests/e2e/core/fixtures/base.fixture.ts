@@ -10,6 +10,7 @@ import { MCPRegistryPage } from '../../features/mcp-registry/pages/mcp-registry.
 import { PluginsPage } from '../../features/plugins/pages/plugins.page'
 import { ObservabilityPage } from '../../features/observability/pages/observability.page'
 import { ConfigSettingsPage } from '../../features/config/pages/config-settings.page'
+import { CachingSettingsPage } from '../../features/config/pages/caching-settings.page'
 import { GovernancePage } from '../../features/governance/pages/governance.page'
 import { MCPAuthConfigPage } from '../../features/mcp-auth-config/pages/mcp-auth-config.page'
 import { MCPSettingsPage } from '../../features/mcp-settings/pages/mcp-settings.page'
@@ -32,6 +33,7 @@ type BifrostFixtures = {
   pluginsPage: PluginsPage
   observabilityPage: ObservabilityPage
   configSettingsPage: ConfigSettingsPage
+  cachingSettingsPage: CachingSettingsPage
   governancePage: GovernancePage
   modelLimitsPage: ModelLimitsPage
   mcpSettingsPage: MCPSettingsPage
@@ -97,6 +99,10 @@ export const test = base.extend<BifrostFixtures>({
 
   configSettingsPage: async ({ page }, use) => {
     await use(new ConfigSettingsPage(page))
+  },
+
+  cachingSettingsPage: async ({ page }, use) => {
+    await use(new CachingSettingsPage(page))
   },
 
   governancePage: async ({ page }, use) => {

@@ -17,6 +17,17 @@ type PineconeConfig struct {
 	IndexHost schemas.EnvVar `json:"index_host"` // Index host URL from Pinecone console - REQUIRED
 }
 
+// Validate checks that all required fields are present in the Pinecone config.
+func (c PineconeConfig) Validate() error {
+	if strings.TrimSpace(c.APIKey.GetValue()) == "" && !c.APIKey.IsFromEnv() {
+		return fmt.Errorf("pinecone API key is required")
+	}
+	if strings.TrimSpace(c.IndexHost.GetValue()) == "" && !c.IndexHost.IsFromEnv() {
+		return fmt.Errorf("pinecone index host is required")
+	}
+	return nil
+}
+
 // PineconeStore represents the Pinecone vector store.
 type PineconeStore struct {
 	client     *pinecone.Client

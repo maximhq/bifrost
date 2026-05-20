@@ -18,6 +18,14 @@ type QdrantConfig struct {
 	UseTLS schemas.EnvVar `json:"use_tls,omitempty"` // Use TLS for connection - Optional
 }
 
+// Validate checks that all required fields are present in the Qdrant config.
+func (c QdrantConfig) Validate() error {
+	if strings.TrimSpace(c.Host.GetValue()) == "" && !c.Host.IsFromEnv() {
+		return fmt.Errorf("qdrant host is required")
+	}
+	return nil
+}
+
 // QdrantStore represents the Qdrant vector store.
 type QdrantStore struct {
 	client *qdrant.Client

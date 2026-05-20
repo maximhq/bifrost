@@ -56,6 +56,17 @@ type RedisConfig struct {
 	ContextTimeout  schemas.Duration `json:"context_timeout,omitempty"`    // Timeout for Redis operations (optional)
 }
 
+// Validate checks that all required fields are present in the Redis config.
+func (c RedisConfig) Validate() error {
+	if c.Addr == nil || (strings.TrimSpace(c.Addr.GetValue()) == "" && !c.Addr.IsFromEnv()) {
+		return fmt.Errorf("redis address is required")
+	}
+	if c.ClusterMode.CoerceBool(false) && c.DB != nil && c.DB.GetValue() != "" && c.DB.GetValue() != "0" {
+		return fmt.Errorf("redis cluster mode does not support database selection (DB must be 0)")
+	}
+	return nil
+}
+
 // RedisStore represents the Redis vector store.
 type RedisStore struct {
 	client redis.UniversalClient

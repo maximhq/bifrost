@@ -186,6 +186,149 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Validate checks that required fields are present for the configured provider.
+// It returns nil if the config is disabled or valid.
+func (c *Config) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	switch c.Type {
+	case VectorStoreTypeRedis:
+		cfg, ok := c.Config.(RedisConfig)
+		if !ok {
+			return fmt.Errorf("invalid redis config: got %T", c.Config)
+		}
+		return cfg.Validate()
+	case VectorStoreTypeWeaviate:
+		cfg, ok := c.Config.(WeaviateConfig)
+		if !ok {
+			return fmt.Errorf("invalid weaviate config: got %T", c.Config)
+		}
+		return cfg.Validate()
+	case VectorStoreTypeQdrant:
+		cfg, ok := c.Config.(QdrantConfig)
+		if !ok {
+			return fmt.Errorf("invalid qdrant config: got %T", c.Config)
+		}
+		return cfg.Validate()
+	case VectorStoreTypePinecone:
+		cfg, ok := c.Config.(PineconeConfig)
+		if !ok {
+			return fmt.Errorf("invalid pinecone config: got %T", c.Config)
+		}
+		return cfg.Validate()
+	default:
+		return fmt.Errorf("unsupported vector store type: %s", c.Type)
+	}
+}
+
+// shouldPreserveSecret reports whether incoming is an unchanged echo of
+// existing and should be replaced with the real stored value.
+//
+// A field is considered unchanged when:
+//   - It carries a redaction placeholder (asterisks / "<redacted>") with no
+//     env-var backing — the UI round-tripped a masked literal secret.
+//   - It is env-var-backed AND the env-var name matches the existing one —
+//     the UI echoed back the same reference without changes.
+//
+// If the user switched to a different env-var name the incoming value is a
+// genuine change and must NOT be overwritten.
+func shouldPreserveSecret(incoming, existing *schemas.EnvVar) bool {
+	if incoming == nil || !incoming.IsRedacted() {
+		return false
+	}
+	// Non-env redaction placeholder — always preserve existing.
+	if !incoming.IsFromEnv() {
+		return true
+	}
+	// Env-var-backed: preserve only when the env var name is unchanged.
+	return existing != nil && incoming.EnvVar == existing.EnvVar
+}
+
+// shouldPreserveSecretVal is the value-type equivalent of shouldPreserveSecret
+// for config structs that use schemas.EnvVar (not *schemas.EnvVar).
+func shouldPreserveSecretVal(incoming, existing schemas.EnvVar) bool {
+	if !incoming.IsRedacted() {
+		return false
+	}
+	if !incoming.IsFromEnv() {
+		return true
+	}
+	return incoming.EnvVar == existing.EnvVar
+}
+
+// MergeRedactedSecrets replaces any redacted sensitive fields in c with the
+// corresponding unredacted values from existing. This prevents the UI from
+// overwriting real secrets with redaction placeholders when saving config.
+// If existing is nil or the types differ, c is left unchanged.
+func (c *Config) MergeRedactedSecrets(existing *Config) {
+	if existing == nil || existing.Config == nil || existing.Type != c.Type {
+		return
+	}
+
+	switch c.Type {
+	case VectorStoreTypeRedis:
+		incoming, ok := c.Config.(RedisConfig)
+		if !ok {
+			return
+		}
+		ex, eOk := existing.Config.(RedisConfig)
+		if !eOk {
+			return
+		}
+		if shouldPreserveSecret(incoming.Password, ex.Password) {
+			incoming.Password = ex.Password
+		}
+		if shouldPreserveSecret(incoming.CACertPEM, ex.CACertPEM) {
+			incoming.CACertPEM = ex.CACertPEM
+		}
+		c.Config = incoming
+
+	case VectorStoreTypeWeaviate:
+		incoming, ok := c.Config.(WeaviateConfig)
+		if !ok {
+			return
+		}
+		ex, eOk := existing.Config.(WeaviateConfig)
+		if !eOk {
+			return
+		}
+		if shouldPreserveSecret(incoming.APIKey, ex.APIKey) {
+			incoming.APIKey = ex.APIKey
+		}
+		c.Config = incoming
+
+	case VectorStoreTypeQdrant:
+		incoming, ok := c.Config.(QdrantConfig)
+		if !ok {
+			return
+		}
+		ex, eOk := existing.Config.(QdrantConfig)
+		if !eOk {
+			return
+		}
+		if shouldPreserveSecretVal(incoming.APIKey, ex.APIKey) {
+			incoming.APIKey = ex.APIKey
+		}
+		c.Config = incoming
+
+	case VectorStoreTypePinecone:
+		incoming, ok := c.Config.(PineconeConfig)
+		if !ok {
+			return
+		}
+		ex, eOk := existing.Config.(PineconeConfig)
+		if !eOk {
+			return
+		}
+		if shouldPreserveSecretVal(incoming.APIKey, ex.APIKey) {
+			incoming.APIKey = ex.APIKey
+		}
+		c.Config = incoming
+	}
+}
+
 // NewVectorStore returns a new vector store based on the configuration.
 func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) (VectorStore, error) {
 	if config == nil {
@@ -203,7 +346,7 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		}
 		weaviateConfig, ok := config.Config.(WeaviateConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid weaviate config")
+			return nil, fmt.Errorf("invalid weaviate config: got %T", config.Config)
 		}
 		return newWeaviateStore(ctx, &weaviateConfig, logger)
 	case VectorStoreTypeRedis:
@@ -212,7 +355,7 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		}
 		redisConfig, ok := config.Config.(RedisConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid redis config")
+			return nil, fmt.Errorf("invalid redis config: got %T", config.Config)
 		}
 		return newRedisStore(ctx, redisConfig, logger)
 	case VectorStoreTypeQdrant:
@@ -221,7 +364,7 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		}
 		qdrantConfig, ok := config.Config.(QdrantConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid qdrant config")
+			return nil, fmt.Errorf("invalid qdrant config: got %T", config.Config)
 		}
 		return newQdrantStore(ctx, &qdrantConfig, logger)
 	case VectorStoreTypePinecone:
@@ -230,7 +373,7 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		}
 		pineconeConfig, ok := config.Config.(PineconeConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid pinecone config")
+			return nil, fmt.Errorf("invalid pinecone config: got %T", config.Config)
 		}
 		return newPineconeStore(ctx, &pineconeConfig, logger)
 	}

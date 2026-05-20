@@ -887,6 +887,11 @@ func (m *MockConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *v
 	return nil
 }
 
+func (m *MockConfigStore) UpdateVectorStoreConfigAndSetRestart(ctx context.Context, config *vectorstore.Config, restart *tables.RestartRequiredConfig) error {
+	m.vectorConfig = config
+	return nil
+}
+
 func (m *MockConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error) {
 	return m.vectorConfig, nil
 }
