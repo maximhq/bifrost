@@ -705,6 +705,8 @@ paths:
     $ref: './paths/management/users.yaml#/users-role'
   /api/users/{id}/teams:
     $ref: './paths/management/users.yaml#/users-teams'
+  /api/users/email/{email}/virtual-keys:
+    $ref: './paths/management/users.yaml#/users-email-virtual-keys'
 
   # Teams
   /api/teams:

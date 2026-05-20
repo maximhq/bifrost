@@ -1239,6 +1239,17 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
+	// Gemini 2.5 and earlier reject function declarations sent together with
+	// responseMimeType "application/json" (structured output / JSON mode). That
+	// pairing is only supported on Gemini 3.x. Keep function calling working by
+	// dropping the JSON response-format hint for older models.
+	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+	if len(params.Tools) > 0 &&
+		config.ResponseMIMEType == "application/json" &&
+		!isGemini3Plus(model) {
+		config.ResponseMIMEType = ""
+		config.ResponseJSONSchema = nil
+	}
 	return config, nil
 }
 
@@ -1814,7 +1825,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		if len(pendingToolResponseParts) > 0 && !isToolResponse {
 			contents = append(contents, Content{
 				Parts: pendingToolResponseParts,
-				Role:  "model", // Tool responses use "model" role in Gemini
+				Role:  "user", // Function responses use "user" role in Gemini
 			})
 			pendingToolResponseParts = nil
 		}
@@ -1888,7 +1899,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			if i == len(messages)-1 && len(pendingToolResponseParts) > 0 {
 				contents = append(contents, Content{
 					Parts: pendingToolResponseParts,
-					Role:  "model",
+					Role:  "user",
 				})
 				pendingToolResponseParts = nil
 			}
