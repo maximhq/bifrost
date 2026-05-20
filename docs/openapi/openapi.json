@@ -39056,11 +39056,10 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of customers to return",
+            "description": "Maximum number of customers to return. Only applies when at least one of limit, offset, or search is provided; omitting all parameters returns the full dataset.",
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "default": 25,
               "maximum": 100
             }
           },
