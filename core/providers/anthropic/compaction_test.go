@@ -772,9 +772,13 @@ func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
 	}
 
 	var messageDelta *AnthropicStreamEvent
+	var hasMessageStop bool
 	for _, event := range events {
 		if event.Type == AnthropicStreamEventTypeMessageDelta {
 			messageDelta = event
+		}
+		if event.Type == AnthropicStreamEventTypeMessageStop {
+			hasMessageStop = true
 		}
 	}
 
@@ -783,5 +787,8 @@ func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
 	}
 	if *messageDelta.Delta.StopReason != AnthropicStopReasonToolUse {
 		t.Fatalf("message_delta stop_reason = %q, want %q", *messageDelta.Delta.StopReason, AnthropicStopReasonToolUse)
+	}
+	if !hasMessageStop {
+		t.Fatal("expected message_stop event in mixed text+tool_use stream")
 	}
 }
