@@ -498,6 +498,10 @@ UpdateCustomerRequest:
 ListCustomersResponse:
   type: object
   description: List customers response
+  required:
+    - total_count
+    - limit
+    - offset
   properties:
     customers:
       type: array
@@ -505,6 +509,15 @@ ListCustomersResponse:
         $ref: '#/Customer'
     count:
       type: integer
+    total_count:
+      type: integer
+      description: Total number of customers matching the query (before pagination)
+    limit:
+      type: integer
+      description: Maximum number of customers returned (matches request limit param)
+    offset:
+      type: integer
+      description: Number of customers skipped (matches request offset param)
 
 ListBudgetsResponse:
   type: object

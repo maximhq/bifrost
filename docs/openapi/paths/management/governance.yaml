@@ -362,6 +362,26 @@ customers:
         schema:
           type: boolean
           default: false
+      - name: limit
+        in: query
+        description: Maximum number of customers to return
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        description: Number of customers to skip for pagination
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: search
+        in: query
+        description: Search string to filter customers by name or ID
+        schema:
+          type: string
     responses:
       '200':
         description: Successful response

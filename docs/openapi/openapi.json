@@ -39059,7 +39059,9 @@
             "description": "Maximum number of customers to return",
             "schema": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "default": 20,
+              "maximum": 100
             }
           },
           {
@@ -61446,7 +61448,12 @@
             "type": "integer",
             "description": "Number of customers skipped (matches request offset param)"
           }
-        }
+        },
+        "required": [
+          "total_count",
+          "limit",
+          "offset"
+        ]
       },
       "CreateCustomerRequest": {
         "type": "object",
