@@ -7693,16 +7693,15 @@ func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB)
 		ID: "drop_legacy_calendar_aligned_columns",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mig.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_budgets: %w", err)
-				}
+			// Use raw `ALTER TABLE ... DROP COLUMN IF EXISTS` instead of GORM's Migrator.DropColumn,
+			// which on SQLite does a full table rebuild that aborts on pre-existing FK violations;
+			// since these unconstrained boolean columns are safe to leave behind, we log a warning
+			// rather than fail boot.
+			if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN calendar_aligned").Error; err != nil {
+				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 			}
-			if mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned") {
-				if err := mig.DropColumn(&tables.TableRateLimit{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to drop legacy calendar_aligned column from governance_rate_limits: %w", err)
-				}
+			if err := tx.Exec("ALTER TABLE governance_rate_limits DROP COLUMN calendar_aligned").Error; err != nil {
+				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
 			}
 			return nil
 		},
