@@ -460,6 +460,14 @@ func (m *MockConfigStore) GetClientConfig(ctx context.Context) (*configstore.Cli
 	return m.clientConfig, nil
 }
 
+func (m *MockConfigStore) GetClientMetadata(ctx context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (m *MockConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
+	return nil
+}
+
 // Provider config
 func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers = providers

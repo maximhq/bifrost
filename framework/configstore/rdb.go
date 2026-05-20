@@ -12,6 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -258,8 +259,18 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
 		ConfigHash:                            config.ConfigHash,
 	}
-	// Delete existing client config and create new one in a transaction
+	// Delete existing client config and create new one in a transaction.
+	// MetadataJSON is preserved here because Metadata is a UI/admin-preferences
+	// blob that is NOT part of the API-facing ClientConfig (so config.json sync
+	// can never set it). Reading it inside the transaction before DELETE keeps
+	// callers from clobbering UI prefs on every config write.
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableClientConfig
+		if err := dbForUpdate(tx.Select("metadata_json")).First(&existing).Error; err == nil {
+			dbConfig.MetadataJSON = existing.MetadataJSON
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableClientConfig{}).Error; err != nil {
 			return err
 		}
@@ -511,6 +522,78 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
+}
+
+// GetClientMetadata returns the UI/admin-preferences blob stored on config_client.
+// Returns an empty (non-nil) map if no row exists yet or the blob is unset, so
+// callers can read keys without nil-checking.
+func (s *RDBConfigStore) GetClientMetadata(ctx context.Context) (map[string]any, error) {
+	var dbConfig tables.TableClientConfig
+	if err := s.DB().WithContext(ctx).First(&dbConfig).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	if dbConfig.Metadata == nil {
+		return map[string]any{}, nil
+	}
+	return dbConfig.Metadata, nil
+}
+
+// mergeMetadataPatch applies patch into dst following JSON Merge Patch
+// semantics (RFC 7386): a nil patch value deletes the key; when both the
+// existing value and the patch value are objects they are merged recursively;
+// any other value replaces the existing one. dst is mutated in place.
+func mergeMetadataPatch(dst, patch map[string]any) {
+	for k, v := range patch {
+		if v == nil {
+			delete(dst, k)
+			continue
+		}
+		patchObj, patchIsObj := v.(map[string]any)
+		dstObj, dstIsObj := dst[k].(map[string]any)
+		if patchIsObj && dstIsObj {
+			mergeMetadataPatch(dstObj, patchObj)
+			continue
+		}
+		dst[k] = v
+	}
+}
+
+// UpdateClientMetadata merges patch into the existing metadata blob and writes
+// it back via a targeted UPDATE on metadata_json only — no DELETE+CREATE, no
+// risk of clobbering other ClientConfig columns. The merge follows JSON Merge
+// Patch semantics (RFC 7386): nested objects are merged recursively, and keys
+// with a nil value in patch are removed from the blob (callers can pass
+// {"key": nil} to clear, including nested keys).
+func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableClientConfig
+		if err := dbForUpdate(tx).First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("%w: client config must be initialized before metadata can be updated", ErrNotFound)
+			}
+			return err
+		}
+		merged := existing.Metadata
+		if merged == nil {
+			merged = map[string]any{}
+		}
+		mergeMetadataPatch(merged, patch)
+		data, mErr := providerUtils.MarshalSorted(merged)
+		if mErr != nil {
+			return mErr
+		}
+		result := tx.Model(&tables.TableClientConfig{}).Where("id = ?", existing.ID).Update("metadata_json", string(data))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("client config metadata update affected no rows")
+		}
+		return nil
+	})
 }
 
 // UpdateProvidersConfig updates the client configuration in the database.
