@@ -752,7 +752,10 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
 		return err
 	}
-  if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
+	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddFrameworkConfigHashColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddModelParametersURLColumn(ctx, db); err != nil {
@@ -815,7 +818,7 @@ func migrationAddFeatureFlagsTable(ctx context.Context, db *gorm.DB) error {
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
-  return nil
+	return nil
 }
 
 func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
@@ -7828,6 +7831,36 @@ func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_model_parameters_url_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFrameworkConfigHashColumn adds the config_hash column to framework_configs
+// so that file-vs-DB precedence can be determined via hash comparison on restart.
+func migrationAddFrameworkConfigHashColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_framework_config_hash_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableFrameworkConfig{}, "config_hash") {
+				if err := mig.AddColumn(&tables.TableFrameworkConfig{}, "ConfigHash"); err != nil {
+					return fmt.Errorf("failed to add config_hash column to framework_configs: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableFrameworkConfig{}, "config_hash") {
+				return mig.DropColumn(&tables.TableFrameworkConfig{}, "config_hash")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_framework_config_hash_column migration: %s", err.Error())
 	}
 	return nil
 }

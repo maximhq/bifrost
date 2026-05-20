@@ -7,6 +7,7 @@ type TableFrameworkConfig struct {
 	PricingURL          *string `gorm:"type:text" json:"pricing_url"`
 	PricingSyncInterval *int64  `gorm:"" json:"pricing_sync_interval"`
 	ModelParametersURL  *string `gorm:"type:text" json:"model_parameters_url"`
+	ConfigHash          string  `gorm:"type:text" json:"config_hash"`
 }
 
 // TableName sets the table name for each model

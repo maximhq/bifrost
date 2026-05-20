@@ -1345,6 +1345,28 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
+type frameworkConfigHashPayload struct {
+	PricingURL          *string `json:"pricing_url"`
+	ModelParametersURL  *string `json:"model_parameters_url"`
+	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
+}
+
+// GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
+// This is used to detect changes to framework config between config.json and database.
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64) (string, error) {
+	data, err := sonic.Marshal(frameworkConfigHashPayload{
+		PricingURL:          pricingURL,
+		ModelParametersURL:  modelParametersURL,
+		PricingSyncInterval: pricingSyncInterval,
+	})
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:]), nil
+}
+
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
 	AdminUserName          *schemas.EnvVar `json:"admin_username"`
