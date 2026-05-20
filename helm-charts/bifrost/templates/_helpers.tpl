@@ -306,24 +306,6 @@ false
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "mcpExternalBaseUrl" }}
-{{- $mcpExternalBaseUrl := .Values.bifrost.client.mcpExternalBaseUrl }}
-{{- if kindIs "map" $mcpExternalBaseUrl }}
-{{- $envVar := dict }}
-{{- if hasKey $mcpExternalBaseUrl "value" }}
-{{- $_ := set $envVar "value" $mcpExternalBaseUrl.value }}
-{{- end }}
-{{- if hasKey $mcpExternalBaseUrl "envVar" }}
-{{- $_ := set $envVar "env_var" $mcpExternalBaseUrl.envVar }}
-{{- end }}
-{{- if hasKey $mcpExternalBaseUrl "fromEnv" }}
-{{- $_ := set $envVar "from_env" $mcpExternalBaseUrl.fromEnv }}
-{{- end }}
-{{- $_ := set $client "mcp_external_base_url" $envVar }}
-{{- else }}
-{{- $_ := set $client "mcp_external_base_url" $mcpExternalBaseUrl }}
-{{- end }}
-{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Framework */ -}}
@@ -463,6 +445,7 @@ false
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
+{{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}

@@ -224,23 +224,6 @@
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
         },
-        "mcp_external_server_url": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "object",
-              "properties": {
-                "value": { "type": "string" },
-                "env_var": { "type": "string" },
-                "from_env": { "type": "boolean" }
-              },
-              "additionalProperties": false
-            }
-          ],
-          "description": "Public base URL Bifrost advertises when acting as an OAuth server/resource (well-known metadata, WWW-Authenticate). Set when Bifrost runs behind a reverse proxy. Supports env var syntax: \"env.MY_VAR\"."
-        },
         "mcp_external_client_url": {
           "anyOf": [
             {
@@ -626,6 +609,11 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
+              },
+              "access_profile_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
               "rate_limit_id": {
                 "type": "string",

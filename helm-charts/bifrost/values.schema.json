@@ -451,29 +451,6 @@
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
-            },
-            "mcpExternalBaseUrl": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "value": {
-                      "type": "string"
-                    },
-                    "envVar": {
-                      "type": "string"
-                    },
-                    "fromEnv": {
-                      "type": "boolean"
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              ],
-              "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy (e.g. \"https://api.example.com\"). Supports env var syntax: \"env.MY_VAR\"."
             }
           },
           "additionalProperties": false
@@ -1234,6 +1211,10 @@
                   },
                   "customer_id": {
                     "type": "string"
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "minimum": 1
                   },
                   "rate_limit_id": {
                     "type": "string"
