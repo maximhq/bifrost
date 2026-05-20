@@ -1347,6 +1347,16 @@ func responsesStatusFromChatFinishReason(finishReason string) (status string, in
 	}
 }
 
+func responsesStopReasonFromChatFinishReason(finishReason *string) *string {
+	if finishReason == nil || *finishReason == "" {
+		return nil
+	}
+	if _, _, mapped := responsesStatusFromChatFinishReason(*finishReason); !mapped {
+		return nil
+	}
+	return Ptr(*finishReason)
+}
+
 func responsesTerminalFromChatFinishReason(finishReason *string) (eventType ResponsesStreamResponseType, status string, incompleteDetails *ResponsesResponseIncompleteDetails) {
 	// Unknown/empty finish reasons preserve prior behavior: treat as completed.
 	eventType = ResponsesStreamResponseTypeCompleted
@@ -1418,8 +1428,12 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 		if status == "incomplete" {
 			responsesResp.Status = Ptr(status)
 			responsesResp.IncompleteDetails = incompleteDetails
+			responsesResp.StopReason = responsesStopReasonFromChatFinishReason(choice.FinishReason)
 			hasCompletedFinishReason = false
 			break
+		}
+		if responsesResp.StopReason == nil {
+			responsesResp.StopReason = responsesStopReasonFromChatFinishReason(choice.FinishReason)
 		}
 		hasCompletedFinishReason = true
 	}
@@ -2106,6 +2120,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			CreatedAt:         state.CreatedAt,
 			Usage:             usage,
 			Status:            &responseStatus,
+			StopReason:        responsesStopReasonFromChatFinishReason(choice.FinishReason),
 			IncompleteDetails: terminalIncompleteDetails,
 		}
 

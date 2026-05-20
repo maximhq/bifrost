@@ -701,3 +701,87 @@ func TestToAnthropicResponsesStreamResponse_CompletedWithCompactionStopReason(t 
 		t.Errorf("event[1] type = %v, want message_stop", messageStop.Type)
 	}
 }
+
+func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	state := schemas.AcquireChatToResponsesStreamState()
+	defer schemas.ReleaseChatToResponsesStreamState(state)
+
+	content := "\n\nNow let me fetch the source branch:"
+	toolCallID := "chatcmpl-tool-123"
+	toolName := "Bash"
+	toolType := "function"
+	arguments := `{"command":"git fetch origin feat-IGPS-15746-controller-health-endpoint"}`
+	finishReason := string(schemas.BifrostFinishReasonToolCalls)
+
+	chatChunks := []*schemas.BifrostChatResponse{
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+					},
+				},
+			},
+		},
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Index: 0,
+									ID:    &toolCallID,
+									Type:  &toolType,
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      &toolName,
+										Arguments: arguments,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index:        0,
+					FinishReason: &finishReason,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{},
+					},
+				},
+			},
+		},
+	}
+
+	var events []*AnthropicStreamEvent
+	for _, chunk := range chatChunks {
+		for _, responseEvent := range chunk.ToBifrostResponsesStreamResponse(state) {
+			events = append(events, ToAnthropicResponsesStreamResponse(ctx, responseEvent)...)
+		}
+	}
+
+	var messageDelta *AnthropicStreamEvent
+	for _, event := range events {
+		if event.Type == AnthropicStreamEventTypeMessageDelta {
+			messageDelta = event
+		}
+	}
+
+	if messageDelta == nil || messageDelta.Delta == nil || messageDelta.Delta.StopReason == nil {
+		t.Fatalf("expected message_delta stop_reason in events: %#v", events)
+	}
+	if *messageDelta.Delta.StopReason != AnthropicStopReasonToolUse {
+		t.Fatalf("message_delta stop_reason = %q, want %q", *messageDelta.Delta.StopReason, AnthropicStopReasonToolUse)
+	}
+}
