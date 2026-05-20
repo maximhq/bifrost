@@ -16379,6 +16379,9 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	})
 
 	t.Run("fallback to defaults when db and file are missing", func(t *testing.T) {
+		t.Setenv(modelcatalog.PricingURLEnvVar, "")
+		t.Setenv(modelcatalog.ModelParametersURLEnvVar, "")
+
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
 		require.False(t, needsDBUpdate)
 		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
@@ -16392,6 +16395,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	t.Run("fallback default pricing url uses env override", func(t *testing.T) {
 		envURL := "https://env-default.example.com/pricing.json"
 		t.Setenv(modelcatalog.PricingURLEnvVar, envURL)
+		t.Setenv(modelcatalog.ModelParametersURLEnvVar, "")
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
 		require.False(t, needsDBUpdate)
@@ -16403,6 +16407,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 
 	t.Run("fallback default model parameters url uses env override", func(t *testing.T) {
 		envURL := "https://env-default.example.com/model-parameters.json"
+		t.Setenv(modelcatalog.PricingURLEnvVar, "")
 		t.Setenv(modelcatalog.ModelParametersURLEnvVar, envURL)
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
