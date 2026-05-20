@@ -73,7 +73,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 	return (
 		<ProgressProvider>
 			<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-				<Toaster />
+				<Toaster closeButton />
 				<ReduxProvider>
 					<NuqsAdapter>
 						<RbacProvider>
