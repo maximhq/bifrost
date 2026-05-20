@@ -8250,8 +8250,25 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 			// Gating on the legacy column would make ordering brittle: any
 			// reordering that drops the column before this runs would silently
 			// turn the refresh into a no-op and leave stale hashes behind.
+			// Read via an explicit, schema-derived column projection rather
+			// than GORM's default Find (SELECT *). Earlier migrations in this
+			// same run add and drop config_client columns; reusing a cached
+			// SELECT * plan whose projection has since drifted is what trips
+			// PostgreSQL's "cached plan must not change result type"
+			// (SQLSTATE 0A000) — an error that is unrecoverable inside a
+			// migration's transaction. An explicit column list is a distinct,
+			// previously-uncached query: it prepares fresh against the current
+			// schema and has a fixed result type. Same class of guard as
+			// migrate_calendar_aligned. The projection is derived from the
+			// TableClientConfig schema so it cannot drift from the struct.
+			schemaStmt := &gorm.Statement{DB: tx}
+			if err := schemaStmt.Parse(&tables.TableClientConfig{}); err != nil {
+				return fmt.Errorf("parse config_client schema for hash recompute: %w", err)
+			}
 			var clientConfigs []tables.TableClientConfig
-			if err := tx.Find(&clientConfigs).Error; err != nil {
+			if err := tx.Model(&tables.TableClientConfig{}).
+				Select(schemaStmt.Schema.DBNames).
+				Find(&clientConfigs).Error; err != nil {
 				return fmt.Errorf("fetch client configs for hash recompute: %w", err)
 			}
 			for _, cc := range clientConfigs {
