@@ -61442,11 +61442,11 @@
           },
           "limit": {
             "type": "integer",
-            "description": "Maximum number of customers returned (matches request limit param)"
+            "description": "Effective limit applied (clamped to maximum 100)"
           },
           "offset": {
             "type": "integer",
-            "description": "Number of customers skipped (matches request offset param)"
+            "description": "Effective offset applied"
           }
         },
         "required": [
