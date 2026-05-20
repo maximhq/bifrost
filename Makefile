@@ -439,7 +439,9 @@ docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/conf
 	fi; \
 	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
-docs: ## Prepare local docs
+docs: ## Prepare local docs (bundles OpenAPI spec then starts Mintlify dev server)
+	@$(ECHO) "$(GREEN)Bundling OpenAPI spec...$(NC)"
+	@cd docs/openapi && python3 bundle.py
 	@$(ECHO) "$(GREEN)Preparing local docs...$(NC)"
 	@cd docs && npx --yes mintlify@latest dev
 
