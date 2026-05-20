@@ -144,14 +144,18 @@ func (l *migrationLock) release(ctx context.Context) {
 // directly, so downstream consumers (bifrost-enterprise, plugins) can run
 // their migrations inside a MigrateOnFreshConnection callback without having
 // to reach the throwaway pool through the ConfigStore abstraction.
-func RunSingleMigration(ctx context.Context, db *gorm.DB, migration *migrator.Migration) error {
+func RunSingleMigration(ctx context.Context, options *migrator.Options, db *gorm.DB, migration *migrator.Migration) error {
 	if db == nil {
 		return fmt.Errorf("db cannot be nil")
 	}
 	if migration == nil {
 		return fmt.Errorf("migration cannot be nil")
 	}
-	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{migration})
+	migrationOpts := migrator.DefaultOptions
+	if options != nil {
+		migrationOpts = options
+	}
+	m := migrator.New(db.WithContext(ctx), migrationOpts, []*migrator.Migration{migration})
 	return m.Migrate()
 }
 
@@ -1446,7 +1450,7 @@ func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
 // migrationAddTeamSourceIDColumn adds optional source_id to governance_teams, with a unique index
 func migrationAddTeamSourceIDColumn(ctx context.Context, db *gorm.DB) error {
 	const idxName = "idx_governance_teams_source_id"
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "add_team_source_id_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7638,7 +7642,7 @@ func migrationAddMCPClientDisabledColumn(ctx context.Context, db *gorm.DB) error
 // appended so no data is lost. The struct tag uniqueIndex makes GORM enforce
 // this on new rows going forward.
 func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "gov_unique_team_names",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7697,7 +7701,7 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 // oauth_user_tokens, and creates partial unique indexes (one per identity
 // dimension).
 func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "add_oauth_auth_mode_columns",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -7973,7 +7977,7 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB) error {
 // No data backfill: existing rows are dev-only test data; production hasn't
 // landed yet.
 func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "replace_oauth_session_token_with_session_id",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -8100,7 +8104,7 @@ func migrationReplaceOauthSessionTokenWithSessionID(ctx context.Context, db *gor
 // Rollback recreates the tables empty (best-effort schema-only; original data
 // is gone).
 func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "drop_legacy_oauth_server_tables",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -8153,7 +8157,7 @@ func migrationDropLegacyOAuthServerTables(ctx context.Context, db *gorm.DB) erro
 // Affected users / clients re-authenticate fresh — the alternative is carrying
 // forward dead state that surfaces in the sessions UI but can never refresh.
 func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "drop_non_vk_oauth_user_rows",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -8198,7 +8202,7 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB) error {
 // as the redirect_uri base when Bifrost acts as an OAuth *client* to upstream
 // MCP servers.
 func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "drop_mcp_external_server_url_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -8231,7 +8235,7 @@ func migrationDropMCPExternalServerURL(ctx context.Context, db *gorm.DB) error {
 // config_client indefinitely on contended Postgres instances. See the same
 // split for migrationDropAllowDirectKeysColumn.
 func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Context, db *gorm.DB) error {
-	return RunSingleMigration(ctx, db, &migrator.Migration{
+	return RunSingleMigration(ctx, nil, db, &migrator.Migration{
 		ID: "refresh_config_hash_after_mcp_external_server_url_removal",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
