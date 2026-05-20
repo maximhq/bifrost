@@ -48,11 +48,12 @@ function TeamActionsMenu({
 	onEdit: (team: Team) => void;
 	onDelete: (teamId: string) => void;
 }) {
+	const [isOpen, setIsOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
 		<>
-			<DropdownMenu>
+			<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 				<DropdownMenuTrigger asChild>
 					<Button
 						variant="ghost"
@@ -72,6 +73,7 @@ function TeamActionsMenu({
 						onSelect={(e) => {
 							e.preventDefault();
 							onEdit(team);
+							setIsOpen(false);
 						}}
 					>
 						<Edit className="h-4 w-4" />
@@ -85,6 +87,7 @@ function TeamActionsMenu({
 						onSelect={(e) => {
 							e.preventDefault();
 							setDeleteOpen(true);
+							setIsOpen(false);
 						}}
 					>
 						<Trash2 className="h-4 w-4" />

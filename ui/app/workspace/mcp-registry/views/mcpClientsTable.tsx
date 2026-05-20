@@ -25,6 +25,72 @@ import { useState } from "react";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import MCPClientSheet from "./mcpClientSheet";
 
+function MCPClientActionsMenu({
+	client,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	isReconnecting,
+	isPerUserOAuth,
+	onReconnect,
+	onDelete,
+}: {
+	client: MCPClient;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	isReconnecting: boolean;
+	isPerUserOAuth: boolean;
+	onReconnect: (client: MCPClient) => void;
+	onDelete: (client: MCPClient) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label="MCP server actions"
+					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
+				>
+					{isReconnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				{hasUpdateAccess && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={isPerUserOAuth || client.config.disabled || isReconnecting}
+						onSelect={(e) => {
+							e.preventDefault();
+							onReconnect(client);
+							setIsOpen(false);
+						}}
+					>
+						<RefreshCcw className="h-4 w-4" />
+						Reconnect
+					</DropdownMenuItem>
+				)}
+				{hasDeleteAccess && (
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onDelete(client);
+							setIsOpen(false);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				)}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
 interface MCPClientsTableProps {
 	mcpClients: MCPClient[];
 	totalCount: number;
@@ -318,51 +384,15 @@ export default function MCPClientsTable({
 											className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 											onClick={(e) => e.stopPropagation()}
 										>
-											<DropdownMenu>
-												<DropdownMenuTrigger asChild>
-													<Button
-														variant="ghost"
-														size="icon"
-														className="h-8 w-8"
-														aria-label="MCP server actions"
-														data-testid={`mcp-client-actions-${c.config.client_id}-btn`}
-													>
-														{reconnectingClients.includes(c.config.client_id) ? (
-															<Loader2 className="h-4 w-4 animate-spin" />
-														) : (
-															<MoreHorizontal className="h-4 w-4" />
-														)}
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													{hasUpdateMCPClientAccess && (
-														<DropdownMenuItem
-															className="cursor-pointer"
-															disabled={isPerUserOAuth || c.config.disabled || reconnectingClients.includes(c.config.client_id)}
-															onSelect={(e) => {
-																e.preventDefault();
-																void handleReconnect(c);
-															}}
-														>
-															<RefreshCcw className="h-4 w-4" />
-															Reconnect
-														</DropdownMenuItem>
-													)}
-													{hasDeleteMCPClientAccess && (
-														<DropdownMenuItem
-															variant="destructive"
-															className="cursor-pointer"
-															onSelect={(e) => {
-																e.preventDefault();
-																setClientToDelete(c);
-															}}
-														>
-															<Trash2 className="h-4 w-4" />
-															Delete
-														</DropdownMenuItem>
-													)}
-												</DropdownMenuContent>
-											</DropdownMenu>
+											<MCPClientActionsMenu
+												client={c}
+												hasUpdateAccess={hasUpdateMCPClientAccess}
+												hasDeleteAccess={hasDeleteMCPClientAccess}
+												isReconnecting={reconnectingClients.includes(c.config.client_id)}
+												isPerUserOAuth={isPerUserOAuth}
+												onReconnect={(client) => void handleReconnect(client)}
+												onDelete={setClientToDelete}
+											/>
 										</TableCell>
 									</TableRow>
 								);
