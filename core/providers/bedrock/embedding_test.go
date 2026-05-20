@@ -268,6 +268,40 @@ func TestToBedrockTitanEmbeddingRequest_NonStringInputImage(t *testing.T) {
 	assert.Equal(t, 42, req.ExtraParams["inputImage"])
 }
 
+func TestToBedrockTitanEmbeddingRequest_ImageOnlyNonStringRejected(t *testing.T) {
+	// Greptile/CodeRabbit P1: image-only request with a non-string inputImage
+	// must be rejected at validation time. Previously hasImage = key existence
+	// alone, so this case slipped through and produced an empty {} wire body.
+	req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{
+				"inputImage": 42, // non-string + no text → reject
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, req)
+	assert.Contains(t, err.Error(), "no input text or image provided")
+}
+
+func TestToBedrockTitanEmbeddingRequest_ImageOnlyEmptyStringRejected(t *testing.T) {
+	// Empty-string inputImage carries no usable content; treated as absent.
+	req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{
+				"inputImage": "",
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, req)
+	assert.Contains(t, err.Error(), "no input text or image provided")
+}
+
 func TestToBedrockTitanEmbeddingRequest_NilInputWithImage(t *testing.T) {
 	inputImage := "iVBORw0KGgoAAAANSUhEUgAA"
 

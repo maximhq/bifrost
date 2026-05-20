@@ -15,9 +15,16 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	}
 
 	hasText := bifrostReq.Input != nil && (bifrostReq.Input.Text != nil || len(bifrostReq.Input.Texts) > 0)
+	// hasImage requires a non-empty string value, matching the lifting contract
+	// below. Treating any other value (nil, non-string, empty string) as "present"
+	// would let validation pass and then ship an empty {} wire body to AWS.
 	var hasImage bool
 	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
-		_, hasImage = bifrostReq.Params.ExtraParams["inputImage"]
+		if img, ok := bifrostReq.Params.ExtraParams["inputImage"]; ok {
+			if s, ok := img.(string); ok && s != "" {
+				hasImage = true
+			}
+		}
 	}
 	if !hasText && !hasImage {
 		return nil, fmt.Errorf("no input text or image provided for embedding")
@@ -48,7 +55,7 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		// (does not depend on BifrostContextKeyPassthroughExtraParams).
 		var inputImageLifted bool
 		if img, ok := bifrostReq.Params.ExtraParams["inputImage"]; ok {
-			if s, ok := img.(string); ok {
+			if s, ok := img.(string); ok && s != "" {
 				titanReq.InputImage = s
 				inputImageLifted = true
 			}
