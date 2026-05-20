@@ -1495,6 +1495,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
 	if requestedModel != "" {
+		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
+		// lookups) and attach them to the context. The logging plugin reads these keys
+		// when building the log entry, enabling ghost-node usage reconciliation to
+		// attribute cost/tokens to the correct governance entities.
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, provider, requestedModel)
+		if len(budgetIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+		}
+		if len(rateLimitIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+		}
+
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()

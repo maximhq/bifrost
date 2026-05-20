@@ -201,9 +201,9 @@ type Log struct {
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
-	ClusterNodeID  *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
-	BudgetIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
-	RateLimitIDs   *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
+	ClusterNodeID *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
+	BudgetIDs     *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
+	RateLimitIDs  *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -246,8 +246,8 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
-	BudgetIDsParsed    []string `gorm:"-" json:"budget_ids,omitempty"`
-	RateLimitIDsParsed []string `gorm:"-" json:"rate_limit_ids,omitempty"`
+	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -553,7 +553,8 @@ func (l *Log) SerializeFields() error {
 			l.Metadata = nil
 			l.MetadataParsed = nil
 		} else {
-			l.Metadata = new(string(data))
+			metadata := string(data)
+			l.Metadata = &metadata
 		}
 	}
 
@@ -561,7 +562,8 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.BudgetIDsParsed); err != nil {
 			return err
 		} else {
-			l.BudgetIDs = new(string(data))
+			budgetIDs := string(data)
+			l.BudgetIDs = &budgetIDs
 		}
 	}
 
@@ -569,7 +571,8 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.RateLimitIDsParsed); err != nil {
 			return err
 		} else {
-			l.RateLimitIDs = new(string(data))
+			rateLimitIDs := string(data)
+			l.RateLimitIDs = &rateLimitIDs
 		}
 	}
 
@@ -1540,6 +1543,14 @@ type UserRankingResult struct {
 	Rankings []UserRankingWithTrend `json:"rankings"`
 }
 
+// NodeUsageCursor identifies the last log row included in a node usage scan.
+// Timestamp alone is not unique, so LogID is used as a stable tiebreaker once a
+// previous row has been processed.
+type NodeUsageCursor struct {
+	Timestamp time.Time `json:"timestamp"`
+	LogID     string    `json:"log_id"`
+}
+
 // NodeUsageAggregate represents aggregated usage for a specific node from the logs table,
 // broken down by the budget and rate-limit IDs that each log entry was tagged with.
 // This ensures usage is attributed to the correct governance resource rather than
@@ -1548,4 +1559,8 @@ type NodeUsageAggregate struct {
 	BudgetCosts       map[string]float64 `json:"budget_costs"`        // budget_id -> cumulative cost
 	RateLimitRequests map[string]int64   `json:"rate_limit_requests"` // rate_limit_id -> successful request count
 	RateLimitTokens   map[string]int64   `json:"rate_limit_tokens"`   // rate_limit_id -> total tokens
+	RowCount          int                `json:"row_count"`           // number of log rows included in the aggregate
+	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
+	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
+	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
 }
