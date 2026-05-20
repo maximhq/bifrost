@@ -33,7 +33,8 @@
   "framework": {
     "pricing": {
       "pricing_url": "https://getbifrost.ai/datasheet",
-      "pricing_sync_interval": 86400
+      "pricing_sync_interval": 86400,
+      "model_parameters_url": "https://getbifrost.ai/datasheet/model-parameters"
     }
   }
 }
