@@ -3007,8 +3007,6 @@ func ResolveFrameworkPricingConfig(
 	defaultModelParametersURL := modelcatalog.DefaultModelParametersURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 
-	// --- Phase 1: parse and validate file config ---
-
 	filePricingURL := (*string)(nil)
 	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
