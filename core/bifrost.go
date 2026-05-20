@@ -4026,6 +4026,19 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 	return bifrost.getProviderByKey(providerKey)
 }
 
+// applyProviderAPIKeyOverride applies a request-scoped provider API key override (BYOK)
+// from context on the given key, if set. Returns the original key if no override exists.
+// Normal provider/model/key eligibility runs before this override, so BYOK cannot
+// bypass configured restrictions — only the selected key's secret value is replaced.
+func applyProviderAPIKeyOverride(ctx *schemas.BifrostContext, key schemas.Key) schemas.Key {
+	if byokVal, ok := ctx.Value(schemas.BifrostContextKeyProviderAPIKey).(string); ok && byokVal != "" {
+		byokKey := key
+		byokKey.Value = schemas.EnvVar{Val: byokVal}
+		return byokKey
+	}
+	return key
+}
+
 // SelectKeyForProviderRequestType selects an API key for the given provider, request type, and model.
 // Used by WebSocket handlers that need a key for upstream connections while honoring request-specific
 // AllowedRequests gates such as realtime-only support.
@@ -4045,10 +4058,16 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
 	}
+	var selectedKey schemas.Key
 	if len(supportedKeys) == 1 {
-		return supportedKeys[0], nil
+		selectedKey = supportedKeys[0]
+	} else {
+		selectedKey, err = bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+		if err != nil {
+			return schemas.Key{}, err
+		}
 	}
-	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+	return applyProviderAPIKeyOverride(ctx, selectedKey), nil
 }
 
 // ComputeRawStorageForProvider determines whether raw request/response payloads should be
@@ -5244,6 +5263,12 @@ func executeRequestWithRetries[T any](
 	var usedKeyIDs map[string]bool
 	lastWasRateLimit := false
 
+	// Detect request-scoped BYOK: when active, the actual upstream credential never changes,
+	// so configured-key rotation on rate-limit is pointless and misleading. We still run
+	// normal eligibility once on attempt 0 but skip rotation on subsequent rate-limit retries.
+	byokVal, hasProviderAPIKeyOverride := ctx.Value(schemas.BifrostContextKeyProviderAPIKey).(string)
+	hasProviderAPIKeyOverride = hasProviderAPIKeyOverride && byokVal != ""
+
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
@@ -5255,7 +5280,7 @@ func executeRequestWithRetries[T any](
 
 		// Select / rotate key: always on attempt 0, and again when the previous failure was a
 		// rate-limit (different key may have remaining capacity). Network errors keep the same key.
-		if keyProvider != nil && (attempts == 0 || lastWasRateLimit) {
+		if keyProvider != nil && (attempts == 0 || (lastWasRateLimit && !hasProviderAPIKeyOverride)) {
 			if usedKeyIDs == nil {
 				usedKeyIDs = make(map[string]bool)
 			}
@@ -5295,7 +5320,7 @@ func executeRequestWithRetries[T any](
 				var zero T
 				return zero, newBifrostErrorFromMsg(err.Error())
 			}
-			currentKey = selectedKey
+			currentKey = applyProviderAPIKeyOverride(ctx, selectedKey)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
 		}
@@ -5515,7 +5540,7 @@ func executeRequestWithRetries[T any](
 
 		// Mark current key as used so the next selection excludes it (rate-limit only).
 		// Network errors keep the same key — they are transient server issues, not per-key.
-		if isRateLimit && keyProvider != nil {
+		if isRateLimit && keyProvider != nil && !hasProviderAPIKeyOverride {
 			if usedKeyIDs == nil {
 				usedKeyIDs = make(map[string]bool)
 			}
