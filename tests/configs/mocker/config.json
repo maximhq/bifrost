@@ -18,6 +18,26 @@
             "path": "../../tests/configs/mocker/logs.db"
         }
     },
+    "vector_store": {
+        "enabled": true,
+        "type": "redis",
+        "config": {
+            "addr": "localhost:6379",
+            "db": 0
+        }
+    },
+    "plugins": [
+        {
+            "enabled": true,
+            "name": "semantic_cache",
+            "config": {
+                "dimension": 1,
+                "vector_store_namespace": "BifrostE2EMockerSemanticCache",
+                "default_cache_key": "bifrost-e2e-mocker",
+                "ttl": "5m"
+            }
+        }
+    ],
     "providers": {
         "openai": {
             "keys": [
