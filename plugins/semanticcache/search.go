@@ -391,7 +391,6 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 
 			// Add cache debug to only the last chunk
 			if i == len(streamArray)-1 {
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields := cachedResponse.GetExtraFields()
 				cacheDebug := schemas.BifrostCacheDebug{
 					CacheHit:          true,

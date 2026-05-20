@@ -5002,37 +5002,50 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 				defer func() {
 					drainAndAttachPluginLogs(ctx) // ensure logs are drained even if stream closes without a final chunk
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {
+						tracer.CompleteAndFlushTrace(strings.TrimSpace(traceID))
+					}
 					bifrost.releasePluginPipeline(pipeline)
 				}()
 				defer close(outputStream)
 
-				for streamMsg := range shortCircuit.Stream {
-					if streamMsg == nil {
-						continue
-					}
+			// Use lookahead pattern to detect final chunk deterministically.
+			// Read one chunk ahead so we know whether the current chunk is final.
+			var current *schemas.BifrostStreamChunk
+			for {
+				next, ok := <-shortCircuit.Stream
+				if current != nil {
+					// Process current chunk with finality determined by whether next exists
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, !ok)
 
 					bifrostResponse := &schemas.BifrostResponse{}
-					if streamMsg.BifrostTextCompletionResponse != nil {
-						bifrostResponse.TextCompletionResponse = streamMsg.BifrostTextCompletionResponse
+					if current.BifrostTextCompletionResponse != nil {
+						bifrostResponse.TextCompletionResponse = current.BifrostTextCompletionResponse
 					}
-					if streamMsg.BifrostChatResponse != nil {
-						bifrostResponse.ChatResponse = streamMsg.BifrostChatResponse
+					if current.BifrostChatResponse != nil {
+						bifrostResponse.ChatResponse = current.BifrostChatResponse
 					}
-					if streamMsg.BifrostResponsesStreamResponse != nil {
-						bifrostResponse.ResponsesStreamResponse = streamMsg.BifrostResponsesStreamResponse
+					if current.BifrostResponsesStreamResponse != nil {
+						bifrostResponse.ResponsesStreamResponse = current.BifrostResponsesStreamResponse
 					}
-					if streamMsg.BifrostSpeechStreamResponse != nil {
-						bifrostResponse.SpeechStreamResponse = streamMsg.BifrostSpeechStreamResponse
+					if current.BifrostSpeechStreamResponse != nil {
+						bifrostResponse.SpeechStreamResponse = current.BifrostSpeechStreamResponse
 					}
-					if streamMsg.BifrostTranscriptionStreamResponse != nil {
-						bifrostResponse.TranscriptionStreamResponse = streamMsg.BifrostTranscriptionStreamResponse
+					if current.BifrostTranscriptionStreamResponse != nil {
+						bifrostResponse.TranscriptionStreamResponse = current.BifrostTranscriptionStreamResponse
 					}
-					if streamMsg.BifrostImageGenerationStreamResponse != nil {
-						bifrostResponse.ImageGenerationStreamResponse = streamMsg.BifrostImageGenerationStreamResponse
+					if current.BifrostImageGenerationStreamResponse != nil {
+						bifrostResponse.ImageGenerationStreamResponse = current.BifrostImageGenerationStreamResponse
+					}
+
+					// Populate extra fields so plugins (e.g. logging) can read requestType/provider/model
+					bifrostResponse.PopulateExtraFields(req.RequestType, provider, model, model)
+					if current.BifrostError != nil {
+						current.BifrostError.PopulateExtraFields(req.RequestType, provider, model, model)
 					}
 
 					// Run post hooks on the stream message
-					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, streamMsg.BifrostError)
+					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, current.BifrostError)
 
 					// Build the client-facing chunk via the shared helper, which strips raw
 					// request/response fields when in logging-only mode without mutating the
@@ -5052,6 +5065,14 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 					// TODO: Release the processed response immediately after use
 				}
+				if !ok {
+					break
+				}
+				if next == nil {
+					continue // Skip nil chunks
+				}
+				current = next
+			}
 			}()
 
 			return outputStream, nil
