@@ -8400,7 +8400,11 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 
 // migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
 // so that existing VKs can be attached directly to an access profile template (enterprise feature).
+// The column add runs in a transaction; the index is built in a separate non-transactional
+// migration so Postgres can use CREATE INDEX CONCURRENTLY and avoid blocking VK writes.
 func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_virtual_keys_access_profile_id"
+
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_vk_access_profile_id_column",
 		Migrate: func(tx *gorm.DB) error {
@@ -8409,11 +8413,6 @@ func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error
 			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
 				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
 					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
-				}
-			}
-			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
-				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
 				}
 			}
 			return nil
@@ -8430,7 +8429,35 @@ func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
 	}
-	return nil
+
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	return RunSingleMigration(ctx, &opts, db, &migrator.Migration{
+		ID: "add_vk_access_profile_id_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasIndex(&tables.TableVirtualKey{}, idxName) {
+				return nil
+			}
+			if tx.Dialector.Name() == "postgres" {
+				return tx.Exec(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ` + idxName + ` ON governance_virtual_keys (access_profile_id)`).Error
+			}
+			if err := tx.Migrator().CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
+				return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				return tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS ` + idxName).Error
+			}
+			if tx.Migrator().HasIndex(&tables.TableVirtualKey{}, idxName) {
+				return tx.Migrator().DropIndex(&tables.TableVirtualKey{}, idxName)
+			}
+			return nil
+		},
+	})
 }
 
 func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
