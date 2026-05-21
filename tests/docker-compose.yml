@@ -49,7 +49,7 @@ services:
     # Generates self-signed TLS certs shared with the TLS Redis services.
     # Writes to ./redis-certs on the host so tests can read the CA cert.
     redis-certs-init:
-        image: alpine:3.19
+        image: alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
         volumes:
             - ./redis-certs:/tls
         command: >
