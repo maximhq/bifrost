@@ -77,6 +77,10 @@ const (
 	mcpFilterDimToolNames    = "tool_names"
 	mcpFilterDimServerLabels = "server_labels"
 	mcpFilterDimVirtualKeys  = "virtual_keys"
+	mcpFilterDimUsers        = "users"
+	mcpFilterDimTeams        = "teams"
+	mcpFilterDimCustomers    = "customers"
+	mcpFilterDimBusinessUnits = "business_units"
 )
 
 var allFilterDimensions = []string{
@@ -88,6 +92,7 @@ var allFilterDimensions = []string{
 
 var allMCPFilterDimensions = []string{
 	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimVirtualKeys,
+	mcpFilterDimUsers, mcpFilterDimTeams, mcpFilterDimCustomers, mcpFilterDimBusinessUnits,
 }
 
 // parseFilterDimensions returns the requested subset of dimensions in a
@@ -1897,6 +1902,18 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	if userIDs := string(ctx.QueryArgs().Peek("user_ids")); userIDs != "" {
+		filters.UserIDs = parseCommaSeparated(userIDs)
+	}
+	if teamIDs := string(ctx.QueryArgs().Peek("team_ids")); teamIDs != "" {
+		filters.TeamIDs = parseCommaSeparated(teamIDs)
+	}
+	if customerIDs := string(ctx.QueryArgs().Peek("customer_ids")); customerIDs != "" {
+		filters.CustomerIDs = parseCommaSeparated(customerIDs)
+	}
+	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
+		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
+	}
 
 	// Extract pagination parameters
 	pagination.Limit = 50 // Default limit
@@ -2014,6 +2031,18 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
+	}
+	if userIDs := string(ctx.QueryArgs().Peek("user_ids")); userIDs != "" {
+		filters.UserIDs = parseCommaSeparated(userIDs)
+	}
+	if teamIDs := string(ctx.QueryArgs().Peek("team_ids")); teamIDs != "" {
+		filters.TeamIDs = parseCommaSeparated(teamIDs)
+	}
+	if customerIDs := string(ctx.QueryArgs().Peek("customer_ids")); customerIDs != "" {
+		filters.CustomerIDs = parseCommaSeparated(customerIDs)
+	}
+	if businessUnitIDs := string(ctx.QueryArgs().Peek("business_unit_ids")); businessUnitIDs != "" {
+		filters.BusinessUnitIDs = parseCommaSeparated(businessUnitIDs)
 	}
 
 	return filters, nil
@@ -2197,6 +2226,26 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	var mcpUsers []logging.KeyPair
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		mcpUsers = h.logManager.GetAvailableMCPUsers(ctx, defaultFilterDataLimit, query)
+	}
+
+	var mcpTeams []logging.KeyPair
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		mcpTeams = h.logManager.GetAvailableMCPTeams(ctx, defaultFilterDataLimit, query)
+	}
+
+	var mcpCustomers []logging.KeyPair
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		mcpCustomers = h.logManager.GetAvailableMCPCustomers(ctx, defaultFilterDataLimit, query)
+	}
+
+	var mcpBusinessUnits []logging.KeyPair
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		mcpBusinessUnits = h.logManager.GetAvailableMCPBusinessUnits(ctx, defaultFilterDataLimit, query)
+	}
+
 	payload := make(map[string]interface{}, len(dims))
 	if _, ok := want[mcpFilterDimToolNames]; ok {
 		payload[mcpFilterDimToolNames] = toolNames
@@ -2206,6 +2255,18 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		payload[mcpFilterDimVirtualKeys] = virtualKeysArray
+	}
+	if _, ok := want[mcpFilterDimUsers]; ok {
+		payload[mcpFilterDimUsers] = mcpUsers
+	}
+	if _, ok := want[mcpFilterDimTeams]; ok {
+		payload[mcpFilterDimTeams] = mcpTeams
+	}
+	if _, ok := want[mcpFilterDimCustomers]; ok {
+		payload[mcpFilterDimCustomers] = mcpCustomers
+	}
+	if _, ok := want[mcpFilterDimBusinessUnits]; ok {
+		payload[mcpFilterDimBusinessUnits] = mcpBusinessUnits
 	}
 	if useCache && entry != nil {
 		h.mcpFilterDataCache.store(entry, payload)

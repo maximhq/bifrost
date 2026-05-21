@@ -3623,6 +3623,46 @@ func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddNameColumnsToMCPToolLogs adds user_name, team_name,
+// customer_name, and business_unit_name columns to mcp_tool_logs so filter
+// dropdowns can display human-readable labels (matching the logs table).
+func migrationAddNameColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_governance_name_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			for _, col := range []string{"user_name", "team_name", "customer_name", "business_unit_name"} {
+				if !mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.AddColumn(&MCPToolLog{}, col); err != nil {
+						return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, col := range []string{"business_unit_name", "customer_name", "team_name", "user_name"} {
+				if mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.DropColumn(&MCPToolLog{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding governance name columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddClusterGovernanceColumns adds cluster_node_id, budget_ids, and rate_limit_ids
 // columns to the logs table for node usage recovery in clustered deployments.
 func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

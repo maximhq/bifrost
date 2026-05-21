@@ -89,6 +89,7 @@ type LogStore interface {
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+	GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

@@ -143,6 +143,11 @@ type LogManager interface {
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
+	GetAvailableMCPUsers(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableMCPTeams(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableMCPCustomers(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) []KeyPair
+
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
 
@@ -416,6 +421,34 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit
 		return []KeyPair{}, nil
 	}
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) []KeyPair {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}
+	}
+	return p.plugin.GetAvailableMCPUsers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) []KeyPair {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}
+	}
+	return p.plugin.GetAvailableMCPTeams(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) []KeyPair {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}
+	}
+	return p.plugin.GetAvailableMCPCustomers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) []KeyPair {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}
+	}
+	return p.plugin.GetAvailableMCPBusinessUnits(ctx, limit, query)
 }
 
 // GetMCPHistogram returns time-bucketed MCP tool call volume

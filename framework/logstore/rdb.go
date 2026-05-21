@@ -3583,6 +3583,18 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	if len(filters.LLMRequestIDs) > 0 {
 		baseQuery = baseQuery.Where("llm_request_id IN ?", filters.LLMRequestIDs)
 	}
+	if len(filters.UserIDs) > 0 {
+		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
+	}
+	if len(filters.TeamIDs) > 0 {
+		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+	}
+	if len(filters.CustomerIDs) > 0 {
+		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+	}
+	if len(filters.BusinessUnitIDs) > 0 {
+		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
 	}
@@ -3894,6 +3906,40 @@ func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int,
 		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
 	}
 	return logs, nil
+}
+
+func (s *RDBLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	if _, ok := allowedMCPKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid column: %s", idCol)
+	}
+	if _, ok := allowedMCPKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid column: %s", nameCol)
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var results []KeyPairResult
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?",
+			idCol, idCol, nameCol, nameCol), cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, nameCol, query)
+	}
+	if err := q.Order("name ASC").Limit(limit).Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct MCP key pairs for %s/%s: %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
+var allowedMCPKeyPairColumns = map[string]struct{}{
+	"user_id":            {},
+	"user_name":          {},
+	"team_id":            {},
+	"team_name":          {},
+	"customer_id":        {},
+	"customer_name":      {},
+	"business_unit_id":   {},
+	"business_unit_name": {},
 }
 
 // GetMCPHistogram returns time-bucketed MCP tool call volume for the given filters.

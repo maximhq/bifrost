@@ -1446,6 +1446,16 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
+	// Get governance fields from context
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+
 	// Use the per-tool-call unique MCP log ID (set by agent executor per goroutine) as the
 	// primary key. Fall back to requestID if not set (e.g. direct single tool call).
 	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
@@ -1474,6 +1484,31 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		entry.VirtualKeyName = &virtualKeyName
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+
+	if userID != "" {
+		entry.UserID = &userID
+	}
+	if userName != "" {
+		entry.UserName = &userName
+	}
+	if teamID != "" {
+		entry.TeamID = &teamID
+	}
+	if teamName != "" {
+		entry.TeamName = &teamName
+	}
+	if customerID != "" {
+		entry.CustomerID = &customerID
+	}
+	if customerName != "" {
+		entry.CustomerName = &customerName
+	}
+	if businessUnitID != "" {
+		entry.BusinessUnitID = &businessUnitID
+	}
+	if businessUnitName != "" {
+		entry.BusinessUnitName = &businessUnitName
+	}
 
 	// Set arguments if content logging is enabled
 	if p.contentLoggingEnabled(ctx) {

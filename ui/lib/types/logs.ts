@@ -1074,6 +1074,10 @@ export interface MCPToolLogFilters {
 	status?: string[];
 	virtual_key_ids?: string[];
 	llm_request_ids?: string[];
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
@@ -1102,6 +1106,10 @@ export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	virtual_keys: VirtualKey[];
+	users?: { id: string; name: string }[];
+	teams?: { id: string; name: string }[];
+	customers?: { id: string; name: string }[];
+	business_units?: { id: string; name: string }[];
 }
 
 // WebSocket message types for MCP tool logs

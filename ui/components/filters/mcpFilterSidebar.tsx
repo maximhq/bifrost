@@ -107,6 +107,10 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 					{/* Rest closed unless they have active filters */}
 					<ServersFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<CustomerFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<BusinessUnitFilter filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
 		</div>
@@ -449,6 +453,224 @@ function VirtualKeysFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 				inputRef={searchInputRef}
 				placeholder="Search virtual keys"
 				items={availableVirtualKeys.map((key) => ({ key: key.name, label: key.name }))}
+				isSelected={isSelected}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for name→ID deduplication
+// ---------------------------------------------------------------------------
+
+function groupByName(items: { name: string; id: string }[]) {
+	const map = new Map<string, string[]>();
+	for (const item of items) {
+		const ids = map.get(item.name) || [];
+		ids.push(item.id);
+		map.set(item.name, ids);
+	}
+	return map;
+}
+
+function dedup(items: { name: string }[]) {
+	return [...new Map(items.map((i) => [i.name, i])).values()].map((i) => i.name);
+}
+
+// ---------------------------------------------------------------------------
+// UserFilter
+// ---------------------------------------------------------------------------
+
+function UserFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.user_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["users"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableUsers = filterData?.users || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableUsers.map((u) => u.id));
+		const extras = (filters.user_ids || []).filter((id) => !seen.has(id));
+		return [...availableUsers.map((u) => ({ key: u.id, label: u.name || u.id })), ...extras.map((id) => ({ key: id, label: id }))];
+	}, [availableUsers, filters.user_ids]);
+
+	if (!isUninitialized && !isLoading && availableUsers.length === 0 && !hasActive && !opened) return null;
+
+	return (
+		<FilterSection title="User" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a user"
+				items={items}
+				allowCustom
+				isSelected={(id) => (filters.user_ids || []).includes(id)}
+				onToggle={(id) => {
+					const current = filters.user_ids || [];
+					const next = current.includes(id) ? current.filter((u) => u !== id) : [...current, id];
+					onFiltersChange({ ...filters, user_ids: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// TeamFilter
+// ---------------------------------------------------------------------------
+
+function TeamFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.team_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["teams"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableTeams = filterData?.teams || [];
+	const nameToIds = useMemo(() => groupByName(availableTeams), [availableTeams]);
+
+	if (!isUninitialized && !isLoading && availableTeams.length === 0 && !hasActive && !opened) return null;
+
+	const toggle = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.team_ids || [];
+		const allSelected = resolvedIds.every((id) => current.includes(id));
+		const next = allSelected
+			? current.filter((v) => !resolvedIds.includes(v))
+			: [...current, ...resolvedIds.filter((id) => !current.includes(id))];
+		onFiltersChange({ ...filters, team_ids: next });
+	};
+
+	const isSelected = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.team_ids || [];
+		return resolvedIds.every((id) => current.includes(id));
+	};
+
+	return (
+		<FilterSection title="Teams" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a team"
+				items={dedup(availableTeams).map((name) => ({ key: name, label: name }))}
+				allowCustom
+				isSelected={isSelected}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// CustomerFilter
+// ---------------------------------------------------------------------------
+
+function CustomerFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.customer_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["customers"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableCustomers = filterData?.customers || [];
+	const nameToIds = useMemo(() => groupByName(availableCustomers), [availableCustomers]);
+
+	if (!isUninitialized && !isLoading && availableCustomers.length === 0 && !hasActive && !opened) return null;
+
+	const toggle = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.customer_ids || [];
+		const allSelected = resolvedIds.every((id) => current.includes(id));
+		const next = allSelected
+			? current.filter((v) => !resolvedIds.includes(v))
+			: [...current, ...resolvedIds.filter((id) => !current.includes(id))];
+		onFiltersChange({ ...filters, customer_ids: next });
+	};
+
+	const isSelected = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.customer_ids || [];
+		return resolvedIds.every((id) => current.includes(id));
+	};
+
+	return (
+		<FilterSection title="Customers" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a customer"
+				items={dedup(availableCustomers).map((name) => ({ key: name, label: name }))}
+				allowCustom
+				isSelected={isSelected}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// BusinessUnitFilter
+// ---------------------------------------------------------------------------
+
+function BusinessUnitFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.business_unit_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["business_units"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableBusinessUnits = filterData?.business_units || [];
+	const nameToIds = useMemo(() => groupByName(availableBusinessUnits), [availableBusinessUnits]);
+
+	if (!isUninitialized && !isLoading && availableBusinessUnits.length === 0 && !hasActive && !opened) return null;
+
+	const toggle = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.business_unit_ids || [];
+		const allSelected = resolvedIds.every((id) => current.includes(id));
+		const next = allSelected
+			? current.filter((v) => !resolvedIds.includes(v))
+			: [...current, ...resolvedIds.filter((id) => !current.includes(id))];
+		onFiltersChange({ ...filters, business_unit_ids: next });
+	};
+
+	const isSelected = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.business_unit_ids || [];
+		return resolvedIds.every((id) => current.includes(id));
+	};
+
+	return (
+		<FilterSection title="Business Units" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a business unit"
+				items={dedup(availableBusinessUnits).map((name) => ({ key: name, label: name }))}
+				allowCustom
 				isSelected={isSelected}
 				onToggle={toggle}
 				onSearch={setSearchQuery}

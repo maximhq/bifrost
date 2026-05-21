@@ -4,6 +4,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import {
 	getErrorMessage,
 	useDeleteMCPLogsMutation,
@@ -19,7 +20,6 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createMCPColumns } from "./views/columns";
@@ -54,6 +54,10 @@ export default function MCPLogsPage() {
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
+			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(50),
@@ -83,19 +87,27 @@ export default function MCPLogsPage() {
 			server_labels: urlState.server_labels,
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
+			user_ids: urlState.user_ids,
+			team_ids: urlState.team_ids,
+			customer_ids: urlState.customer_ids,
+			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
 			...(urlState.period
 				? { period: urlState.period }
 				: {
-						start_time: dateUtils.toISOString(urlState.start_time),
-						end_time: dateUtils.toISOString(urlState.end_time),
-					}),
+					start_time: dateUtils.toISOString(urlState.start_time),
+					end_time: dateUtils.toISOString(urlState.end_time),
+				}),
 		}),
 		[
 			urlState.tool_names,
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
 			urlState.content_search,
 			urlState.period,
 			urlState.start_time,
@@ -219,6 +231,10 @@ export default function MCPLogsPage() {
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,

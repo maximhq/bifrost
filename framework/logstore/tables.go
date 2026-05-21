@@ -929,9 +929,13 @@ type MCPToolLog struct {
 	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	UserID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_user_id" json:"user_id"`
+	UserName       *string   `gorm:"type:varchar(255)" json:"user_name"`
 	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
+	TeamName       *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
+	CustomerName   *string   `gorm:"type:varchar(255)" json:"customer_name"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
+	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name"`
 	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
 	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
 	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
@@ -1152,16 +1156,20 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
 type MCPToolLogSearchFilters struct {
-	ToolNames     []string   `json:"tool_names,omitempty"`
-	ServerLabels  []string   `json:"server_labels,omitempty"`
-	Status        []string   `json:"status,omitempty"`
-	VirtualKeyIDs []string   `json:"virtual_key_ids,omitempty"`
-	LLMRequestIDs []string   `json:"llm_request_ids,omitempty"`
-	StartTime     *time.Time `json:"start_time,omitempty"`
-	EndTime       *time.Time `json:"end_time,omitempty"`
-	MinLatency    *float64   `json:"min_latency,omitempty"`
-	MaxLatency    *float64   `json:"max_latency,omitempty"`
-	ContentSearch string     `json:"content_search,omitempty"`
+	ToolNames       []string   `json:"tool_names,omitempty"`
+	ServerLabels    []string   `json:"server_labels,omitempty"`
+	Status          []string   `json:"status,omitempty"`
+	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
+	LLMRequestIDs   []string   `json:"llm_request_ids,omitempty"`
+	UserIDs         []string   `json:"user_ids,omitempty"`
+	TeamIDs         []string   `json:"team_ids,omitempty"`
+	CustomerIDs     []string   `json:"customer_ids,omitempty"`
+	BusinessUnitIDs []string   `json:"business_unit_ids,omitempty"`
+	StartTime       *time.Time `json:"start_time,omitempty"`
+	EndTime         *time.Time `json:"end_time,omitempty"`
+	MinLatency      *float64   `json:"min_latency,omitempty"`
+	MaxLatency      *float64   `json:"max_latency,omitempty"`
+	ContentSearch   string     `json:"content_search,omitempty"`
 }
 
 // MCPToolLogSearchResult represents the result of an MCP tool log search

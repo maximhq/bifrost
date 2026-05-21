@@ -28,6 +28,18 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 		params.llm_request_ids = filters.llm_request_ids.join(",");
 	}
+	if (filters.user_ids && filters.user_ids.length > 0) {
+		params.user_ids = filters.user_ids.join(",");
+	}
+	if (filters.team_ids && filters.team_ids.length > 0) {
+		params.team_ids = filters.team_ids.join(",");
+	}
+	if (filters.customer_ids && filters.customer_ids.length > 0) {
+		params.customer_ids = filters.customer_ids.join(",");
+	}
+	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
+		params.business_unit_ids = filters.business_unit_ids.join(",");
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
@@ -54,45 +66,16 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				pagination: Pagination;
 			}
 		>({
-			query: ({ filters, pagination }) => {
-				const params: Record<string, string | number> = {
+			query: ({ filters, pagination }) => ({
+				url: "/mcp-logs",
+				params: {
 					limit: pagination.limit,
 					offset: pagination.offset,
 					sort_by: pagination.sort_by,
 					order: pagination.order,
-				};
-
-				// Add filters to params if they exist
-				if (filters.tool_names && filters.tool_names.length > 0) {
-					params.tool_names = filters.tool_names.join(",");
-				}
-				if (filters.server_labels && filters.server_labels.length > 0) {
-					params.server_labels = filters.server_labels.join(",");
-				}
-				if (filters.status && filters.status.length > 0) {
-					params.status = filters.status.join(",");
-				}
-				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
-					params.virtual_key_ids = filters.virtual_key_ids.join(",");
-				}
-				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
-					params.llm_request_ids = filters.llm_request_ids.join(",");
-				}
-				if (filters.period) {
-					params.period = filters.period;
-				} else {
-					if (filters.start_time) params.start_time = filters.start_time;
-					if (filters.end_time) params.end_time = filters.end_time;
-				}
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.content_search) params.content_search = filters.content_search;
-
-				return {
-					url: "/mcp-logs",
-					params,
-				};
-			},
+					...buildMCPFilterParams(filters),
+				},
+			}),
 			providesTags: ["MCPLogs"],
 		}),
 
@@ -109,40 +92,10 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				filters: MCPToolLogFilters;
 			}
 		>({
-			query: ({ filters }) => {
-				const params: Record<string, string | number> = {};
-
-				// Add filters to params if they exist
-				if (filters.tool_names && filters.tool_names.length > 0) {
-					params.tool_names = filters.tool_names.join(",");
-				}
-				if (filters.server_labels && filters.server_labels.length > 0) {
-					params.server_labels = filters.server_labels.join(",");
-				}
-				if (filters.status && filters.status.length > 0) {
-					params.status = filters.status.join(",");
-				}
-				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
-					params.virtual_key_ids = filters.virtual_key_ids.join(",");
-				}
-				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
-					params.llm_request_ids = filters.llm_request_ids.join(",");
-				}
-				if (filters.period) {
-					params.period = filters.period;
-				} else {
-					if (filters.start_time) params.start_time = filters.start_time;
-					if (filters.end_time) params.end_time = filters.end_time;
-				}
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.content_search) params.content_search = filters.content_search;
-
-				return {
-					url: "/mcp-logs/stats",
-					params,
-				};
-			},
+			query: ({ filters }) => ({
+				url: "/mcp-logs/stats",
+				params: buildMCPFilterParams(filters),
+			}),
 			providesTags: ["MCPLogs"],
 		}),
 

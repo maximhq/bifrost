@@ -1118,6 +1118,42 @@ func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int,
 	return keyPairResultsToKeyPairs(results), nil
 }
 
+func (p *LoggerPlugin) GetAvailableMCPUsers(ctx context.Context, limit int, query string) []KeyPair {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "user_id", "user_id", limit, query)
+	if err != nil {
+		p.logger.Error("failed to get available MCP users: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+func (p *LoggerPlugin) GetAvailableMCPTeams(ctx context.Context, limit int, query string) []KeyPair {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "team_id", "team_name", limit, query)
+	if err != nil {
+		p.logger.Error("failed to get available MCP teams: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+func (p *LoggerPlugin) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) []KeyPair {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "customer_id", "customer_name", limit, query)
+	if err != nil {
+		p.logger.Error("failed to get available MCP customers: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+func (p *LoggerPlugin) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) []KeyPair {
+	results, err := p.store.GetDistinctMCPKeyPairs(ctx, "business_unit_id", "business_unit_name", limit, query)
+	if err != nil {
+		p.logger.Error("failed to get available MCP business units: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
 func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
