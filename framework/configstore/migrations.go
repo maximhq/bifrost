@@ -375,6 +375,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"replace_enable_litellm_with_compat_columns"}, run: migrationReplaceEnableLiteLLMWithCompatColumns},
 	{IDs: []string{"add_model_pricing_unique_index"}, run: migrationAddModelPricingUniqueIndex},
 	{IDs: []string{"default_compat_should_convert_params_false"}, run: migrationDefaultCompatShouldConvertParamsFalse},
+	{IDs: []string{"add_compat_count_tokens_fallback_column"}, run: migrationAddCompatCountTokensFallbackColumn},
 	{IDs: []string{"add_priority_tier_pricing_columns"}, run: migrationAddPriorityTierPricingColumns},
 	{IDs: []string{"add_flex_tier_pricing_columns"}, run: migrationAddFlexTierPricingColumns},
 	{IDs: []string{"normalize_otel_trace_type"}, run: migrationNormalizeOtelTraceType},
@@ -1334,6 +1335,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger
 						ConvertChatToResponses: cc.CompatConvertChatToResponses,
 						ShouldDropParams:       cc.CompatShouldDropParams,
 						ShouldConvertParams:    cc.CompatShouldConvertParams,
+						CountTokensFallback:    cc.CompatCountTokensFallback,
 					},
 				}
 				newHash, err := clientConfig.GenerateClientConfigHash()
@@ -8411,6 +8413,45 @@ func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gor
 	return nil
 }
 
+// migrationAddCompatCountTokensFallbackColumn adds the compat_count_tokens_fallback
+// column to config_client. The flag is opt-in and defaults to false, so existing
+// deployments keep the previous behaviour of surfacing unsupported count_tokens
+// errors instead of returning a best-effort estimate.
+func migrationAddCompatCountTokensFallbackColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_count_tokens_fallback_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "compat_count_tokens_fallback"); err != nil {
+				return err
+			}
+
+			if err := tx.Exec("UPDATE config_client SET compat_count_tokens_fallback = FALSE").Error; err != nil {
+				return err
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_count_tokens_fallback"); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_compat_count_tokens_fallback_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddModelPricingUniqueIndex ensures the composite unique index (model, provider, mode)
 // exists on governance_model_pricing so that atomic ON CONFLICT upserts work correctly.
 func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -9472,6 +9513,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 						ConvertChatToResponses: cc.CompatConvertChatToResponses,
 						ShouldDropParams:       cc.CompatShouldDropParams,
 						ShouldConvertParams:    cc.CompatShouldConvertParams,
+						CountTokensFallback:    cc.CompatCountTokensFallback,
 					},
 				}
 				newHash, err := clientConfig.GenerateClientConfigHash()
