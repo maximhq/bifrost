@@ -1061,6 +1061,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1132,8 +1133,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		// Initialize latency timers post-handshake so chunk latency reflects pure streaming time.
-		startTime := time.Now()
+		// Seed lastChunkTime with startTime (captured before Do) so the first chunk's latency reflects TTFT, including request/network time.
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string
@@ -1440,6 +1440,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1511,8 +1512,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		// Initialize latency timers post-handshake so chunk latency reflects pure streaming time.
-		startTime := time.Now()
+		// Seed lastChunkTime with startTime (captured before Do) so the first chunk's latency reflects TTFT, including request/network time.
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string

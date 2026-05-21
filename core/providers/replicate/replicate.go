@@ -534,6 +534,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -608,7 +609,6 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -873,6 +873,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -947,7 +948,6 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -1225,6 +1225,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -1351,7 +1352,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		defer stopCancellation()
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
-		startTime := time.Now()
 		sequenceNumber := 0
 		messageID := prediction.ID
 		// Generate a unique item ID for the message (needed for accumulator to track deltas)
@@ -1840,6 +1840,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		schemas.ImageGenerationStreamRequest,
 		useDeploymentsEndpoint(key),
 	)
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -1921,7 +1922,6 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -2246,6 +2246,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -2327,7 +2328,6 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 

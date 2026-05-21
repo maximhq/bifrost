@@ -930,6 +930,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "invoke-with-response-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -964,7 +965,6 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
-		startTime := time.Now()
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
 
@@ -1166,6 +1166,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1204,7 +1205,6 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
-		startTime := time.Now()
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
@@ -1546,6 +1546,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1598,7 +1599,6 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		var isAccumulatingStructuredOutput bool
 
 		// Process AWS Event Stream format using proper decoder
-		startTime := time.Now()
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
