@@ -291,17 +291,19 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ## Per-User OAuth for MCP Clients
 
-When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint automatically advertises OAuth support via standard discovery headers. OAuth-capable MCP clients (Claude Code, Cursor, and others) detect this automatically - no manual configuration is needed on the client side.
+When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint serves per-user tokens lazily. Bifrost is **not** an OAuth Authorization Server — there is no `.well-known/oauth-protected-resource` discovery and no inbound consent screen. Inbound MCP clients identify themselves via headers:
 
-When an unauthenticated client connects, Bifrost responds with a `401` that points to the discovery endpoints:
+- `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>`) — VK-mode identity
+- `x-bf-mcp-session-id: <opaque-string>` — session-mode identity (client-asserted, must be re-sent on every call)
+- Enterprise SSO — user-mode identity, attached automatically by the auth middleware
 
-```
-WWW-Authenticate: Bearer resource_metadata="https://your-bifrost-domain/.well-known/oauth-protected-resource"
-```
+When a tool call hits an MCP server the caller has not authenticated against, Bifrost returns an `mcp_auth_required` tool result containing an inline `authorize_url`. The user opens it, completes the upstream OAuth flow, and the next tool call executes normally.
 
-The client then fetches the OAuth metadata and kicks off a consent flow where the user can attach an identity and connect their upstream services. Subsequent requests use a Bifrost-issued session token as the Bearer credential.
+<Note>
+Claude Code's MCP client may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+</Note>
 
-See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options.
+See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options, and [MCP Sessions →](./sessions) for managing the resulting tokens.
 
 ### Public URL configuration when behind a proxy
 

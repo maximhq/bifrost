@@ -118,7 +118,7 @@ For existing MCP clients, the edit flow supports rotating OAuth credentials (`cl
 
 #### Per-User OAuth
 
-Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server - users authenticate through a consent flow and their tokens are stored per-identity.
+Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). The same caller identity (VK, signed-in user, or asserted session ID) is honored on both the MCP Gateway and the LLM Gateway, and auth happens lazily — the first tool call that needs an upstream token gets back an inline `authorize_url`.
 
 Per-user OAuth is configured through the Web UI only (Bifrost runs a test OAuth flow and pre-fetches tools at setup time).
 
