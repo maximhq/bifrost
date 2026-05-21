@@ -50,8 +50,8 @@ interface VirtualKeyDetailSheetProps {
 }
 
 export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKeyDetailSheetProps) {
-	const { assignedUsers, isManagedByProfile, managingProfile, hasApRateLimit, displayBudgets, displayRateLimit } =
-		useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, managingProfile, hasApRateLimit, displayBudgets, displayRateLimit } = useVirtualKeyUsage(virtualKey);
+	const isManagedByProfile = !!virtualKey.access_profile_id;
 
 	const getEntityInfo = () => {
 		if (virtualKey.team) {
