@@ -105,7 +105,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 				ctx,
 				provider.client,
 				provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
-				schemas.Key{},
+				schemas.Key{Models: schemas.WhiteList{"*"}},
 				request.Unfiltered,
 				provider.networkConfig.ExtraHeaders,
 				providerName,
