@@ -18,15 +18,18 @@ type Config struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	CountTokensFallback    bool `json:"count_tokens_fallback"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults the legacy compat flags to true when absent from JSON.
+// count_tokens_fallback stays opt-in and defaults to false.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config struct {
 		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		CountTokensFallback    *bool `json:"count_tokens_fallback"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -36,12 +39,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.CountTokensFallback = s.CountTokensFallback != nil && *s.CountTokensFallback
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.CountTokensFallback
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -53,6 +57,7 @@ type CompatPlugin struct {
 	config        Config
 	logger        schemas.Logger
 	modelCatalog  *modelcatalog.ModelCatalog
+	account       schemas.Account
 	droppedParams []string
 }
 
@@ -61,11 +66,12 @@ type CompatPlugin struct {
 // chat completion natively. If the model catalog is nil, the plugin will
 // convert all text completion requests to chat completion and all chat
 // completion requests to responses.
-func Init(config Config, logger schemas.Logger, mc *modelcatalog.ModelCatalog) (*CompatPlugin, error) {
+func Init(config Config, logger schemas.Logger, mc *modelcatalog.ModelCatalog, account schemas.Account) (*CompatPlugin, error) {
 	return &CompatPlugin{
 		config:       config,
 		logger:       logger,
 		modelCatalog: mc,
+		account:      account,
 	}, nil
 }
 
@@ -99,6 +105,15 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
+
+	rootCtx := ctx.Root()
+	rootCtx.ClearValue(countTokensFallbackStateKey{})
+	if p.shouldEnableCountTokensFallback(ctx, req) {
+		rootCtx.SetValue(countTokensFallbackStateKey{}, &countTokensFallbackState{
+			request:              req.CountTokensRequest,
+			explicitlyDisallowed: p.isCountTokensExplicitlyDisallowed(req.CountTokensRequest.Provider),
+		})
+	}
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -146,6 +161,15 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		return result, bifrostErr, nil
 	}
 
+	if result == nil && bifrostErr != nil {
+		if state, _ := ctx.Root().Value(countTokensFallbackStateKey{}).(*countTokensFallbackState); shouldGracefullyFallbackCountTokens(state, ctx, bifrostErr) {
+			result = &schemas.BifrostResponse{
+				CountTokensResponse: buildGracefulCountTokensFallbackResponse(state.request),
+			}
+			bifrostErr = nil
+		}
+	}
+
 	if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok {
 		if result != nil {
 			extraFields := result.GetExtraFields()
@@ -170,6 +194,15 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // Cleanup performs plugin cleanup.
 func (p *CompatPlugin) Cleanup() error {
 	return nil
+}
+
+func (p *CompatPlugin) shouldEnableCountTokensFallback(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
+	if req == nil || req.RequestType != schemas.CountTokensRequest || req.CountTokensRequest == nil {
+		return false
+	}
+
+	override, ok := ctx.Value(schemas.BifrostContextKeyCompatCountTokensFallback).(bool)
+	return (ok && override) || p.config.CountTokensFallback
 }
 
 // markForConversion checks if the model supports the current request type; if not, mark for conversion

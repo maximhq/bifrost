@@ -42,15 +42,18 @@ type CompatConfig struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	CountTokensFallback    bool `json:"count_tokens_fallback"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults the legacy compat flags to true when absent from JSON.
+// count_tokens_fallback stays opt-in and defaults to false.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
 		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		CountTokensFallback    *bool `json:"count_tokens_fallback"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -60,6 +63,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.CountTokensFallback = s.CountTokensFallback != nil && *s.CountTokensFallback
 	return nil
 }
 
@@ -107,6 +111,7 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			ConvertChatToResponses: true,
 			ShouldDropParams:       true,
 			ShouldConvertParams:    true,
+			CountTokensFallback:    false,
 		},
 	}
 	if err := sonic.Unmarshal(data, &alias); err != nil {
@@ -164,6 +169,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.Compat.ShouldConvertParams {
 		hash.Write([]byte("compatShouldConvertParams:true"))
+	}
+	if c.Compat.CountTokensFallback {
+		hash.Write([]byte("compatCountTokensFallback:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.

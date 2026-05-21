@@ -472,6 +472,7 @@ export interface CompatConfig {
 	convert_chat_to_responses: boolean;
 	should_drop_params: boolean;
 	should_convert_params: boolean;
+	count_tokens_fallback: boolean;
 }
 
 // Core Bifrost configuration types
@@ -518,7 +519,13 @@ export const DefaultCoreConfig: CoreConfig = {
 	enforce_auth_on_inference: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
+	compat: {
+		convert_text_to_chat: false,
+		convert_chat_to_responses: false,
+		should_drop_params: false,
+		should_convert_params: false,
+		count_tokens_fallback: false,
+	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
