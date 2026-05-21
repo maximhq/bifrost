@@ -425,6 +425,7 @@ func HandleGeminiChatCompletionStream(
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
 	doErr := client.Do(req, resp)
 	if doErr != nil {
@@ -511,7 +512,6 @@ func HandleGeminiChatCompletionStream(
 		}
 
 		chunkIndex := 0
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var responseID string
@@ -925,6 +925,7 @@ func HandleGeminiResponsesStream(
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
 	doErr := client.Do(req, resp)
 	if doErr != nil {
@@ -1019,7 +1020,6 @@ func HandleGeminiResponsesStream(
 
 		chunkIndex := 0
 		sequenceNumber := 0 // Track sequence across all events
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Initialize stream state for responses lifecycle management
@@ -1414,6 +1414,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1485,7 +1486,6 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
 		usage := &schemas.SpeechUsage{}
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -1704,6 +1704,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1773,7 +1774,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
 		usage := &schemas.TranscriptionUsage{}
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var fullTranscriptionText string

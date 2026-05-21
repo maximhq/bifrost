@@ -1011,6 +1011,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	requestErr := provider.client.Do(req, resp)
 	if requestErr != nil {
@@ -1073,7 +1074,6 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		defer stopCancellation()
 
 		chunkIndex := -1
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Read SSE events manually to handle binary data with embedded newlines
