@@ -4756,20 +4756,20 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// UpdateProvider/UpdateModel (called by hooks) set them via SetProvider/SetModel.
 	provider, model, _ := preReq.GetRequestFields()
 
-	// Provider check should be after plugin execution since plugins can change providers.
-	if provider == "" {
-		bifrostErr := newBifrostErrorFromMsg("provider is required (no provider/<model> prefix matched a known provider, no model-catalog match, and no plugin set req.Provider)")
-		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
-		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, origProvider, model, bifrostErr)
-		return resp, finalErr, effectiveReq
-	}
-
 	// Wire request-level key/URL overrides into context for key selection and URL construction.
 	// Clear any leftover from a previous attempt first so each attempt starts fresh.
 	override := preReq.ProviderOverride
 	ctx.ClearValue(schemas.BifrostContextKeyProviderOverride)
 	if override != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, override)
+	}
+
+	// Provider check should be after plugin execution since plugins can change providers.
+	if provider == "" {
+		bifrostErr := newBifrostErrorFromMsg("provider is required (no provider/<model> prefix matched a known provider, no model-catalog match, and no plugin set req.Provider)")
+		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
+		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, origProvider, model, bifrostErr)
+		return resp, finalErr, effectiveReq
 	}
 
 	pq, err := bifrost.getProviderQueue(provider, override)

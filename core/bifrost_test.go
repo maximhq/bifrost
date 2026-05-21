@@ -3438,6 +3438,44 @@ func TestProviderOverride(t *testing.T) {
 			t.Errorf("expected 'provider is required' error, got: %s", bifrostErr.Error.Message)
 		}
 	})
+
+	t.Run("EmptyProviderFailureClearsProviderOverrideBeforePostHook", func(t *testing.T) {
+		account := NewMockAccount()
+		plugin := &providerOverridePostHookObserverPlugin{}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		reqCtx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+			BaseURL:          "https://stale.example.com",
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Model: "gpt-4o",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr == nil {
+			t.Fatal("expected error when no plugin sets the provider")
+		}
+		if got := atomic.LoadInt32(&plugin.postCalls); got != 1 {
+			t.Fatalf("PostLLMHook calls: got %d, want 1", got)
+		}
+		if plugin.sawProviderOverride.Load() {
+			t.Fatal("PostLLMHook saw stale ProviderOverride on empty-provider failure")
+		}
+	})
 }
 
 // TestValidateRequest_DefersProviderCheck verifies that validateRequest does NOT
@@ -3506,6 +3544,26 @@ func (p *keyBaseURLPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bi
 	return req, nil, nil
 }
 func (p *keyBaseURLPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+type providerOverridePostHookObserverPlugin struct {
+	postCalls           int32
+	sawProviderOverride atomic.Bool
+}
+
+func (p *providerOverridePostHookObserverPlugin) GetName() string {
+	return "provider-override-post-hook-observer-test-plugin"
+}
+func (p *providerOverridePostHookObserverPlugin) Cleanup() error { return nil }
+func (p *providerOverridePostHookObserverPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *providerOverridePostHookObserverPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	atomic.AddInt32(&p.postCalls, 1)
+	if override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride); ok && override != nil {
+		p.sawProviderOverride.Store(true)
+	}
 	return resp, err, nil
 }
 
