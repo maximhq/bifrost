@@ -188,6 +188,29 @@ const TimeFilterPages = new Set([
   "/workspace/mcp-logs",
 ]);
 
+const preserveTimeFilters = (
+  baseHref: string,
+  subItemUrl: string,
+  pathname: string,
+  search: string,
+): string => {
+  if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
+    const currentParams = new URLSearchParams(search);
+    const startTime = currentParams.get("start_time");
+    const endTime = currentParams.get("end_time");
+    const period = currentParams.get("period");
+    if ((startTime && endTime) || period) {
+      const params = new URLSearchParams();
+      if (startTime) params.set("start_time", startTime);
+      if (endTime) params.set("end_time", endTime);
+      if (period) params.set("period", period);
+      const sep = baseHref.includes("?") ? "&" : "?";
+      return `${baseHref}${sep}${params.toString()}`;
+    }
+  }
+  return baseHref;
+};
+
 const SidebarItemView = ({
   item,
   isActive,
@@ -405,7 +428,8 @@ const SidebarItemView = ({
               {item.title}
             </div>
             {item.subItems?.map((subItem) => {
-              const href = getSidebarItemHref(subItem);
+              const baseHref = getSidebarItemHref(subItem);
+              const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
               const isSubItemActive = subItem.queryParam
                 ? pathname === subItem.url
                 : isRouteMatch(subItem.url);
@@ -468,26 +492,7 @@ const SidebarItemView = ({
         <SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
           {item.subItems?.map((subItem: SidebarItem) => {
             const baseHref = getSidebarItemHref(subItem);
-            const subItemHref = (() => {
-              if (
-                TimeFilterPages.has(subItem.url) &&
-                TimeFilterPages.has(pathname)
-              ) {
-                const currentParams = new URLSearchParams(search);
-                const startTime = currentParams.get("start_time");
-                const endTime = currentParams.get("end_time");
-                const period = currentParams.get("period");
-                if ((startTime && endTime) || period) {
-                  const params = new URLSearchParams();
-                  if (startTime) params.set("start_time", startTime);
-                  if (endTime) params.set("end_time", endTime);
-                  if (period) params.set("period", period);
-                  const sep = baseHref.includes("?") ? "&" : "?";
-                  return `${baseHref}${sep}${params.toString()}`;
-                }
-              }
-              return baseHref;
-            })();
+            const subItemHref = preserveTimeFilters(baseHref, subItem.url, pathname, search);
             // For query param based subitems, check if tab matches
             const isSubItemActive = subItem.queryParam
               ? pathname === subItem.url
