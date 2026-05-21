@@ -126,6 +126,7 @@ const providerConfigSchema = z.object({
     .max(1, "Weight must be at most 1")
     .optional(),
   allowed_models: z.array(z.string()).optional(),
+  blacklisted_models: z.array(z.string()).optional(),
   key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
   // Provider-level budget
   budgets: z
@@ -245,8 +246,11 @@ export default function VirtualKeySheet({
   );
   const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
 
-  const { assignedUsers } = useVirtualKeyUsage(virtualKey);
-  const isManagedByProfile = isEditing && !!virtualKey?.access_profile_id;
+  // Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
+  // of assignees — directly-attached users don't imply an access-profile relation.
+  const { assignedUsers, isManagedByProfile: isManagedByProfileHook } =
+    useVirtualKeyUsage(virtualKey);
+  const isManagedByProfile = isEditing && isManagedByProfileHook;
   // Team attachment: when creating from a team context (defaultTeamId provided), the entity
   // assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
   const attachedTeamId = isEditing
@@ -298,6 +302,7 @@ export default function VirtualKeySheet({
           provider: config.provider,
           weight: config.weight ?? undefined,
           allowed_models: config.allowed_models,
+          blacklisted_models: config.blacklisted_models,
           key_ids: config.allow_all_keys
             ? ["*"]
             : config.keys?.map((key) => key.key_id) || [],
@@ -460,6 +465,7 @@ export default function VirtualKeySheet({
       provider: provider,
       weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
       allowed_models: ["*"],
+      blacklisted_models: [],
       key_ids: ["*"],
     };
 
@@ -1095,14 +1101,12 @@ export default function VirtualKeySheet({
                 <Alert variant="info">
                   <Users className="h-4 w-4" />
                   <AlertDescription>
-                    <p>
-                      Creating this virtual key under team{" "}
-                      <span className="font-medium">
-                        {attachedTeam?.name ?? attachedTeamId}
-                      </span>
-                      . Team assignment is pre-set — all other fields are
-                      editable.
-                    </p>
+                    Creating this virtual key under team{" "}
+                    <span className="font-medium">
+                      {attachedTeam?.name ?? attachedTeamId}
+                    </span>
+                    . Team assignment is pre-set — all other fields are
+                    editable.
                   </AlertDescription>
                 </Alert>
               )}
@@ -1473,10 +1477,119 @@ export default function VirtualKeySheet({
                                       );
                                     })()}
                                     <p className="text-muted-foreground text-xs">
-                                      Select specific models or choose “Allow
-                                      All Models” to allow all. Leave empty to
+                                      Select specific models or choose "Allow
+                                      All Models" to allow all. Leave empty to
                                       deny all.
                                     </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex w-full items-start gap-2">
+                                  <div className="w-1/4" />
+                                  <div className="w-3/4 space-y-2">
+                                    <div className="flex items-center gap-2">
+                                      <Label className="text-sm font-medium">
+                                        Blocked Models
+                                      </Label>
+                                      <TooltipProvider>
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <span>
+                                              <Info className="text-muted-foreground h-3 w-3" />
+                                            </span>
+                                          </TooltipTrigger>
+                                          <TooltipContent className="max-w-sm">
+                                            <p>
+                                              Models this VK must never serve.
+                                              The denylist always wins - if a
+                                              model appears in both Allowed
+                                              Models and here, it is blocked.
+                                              Select "All Models" to block every
+                                              model on this VK.
+                                            </p>
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+                                    </div>
+                                    {(() => {
+                                      const hasWildcardBlocked = (
+                                        config.blacklisted_models || []
+                                      ).includes("*");
+                                      return (
+                                        <ModelMultiselect
+                                          data-testid={`vk-models-blocked-multiselect-${index}`}
+                                          provider={config.provider}
+                                          keys={(() => {
+                                            const providerKeys =
+                                              availableKeys.filter(
+                                                (key) =>
+                                                  key.provider ===
+                                                  config.provider,
+                                              );
+                                            const configKeyIds =
+                                              config.key_ids || [];
+                                            return configKeyIds.includes("*")
+                                              ? providerKeys.map(
+                                                  (key) => key.key_id,
+                                                )
+                                              : providerKeys
+                                                  .filter((key) =>
+                                                    configKeyIds.includes(
+                                                      key.key_id,
+                                                    ),
+                                                  )
+                                                  .map((key) => key.key_id);
+                                          })()}
+                                          allowAllOption={true}
+                                          value={
+                                            hasWildcardBlocked
+                                              ? ["*"]
+                                              : config.blacklisted_models || []
+                                          }
+                                          onChange={(models: string[]) => {
+                                            const hadStar = (
+                                              config.blacklisted_models || []
+                                            ).includes("*");
+                                            const hasStar =
+                                              models.includes("*");
+                                            if (!hadStar && hasStar) {
+                                              handleUpdateProviderConfig(
+                                                index,
+                                                "blacklisted_models",
+                                                ["*"],
+                                              );
+                                            } else if (
+                                              hadStar &&
+                                              hasStar &&
+                                              models.length > 1
+                                            ) {
+                                              handleUpdateProviderConfig(
+                                                index,
+                                                "blacklisted_models",
+                                                models.filter((m) => m !== "*"),
+                                              );
+                                            } else {
+                                              handleUpdateProviderConfig(
+                                                index,
+                                                "blacklisted_models",
+                                                models,
+                                              );
+                                            }
+                                          }}
+                                          placeholder={
+                                            hasWildcardBlocked
+                                              ? "All models blocked"
+                                              : (
+                                                    config.blacklisted_models ||
+                                                    []
+                                                  ).length === 0
+                                                ? "No models blocked"
+                                                : "Search models..."
+                                          }
+                                          className="min-h-10 max-w-[500px] min-w-[200px]"
+                                        />
+                                      );
+                                    })()}
                                   </div>
                                 </div>
 
