@@ -1797,6 +1797,69 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+func TestFilterUnsupportedTools_MaxUses(t *testing.T) {
+	maxUses := 1
+	tests := []struct {
+		name            string
+		model           string
+		expectMaxUses   bool
+	}{
+		{
+			name:          "anthropic model via OpenRouter preserves max_uses",
+			model:         "anthropic/claude-haiku-4-5-20251001",
+			expectMaxUses: true,
+		},
+		{
+			name:          "native OpenAI model strips max_uses",
+			model:         "gpt-5.4",
+			expectMaxUses: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Model: tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						{
+							Type: schemas.ResponsesToolTypeWebSearch,
+							ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+								MaxUses: &maxUses,
+							},
+						},
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(bifrostReq)
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.Tools) != 1 {
+				t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+			}
+			webSearch := result.Tools[0].ResponsesToolWebSearch
+			if webSearch == nil {
+				t.Fatal("expected ResponsesToolWebSearch to be set")
+			}
+			if tt.expectMaxUses {
+				if webSearch.MaxUses == nil || *webSearch.MaxUses != maxUses {
+					t.Errorf("expected MaxUses=%d to be preserved, got %v", maxUses, webSearch.MaxUses)
+				}
+			} else {
+				if webSearch.MaxUses != nil {
+					t.Errorf("expected MaxUses to be nil for native OpenAI model, got %v", *webSearch.MaxUses)
+				}
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
