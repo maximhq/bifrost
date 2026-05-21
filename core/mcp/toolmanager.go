@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,8 +50,9 @@ type ToolsManager struct {
 	logger                schemas.Logger
 	agentModeExecutor     *AgentModeExecutor
 
-	// OAuth2Provider for per-user OAuth token management
-	oauth2Provider schemas.OAuth2Provider
+	// CredentialStore resolves per-call credentials (headers, Bearer tokens)
+	// and signals whether a client needs an ephemeral upstream connection.
+	credStore schemas.MCPCredentialStore
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -77,7 +79,7 @@ func NewToolsManager(
 	config *schemas.MCPToolManagerConfig,
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	oauth2Provider schemas.OAuth2Provider,
+	credStore schemas.MCPCredentialStore,
 	logger schemas.Logger,
 ) *ToolsManager {
 	return NewToolsManagerWithCodeMode(
@@ -85,7 +87,7 @@ func NewToolsManager(
 		clientManager,
 		fetchNewRequestIDFunc,
 		nil, // Use default code mode (will be set later via SetCodeMode)
-		oauth2Provider,
+		credStore,
 		logger,
 	)
 }
@@ -106,7 +108,7 @@ func NewToolsManagerWithCodeMode(
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	codeMode CodeMode,
-	oauth2Provider schemas.OAuth2Provider,
+	credStore schemas.MCPCredentialStore,
 	logger schemas.Logger,
 ) *ToolsManager {
 	if config == nil {
@@ -141,7 +143,7 @@ func NewToolsManagerWithCodeMode(
 		codeMode:              codeMode,
 		logger:                logger,
 		agentModeExecutor:     agentModeExecutor,
-		oauth2Provider:        oauth2Provider,
+		credStore:             credStore,
 	}
 
 	// Initialize atomic values
@@ -170,7 +172,7 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 	return &CodeModeDependencies{
 		ClientManager:         m.clientManager,
 		FetchNewRequestIDFunc: m.fetchNewRequestIDFunc,
-		OAuth2Provider:        m.oauth2Provider,
+		CredentialStore:       m.credStore,
 	}
 }
 
@@ -647,7 +649,36 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 	sanitizedToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
 	originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
 
-	// Call the tool via MCP client -> MCP server
+	// Create timeout context for tool execution
+	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
+	defer cancel()
+
+	// Per-user auth types open an ephemeral transport per call with the
+	// caller's full set of credentials (static + extras + per-user auth).
+	if m.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
+		connHeaders, err := m.credStore.ConnectionHeaders(ctx, client.ExecutionConfig)
+		if err != nil {
+			return nil, "", "", err
+		}
+		toolResponse, callErr := OpenConnectionAndExecuteTool(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, connHeaders)
+		if callErr != nil {
+			if toolCtx.Err() == context.DeadlineExceeded {
+				return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+			}
+			m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
+			return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
+		}
+		responseText := extractTextFromMCPResponse(toolResponse, toolName)
+		return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
+	}
+
+	// Shared persistent connection path — admin-level credentials are already
+	// on the transport; per-call only carries filtered context-extras.
+	reqHeaders, err := m.credStore.RequestHeaders(ctx, client.ExecutionConfig)
+	if err != nil {
+		return nil, "", "", err
+	}
 	callRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: string(mcp.MethodToolsCall),
@@ -656,41 +687,8 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
-		Header: utils.GetHeadersForToolExecution(ctx, client),
+		Header: reqHeaders,
 	}
-
-	// Handle per-user OAuth: inject user-specific Authorization header
-	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		accessToken, err := utils.ResolvePerUserOAuthToken(ctx, client, m.oauth2Provider)
-		if err != nil {
-			return nil, "", "", err
-		}
-
-		if client.Conn == nil {
-			// No persistent connection — create temporary connection with user's token
-			toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-			toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-			defer cancel()
-
-			toolResponse, callErr := ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
-			if callErr != nil {
-				if toolCtx.Err() == context.DeadlineExceeded {
-					return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
-				}
-				m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-				return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
-			}
-			responseText := extractTextFromMCPResponse(toolResponse, toolName)
-			return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
-		}
-
-		callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
-	}
-
-	// Create timeout context for tool execution
-	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-	defer cancel()
 
 	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
 	if callErr != nil {
@@ -786,37 +784,36 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
 
-// executeToolWithUserToken creates a temporary MCP connection using the user's
-// OAuth access token, calls the specified tool, and closes the connection.
-// This is used for per_user_oauth clients which have no persistent connection —
-// each tool call gets its own short-lived connection authenticated with the
-// requesting user's token.
+// OpenConnectionAndExecuteTool opens an ephemeral HTTP MCP connection to the
+// configured server using the provided headers, performs the Initialize
+// handshake, calls the named tool, and closes. Used for per-user auth types
+// where credentials vary by caller and no persistent upstream connection is
+// maintained.
 //
 // Parameters:
-//   - ctx: context with timeout for the entire operation
-//   - config: MCP client configuration (connection URL, name)
-//   - toolName: original MCP tool name to call
-//   - arguments: tool call arguments
-//   - accessToken: user's OAuth access token
-//   - logger: logger instance
+//   - ctx: cancellable context (caller usually wraps with the tool execution timeout)
+//   - config: MCP client config (provides ConnectionString + Name)
+//   - toolName: original MCP tool name (with hyphens; not the sanitized form)
+//   - arguments: tool arguments
+//   - headers: complete header set for opening the transport (Authorization +
+//     static + extras). Typically obtained from CredentialStore.ConnectionHeaders.
+//   - logger: optional logger (reserved for future trace logs)
 //
 // Returns:
 //   - *mcp.CallToolResult: tool execution result
 //   - error: any error during connection or execution
-func ExecuteToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
+func OpenConnectionAndExecuteTool(
+	ctx context.Context,
+	config *schemas.MCPClientConfig,
+	toolName string,
+	arguments map[string]any,
+	headers http.Header,
+) (*mcp.CallToolResult, error) {
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
-		return nil, fmt.Errorf("connection URL is required for per-user OAuth tool execution")
+		return nil, fmt.Errorf("connection URL is required for ephemeral MCP tool execution")
 	}
 
-	// Create HTTP transport with the user's Bearer token, preserving configured headers
-	headers := make(map[string]string)
-	if config.Headers != nil {
-		for key, value := range config.Headers {
-			headers[key] = value.GetValue()
-		}
-	}
-	headers["Authorization"] = "Bearer " + accessToken
-	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
+	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(utils.FlattenHeaders(headers)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
