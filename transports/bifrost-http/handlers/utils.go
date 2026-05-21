@@ -52,6 +52,32 @@ type badRequestError struct{ err error }
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
 
+// IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
+func IsUniqueConstraintError(err error, identifiers ...string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	hasUniqueSignal := strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index") ||
+		strings.Contains(msg, "unique_violation") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "duplicated key")
+	if !hasUniqueSignal {
+		return false
+	}
+	if len(identifiers) == 0 {
+		return true
+	}
+	for _, identifier := range identifiers {
+		if strings.Contains(msg, strings.ToLower(identifier)) {
+			return true
+		}
+	}
+	return false
+}
+
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
