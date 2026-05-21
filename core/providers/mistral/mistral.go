@@ -424,6 +424,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 	req.SetBody(body.Bytes())
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -493,7 +494,6 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := -1
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {

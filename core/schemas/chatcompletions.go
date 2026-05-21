@@ -1487,10 +1487,11 @@ type BifrostServiceTier string
 
 // BifrostServiceTier values
 const (
-	BifrostServiceTierAuto     BifrostServiceTier = "auto"
-	BifrostServiceTierDefault  BifrostServiceTier = "default"
-	BifrostServiceTierFlex     BifrostServiceTier = "flex"
-	BifrostServiceTierPriority BifrostServiceTier = "priority"
+	BifrostServiceTierAuto        BifrostServiceTier = "auto"
+	BifrostServiceTierDefault     BifrostServiceTier = "default"
+	BifrostServiceTierFlex        BifrostServiceTier = "flex"
+	BifrostServiceTierPriority    BifrostServiceTier = "priority"
+	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
 )
 
 type BifrostReasoningDetailsType string
