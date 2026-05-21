@@ -3,8 +3,6 @@ name: Snyk checks
 on:
   push:
     branches: [main, master, "**/*"]
-  pull_request:
-    branches: ["**/*"]
   workflow_dispatch:
 
 permissions:

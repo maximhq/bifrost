@@ -1,9 +1,6 @@
 name: Docs Validation
 
 on:
-  pull_request:
-    paths:
-      - "docs/**"
   push:
     branches: ["main"]
     paths:
