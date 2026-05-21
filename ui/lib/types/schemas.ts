@@ -741,13 +741,13 @@ export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 export const otelConfigSchema = z
 	.object({
 		service_name: z.string().optional(),
-		collector_url: z.string().default(""),
+		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
 		trace_type: z
 			.enum(["genai_extension", "vercel", "open_inference"], {
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
-		headers: z.record(z.string(), z.string()).optional(),
+		headers: z.record(z.string(), envVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -758,7 +758,7 @@ export const otelConfigSchema = z
 		insecure: z.boolean().default(true),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
-		metrics_endpoint: z.string().optional(),
+		metrics_endpoint: envVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 	})
 	.superRefine((data, ctx) => {
@@ -811,26 +811,26 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Validate collector_url format (emptiness check is at form level, gated by enabled)
-		const collectorUrl = (data.collector_url || "").trim();
-		if (collectorUrl && protocol === "http") {
+		// Validate collector_url format — skip format check for env var references
+		const collectorUrl = (data.collector_url?.value || "").trim();
+		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && protocol === "grpc") {
+		} else if (collectorUrl && !data.collector_url?.from_env && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
 		if (data.metrics_enabled) {
-			const metricsEndpoint = (data.metrics_endpoint || "").trim();
-			if (!metricsEndpoint) {
+			const metricsEndpoint = (data.metrics_endpoint?.value || "").trim();
+			if (!isEnvVarSet(data.metrics_endpoint)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["metrics_endpoint"],
 					message: "Metrics endpoint is required when metrics push is enabled",
 				});
-			} else if (protocol === "http") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
-			} else if (protocol === "grpc") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
@@ -844,8 +844,7 @@ export const otelFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.enabled) {
-			const collectorUrl = (data.otel_config.collector_url || "").trim();
-			if (!collectorUrl) {
+			if (!isEnvVarSet(data.otel_config.collector_url)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["otel_config", "collector_url"],
@@ -889,17 +888,17 @@ export const maximFormSchema = z
 // Prometheus Push Gateway Configuration Schema
 export const prometheusConfigSchema = z
 	.object({
-		push_gateway_url: z.string().optional(),
+		push_gateway_url: envVarSchema.optional(),
 		job_name: z.string().default("bifrost"),
 		instance_id: z.string().optional(),
 		push_interval: z.number().min(1).max(300).default(15),
-		basic_auth_username: z.string().optional(),
-		basic_auth_password: z.string().optional(),
+		basic_auth_username: envVarSchema.optional(),
+		basic_auth_password: envVarSchema.optional(),
 	})
 	.superRefine((data, ctx) => {
-		// Validate push_gateway_url format
-		const url = (data.push_gateway_url || "").trim();
-		if (url) {
+		// Validate push_gateway_url format — skip for env var references
+		const url = (data.push_gateway_url?.value || "").trim();
+		if (url && !data.push_gateway_url?.from_env) {
 			try {
 				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {
@@ -919,8 +918,8 @@ export const prometheusConfigSchema = z
 		}
 
 		// Validate basic auth: if one credential is provided, both must be provided
-		const hasUsername = !!data.basic_auth_username?.trim();
-		const hasPassword = !!data.basic_auth_password?.trim();
+		const hasUsername = isEnvVarSet(data.basic_auth_username);
+		const hasPassword = isEnvVarSet(data.basic_auth_password);
 		if (hasUsername && !hasPassword) {
 			ctx.addIssue({
 				code: "custom",
@@ -946,8 +945,8 @@ export const prometheusFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.push_gateway_enabled) {
-			const url = (data.prometheus_config.push_gateway_url || "").trim();
-			if (!url) {
+			const urlIsSet = isEnvVarSet(data.prometheus_config.push_gateway_url);
+			if (!urlIsSet) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["prometheus_config", "push_gateway_url"],
