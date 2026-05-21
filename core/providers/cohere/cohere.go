@@ -454,6 +454,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -525,7 +526,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := 0
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var responseID string
@@ -719,6 +719,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -792,7 +793,6 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Create stream state for stateful conversions (outside loop to persist across events)
