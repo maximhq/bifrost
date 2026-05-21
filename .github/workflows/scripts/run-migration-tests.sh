@@ -727,6 +727,8 @@ append_dynamic_mcp_clients_insert() {
     generate_async_jobs_insert_postgres "$now" "$future" "$faker_sql"
     generate_prompt_repo_tables_insert_postgres "$now" "$faker_sql"
     generate_per_user_oauth_tables_insert_postgres "$now" "$faker_sql"
+    generate_feature_flags_insert_postgres "$now" "$faker_sql"
+    generate_temp_tokens_insert_postgres "$now" "$faker_sql"
     generate_model_parameters_insert_postgres "$now" "$faker_sql"
     generate_routing_targets_insert_postgres "$now" "$faker_sql"
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
@@ -739,6 +741,8 @@ append_dynamic_mcp_clients_insert() {
     generate_async_jobs_insert_sqlite "$now" "$future" "$faker_sql"
     generate_prompt_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_per_user_oauth_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_feature_flags_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_temp_tokens_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_model_parameters_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
@@ -1660,6 +1664,92 @@ append_dynamic_columns_postgres() {
     echo "UPDATE prompt_sessions SET variables_json = '{}' WHERE prompt_id = 'prompt-migration-test-001';" >> "$output_file"
     echo "UPDATE prompt_sessions SET variables_json = '{}' WHERE prompt_id = 'prompt-migration-test-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.3 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.metadata_json (added in v1.5.3 via migrationAddClientConfigMetadataColumn)
+  if column_exists_postgres "config_client" "metadata_json"; then
+    echo "UPDATE config_client SET metadata_json = '{}' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # framework_configs.model_parameters_url (added in v1.5.3 via add_model_parameters_url_column)
+  if column_exists_postgres "framework_configs" "model_parameters_url"; then
+    echo "UPDATE framework_configs SET model_parameters_url = NULL WHERE id = 1;" >> "$output_file"
+  fi
+
+  # framework_configs.config_hash (added in v1.5.3 via migrationAddFrameworkConfigHashColumn)
+  if column_exists_postgres "framework_configs" "config_hash"; then
+    echo "UPDATE framework_configs SET config_hash = 'framework-config-hash-001' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_teams.source_id (added in v1.5.3 via add_team_source_id_column)
+  if column_exists_postgres "governance_teams" "source_id"; then
+    echo "UPDATE governance_teams SET source_id = NULL WHERE id = 'team-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_teams SET source_id = NULL WHERE id = 'team-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_teams.calendar_aligned (added in v1.5.3 via migrationAddTeamCalendarAlignedColumn)
+  if column_exists_postgres "governance_teams" "calendar_aligned"; then
+    echo "UPDATE governance_teams SET calendar_aligned = false WHERE id = 'team-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_teams SET calendar_aligned = false WHERE id = 'team-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_virtual_keys.access_profile_id (added in v1.5.3 via add_vk_access_profile_id_column)
+  if column_exists_postgres "governance_virtual_keys" "access_profile_id"; then
+    echo "UPDATE governance_virtual_keys SET access_profile_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET access_profile_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.3 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs.cluster_node_id (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  if column_exists_postgres "logs" "cluster_node_id"; then
+    echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.budget_ids (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  if column_exists_postgres "logs" "budget_ids"; then
+    echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.rate_limit_ids (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  if column_exists_postgres "logs" "rate_limit_ids"; then
+    echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # mcp_tool_logs.user_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  if column_exists_postgres "mcp_tool_logs" "user_id"; then
+    echo "UPDATE mcp_tool_logs SET user_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET user_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
+
+  # mcp_tool_logs.team_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  if column_exists_postgres "mcp_tool_logs" "team_id"; then
+    echo "UPDATE mcp_tool_logs SET team_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET team_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
+
+  # mcp_tool_logs.customer_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  if column_exists_postgres "mcp_tool_logs" "customer_id"; then
+    echo "UPDATE mcp_tool_logs SET customer_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET customer_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
+
+  # mcp_tool_logs.business_unit_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  if column_exists_postgres "mcp_tool_logs" "business_unit_id"; then
+    echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2539,7 +2629,79 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE prompt_sessions SET variables_json = '{}' WHERE prompt_id = 'prompt-migration-test-001';" >> "$output_file"
       echo "UPDATE prompt_sessions SET variables_json = '{}' WHERE prompt_id = 'prompt-migration-test-002';" >> "$output_file"
     fi
+
+    # -------------------------------------------------------------------------
+    # v1.5.3 columns - config store tables
+    # -------------------------------------------------------------------------
+
+    # config_client.metadata_json (added in v1.5.3 via migrationAddClientConfigMetadataColumn)
+    if column_exists_sqlite "$config_db" "config_client" "metadata_json"; then
+      echo "UPDATE config_client SET metadata_json = '{}' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # framework_configs.model_parameters_url (added in v1.5.3 via add_model_parameters_url_column)
+    if column_exists_sqlite "$config_db" "framework_configs" "model_parameters_url"; then
+      echo "UPDATE framework_configs SET model_parameters_url = NULL WHERE id = 1;" >> "$output_file"
+    fi
+
+    # framework_configs.config_hash (added in v1.5.3 via migrationAddFrameworkConfigHashColumn)
+    if column_exists_sqlite "$config_db" "framework_configs" "config_hash"; then
+      echo "UPDATE framework_configs SET config_hash = 'framework-config-hash-001' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # governance_teams.source_id (added in v1.5.3 via add_team_source_id_column)
+    if column_exists_sqlite "$config_db" "governance_teams" "source_id"; then
+      echo "UPDATE governance_teams SET source_id = NULL WHERE id = 'team-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_teams SET source_id = NULL WHERE id = 'team-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_teams.calendar_aligned (added in v1.5.3 via migrationAddTeamCalendarAlignedColumn)
+    if column_exists_sqlite "$config_db" "governance_teams" "calendar_aligned"; then
+      echo "UPDATE governance_teams SET calendar_aligned = 0 WHERE id = 'team-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_teams SET calendar_aligned = 0 WHERE id = 'team-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_virtual_keys.access_profile_id (added in v1.5.3 via add_vk_access_profile_id_column)
+    if column_exists_sqlite "$config_db" "governance_virtual_keys" "access_profile_id"; then
+      echo "UPDATE governance_virtual_keys SET access_profile_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_keys SET access_profile_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+    fi
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.3 columns - log store tables (emitted unconditionally; fail silently on config_db)
+  # -------------------------------------------------------------------------
+
+  # logs.cluster_node_id (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET cluster_node_id = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.budget_ids (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET budget_ids = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.rate_limit_ids (added in v1.5.3 via migrationAddClusterGovernanceColumns)
+  echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET rate_limit_ids = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # mcp_tool_logs.user_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  echo "UPDATE mcp_tool_logs SET user_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET user_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # mcp_tool_logs.team_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  echo "UPDATE mcp_tool_logs SET team_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET team_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # mcp_tool_logs.customer_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  echo "UPDATE mcp_tool_logs SET customer_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET customer_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # mcp_tool_logs.business_unit_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
+  echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
 }
 
 # ============================================================================
@@ -3069,45 +3231,61 @@ generate_per_user_oauth_tables_insert_postgres() {
   local now="$1"
   local output_file="$2"
 
-  # Check if the tables exist (added in v1.5.0-prerelease4)
-  if ! column_exists_postgres "oauth_per_user_clients" "id"; then
-    return
+  # Generate based on schema version:
+  # - If oauth_per_user_clients exists  -> v1.5.0-prerelease4 schema with all per-user tables
+  # - If oauth_per_user_clients dropped but oauth_user_sessions has session_id -> v1.5.3+ refactored schema
+  if column_exists_postgres "oauth_per_user_clients" "id"; then
+    echo "" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+    echo "-- Per-User OAuth Tables (added in v1.5.0-prerelease4, dynamically generated)" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+
+    # oauth_per_user_clients (no FK dependencies)
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_clients (registered OAuth clients for per-user flows)" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_clients (id, client_id, client_name, redirect_uris, grant_types, created_at, updated_at) VALUES ('per-user-oauth-client-001', 'client-id-migration-test-001', 'Migration Test Client', '[\"http://localhost:3000/callback\"]', '[\"authorization_code\"]', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_sessions (client_id is a string field, no FK constraint enforced by DB)
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_sessions (Bifrost-issued sessions for authenticated MCP connections)" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_sessions (id, access_token, access_token_hash, refresh_token, refresh_token_hash, client_id, virtual_key_id, user_id, expires_at, encryption_status, created_at, updated_at) VALUES ('per-user-oauth-session-001', 'migration-test-access-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', '', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae4', 'client-id-migration-test-001', 'vk-migration-test-1', NULL, $now + INTERVAL '1 hour', 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_codes (references per_user_sessions.id as session_id, no enforced FK)
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_codes (short-lived authorization codes)" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_codes (id, code, code_hash, client_id, redirect_uri, code_challenge, scopes, session_id, expires_at, used, created_at) VALUES ('per-user-oauth-code-001', 'migration-test-code-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae5', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-001', '[\"openid\"]', 'per-user-oauth-session-001', $now + INTERVAL '5 minutes', false, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_pending_flows (no enforced FK)
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_pending_flows (pending OAuth flows awaiting consent)" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_pending_flows (id, client_id, redirect_uri, code_challenge, state, virtual_key_id, user_id, browser_secret_hash, expires_at, created_at, updated_at) VALUES ('per-user-oauth-flow-001', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-002', 'migration-test-state-001', NULL, NULL, 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae6', $now + INTERVAL '15 minutes', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_user_sessions (old prerelease4 schema: session_token, session_token_hash, gateway_session_id)
+    echo "" >> "$output_file"
+    echo "-- oauth_user_sessions (pending per-user OAuth flows)" >> "$output_file"
+    echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_token, session_token_hash, gateway_session_id, virtual_key_id, user_id, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'gateway-session-001', 'vk-migration-test-1', NULL, 'authorized', 'plain_text', $now + INTERVAL '15 minutes', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_user_tokens (old prerelease4 schema: session_token, session_token_hash)
+    echo "" >> "$output_file"
+    echo "-- oauth_user_tokens (per-user OAuth credentials)" >> "$output_file"
+    echo "INSERT INTO oauth_user_tokens (id, session_token, session_token_hash, virtual_key_id, user_id, mcp_client_id, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-user-access-token-001', '', 'Bearer', $now + INTERVAL '1 hour', '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  elif column_exists_postgres "oauth_user_sessions" "session_id"; then
+    # v1.5.3+: oauth_per_user_* tables dropped; oauth_user_sessions/tokens refactored.
+    # New schema uses session_id + flow_mode instead of session_token/session_token_hash/gateway_session_id.
+    echo "" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+    echo "-- OAuth User Tables (v1.5.3+ refactored schema, dynamically generated)" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+
+    echo "" >> "$output_file"
+    echo "-- oauth_user_sessions (v1.5.3+ schema: session_id + flow_mode, no session_token/gateway_session_id)" >> "$output_file"
+    echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_id, virtual_key_id, user_id, flow_mode, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', '', 'vk-migration-test-1', NULL, 'vk', 'authorized', 'plain_text', $now + INTERVAL '15 minutes', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    echo "" >> "$output_file"
+    echo "-- oauth_user_tokens (v1.5.3+ schema: session_id + auth_mode + status, no session_token)" >> "$output_file"
+    echo "INSERT INTO oauth_user_tokens (id, session_id, virtual_key_id, user_id, mcp_client_id, auth_mode, status, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', '', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'vk', 'active', 'oauth-config-migration-test-001', 'migration-test-user-access-token-001', '', 'Bearer', $now + INTERVAL '1 hour', '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
   fi
-
-  echo "" >> "$output_file"
-  echo "-- ============================================================================" >> "$output_file"
-  echo "-- Per-User OAuth Tables (added in v1.5.0-prerelease4, dynamically generated)" >> "$output_file"
-  echo "-- ============================================================================" >> "$output_file"
-
-  # oauth_per_user_clients (no FK dependencies)
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_clients (registered OAuth clients for per-user flows)" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_clients (id, client_id, client_name, redirect_uris, grant_types, created_at, updated_at) VALUES ('per-user-oauth-client-001', 'client-id-migration-test-001', 'Migration Test Client', '[\"http://localhost:3000/callback\"]', '[\"authorization_code\"]', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-
-  # oauth_per_user_sessions (client_id is a string field, no FK constraint enforced by DB)
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_sessions (Bifrost-issued sessions for authenticated MCP connections)" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_sessions (id, access_token, access_token_hash, refresh_token, refresh_token_hash, client_id, virtual_key_id, user_id, expires_at, encryption_status, created_at, updated_at) VALUES ('per-user-oauth-session-001', 'migration-test-access-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', '', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae4', 'client-id-migration-test-001', 'vk-migration-test-1', NULL, $now + INTERVAL '1 hour', 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-
-  # oauth_per_user_codes (references per_user_sessions.id as session_id, no enforced FK)
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_codes (short-lived authorization codes)" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_codes (id, code, code_hash, client_id, redirect_uri, code_challenge, scopes, session_id, expires_at, used, created_at) VALUES ('per-user-oauth-code-001', 'migration-test-code-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae5', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-001', '[\"openid\"]', 'per-user-oauth-session-001', $now + INTERVAL '5 minutes', false, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-
-  # oauth_per_user_pending_flows (no enforced FK)
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_pending_flows (pending OAuth flows awaiting consent)" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_pending_flows (id, client_id, redirect_uri, code_challenge, state, virtual_key_id, user_id, browser_secret_hash, expires_at, created_at, updated_at) VALUES ('per-user-oauth-flow-001', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-002', 'migration-test-state-001', NULL, NULL, 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae6', $now + INTERVAL '15 minutes', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-
-  # oauth_user_sessions (per-user OAuth flow tracking - no enforced FK)
-  echo "" >> "$output_file"
-  echo "-- oauth_user_sessions (pending per-user OAuth flows)" >> "$output_file"
-  echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_token, session_token_hash, gateway_session_id, virtual_key_id, user_id, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'gateway-session-001', 'vk-migration-test-1', NULL, 'authorized', 'plain_text', $now + INTERVAL '15 minutes', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-
-  # oauth_user_tokens (stores per-user access/refresh tokens - no enforced FK)
-  echo "" >> "$output_file"
-  echo "-- oauth_user_tokens (per-user OAuth credentials)" >> "$output_file"
-  echo "INSERT INTO oauth_user_tokens (id, session_token, session_token_hash, virtual_key_id, user_id, mcp_client_id, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'oauth-config-migration-001', 'migration-test-user-access-token-001', '', 'Bearer', $now + INTERVAL '1 hour', '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate per-user OAuth tables INSERTs for SQLite
@@ -3121,46 +3299,127 @@ generate_per_user_oauth_tables_insert_sqlite() {
     return
   fi
 
-  local table_exists
-  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth_per_user_clients';" 2>/dev/null || echo "0")
-  if [ "$table_exists" != "1" ]; then
+  local oauth_per_user_clients_exists
+  oauth_per_user_clients_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth_per_user_clients';" 2>/dev/null || echo "0")
+
+  if [ "$oauth_per_user_clients_exists" = "1" ]; then
+    echo "" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+    echo "-- Per-User OAuth Tables (added in v1.5.0-prerelease4, dynamically generated)" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+
+    # oauth_per_user_clients
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_clients" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_clients (id, client_id, client_name, redirect_uris, grant_types, created_at, updated_at) VALUES ('per-user-oauth-client-001', 'client-id-migration-test-001', 'Migration Test Client', '[\"http://localhost:3000/callback\"]', '[\"authorization_code\"]', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_sessions
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_sessions" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_sessions (id, access_token, access_token_hash, refresh_token, refresh_token_hash, client_id, virtual_key_id, user_id, expires_at, encryption_status, created_at, updated_at) VALUES ('per-user-oauth-session-001', 'migration-test-access-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', '', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae4', 'client-id-migration-test-001', 'vk-migration-test-1', NULL, datetime('now', '+1 hour'), 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_codes
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_codes" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_codes (id, code, code_hash, client_id, redirect_uri, code_challenge, scopes, session_id, expires_at, used, created_at) VALUES ('per-user-oauth-code-001', 'migration-test-code-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae5', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-001', '[\"openid\"]', 'per-user-oauth-session-001', datetime('now', '+5 minutes'), 0, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_per_user_pending_flows
+    echo "" >> "$output_file"
+    echo "-- oauth_per_user_pending_flows" >> "$output_file"
+    echo "INSERT INTO oauth_per_user_pending_flows (id, client_id, redirect_uri, code_challenge, state, virtual_key_id, user_id, browser_secret_hash, expires_at, created_at, updated_at) VALUES ('per-user-oauth-flow-001', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-002', 'migration-test-state-001', NULL, NULL, 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae6', datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_user_sessions (old prerelease4 schema: session_token, session_token_hash, gateway_session_id)
+    echo "" >> "$output_file"
+    echo "-- oauth_user_sessions" >> "$output_file"
+    echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_token, session_token_hash, gateway_session_id, virtual_key_id, user_id, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'gateway-session-001', 'vk-migration-test-1', NULL, 'authorized', 'plain_text', datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    # oauth_user_tokens (old prerelease4 schema: session_token, session_token_hash)
+    echo "" >> "$output_file"
+    echo "-- oauth_user_tokens" >> "$output_file"
+    echo "INSERT INTO oauth_user_tokens (id, session_token, session_token_hash, virtual_key_id, user_id, mcp_client_id, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-user-access-token-001', '', 'Bearer', datetime('now', '+1 hour'), '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  elif column_exists_sqlite "$config_db" "oauth_user_sessions" "session_id"; then
+    # v1.5.3+: oauth_per_user_* tables dropped; oauth_user_sessions/tokens refactored.
+    # New schema uses session_id + flow_mode instead of session_token/session_token_hash/gateway_session_id.
+    echo "" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+    echo "-- OAuth User Tables (v1.5.3+ refactored schema, dynamically generated)" >> "$output_file"
+    echo "-- ============================================================================" >> "$output_file"
+
+    echo "" >> "$output_file"
+    echo "-- oauth_user_sessions (v1.5.3+ schema: session_id + flow_mode, no session_token/gateway_session_id)" >> "$output_file"
+    echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_id, virtual_key_id, user_id, flow_mode, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-test-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', '', 'vk-migration-test-1', NULL, 'vk', 'authorized', 'plain_text', datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+    echo "" >> "$output_file"
+    echo "-- oauth_user_tokens (v1.5.3+ schema: session_id + auth_mode + status, no session_token)" >> "$output_file"
+    echo "INSERT INTO oauth_user_tokens (id, session_id, virtual_key_id, user_id, mcp_client_id, auth_mode, status, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', '', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'vk', 'active', 'oauth-config-migration-test-001', 'migration-test-user-access-token-001', '', 'Bearer', datetime('now', '+1 hour'), '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+}
+
+# Generate feature_flags INSERT for PostgreSQL (added in v1.5.3 via migrationAddFeatureFlagsTable)
+generate_feature_flags_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  if ! column_exists_postgres "feature_flags" "id"; then
     return
   fi
 
   echo "" >> "$output_file"
-  echo "-- ============================================================================" >> "$output_file"
-  echo "-- Per-User OAuth Tables (added in v1.5.0-prerelease4, dynamically generated)" >> "$output_file"
-  echo "-- ============================================================================" >> "$output_file"
+  echo "-- feature_flags (user-toggled feature flag overrides - added in v1.5.3, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO feature_flags (id, enabled, updated_at) VALUES ('migration-test-flag-001', false, extract(epoch from NOW())::bigint * 1000) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
 
-  # oauth_per_user_clients
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_clients" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_clients (id, client_id, client_name, redirect_uris, grant_types, created_at, updated_at) VALUES ('per-user-oauth-client-001', 'client-id-migration-test-001', 'Migration Test Client', '[\"http://localhost:3000/callback\"]', '[\"authorization_code\"]', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+# Generate feature_flags INSERT for SQLite (added in v1.5.3 via migrationAddFeatureFlagsTable)
+generate_feature_flags_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
 
-  # oauth_per_user_sessions
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_sessions" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_sessions (id, access_token, access_token_hash, refresh_token, refresh_token_hash, client_id, virtual_key_id, user_id, expires_at, encryption_status, created_at, updated_at) VALUES ('per-user-oauth-session-001', 'migration-test-access-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', '', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae4', 'client-id-migration-test-001', 'vk-migration-test-1', NULL, datetime('now', '+1 hour'), 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
 
-  # oauth_per_user_codes
-  echo "" >> "$output_file"
-  echo "-- oauth_per_user_codes" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_codes (id, code, code_hash, client_id, redirect_uri, code_challenge, scopes, session_id, expires_at, used, created_at) VALUES ('per-user-oauth-code-001', 'migration-test-code-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae5', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-001', '[\"openid\"]', 'per-user-oauth-session-001', datetime('now', '+5 minutes'), 0, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  if ! column_exists_sqlite "$config_db" "feature_flags" "id"; then
+    return
+  fi
 
-  # oauth_per_user_pending_flows
   echo "" >> "$output_file"
-  echo "-- oauth_per_user_pending_flows" >> "$output_file"
-  echo "INSERT INTO oauth_per_user_pending_flows (id, client_id, redirect_uri, code_challenge, state, virtual_key_id, user_id, browser_secret_hash, expires_at, created_at, updated_at) VALUES ('per-user-oauth-flow-001', 'client-id-migration-test-001', 'http://localhost:3000/callback', 'migration-test-challenge-002', 'migration-test-state-001', NULL, NULL, 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae6', datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "-- feature_flags (user-toggled feature flag overrides - added in v1.5.3, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO feature_flags (id, enabled, updated_at) VALUES ('migration-test-flag-001', 0, cast(strftime('%s', 'now') as integer) * 1000) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
 
-  # oauth_user_sessions
-  echo "" >> "$output_file"
-  echo "-- oauth_user_sessions" >> "$output_file"
-  echo "INSERT INTO oauth_user_sessions (id, mcp_client_id, oauth_config_id, state, redirect_uri, code_verifier, session_token, session_token_hash, gateway_session_id, virtual_key_id, user_id, status, encryption_status, expires_at, created_at, updated_at) VALUES ('oauth-user-session-001', 'mcp-migration-test-001', 'oauth-config-migration-001', 'migration-test-state-002', 'http://localhost:3000/callback', 'migration-test-verifier-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'gateway-session-001', 'vk-migration-test-1', NULL, 'authorized', 'plain_text', datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+# Generate temp_tokens INSERT for PostgreSQL (added in v1.5.3 via migrationAddTempTokensTable)
+generate_temp_tokens_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
 
-  # oauth_user_tokens
+  if ! column_exists_postgres "temp_tokens" "id"; then
+    return
+  fi
+
   echo "" >> "$output_file"
-  echo "-- oauth_user_tokens" >> "$output_file"
-  echo "INSERT INTO oauth_user_tokens (id, session_token, session_token_hash, virtual_key_id, user_id, mcp_client_id, oauth_config_id, access_token, refresh_token, token_type, expires_at, scopes, last_refreshed_at, encryption_status, created_at, updated_at) VALUES ('oauth-user-token-001', 'migration-test-session-token-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae7', 'vk-migration-test-1', NULL, 'mcp-migration-test-001', 'oauth-config-migration-001', 'migration-test-user-access-token-001', '', 'Bearer', datetime('now', '+1 hour'), '[\"openid\"]', NULL, 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "-- temp_tokens (short-lived narrow-scope credentials - added in v1.5.3, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO temp_tokens (id, token, token_hash, scope, resource_id, expires_at, created_at, updated_at, encryption_status) VALUES ('temp-token-migration-test-001', 'migration-test-temp-token-value-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', 'mcp_auth', 'oauth-config-migration-test-001', $now + INTERVAL '15 minutes', $now, $now, 'plain_text') ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate temp_tokens INSERT for SQLite (added in v1.5.3 via migrationAddTempTokensTable)
+generate_temp_tokens_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  if ! column_exists_sqlite "$config_db" "temp_tokens" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- temp_tokens (short-lived narrow-scope credentials - added in v1.5.3, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO temp_tokens (id, token, token_hash, scope, resource_id, expires_at, created_at, updated_at, encryption_status) VALUES ('temp-token-migration-test-001', 'migration-test-temp-token-value-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', 'mcp_auth', 'oauth-config-migration-test-001', datetime('now', '+15 minutes'), $now, $now, 'plain_text') ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate governance_model_parameters INSERT for PostgreSQL
@@ -3584,8 +3843,13 @@ compare_postgres_snapshots() {
     fi
     # budget_id (dropped from governance_virtual_keys and governance_virtual_key_provider_configs
     # in add_multi_budget_tables - ownership moved to governance_budgets.virtual_key_id/provider_config_id)
+    # access_profile_id (dropped from governance_virtual_keys in v1.5.3 via migrationDropVKAccessProfileIDColumn -
+    # the add migration ran transiently in v1.5.2 but the feature was reverted before stable release)
     if [ "$table" = "governance_virtual_keys" ] || [ "$table" = "governance_virtual_key_provider_configs" ]; then
       dropped_columns="$dropped_columns budget_id"
+    fi
+    if [ "$table" = "governance_virtual_keys" ]; then
+      dropped_columns="$dropped_columns access_profile_id"
     fi
     # budget_id (dropped from governance_teams in migrationAddTeamBudgetsToBudgetsTable v1.5.0-prerelease4 -
     # ownership moved to governance_budgets.team_id)
@@ -3693,6 +3957,12 @@ compare_postgres_snapshots() {
       # legacy minute values to seconds (e.g. 5 → 300), so this column intentionally changes.
       if [ "$table" = "config_mcp_clients" ]; then
         table_ignore_columns="$table_ignore_columns tool_sync_interval"
+      fi
+      # model_parameters_url: set to DefaultModelParametersURL by initFrameworkConfig on every
+      # startup (via ResolveFrameworkPricingConfig), so it changes from NULL to the URL when
+      # bifrost first starts after the add_model_parameters_url_column migration.
+      if [ "$table" = "framework_configs" ]; then
+        table_ignore_columns="$table_ignore_columns model_parameters_url"
       fi
       if [[ " $table_ignore_columns " == *" $col "* ]]; then
         col_idx=$((col_idx + 1))
