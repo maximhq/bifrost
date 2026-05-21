@@ -1,6 +1,6 @@
 ---
 title: "Guardrails"
-description: "Enterprise-grade content safety and security validation with support for native regex and secrets detection, AWS Bedrock Guardrails, Azure Content Safety, CrowdStrike AIDR, GraySwan Cygnal, and Patronus AI."
+description: "Enterprise-grade content safety and security validation with support for native regex and secrets detection, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan Cygnal, and Patronus AI."
 icon: "road-barrier"
 ---
 
@@ -27,6 +27,9 @@ icon: "road-barrier"
   <Card title="Azure Content Safety" icon="microsoft" href="/integrations/guardrails/azure-content-safety">
     Multi-modal content moderation with severity-based filtering.
   </Card>
+  <Card title="Google Model Armor" icon="/media/google-model-armor.png" href="/integrations/guardrails/google-model-armor">
+    Google Cloud policy enforcement for prompt injection, content safety, malicious URLs, and Sensitive Data Protection.
+  </Card>
   <Card title="CrowdStrike AIDR" icon="/media/crowdstrike-white.svg" href="/integrations/guardrails/crowdstrike-aidr">
     Inline AI threat detection, policy enforcement, redaction, and AIDR audit visibility.
   </Card>
@@ -45,7 +48,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (AWS Bedrock, Azure Content Safety, CrowdStrike AIDR, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -57,7 +60,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus AWS Bedrock, Azure Content Safety, CrowdStrike AIDR, GraySwan, and Patronus AI integrations |
+| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, and Patronus AI integrations |
 | **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -94,6 +97,7 @@ flowchart TB
         Rule3[Rule: Prompt Injection]
         Rule4[Rule: Credential Leakage]
         Rule5[Rule: AI Threat Detection]
+        Rule6[Rule: Sensitive Data Protection]
     end
 
     subgraph profiles [Guardrail Profiles]
@@ -104,12 +108,14 @@ flowchart TB
         Profile5[Secrets Detection Profile]
         Profile6[Custom Regex Profile]
         Profile7[CrowdStrike AIDR Profile]
+        Profile8[Google Model Armor Profile]
     end
 
     InputValidation --> Rule1
     InputValidation --> Rule3
     InputValidation --> Rule4
     InputValidation --> Rule5
+    InputValidation --> Rule6
     OutputValidation --> Rule2
 
     Rule1 --> Profile6
@@ -118,6 +124,7 @@ flowchart TB
     Rule3 --> Profile1
     Rule4 --> Profile5
     Rule5 --> Profile7
+    Rule6 --> Profile8
 ```
 
 **Flow Description:**
@@ -397,7 +404,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `bedrock`, `azure`, `crowdstrike-aidr`, `grayswan`, `patronus-ai` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -416,7 +423,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Frame>
 
 2. **Select Provider Type**
-   - Choose from: Secrets Detection, Custom Regex, AWS Bedrock, Azure Content Safety, CrowdStrike AIDR, GraySwan, or Patronus AI
+   - Choose from: Secrets Detection, Custom Regex, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, or Patronus AI
 
 3. **Configure Provider Settings**
    - Enter credentials and endpoint information for external providers, or local settings for native providers
@@ -430,7 +437,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
-Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `bedrock`, `azure`, `crowdstrike-aidr`, `grayswan`, or `patronus-ai`. The API assigns the configuration ID after creation.
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, or `patronus-ai`. The API assigns the configuration ID after creation.
 
 **Create a Profile:**
 ```bash
@@ -548,6 +555,19 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
         },
         {
           "id": 5,
+          "provider_name": "model-armor",
+          "policy_name": "Google Model Armor Production",
+          "enabled": true,
+          "timeout": 30,
+          "config": {
+            "auth_type": "default_credential",
+            "project_id": "env.GCP_PROJECT_ID",
+            "location": "env.GCP_LOCATION",
+            "template_id": "env.GMA_TEMPLATE_ID"
+          }
+        },
+        {
+          "id": 6,
           "provider_name": "crowdstrike-aidr",
           "policy_name": "CrowdStrike AIDR Production",
           "enabled": true,
@@ -560,7 +580,7 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
           }
         },
         {
-          "id": 6,
+          "id": 7,
           "provider_name": "grayswan",
           "policy_name": "Custom Safety Rules",
           "enabled": true,
@@ -575,7 +595,7 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
           }
         },
         {
-          "id": 7,
+          "id": 8,
           "provider_name": "patronus-ai",
           "policy_name": "Patronus Quality Checks",
           "enabled": true,
@@ -651,6 +671,16 @@ guardrails_config:
         analyze_severity_threshold: "medium"
         jailbreak_shield_enabled: true
     - id: 5
+      provider_name: "model-armor"
+      policy_name: "Google Model Armor Production"
+      enabled: true
+      timeout: 30
+      config:
+        auth_type: "default_credential"
+        project_id: "env.GCP_PROJECT_ID"
+        location: "env.GCP_LOCATION"
+        template_id: "env.GMA_TEMPLATE_ID"
+    - id: 6
       provider_name: "crowdstrike-aidr"
       policy_name: "CrowdStrike AIDR Production"
       enabled: true
@@ -660,7 +690,7 @@ guardrails_config:
         base_url: "env.CS_AIDR_BASE_URL"
         app_id: "bifrost-production"
         collector_instance_id: "prod-us-east-1"
-    - id: 6
+    - id: 7
       provider_name: "grayswan"
       policy_name: "Custom Safety Rules"
       enabled: true
@@ -671,7 +701,7 @@ guardrails_config:
         rules:
           no_pii: "Do not allow personally identifiable information"
           professional_tone: "Ensure responses maintain a professional tone"
-    - id: 7
+    - id: 8
       provider_name: "patronus-ai"
       policy_name: "Patronus Quality Checks"
       enabled: true
@@ -694,19 +724,23 @@ guardrails_config:
 
 Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, and [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, including the PII Detection template.
 
-| Capability | AWS Bedrock | Azure Content Safety | CrowdStrike AIDR | GraySwan | Patronus AI |
-|------------|-------------|----------------------|------------------|----------|-------------|
-| PII Detection | Yes | No | Yes | No | Yes |
-| Content Filtering | Yes | Yes | Yes | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes | Yes | Yes |
-| Hallucination Detection | No | No | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes | Yes | Yes |
-| Custom Natural Language Rules | No | No | No | Yes | No |
-| Image Support | Yes | No | No | No | No |
-| IPI Detection | No | Yes | Policy-dependent | Yes | No |
-| Mutation Detection | No | No | No | Yes | No |
-| Output Redaction | Yes | No | Yes | No | No |
+| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | GraySwan | Patronus AI |
+|------------|-------------|----------------------|--------------------|------------------|----------|-------------|
+| PII Detection | Yes | No | Yes | Policy-dependent | No | Yes |
+| Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
+| Prompt Injection | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
+| Hallucination Detection | No | No | No | No | No | Yes |
+| Toxicity Screening | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
+| Custom Policies | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
+| Custom Natural Language Rules | No | No | No | No | Yes | No |
+| Image Support | Yes | No | No | No | No | No |
+| IPI Detection | No | Yes | Yes | Policy-dependent | Yes | No |
+| Mutation Detection | No | No | No | No | Yes | No |
+| Output Redaction | Yes | No | Yes | Yes | No | No |
+
+<Note>
+  CrowdStrike AIDR capabilities depend on the AIDR policy and detectors configured in CrowdStrike. Bifrost sends the request to AIDR, then enforces the returned `blocked` or `transformed` decision.
+</Note>
 
 ### Best Practices
 
@@ -724,6 +758,7 @@ Third-party guardrail providers offer different capabilities. Bifrost-native pro
 - Store API keys and credentials in environment variables or secrets managers
 - Regularly rotate credentials
 - Use least-privilege IAM roles for AWS Bedrock
+- Use least-privilege Google IAM roles for Google Model Armor, such as `roles/modelarmor.user` or a higher Model Armor role
 
 ---
 
