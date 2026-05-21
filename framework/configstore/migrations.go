@@ -799,6 +799,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8552,6 +8555,35 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
+func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_created_by_user_id_column_for_virtual_keys",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN created_by_user_id VARCHAR(255)").Error; err != nil {
+					return fmt.Errorf("failed to add created_by_user_id column to governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN created_by_user_id").Error; err != nil {
+					return fmt.Errorf("failed to drop created_by_user_id column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_created_by_user_id_column_for_virtual_keys migration: %s", err.Error())
 	}
 	return nil
 }

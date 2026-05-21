@@ -225,6 +225,8 @@ type TableVirtualKey struct {
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
 
+	CreatedByUserID *string `gorm:"type:varchar(255);index:idx_virtual_key_created_by" json:"created_by_user_id,omitempty"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }

@@ -2145,6 +2145,7 @@ func closeBodyStream(bodyStream io.Reader, err error) {
 // if no data arrives within the configured timeout. This unblocks any pending
 // Read() call on the wrapped reader.
 type idleTimeoutReader struct {
+	ctx        *schemas.BifrostContext
 	reader     io.Reader
 	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
 	timeout    time.Duration
@@ -2174,6 +2175,7 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 		timeout = DefaultStreamIdleTimeout
 	}
 	r := &idleTimeoutReader{
+		ctx:        ctx,
 		reader:     reader,
 		bodyStream: bodyStream,
 		timeout:    timeout,
@@ -2191,6 +2193,10 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	// Checking if stream is already closed
+	if connClosed, ok := r.ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && connClosed {
+		return 0, nil
+	}
 	n, err := r.reader.Read(p)
 	if n > 0 {
 		r.timer.Reset(r.timeout)
