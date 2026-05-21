@@ -33,7 +33,6 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useGetAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -80,8 +79,6 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 			? `Team: ${vk.team.name}`
 			: vk.customer
 				? `Customer: ${vk.customer.name}`
-				: vk.access_profile_id
-					? `Access Profile: ${accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}`
 					: "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
@@ -295,15 +292,6 @@ export default function VirtualKeysTable({
 	const [showBulkRotateDialog, setShowBulkRotateDialog] = useState(false);
 	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery();
 
-	const { data: accessProfilesData } = useGetAccessProfilesQuery({ limit: 100 });
-	const accessProfileNames = useMemo(() => {
-		const map: Record<number, string> = {};
-		for (const ap of accessProfilesData?.access_profiles ?? []) {
-			map[ap.id] = ap.name;
-		}
-		return map;
-	}, [accessProfilesData]);
-
 	// Derive objects from props so they stay in sync with RTK cache updates
 	const editingVirtualKey = useMemo(
 		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
@@ -477,7 +465,7 @@ export default function VirtualKeysTable({
 
 	const handleExportCSV = async () => {
 		if (exportScope === "current_page") {
-			downloadCSV(virtualKeysToCSV(virtualKeys, accessProfileNames));
+			downloadCSV(virtualKeysToCSV(virtualKeys));
 			toast.success(`Exported ${virtualKeys.length} virtual keys`);
 			setShowExportDialog(false);
 			return;
@@ -499,7 +487,7 @@ export default function VirtualKeysTable({
 				export: true,
 			}).unwrap();
 
-			downloadCSV(virtualKeysToCSV(result.virtual_keys, accessProfileNames));
+			downloadCSV(virtualKeysToCSV(result.virtual_keys));
 			toast.success(`Exported ${result.virtual_keys.length} virtual keys`);
 			setShowExportDialog(false);
 		} catch (error) {
@@ -671,8 +659,8 @@ export default function VirtualKeysTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="space-y-4">
-				<div className="flex items-center justify-between">
+			<div className="flex min-h-0 w-full grow flex-col gap-4 overflow-hidden">
+				<div className="flex shrink-0 items-center justify-between">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
@@ -701,7 +689,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="flex items-center gap-3">
+				<div className="flex shrink-0 items-center gap-3">
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -732,9 +720,9 @@ export default function VirtualKeysTable({
 					/>
 				</div>
 
-				<div className="rounded-sm border">
-					<Table className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
-						<TableHeader>
+				<div className="min-h-0 grow overflow-hidden rounded-sm border">
+					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
+						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[48px]">
 									<Checkbox
@@ -756,7 +744,7 @@ export default function VirtualKeysTable({
 								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -797,10 +785,6 @@ export default function VirtualKeysTable({
 													<Badge variant="outline" className="block max-w-full truncate text-left">
 														Customer: {vk.customer.name}
 													</Badge>
-												) : vk.access_profile_id ? (
-													<Badge variant="outline" className="block max-w-full truncate text-left">
-														AP: {accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}
-													</Badge>
 												) : (
 													<span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>
 												)}
@@ -840,7 +824,7 @@ export default function VirtualKeysTable({
 												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 											</TableCell>
 											<TableCell
-												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
 												<VKActionsMenu
@@ -862,8 +846,8 @@ export default function VirtualKeysTable({
 
 				{/* Pagination */}
 				{totalCount > 0 && (
-					<div className="flex items-center justify-between px-2">
-						<p className="text-muted-foreground text-sm">
+					<div className="flex shrink-0 items-center justify-between px-2 text-xs">
+						<p className="text-muted-foreground">
 							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
 						</p>
 						<div className="flex gap-2">

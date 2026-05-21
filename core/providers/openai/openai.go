@@ -105,7 +105,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 				ctx,
 				provider.client,
 				provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
-				schemas.Key{},
+				schemas.Key{Models: schemas.WhiteList{"*"}},
 				request.Unfiltered,
 				provider.networkConfig.ExtraHeaders,
 				providerName,
@@ -487,6 +487,7 @@ func HandleOpenAITextCompletionStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -570,7 +571,6 @@ func HandleOpenAITextCompletionStreaming(
 
 		var finishReason *string
 		var messageID string
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -1028,6 +1028,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -1111,7 +1112,6 @@ func HandleOpenAIChatCompletionStreaming(
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var finishReason *string
@@ -1669,6 +1669,7 @@ func HandleOpenAIResponsesStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -1747,7 +1748,6 @@ func HandleOpenAIResponsesStreaming(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -2282,6 +2282,7 @@ func HandleOpenAISpeechStreamRequest(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -2358,7 +2359,6 @@ func HandleOpenAISpeechStreamRequest(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -2723,6 +2723,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	req.SetBody(body.Bytes())
 
+	startTime := time.Now()
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
@@ -2799,7 +2800,6 @@ func HandleOpenAITranscriptionStreamRequest(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		var fullTranscriptionText string
 
@@ -3161,6 +3161,7 @@ func HandleOpenAIImageGenerationStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -3236,7 +3237,6 @@ func HandleOpenAIImageGenerationStreaming(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
@@ -4400,6 +4400,7 @@ func HandleOpenAIImageEditStreamRequest(
 
 	req.SetBody(body.Bytes())
 
+	startTime := time.Now()
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
@@ -4474,7 +4475,6 @@ func HandleOpenAIImageEditStreamRequest(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex

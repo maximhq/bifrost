@@ -486,6 +486,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		req.SetBody(body.Bytes())
 
+		startTime := time.Now()
 		// Make the request
 		err := provider.streamingClient.Do(req, resp)
 		if err != nil {
@@ -555,7 +556,6 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 			chunkIndex := -1
 
-			startTime := time.Now()
 			lastChunkTime := startTime
 			var fullTranscriptionText strings.Builder
 

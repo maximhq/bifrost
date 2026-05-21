@@ -1,0 +1,7 @@
+- fix: idle timeout panic in the streaming idle-timeout reader
+- fix: short-circuit `IdleTimeoutReader` reads when the connection is already closed (#3672)
+- fix: preserve tool call stop reason in Anthropic streaming fallback (#3640) (thanks [@dicnunz](https://github.com/dicnunz)!)
+- fix: correct start-time setting for accurate TTFT metric value (#3668)
+- fix: map Vertex traffic type to Bifrost service tier (#3662)
+- fix: ListModels for keyless providers (#3655)
+- fix: remove manual `type: custom` for Anthropic tools (#3652)

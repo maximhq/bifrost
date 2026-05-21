@@ -322,29 +322,37 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 }
 
-// isModelAllowed checks if the requested model is allowed for this VK
+// isModelAllowed checks if the requested model is allowed for this VK.
+// Blacklisted models win over allowed models (same semantics as provider-key enforcement).
+// Two-pass: blacklist scan across all matching configs first, then allowlist scan.
 func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
 	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
 		return false
 	}
 
+	// Pass 1: if any matching provider config blacklists the model, block immediately.
+	for _, pc := range vk.ProviderConfigs {
+		if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(model) {
+			return false
+		}
+	}
+
+	// Pass 2: allowlist check — model is allowed if any matching config permits it.
 	for _, pc := range vk.ProviderConfigs {
 		if pc.Provider == string(provider) {
-			// Delegate model allowance check to model catalog
-			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
-			// and provider-prefixed allowed_models entries
 			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
 				providerConfig, ok := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
 				providerConfigPtr := &providerConfig
 				if !ok {
 					providerConfigPtr = nil
 				}
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels)
+				if r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels) {
+					return true
+				}
+			} else if pc.AllowedModels.IsAllowed(model) {
+				return true
 			}
-			// Fallback when model catalog is not available: simple string matching
-			// ["*"] = allow all models; [] = deny all models
-			return pc.AllowedModels.IsAllowed(model)
 		}
 	}
 

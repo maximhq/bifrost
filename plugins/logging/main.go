@@ -137,6 +137,29 @@ func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.disableContentLogging == nil || !*p.disableContentLogging
 }
 
+// applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context.
+func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if ctx == nil || entry == nil {
+		return
+	}
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	if userID != "" {
+		entry.UserID = &userID
+	}
+	if teamID != "" {
+		entry.TeamID = &teamID
+	}
+	if customerID != "" {
+		entry.CustomerID = &customerID
+	}
+	if businessUnitID != "" {
+		entry.BusinessUnitID = &businessUnitID
+	}
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
@@ -292,7 +315,7 @@ type LoggerPlugin struct {
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
-	clusterNodeID          atomic.Value         // Cluster node ID (string) for log attribution in clustered deployments
+	clusterNodeID          atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
 }
 
 // Init creates new logger plugin with given log store
@@ -1262,6 +1285,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if virtualKeyName != "" {
 		entry.VirtualKeyName = &virtualKeyName
 	}
+	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
 	// Set arguments if content logging is enabled
 	if p.contentLoggingEnabled(ctx) {
@@ -1356,6 +1380,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if virtualKeyName != "" {
 		entry.VirtualKeyName = &virtualKeyName
 	}
+	applyMCPGovernanceFieldsToEntry(ctx, entry)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency

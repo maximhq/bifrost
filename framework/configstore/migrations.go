@@ -771,6 +771,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropVKAccessProfileIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
@@ -786,13 +789,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddTempTokensTable(ctx, db); err != nil {
 		return err
 	}
-	// Runs LAST in this batch — the refresh does tx.Find(&clientConfigs)
-	// which GORM projects to every column in TableClientConfig, so it has
-	// to come after every config_client column-add above (otherwise the
-	// SELECT trips on a yet-to-be-added column on upgraded DBs). The refresh
-	// no longer gates on the legacy mcp_external_server_url column still
-	// existing — idempotency is handled by migrator_meta, so ordering
-	// relative to migrationDropMCPExternalServerURL is unconstrained.
+	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
@@ -8415,41 +8417,7 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
-// so that existing VKs can be attached directly to an access profile template (enterprise feature).
-func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_access_profile_id_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
-				}
-			}
-			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
-				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				return mig.DropColumn(&tables.TableVirtualKey{}, "access_profile_id")
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
-	}
-	return nil
-}
-
+// migrationAddModelParametersURLColumn adds the model_parameters_url column to framework_configs.
 func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_model_parameters_url_column",
@@ -8536,6 +8504,142 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_temp_tokens_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyBlacklistedModelsColumn adds the blacklisted_models JSON column
+// to governance_virtual_key_provider_configs, matching the provider-key blacklist pattern.
+func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_provider_config_blacklisted_models_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to add blacklisted_models column: %w", err)
+				}
+				// Backfill empty arrays for existing rows (only when column is newly added)
+				if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
+					return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
+				}
+				// Recompute config_hash for all VKs affected by the backfill so they
+				// do not appear stale after upgrade (same pattern as allow_all_keys migration).
+				var virtualKeys []tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					Find(&virtualKeys).Error; err != nil {
+					return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+				}
+				for _, vk := range virtualKeys {
+					newHash, err := GenerateVirtualKeyHash(vk)
+					if err != nil {
+						return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+					}
+					if err := tx.Model(&tables.TableVirtualKey{}).
+						Where("id = ?", vk.ID).
+						Update("config_hash", newHash).Error; err != nil {
+						return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+					}
+
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVKAccessProfileIDColumn adds the access_profile_id column to governance_virtual_keys.
+func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropVKAccessProfileIDColumn drops the access_profile_id column and its
+// index from governance_virtual_keys, reverting migrationAddVKAccessProfileIDColumn.
+func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// DROP INDEX IF EXISTS avoids aborting the Postgres transaction when
+			// the index was never created (e.g. fresh installs where the add
+			// migration ran as a no-op).
+			if err := tx.Exec("DROP INDEX IF EXISTS idx_governance_virtual_keys_access_profile_id").Error; err != nil {
+				return fmt.Errorf("failed to drop index idx_governance_virtual_keys_access_profile_id: %w", err)
+			}
+			// Use raw ALTER TABLE instead of GORM's DropColumn: GORM's SQLite
+			// DropColumn does a full table rebuild inside a transaction where
+			// PRAGMA foreign_keys cannot be disabled, causing FK checks on
+			// unrelated columns to fail against test data.
+			// ALTER TABLE DROP COLUMN (SQLite 3.35+) modifies the schema in place.
+			if tx.Migrator().HasColumn("governance_virtual_keys", "access_profile_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN access_profile_id").Error; err != nil {
+					return fmt.Errorf("failed to drop access_profile_id column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
+func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_created_by_user_id_column_for_virtual_keys",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN created_by_user_id VARCHAR(255)").Error; err != nil {
+					return fmt.Errorf("failed to add created_by_user_id column to governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN created_by_user_id").Error; err != nil {
+					return fmt.Errorf("failed to drop created_by_user_id column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_created_by_user_id_column_for_virtual_keys migration: %s", err.Error())
 	}
 	return nil
 }
