@@ -15,8 +15,10 @@ spec:
   parentRefs:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- with .Values.httproute.hostnames }}
   hostnames:
-    {{- toYaml .Values.httproute.hostnames | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   rules:
     - backendRefs:
         - name: {{ include "bifrost.fullname" . }}
