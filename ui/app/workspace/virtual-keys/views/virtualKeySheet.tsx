@@ -91,12 +91,11 @@ import {
   UpdateVirtualKeyRequest,
   VirtualKey,
 } from "@/lib/types/governance";
-import { useGetAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
 import { toast } from "sonner";
@@ -109,9 +108,6 @@ interface VirtualKeySheetProps {
   // When set, the new VK is created under this team. The entity assignment is pre-set
   // and cannot be changed (but all other fields remain editable).
   defaultTeamId?: string;
-  // When set, the new VK is created under this access profile. The entity assignment is
-  // pre-set and cannot be changed.
-  defaultAccessProfileId?: number;
   onSave: () => void;
   onCancel: () => void;
 }
@@ -126,7 +122,6 @@ const providerConfigSchema = z.object({
     .max(1, "Weight must be at most 1")
     .optional(),
   allowed_models: z.array(z.string()).optional(),
-  blacklisted_models: z.array(z.string()).optional(),
   key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
   // Provider-level budget
   budgets: z
@@ -162,10 +157,9 @@ const formSchema = z
     description: z.string().optional(),
     providerConfigs: z.array(providerConfigSchema).optional(),
     mcpConfigs: z.array(mcpConfigSchema).optional(),
-    entityType: z.enum(["team", "customer", "access_profile", "none"]),
+    entityType: z.enum(["team", "customer", "none"]),
     teamId: z.string().optional(),
     customerId: z.string().optional(),
-    accessProfileId: z.string().optional(),
     isActive: z.boolean(),
     // Budget
     budgetCalendarAligned: z.boolean(),
@@ -195,16 +189,12 @@ const formSchema = z
       if (data.entityType === "customer") {
         return data.customerId && data.customerId.trim() !== "";
       }
-      // If entityType is "access_profile", accessProfileId must be provided and not empty
-      if (data.entityType === "access_profile") {
-        return data.accessProfileId && data.accessProfileId.trim() !== "";
-      }
       return true;
     },
     {
       message:
-        "Please select a valid team, customer, or access profile when assignment type is chosen",
-      path: ["entityType"],
+        "Please select a valid team or customer when assignment type is chosen",
+      path: ["entityType"], // This will show the error on the entityType field
     },
   );
 
@@ -228,7 +218,6 @@ export default function VirtualKeySheet({
   teams,
   customers,
   defaultTeamId,
-  defaultAccessProfileId,
   onSave,
   onCancel,
 }: VirtualKeySheetProps) {
@@ -260,7 +249,6 @@ export default function VirtualKeySheet({
     ? teams.find((t) => t.id === attachedTeamId)
     : undefined;
   const isTeamLocked = !isEditing && !!defaultTeamId;
-  const isAPLocked = !isEditing && !!defaultAccessProfileId;
 
   const handleClose = () => {
     setIsOpen(false);
@@ -280,10 +268,6 @@ export default function VirtualKeySheet({
     useRotateVirtualKeyMutation();
   const { data: mcpClientsResponse, error: mcpClientsError } =
     useGetMCPClientsQuery();
-  const { data: accessProfilesData } = useGetAccessProfilesQuery({
-    limit: 100,
-  });
-  const accessProfiles = accessProfilesData?.access_profiles ?? [];
   const mcpClientsData = mcpClientsResponse?.clients || [];
   const isLoading = isCreating || isUpdating || isRotating;
 
@@ -302,7 +286,6 @@ export default function VirtualKeySheet({
           provider: config.provider,
           weight: config.weight ?? undefined,
           allowed_models: config.allowed_models,
-          blacklisted_models: config.blacklisted_models,
           key_ids: config.allow_all_keys
             ? ["*"]
             : config.keys?.map((key) => key.key_id) || [],
@@ -332,20 +315,11 @@ export default function VirtualKeySheet({
         ? "team"
         : virtualKey?.customer_id
           ? "customer"
-          : virtualKey?.access_profile_id
-            ? "access_profile"
-            : !isEditing && defaultTeamId
-              ? "team"
-              : !isEditing && defaultAccessProfileId
-                ? "access_profile"
-                : "none",
+          : !isEditing && defaultTeamId
+            ? "team"
+            : "none",
       teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
       customerId: virtualKey?.customer_id || "",
-      accessProfileId: virtualKey?.access_profile_id
-        ? String(virtualKey.access_profile_id)
-        : !isEditing && defaultAccessProfileId
-          ? String(defaultAccessProfileId)
-          : "",
       isActive: virtualKey?.is_active ?? true,
       budgets:
         virtualKey?.budgets && virtualKey.budgets.length > 0
@@ -391,22 +365,16 @@ export default function VirtualKeySheet({
     }
   }, [mcpClientsError]);
 
-  // Clear entity ID fields when entityType changes
+  // Clear team/customer IDs when entityType changes to "none"
   useEffect(() => {
     const entityType = form.watch("entityType");
     if (entityType === "none") {
       form.setValue("teamId", "", { shouldDirty: true });
       form.setValue("customerId", "", { shouldDirty: true });
-      form.setValue("accessProfileId", "", { shouldDirty: true });
     } else if (entityType === "team") {
       form.setValue("customerId", "", { shouldDirty: true });
-      form.setValue("accessProfileId", "", { shouldDirty: true });
     } else if (entityType === "customer") {
       form.setValue("teamId", "", { shouldDirty: true });
-      form.setValue("accessProfileId", "", { shouldDirty: true });
-    } else if (entityType === "access_profile") {
-      form.setValue("teamId", "", { shouldDirty: true });
-      form.setValue("customerId", "", { shouldDirty: true });
     }
   }, [form.watch("entityType"), form]);
 
@@ -465,7 +433,6 @@ export default function VirtualKeySheet({
       provider: provider,
       weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
       allowed_models: ["*"],
-      blacklisted_models: [],
       key_ids: ["*"],
     };
 
@@ -532,14 +499,6 @@ export default function VirtualKeySheet({
     useState(false);
   const [showReassignTeamWarning, setShowReassignTeamWarning] = useState(false);
   const [pendingTeamId, setPendingTeamId] = useState<string | null>(null);
-  const [showReassignAPWarning, setShowReassignAPWarning] = useState(false);
-  const [pendingAccessProfileId, setPendingAccessProfileId] = useState<
-    string | null
-  >(null);
-  const [showReassignTypeWarning, setShowReassignTypeWarning] = useState(false);
-  const [pendingEntityType, setPendingEntityType] = useState<
-    "team" | "customer" | "access_profile" | "none" | null
-  >(null);
   const [showRotateWarning, setShowRotateWarning] = useState(false);
   const [showBudgetResetPrompt, setShowBudgetResetPrompt] = useState(false);
   const [pendingBudgetResetData, setPendingBudgetResetData] =
@@ -547,25 +506,6 @@ export default function VirtualKeySheet({
   const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<
     string | null
   >(null);
-
-  const currentAssignmentLabel = useMemo(() => {
-    if (!isEditing) return null;
-    if (virtualKey?.team_id) {
-      const team = teams?.find((t) => t.id === virtualKey.team_id);
-      return team ? `Team: ${team.name}` : "a team";
-    }
-    if (virtualKey?.customer_id) {
-      const customer = customers?.find((c) => c.id === virtualKey.customer_id);
-      return customer ? `Customer: ${customer.name}` : "a customer";
-    }
-    if (virtualKey?.access_profile_id) {
-      const ap = accessProfiles?.find(
-        (p) => p.id === virtualKey.access_profile_id,
-      );
-      return ap ? `Access Profile: ${ap.name}` : "an access profile";
-    }
-    return null;
-  }, [isEditing, virtualKey, teams, customers, accessProfiles]);
 
   const handleCalendarAlignedChange = (checked: boolean) => {
     if (checked && isEditing) {
@@ -920,12 +860,6 @@ export default function VirtualKeySheet({
             data.customerId.trim() !== ""
               ? data.customerId
               : undefined,
-          access_profile_id:
-            data.entityType === "access_profile" &&
-            data.accessProfileId &&
-            data.accessProfileId.trim() !== ""
-              ? Number(data.accessProfileId)
-              : undefined,
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
@@ -988,12 +922,6 @@ export default function VirtualKeySheet({
             data.customerId &&
             data.customerId.trim() !== ""
               ? data.customerId
-              : undefined,
-          access_profile_id:
-            data.entityType === "access_profile" &&
-            data.accessProfileId &&
-            data.accessProfileId.trim() !== ""
-              ? Number(data.accessProfileId)
               : undefined,
           is_active: data.isActive,
           // VK-level setting that governs both budget and rate-limit calendar alignment.
@@ -1477,119 +1405,10 @@ export default function VirtualKeySheet({
                                       );
                                     })()}
                                     <p className="text-muted-foreground text-xs">
-                                      Select specific models or choose "Allow
-                                      All Models" to allow all. Leave empty to
+                                      Select specific models or choose “Allow
+                                      All Models” to allow all. Leave empty to
                                       deny all.
                                     </p>
-                                  </div>
-                                </div>
-
-                                <div className="flex w-full items-start gap-2">
-                                  <div className="w-1/4" />
-                                  <div className="w-3/4 space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label className="text-sm font-medium">
-                                        Blocked Models
-                                      </Label>
-                                      <TooltipProvider>
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <span>
-                                              <Info className="text-muted-foreground h-3 w-3" />
-                                            </span>
-                                          </TooltipTrigger>
-                                          <TooltipContent className="max-w-sm">
-                                            <p>
-                                              Models this VK must never serve.
-                                              The denylist always wins - if a
-                                              model appears in both Allowed
-                                              Models and here, it is blocked.
-                                              Select "All Models" to block every
-                                              model on this VK.
-                                            </p>
-                                          </TooltipContent>
-                                        </Tooltip>
-                                      </TooltipProvider>
-                                    </div>
-                                    {(() => {
-                                      const hasWildcardBlocked = (
-                                        config.blacklisted_models || []
-                                      ).includes("*");
-                                      return (
-                                        <ModelMultiselect
-                                          data-testid={`vk-models-blocked-multiselect-${index}`}
-                                          provider={config.provider}
-                                          keys={(() => {
-                                            const providerKeys =
-                                              availableKeys.filter(
-                                                (key) =>
-                                                  key.provider ===
-                                                  config.provider,
-                                              );
-                                            const configKeyIds =
-                                              config.key_ids || [];
-                                            return configKeyIds.includes("*")
-                                              ? providerKeys.map(
-                                                  (key) => key.key_id,
-                                                )
-                                              : providerKeys
-                                                  .filter((key) =>
-                                                    configKeyIds.includes(
-                                                      key.key_id,
-                                                    ),
-                                                  )
-                                                  .map((key) => key.key_id);
-                                          })()}
-                                          allowAllOption={true}
-                                          value={
-                                            hasWildcardBlocked
-                                              ? ["*"]
-                                              : config.blacklisted_models || []
-                                          }
-                                          onChange={(models: string[]) => {
-                                            const hadStar = (
-                                              config.blacklisted_models || []
-                                            ).includes("*");
-                                            const hasStar =
-                                              models.includes("*");
-                                            if (!hadStar && hasStar) {
-                                              handleUpdateProviderConfig(
-                                                index,
-                                                "blacklisted_models",
-                                                ["*"],
-                                              );
-                                            } else if (
-                                              hadStar &&
-                                              hasStar &&
-                                              models.length > 1
-                                            ) {
-                                              handleUpdateProviderConfig(
-                                                index,
-                                                "blacklisted_models",
-                                                models.filter((m) => m !== "*"),
-                                              );
-                                            } else {
-                                              handleUpdateProviderConfig(
-                                                index,
-                                                "blacklisted_models",
-                                                models,
-                                              );
-                                            }
-                                          }}
-                                          placeholder={
-                                            hasWildcardBlocked
-                                              ? "All models blocked"
-                                              : (
-                                                    config.blacklisted_models ||
-                                                    []
-                                                  ).length === 0
-                                                ? "No models blocked"
-                                                : "Search models..."
-                                          }
-                                          className="min-h-10 max-w-[500px] min-w-[200px]"
-                                        />
-                                      );
-                                    })()}
                                   </div>
                                 </div>
 
@@ -2237,171 +2056,6 @@ export default function VirtualKeySheet({
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
-
-                  <AlertDialog
-                    open={showReassignAPWarning}
-                    onOpenChange={(open) => {
-                      setShowReassignAPWarning(open);
-                      if (!open) {
-                        setPendingAccessProfileId(null);
-                      }
-                    }}
-                  >
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>
-                          Reassign to a different access profile?
-                        </AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This key is currently assigned to another access
-                          profile. Reassigning it will move budget tracking to
-                          this access profile — future requests through this key
-                          will count against this profile's budget, not the
-                          previous one.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel
-                          data-testid="reassign-ap-cancel"
-                          onClick={() => setPendingAccessProfileId(null)}
-                        >
-                          Cancel
-                        </AlertDialogCancel>
-                        <AlertDialogAction
-                          data-testid="reassign-ap-confirm"
-                          onClick={() => {
-                            if (pendingAccessProfileId !== null) {
-                              form.setValue(
-                                "accessProfileId",
-                                pendingAccessProfileId,
-                                { shouldDirty: true },
-                              );
-                            }
-                            setPendingAccessProfileId(null);
-                            setShowReassignAPWarning(false);
-                          }}
-                        >
-                          Reassign
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-
-                  {/* Cross-type assignment warning */}
-                  <AlertDialog
-                    open={showReassignTypeWarning}
-                    onOpenChange={(open) => {
-                      if (!open) setPendingEntityType(null);
-                      setShowReassignTypeWarning(open);
-                    }}
-                  >
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Change assignment?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This key is currently assigned to{" "}
-                          {currentAssignmentLabel}. Changing the assignment type
-                          will move budget tracking — future requests will count
-                          against the new entity, not the previous one.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel
-                          data-testid="reassign-type-cancel"
-                          onClick={() => setPendingEntityType(null)}
-                        >
-                          Cancel
-                        </AlertDialogCancel>
-                        <AlertDialogAction
-                          data-testid="reassign-type-confirm"
-                          onClick={async () => {
-                            if (pendingEntityType) {
-                              form.setValue("entityType", pendingEntityType, {
-                                shouldDirty: true,
-                              });
-                              if (
-                                pendingEntityType === "team" &&
-                                teams?.length > 0
-                              ) {
-                                form.setValue("teamId", teams[0].id, {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("customerId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("accessProfileId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                              } else if (
-                                pendingEntityType === "customer" &&
-                                customers?.length > 0
-                              ) {
-                                form.setValue("customerId", customers[0].id, {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("teamId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("accessProfileId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                              } else if (
-                                pendingEntityType === "access_profile"
-                              ) {
-                                const apId =
-                                  accessProfiles?.length > 0
-                                    ? String(accessProfiles[0].id)
-                                    : virtualKey?.access_profile_id
-                                      ? String(virtualKey.access_profile_id)
-                                      : "";
-                                form.setValue("accessProfileId", apId, {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("teamId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("customerId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                              } else {
-                                form.setValue("teamId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("customerId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                                form.setValue("accessProfileId", "", {
-                                  shouldDirty: true,
-                                  shouldValidate: true,
-                                });
-                              }
-                              await form.trigger([
-                                "teamId",
-                                "customerId",
-                                "accessProfileId",
-                                "entityType",
-                              ]);
-                            }
-                            setPendingEntityType(null);
-                            setShowReassignTypeWarning(false);
-                          }}
-                        >
-                          Change Assignment
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
                 </div>
                 {/* Rate Limiting Configuration */}
                 <div className="space-y-4">
@@ -2549,11 +2203,7 @@ export default function VirtualKeySheet({
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
-                {(teams?.length > 0 ||
-                  customers?.length > 0 ||
-                  accessProfiles?.length > 0 ||
-                  !!virtualKey?.access_profile_id ||
-                  !!defaultAccessProfileId) && (
+                {(teams?.length > 0 || customers?.length > 0) && (
                   <>
                     <DottedSeparator className="my-6" />
 
@@ -2591,42 +2241,10 @@ export default function VirtualKeySheet({
                                         },
                                       ]
                                     : []),
-                                  ...(accessProfiles?.length > 0 ||
-                                  virtualKey?.access_profile_id ||
-                                  defaultAccessProfileId
-                                    ? [
-                                        {
-                                          value: "access_profile",
-                                          label: "Assign to Access Profile",
-                                        },
-                                      ]
-                                    : []),
                                 ]}
                                 value={field.value}
                                 onValueChange={async (value) => {
                                   const val = value ?? "none";
-                                  const originalType = virtualKey?.team_id
-                                    ? "team"
-                                    : virtualKey?.customer_id
-                                      ? "customer"
-                                      : virtualKey?.access_profile_id
-                                        ? "access_profile"
-                                        : "none";
-                                  if (
-                                    isEditing &&
-                                    currentAssignmentLabel &&
-                                    val !== "none" &&
-                                    val !== originalType
-                                  ) {
-                                    setPendingEntityType(
-                                      val as
-                                        | "team"
-                                        | "customer"
-                                        | "access_profile",
-                                    );
-                                    setShowReassignTypeWarning(true);
-                                    return;
-                                  }
                                   field.onChange(val);
                                   if (val === "team" && teams?.length > 0) {
                                     form.setValue("teamId", teams[0].id, {
@@ -2637,14 +2255,9 @@ export default function VirtualKeySheet({
                                       shouldDirty: true,
                                       shouldValidate: true,
                                     });
-                                    form.setValue("accessProfileId", "", {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
                                     await form.trigger([
                                       "teamId",
                                       "customerId",
-                                      "accessProfileId",
                                       "entityType",
                                     ]);
                                   } else if (
@@ -2663,39 +2276,9 @@ export default function VirtualKeySheet({
                                       shouldDirty: true,
                                       shouldValidate: true,
                                     });
-                                    form.setValue("accessProfileId", "", {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
                                     await form.trigger([
                                       "teamId",
                                       "customerId",
-                                      "accessProfileId",
-                                      "entityType",
-                                    ]);
-                                  } else if (val === "access_profile") {
-                                    const apId =
-                                      accessProfiles?.length > 0
-                                        ? String(accessProfiles[0].id)
-                                        : virtualKey?.access_profile_id
-                                          ? String(virtualKey.access_profile_id)
-                                          : "";
-                                    form.setValue("accessProfileId", apId, {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
-                                    form.setValue("teamId", "", {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
-                                    form.setValue("customerId", "", {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
-                                    await form.trigger([
-                                      "teamId",
-                                      "customerId",
-                                      "accessProfileId",
                                       "entityType",
                                     ]);
                                   } else {
@@ -2707,19 +2290,14 @@ export default function VirtualKeySheet({
                                       shouldDirty: true,
                                       shouldValidate: true,
                                     });
-                                    form.setValue("accessProfileId", "", {
-                                      shouldDirty: true,
-                                      shouldValidate: true,
-                                    });
                                     await form.trigger([
                                       "teamId",
                                       "customerId",
-                                      "accessProfileId",
                                       "entityType",
                                     ]);
                                   }
                                 }}
-                                disabled={isTeamLocked || isAPLocked}
+                                disabled={isTeamLocked}
                                 disableSearch
                                 hideClear
                                 className="h-9"
@@ -2792,51 +2370,6 @@ export default function VirtualKeySheet({
                                     }
                                     placeholder="Select a customer"
                                     emptyMessage="No customers found."
-                                    className="h-9"
-                                  />
-                                  <FormMessage />
-                                </FormItem>
-                              )}
-                            />
-                          )}
-
-                        {form.watch("entityType") === "access_profile" &&
-                          (accessProfiles?.length > 0 ||
-                            virtualKey?.access_profile_id ||
-                            defaultAccessProfileId) && (
-                            <FormField
-                              control={form.control}
-                              name="accessProfileId"
-                              render={({ field }) => (
-                                <FormItem>
-                                  <FormLabel className="font-normal">
-                                    Select Access Profile
-                                  </FormLabel>
-                                  <ComboboxSelect
-                                    data-testid="access-profile-selector"
-                                    options={accessProfiles.map((ap) => ({
-                                      value: String(ap.id),
-                                      label: ap.name,
-                                    }))}
-                                    value={field.value || null}
-                                    onValueChange={(val) => {
-                                      const newVal = val ?? "";
-                                      if (
-                                        isEditing &&
-                                        virtualKey?.access_profile_id &&
-                                        newVal &&
-                                        newVal !==
-                                          String(virtualKey.access_profile_id)
-                                      ) {
-                                        setPendingAccessProfileId(newVal);
-                                        setShowReassignAPWarning(true);
-                                      } else {
-                                        field.onChange(newVal);
-                                      }
-                                    }}
-                                    placeholder="Select an access profile"
-                                    disabled={isAPLocked}
-                                    emptyMessage="No access profiles found."
                                     className="h-9"
                                   />
                                   <FormMessage />
