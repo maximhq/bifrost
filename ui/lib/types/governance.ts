@@ -72,7 +72,6 @@ export interface VirtualKey {
 	mcp_configs?: VirtualKeyMCPConfig[];
 	team_id?: string;
 	customer_id?: string;
-	access_profile_id?: number;
 	rate_limit_id?: string;
 	is_active: boolean;
 	calendar_aligned?: boolean;
@@ -161,7 +160,6 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	access_profile_id?: number;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
@@ -175,7 +173,6 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	access_profile_id?: number;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -259,7 +256,6 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
-	access_profile_id?: number;
 	exclude_access_profile_managed_virtual?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";

@@ -39,19 +39,3 @@ export interface UserAccessProfile {
 export interface GetUserAccessProfilesResponse {
 	access_profiles: UserAccessProfile[];
 }
-
-export interface GetAccessProfilesParams {
-	limit?: number;
-	offset?: number;
-	search?: string;
-	tags?: string;
-	is_active?: boolean;
-}
-
-export interface GetAccessProfilesResponse {
-	access_profiles: { id: number; name: string; [key: string]: unknown }[];
-	count: number;
-	total_count: number;
-	limit: number;
-	offset: number;
-}
