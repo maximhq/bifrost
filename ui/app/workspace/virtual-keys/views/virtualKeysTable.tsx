@@ -33,7 +33,6 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useGetAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -80,8 +79,6 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 			? `Team: ${vk.team.name}`
 			: vk.customer
 				? `Customer: ${vk.customer.name}`
-				: vk.access_profile_id
-					? `Access Profile: ${accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}`
 					: "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
@@ -295,15 +292,6 @@ export default function VirtualKeysTable({
 	const [showBulkRotateDialog, setShowBulkRotateDialog] = useState(false);
 	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery();
 
-	const { data: accessProfilesData } = useGetAccessProfilesQuery({ limit: 100 });
-	const accessProfileNames = useMemo(() => {
-		const map: Record<number, string> = {};
-		for (const ap of accessProfilesData?.access_profiles ?? []) {
-			map[ap.id] = ap.name;
-		}
-		return map;
-	}, [accessProfilesData]);
-
 	// Derive objects from props so they stay in sync with RTK cache updates
 	const editingVirtualKey = useMemo(
 		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
@@ -477,7 +465,7 @@ export default function VirtualKeysTable({
 
 	const handleExportCSV = async () => {
 		if (exportScope === "current_page") {
-			downloadCSV(virtualKeysToCSV(virtualKeys, accessProfileNames));
+			downloadCSV(virtualKeysToCSV(virtualKeys));
 			toast.success(`Exported ${virtualKeys.length} virtual keys`);
 			setShowExportDialog(false);
 			return;
@@ -499,7 +487,7 @@ export default function VirtualKeysTable({
 				export: true,
 			}).unwrap();
 
-			downloadCSV(virtualKeysToCSV(result.virtual_keys, accessProfileNames));
+			downloadCSV(virtualKeysToCSV(result.virtual_keys));
 			toast.success(`Exported ${result.virtual_keys.length} virtual keys`);
 			setShowExportDialog(false);
 		} catch (error) {
@@ -796,10 +784,6 @@ export default function VirtualKeysTable({
 												) : vk.customer ? (
 													<Badge variant="outline" className="block max-w-full truncate text-left">
 														Customer: {vk.customer.name}
-													</Badge>
-												) : vk.access_profile_id ? (
-													<Badge variant="outline" className="block max-w-full truncate text-left">
-														AP: {accessProfileNames[vk.access_profile_id] ?? vk.access_profile_id}
 													</Badge>
 												) : (
 													<span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>

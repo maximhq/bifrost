@@ -63,7 +63,6 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
-					...(params?.access_profile_id !== undefined && { access_profile_id: params.access_profile_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
