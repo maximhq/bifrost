@@ -2214,6 +2214,10 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
+	if req.ServiceTier != nil {
+		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
+		params.ServiceTier = &mapped
+	}
 
 	// Add truncation parameter if computer tool is being used
 	if provider == schemas.OpenAI && req.Tools != nil {
@@ -2457,7 +2461,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		// Convert service tier
-		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+		if bifrostReq.Params.ServiceTier != nil {
+			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
+			anthropicReq.ServiceTier = &mapped
+		}
 
 		if bifrostReq.Params.ExtraParams != nil {
 			anthropicReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
@@ -2738,9 +2745,13 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	bifrostResp.Model = response.Model
 
-	// Preserve stop reason from Anthropic response
 	if response.StopReason != "" {
-		bifrostResp.StopReason = schemas.Ptr(string(response.StopReason))
+		bifrostResp.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(response.StopReason))
+	}
+
+	if response.Usage != nil && response.Usage.ServiceTier != nil {
+		mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+		bifrostResp.ServiceTier = &mapped
 	}
 
 	return bifrostResp
@@ -2796,6 +2807,14 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	}
 
 	anthropicResp.Model = bifrostResp.Model
+
+	if bifrostResp.ServiceTier != nil {
+		if anthropicResp.Usage == nil {
+			anthropicResp.Usage = &AnthropicUsage{}
+		}
+		mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
+		anthropicResp.Usage.ServiceTier = &mapped
+	}
 
 	return anthropicResp
 }
@@ -3343,6 +3362,20 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 	// Flush any remaining pending tool calls (with tracking)
 	flushPendingToolCallsWithTracking()
+
+	// Trim trailing whitespace from the last assistant message
+	// ContentStr is converted to a single text ContentBlock during message conversion
+	// so we trim the text of that block instead.
+	lastMsgIndex := len(anthropicMessages) - 1
+	if isRequestMessage && lastMsgIndex >= 0 && anthropicMessages[lastMsgIndex].Role == AnthropicMessageRoleAssistant {
+		blocks := anthropicMessages[lastMsgIndex].Content.ContentBlocks
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Type == AnthropicContentBlockTypeText && blocks[j].Text != nil {
+				anthropicMessages[lastMsgIndex].Content.ContentBlocks[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
 
 	return anthropicMessages, systemContent
 }

@@ -1,5 +1,7 @@
 import {
 	Budget,
+	BulkRotateVirtualKeysRequest,
+	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
 	CreateModelConfigRequest,
 	CreatePricingOverrideRequest,
@@ -61,6 +63,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.access_profile_id !== undefined && { access_profile_id: params.access_profile_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
@@ -90,6 +93,23 @@ export const governanceApi = baseApi.injectEndpoints({
 			query: ({ vkId, data }) => ({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys"],
+		}),
+
+		rotateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, string>({
+			query: (vkId) => ({
+				url: `/governance/virtual-keys/${vkId}/rotate`,
+				method: "POST",
+			}),
+			invalidatesTags: ["VirtualKeys"],
+		}),
+
+		bulkRotateVirtualKeys: builder.mutation<BulkRotateVirtualKeysResponse, BulkRotateVirtualKeysRequest>({
+			query: (data) => ({
+				url: "/governance/virtual-keys/rotate",
+				method: "POST",
 				body: data,
 			}),
 			invalidatesTags: ["VirtualKeys"],
@@ -787,6 +807,8 @@ export const {
 	useGetVirtualKeyQuery,
 	useCreateVirtualKeyMutation,
 	useUpdateVirtualKeyMutation,
+	useRotateVirtualKeyMutation,
+	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
 
 	// Teams

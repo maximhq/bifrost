@@ -255,6 +255,27 @@ func TestPendingRealtimeToolOutputUpdate(t *testing.T) {
 	}
 }
 
+func TestRealtimeSessionDedupeNestedRawEvents(t *testing.T) {
+	t.Parallel()
+
+	session := bfws.NewSession(nil)
+	firstRaw := `{"type":"conversation.item.created","item":{"id":"item_tool_123","type":"function_call_output","output":"{\"nextResponse\":\"tool result\"}"}}`
+	laterRaw := `{"type":"conversation.item.done","item":{"id":"item_tool_123","type":"function_call_output","output":"{\"nextResponse\":\"tool result\"}"}}`
+
+	session.RecordRealtimeToolOutput("item_tool_123", `{"nextResponse":"tool result"}`, firstRaw)
+	session.RecordRealtimeToolOutput("item_tool_123", `{"nextResponse":"tool result"}`, laterRaw)
+
+	inputs := session.ConsumeRealtimeTurnInputs()
+	if len(inputs) != 1 {
+		t.Fatalf("len(inputs) = %d, want 1", len(inputs))
+	}
+	// Same-itemID updates replace raw with the latest event — later events
+	// (e.g. conversation.item.done) carry the same or more complete data.
+	if inputs[0].Raw != laterRaw {
+		t.Fatalf("Raw = %q, want latest raw event", inputs[0].Raw)
+	}
+}
+
 func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) {
 	rawRequest := `{"type":"conversation.item.input_audio_transcription.completed","transcript":""}`
 	rawResponse := []byte(`{
@@ -311,6 +332,49 @@ func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) 
 	}
 	if got, ok := resp.ResponsesResponse.ExtraFields.RawResponse.(string); !ok || got == "" {
 		t.Fatalf("RawResponse = %#v, want raw response string", resp.ResponsesResponse.ExtraFields.RawResponse)
+	}
+}
+
+func TestBuildRealtimeTurnPostResponseMergesTextAndToolCalls(t *testing.T) {
+	rawResponse := []byte(`{
+		"type":"response.done",
+		"response":{
+			"output":[
+				{
+					"id":"item_message_123",
+					"type":"message",
+					"content":[{"type":"text","text":"assistant text"}]
+				},
+				{
+					"id":"item_call_123",
+					"type":"function_call",
+					"call_id":"call_123",
+					"name":"lookup_weather",
+					"arguments":"{\"city\":\"SF\"}"
+				}
+			]
+		}
+	}`)
+
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123)
+	if resp == nil || resp.ResponsesResponse == nil {
+		t.Fatal("expected realtime post response")
+	}
+	if len(resp.ResponsesResponse.Output) != 2 {
+		t.Fatalf("len(Output) = %d, want 2", len(resp.ResponsesResponse.Output))
+	}
+	if resp.ResponsesResponse.Output[0].Type == nil || *resp.ResponsesResponse.Output[0].Type != schemas.ResponsesMessageTypeMessage {
+		t.Fatalf("Output[0].Type = %#v, want message", resp.ResponsesResponse.Output[0].Type)
+	}
+	toolOutput := resp.ResponsesResponse.Output[1]
+	if toolOutput.Type == nil || *toolOutput.Type != schemas.ResponsesMessageTypeFunctionCall {
+		t.Fatalf("Output[1].Type = %#v, want function_call", toolOutput.Type)
+	}
+	if toolOutput.ResponsesToolMessage == nil || toolOutput.ResponsesToolMessage.Name == nil || *toolOutput.ResponsesToolMessage.Name != "lookup_weather" {
+		t.Fatalf("tool name = %#v, want lookup_weather", toolOutput.ResponsesToolMessage)
+	}
+	if toolOutput.CallID == nil || *toolOutput.CallID != "call_123" {
+		t.Fatalf("CallID = %#v, want call_123", toolOutput.CallID)
 	}
 }
 

@@ -1,3 +1,28 @@
+plugins-builtins:
+  get:
+    operationId: listBuiltinPlugins
+    summary: List built-in plugin names
+    description: |
+      Returns the canonical list of built-in plugin names available in this Bifrost build.
+      Use this to discover which plugins can be enabled without supplying a custom binary.
+    tags:
+      - Plugins
+    responses:
+      '200':
+        description: Built-in plugin names retrieved successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plugins:
+                  type: array
+                  description: Canonical names of built-in plugins
+                  items:
+                    type: string
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 plugins:
   get:
     operationId: listPlugins

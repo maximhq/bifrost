@@ -388,6 +388,7 @@
             "pages": [
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai"
             ]
@@ -556,6 +557,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.3",
               "changelogs/v1.5.2",
               "changelogs/v1.5.1",
               "changelogs/v1.5.0",

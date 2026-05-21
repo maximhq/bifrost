@@ -395,6 +395,77 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 	var messages []ResponsesMessage
 
+	// Emit reasoning first so chat->responses->anthropic preserves reasoning content
+	// (Anthropic signatures, OpenAI encrypted/summary entries) for clients to echo back; see symmetric ToChatMessages buffering.
+	if cm.Role == ChatMessageRoleAssistant && cm.ChatAssistantMessage != nil {
+		am := cm.ChatAssistantMessage
+		if len(am.ReasoningDetails) > 0 {
+			var contentBlocks []ResponsesMessageContentBlock
+			var summaries []ResponsesReasoningSummary
+			var encryptedContent *string
+			for _, d := range am.ReasoningDetails {
+				switch d.Type {
+				case BifrostReasoningDetailsTypeText:
+					if d.Text != nil && *d.Text != "" {
+						contentBlocks = append(contentBlocks, ResponsesMessageContentBlock{
+							Type:      ResponsesOutputMessageContentTypeReasoning,
+							Text:      d.Text,
+							Signature: d.Signature,
+						})
+					}
+				case BifrostReasoningDetailsTypeSummary:
+					if d.Summary != nil {
+						summaries = append(summaries, ResponsesReasoningSummary{
+							Type: ResponsesReasoningContentBlockTypeSummaryText,
+							Text: *d.Summary,
+						})
+					}
+				case BifrostReasoningDetailsTypeEncrypted:
+					if d.Data != nil {
+						encryptedContent = d.Data
+					}
+				}
+			}
+			if len(contentBlocks) > 0 || len(summaries) > 0 || encryptedContent != nil {
+				reasoningType := ResponsesMessageTypeReasoning
+				reasoningRole := ResponsesInputMessageRoleAssistant
+				rm := ResponsesMessage{
+					ID:   Ptr("rs_" + GetRandomString(50)),
+					Type: &reasoningType,
+					Role: &reasoningRole,
+				}
+				if len(contentBlocks) > 0 {
+					rm.Content = &ResponsesMessageContent{ContentBlocks: contentBlocks}
+				}
+				if len(summaries) > 0 || encryptedContent != nil {
+					rm.ResponsesReasoning = &ResponsesReasoning{
+						Summary:          summaries,
+						EncryptedContent: encryptedContent,
+					}
+				}
+				messages = append(messages, rm)
+			}
+		} else if am.Reasoning != nil && *am.Reasoning != "" {
+			// Fallback for providers that surface plain reasoning text only (e.g. DeepSeek).
+			reasoningType := ResponsesMessageTypeReasoning
+			reasoningRole := ResponsesInputMessageRoleAssistant
+			reasoningText := *am.Reasoning
+			messages = append(messages, ResponsesMessage{
+				ID:   Ptr("rs_" + GetRandomString(50)),
+				Type: &reasoningType,
+				Role: &reasoningRole,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: ResponsesOutputMessageContentTypeReasoning,
+							Text: &reasoningText,
+						},
+					},
+				},
+			})
+		}
+	}
+
 	// Check if this is an assistant message with multiple tool calls that need expansion
 	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
 		// Expand multiple tool calls into separate function_call items
@@ -641,9 +712,61 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 
 	var chatMessages []ChatMessage
 	var currentToolCalls []ChatAssistantMessageToolCall
+	var pendingReasoning strings.Builder
+	var pendingReasoningDetails []ChatReasoningDetails
+
+	// attachPendingReasoning carries the buffered reasoning onto the next assistant turn so multi-turn flows via the Responses→Chat fallback don't 400 on DeepSeek thinking mode.
+	attachPendingReasoning := func(msg *ChatAssistantMessage) {
+		if pendingReasoning.Len() == 0 && len(pendingReasoningDetails) == 0 {
+			return
+		}
+		if msg.Reasoning == nil && pendingReasoning.Len() > 0 {
+			text := pendingReasoning.String()
+			msg.Reasoning = &text
+		}
+		if len(pendingReasoningDetails) > 0 {
+			msg.ReasoningDetails = append(msg.ReasoningDetails, pendingReasoningDetails...)
+		}
+		pendingReasoning.Reset()
+		pendingReasoningDetails = nil
+	}
 
 	for _, rm := range rms {
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
+			// Buffer reasoning so it attaches to the next assistant message.
+			if rm.Content != nil {
+				for _, block := range rm.Content.ContentBlocks {
+					if block.Type == ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+						if pendingReasoning.Len() > 0 {
+							pendingReasoning.WriteByte('\n')
+						}
+						pendingReasoning.WriteString(*block.Text)
+						pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+							Index:     len(pendingReasoningDetails),
+							Type:      BifrostReasoningDetailsTypeText,
+							Text:      block.Text,
+							Signature: block.Signature,
+						})
+					}
+				}
+			}
+			if rm.ResponsesReasoning != nil {
+				for _, summary := range rm.ResponsesReasoning.Summary {
+					summaryText := summary.Text
+					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						Index:   len(pendingReasoningDetails),
+						Type:    BifrostReasoningDetailsTypeSummary,
+						Summary: &summaryText,
+					})
+				}
+				if rm.ResponsesReasoning.EncryptedContent != nil {
+					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						Index: len(pendingReasoningDetails),
+						Type:  BifrostReasoningDetailsTypeEncrypted,
+						Data:  rm.ResponsesReasoning.EncryptedContent,
+					})
+				}
+			}
 			continue
 		}
 
@@ -675,11 +798,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if len(currentToolCalls) > 0 {
 			// Create a copy of the slice to avoid shared slice header issues
 			toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+			assistant := &ChatAssistantMessage{
+				ToolCalls: toolCallsCopy,
+			}
+			attachPendingReasoning(assistant)
 			chatMessages = append(chatMessages, ChatMessage{
-				Role: ChatMessageRoleAssistant,
-				ChatAssistantMessage: &ChatAssistantMessage{
-					ToolCalls: toolCallsCopy,
-				},
+				Role:                 ChatMessageRoleAssistant,
+				ChatAssistantMessage: assistant,
 			})
 			currentToolCalls = nil // Reset for next batch
 		}
@@ -818,6 +943,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			}
 		}
 
+		// Attach any buffered reasoning to assistant turns (regardless of
+		// whether they also carry tool calls or just text content).
+		if cm.Role == ChatMessageRoleAssistant && (pendingReasoning.Len() > 0 || len(pendingReasoningDetails) > 0) {
+			if cm.ChatAssistantMessage == nil {
+				cm.ChatAssistantMessage = &ChatAssistantMessage{}
+			}
+			attachPendingReasoning(cm.ChatAssistantMessage)
+		}
+
 		chatMessages = append(chatMessages, cm)
 	}
 
@@ -825,11 +959,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(currentToolCalls) > 0 {
 		// Create a copy of the slice to avoid shared slice header issues
 		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+		assistant := &ChatAssistantMessage{
+			ToolCalls: toolCallsCopy,
+		}
+		attachPendingReasoning(assistant)
 		chatMessages = append(chatMessages, ChatMessage{
-			Role: ChatMessageRoleAssistant,
-			ChatAssistantMessage: &ChatAssistantMessage{
-				ToolCalls: toolCallsCopy,
-			},
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
 		})
 	}
 

@@ -10,6 +10,9 @@ import (
 
 const (
 	DefaultVertexAnthropicVersion = "vertex-2023-10-16"
+
+	// VertexServiceTierHeader is the HTTP header used to request priority or flex processing on the global endpoint.
+	VertexServiceTierHeader = "X-Vertex-AI-LLM-Shared-Request-Type"
 )
 
 // PhoneticEncoding represents the phonetic encoding of a phrase.

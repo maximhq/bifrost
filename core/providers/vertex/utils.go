@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-	"github.com/maximhq/bifrost/core/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
@@ -173,6 +173,71 @@ func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID
 
 	// Gemini models use projectID
 	return getVertexPublisherModelURL(region, "v1", projectID, "google", deployment, method)
+}
+
+// vertexPriorityModels lists model name prefixes that support Priority PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/priority-paygo
+var vertexPriorityModels = []string{
+	"gemini-2.5-pro",
+	"gemini-2.5-flash",
+	"gemini-2.5-flash-lite",
+	"gemini-3-flash-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3.1-flash-lite",
+}
+
+// vertexFlexModels lists model name prefixes that support Flex PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/flex-paygo
+var vertexFlexModels = []string{
+	"gemini-3.1-flash-lite",
+	"gemini-3.1-flash-image-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-image-preview",
+}
+
+// isVertexModelSupportedForTier reports whether a model supports the given service tier.
+// Custom/fine-tuned models (all-digits IDs) are passed through without restriction since
+// their base model cannot be determined from the ID alone.
+func isVertexModelSupportedForTier(model string, tier schemas.BifrostServiceTier) bool {
+	if schemas.IsAllDigitsASCII(model) {
+		return true
+	}
+	normalized := gemini.NormalizeModelName(model)
+	var prefixes []string
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		prefixes = vertexPriorityModels
+	case schemas.BifrostServiceTierFlex:
+		prefixes = vertexFlexModels
+	default:
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// vertexServiceTierHeaderValue returns the value for the X-Vertex-AI-LLM-Shared-Request-Type header,
+// or "" if no header should be set. Requires the global endpoint and a supported model.
+func vertexServiceTierHeaderValue(region string, model string, tier schemas.BifrostServiceTier) string {
+	if region != "global" {
+		return ""
+	}
+	if !isVertexModelSupportedForTier(model, tier) {
+		return ""
+	}
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		return "priority"
+	case schemas.BifrostServiceTierFlex:
+		return "flex"
+	default:
+		return ""
+	}
 }
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.

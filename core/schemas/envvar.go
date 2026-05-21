@@ -158,6 +158,28 @@ func (e *EnvVar) Redacted() *EnvVar {
 	}
 }
 
+// FullyRedacted returns a copy of the EnvVar with Val replaced by a fixed placeholder
+// so no substring of the original value is exposed. Use for API responses where
+// Redacted is unsafe (e.g. literal proxy passwords). FromEnv and EnvVar are preserved
+// so env references remain visible and round-trip update merges still match via Equals.
+func (e *EnvVar) FullyRedacted() *EnvVar {
+	if e == nil {
+		return nil
+	}
+	if e.Val == "" {
+		return &EnvVar{
+			Val:     "",
+			FromEnv: e.FromEnv,
+			EnvVar:  e.EnvVar,
+		}
+	}
+	return &EnvVar{
+		Val:     "<REDACTED>",
+		FromEnv: e.FromEnv,
+		EnvVar:  e.EnvVar,
+	}
+}
+
 // UnmarshalJSON unmarshals the value from JSON.
 func (e *EnvVar) UnmarshalJSON(data []byte) error {
 	// This is always going to be value

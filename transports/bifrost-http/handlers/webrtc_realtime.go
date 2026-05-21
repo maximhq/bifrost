@@ -13,6 +13,7 @@ import (
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -62,6 +63,10 @@ func (h *WebRTCRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...
 	// Base bifrost route — GA /calls format (multipart sdp + session)
 	r.POST("/v1/realtime/calls", handler)
 
+	// Base bifrost route — legacy format (raw SDP or multipart on /v1/realtime)
+	h.legacyRoutes["/v1/realtime"] = ""
+	r.POST("/v1/realtime", handler)
+
 	// OpenAI integration routes — /calls variants (GA format)
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
 		r.POST(path, handler)
@@ -105,7 +110,7 @@ func (h *WebRTCRealtimeHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 // Raw SDP bodies (application/sdp) fall back to ?model= for the legacy
 // raw-SDP path only; the multipart contract has no ?model= fallback.
 func (h *WebRTCRealtimeHandler) handleCallsRequest(ctx *fasthttp.RequestCtx) {
-	sdpOffer, providerKey, model, normalizedSession, bifrostErr := parseCallsWebRTCRequest(ctx)
+	sdpOffer, providerKey, model, normalizedSession, bifrostErr := parseCallsWebRTCRequest(ctx, h.config)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -124,7 +129,7 @@ func (h *WebRTCRealtimeHandler) handleCallsRequest(ctx *fasthttp.RequestCtx) {
 	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, exchangeSDP)
 }
 
-func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx) (string, schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
+func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (string, schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
 	contentType := strings.ToLower(string(ctx.Request.Header.ContentType()))
 	path := string(ctx.Path())
 	if strings.HasPrefix(contentType, "multipart/form-data") {
@@ -142,7 +147,7 @@ func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx) (string, schemas.ModelPro
 		if strings.TrimSpace(sessionField) == "" {
 			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session form field is required", nil)
 		}
-		providerKey, model, normalizedSession, bifrostErr := resolveRealtimeSDPTarget(path, []byte(sessionField))
+		providerKey, model, normalizedSession, bifrostErr := resolveRealtimeSDPTarget(ctx, config, path, []byte(sessionField))
 		if bifrostErr != nil {
 			return "", "", "", nil, bifrostErr
 		}
@@ -160,6 +165,18 @@ func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx) (string, schemas.ModelPro
 	}
 
 	providerKey, model := schemas.ParseModelString(rawModel, realtimeDefaultProviderForPath(path))
+	// Model catalog auto-resolution for bare model names on base /v1 routes
+	if providerKey == "" && strings.TrimSpace(model) != "" {
+		providers := config.GetProvidersForModel(model)
+		if len(providers) > 0 {
+			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+				Model:            model,
+				ResolvedProvider: providers[0],
+				AllProviders:     providers,
+			})
+			providerKey = providers[0]
+		}
+	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {
 		if realtimeDefaultProviderForPath(path) == "" {
 			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "model must use provider/model on /v1 realtime routes", nil)
@@ -180,6 +197,18 @@ func (h *WebRTCRealtimeHandler) handleLegacyRequest(ctx *fasthttp.RequestCtx, de
 	}
 
 	providerKey, model := schemas.ParseModelString(rawModel, defaultProvider)
+	// Model catalog auto-resolution for bare model names on base /v1 routes
+	if providerKey == "" && strings.TrimSpace(model) != "" {
+		providers := h.config.GetProvidersForModel(model)
+		if len(providers) > 0 {
+			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+				Model:            model,
+				ResolvedProvider: providers[0],
+				AllProviders:     providers,
+			})
+			providerKey = providers[0]
+		}
+	}
 	if providerKey == "" || model == "" {
 		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "invalid model: "+rawModel, nil))
 		return
@@ -195,6 +224,16 @@ func (h *WebRTCRealtimeHandler) handleLegacyRequest(ctx *fasthttp.RequestCtx, de
 	if !ok {
 		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "provider does not support legacy realtime WebRTC: "+string(providerKey), nil))
 		return
+	}
+
+	// Strip provider prefixes from nested model fields (e.g. input_audio_transcription.model)
+	if sessionJSON != nil {
+		if root, parseErr := schemas.ParseRealtimeClientSecretBody(sessionJSON); parseErr == nil {
+			openai.StripNestedModelPrefixes(root)
+			if updated, marshalErr := json.Marshal(root); marshalErr == nil {
+				sessionJSON = updated
+			}
+		}
 	}
 
 	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError) {
@@ -254,6 +293,10 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 ) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
+	// Apply governance/routing values from the transport middleware.
+	// ConvertToBifrostContext creates a fresh context that doesn't carry the user
+	// values the middleware stored on the fasthttp RequestCtx via SetUserValue.
+	applyRealtimeMiddlewareValues(bifrostCtx, snapshotRealtimeMiddlewareValues(ctx))
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if strings.HasPrefix(string(ctx.Path()), "/openai") {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
@@ -271,6 +314,11 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	} else {
 		model = authKey.Aliases.Resolve(model)
 	}
+
+	// Compute raw storage flag from provider config + per-request header overrides.
+	// Normal inference computes this inside bifrost.executeRequest, which is bypassed
+	// for realtime WebRTC connections.
+	applyRealtimeRawStorageContext(bifrostCtx, h.client.ComputeRawStorageForProvider(bifrostCtx, providerKey))
 
 	boundExchange := func(rCtx *schemas.BifrostContext, upstreamOffer string) (string, *schemas.BifrostError) {
 		return exchangeSDP(rCtx, authKey, upstreamOffer)
@@ -792,6 +840,7 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 		}
 	}
 
+	sanitizeRealtimeSessionEventForProvider(event)
 	providerEvent, err := r.provider.ToProviderRealtimeEvent(event)
 	if err != nil {
 		if startsTurn {
@@ -816,6 +865,9 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 		r.sendUpstream(msg.Data, msg.IsString)
 		return
 	}
+	// Track session metadata only after provider translation succeeds. Rejected
+	// session.update events must not affect later turn logs.
+	updateRealtimeSessionFromEvent(r.session, event)
 	r.sendUpstream(providerEvent, msg.IsString)
 }
 
@@ -844,6 +896,8 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 		if event.Session != nil && event.Session.ID != "" {
 			r.session.SetProviderSessionID(event.Session.ID)
 		}
+		// Track session tool definitions from session.created/session.updated (server→client).
+		updateRealtimeSessionFromEvent(r.session, event)
 		inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 		if inputSummary != "" {
 			r.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
@@ -1062,11 +1116,25 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeySelectedKeyID,
 		schemas.BifrostContextKeySelectedKeyName,
 		schemas.BifrostContextKeyIsEnterprise,
+		schemas.BifrostContextKeyRoutingEnginesUsed,
+		schemas.BifrostContextKeyRoutingEngineLogs,
+		schemas.BifrostContextKeyShouldStoreRawInLogs,
+		schemas.BifrostContextKeyAllowPerRequestStorageOverride,
+		schemas.BifrostContextKeyAllowPerRequestRawOverride,
+		schemas.BifrostContextKeyStoreRawRequestResponse,
+		schemas.BifrostContextKeyDisableContentLogging,
+		schemas.BifrostContextKeyCaptureRawRequest,
+		schemas.BifrostContextKeyCaptureRawResponse,
+		schemas.BifrostContextKeyDropRawRequestFromClient,
+		schemas.BifrostContextKeyDropRawResponseFromClient,
 	} {
 		if value := requestCtx.Value(key); value != nil {
 			relayCtx.SetValue(key, value)
 		}
 	}
+
+	// Tag the relay context with transport type for downstream logging/metadata.
+	relayCtx.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
 
 	return relayCtx, cancel
 }
@@ -1149,7 +1217,7 @@ func sendDataChannelMessage(dc *webrtc.DataChannel, payload []byte, isString boo
 	}
 }
 
-func resolveRealtimeSDPTarget(path string, sessionJSON []byte) (schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
+func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path string, sessionJSON []byte) (schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
 	root, err := schemas.ParseRealtimeClientSecretBody(sessionJSON)
 	if err != nil {
 		return "", "", nil, err
@@ -1166,6 +1234,18 @@ func resolveRealtimeSDPTarget(path string, sessionJSON []byte) (schemas.ModelPro
 	}
 
 	providerKey, model := schemas.ParseModelString(strings.TrimSpace(rawModel), realtimeDefaultProviderForPath(path))
+	// Model catalog auto-resolution for bare model names in session body
+	if providerKey == "" && strings.TrimSpace(model) != "" {
+		providers := config.GetProvidersForModel(model)
+		if len(providers) > 0 {
+			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
+				Model:            model,
+				ResolvedProvider: providers[0],
+				AllProviders:     providers,
+			})
+			providerKey = providers[0]
+		}
+	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {
 		if realtimeDefaultProviderForPath(path) == "" {
 			return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model must use provider/model on /v1 realtime routes", nil)
@@ -1178,6 +1258,7 @@ func resolveRealtimeSDPTarget(path string, sessionJSON []byte) (schemas.ModelPro
 		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized session model", marshalErr)
 	}
 	root["model"] = normalizedModel
+	openai.StripNestedModelPrefixes(root)
 	normalizedSession, marshalErr := json.Marshal(root)
 	if marshalErr != nil {
 		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized realtime session", marshalErr)

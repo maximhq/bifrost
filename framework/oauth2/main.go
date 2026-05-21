@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/temptoken"
 )
 
 const (
@@ -32,6 +34,13 @@ type OAuth2Provider struct {
 	configStore    configstore.ConfigStore
 	mu             sync.RWMutex
 	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; doubles each attempt (1×, 2×, 4×)
+
+	// tempTokens, when non-nil, is used by InitiateUserOAuthFlow to mint a
+	// short-lived mcp_auth temp token and embed it in the returned auth-page
+	// URL as a fragment. Optional — when nil, the URL is returned without a
+	// fragment and the page works only for callers already authenticated to
+	// the dashboard.
+	tempTokens *temptoken.Service
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -43,6 +52,38 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 	return &OAuth2Provider{
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
+	}
+}
+
+// SetTempTokenService installs the temp-token service used by
+// InitiateUserOAuthFlow to mint the mcp_auth token embedded in the
+// auth-page URL fragment. Called by server startup once both services
+// have been constructed (the provider is built first by lib/config.go,
+// the service later by the HTTP transport).
+func (p *OAuth2Provider) SetTempTokenService(svc *temptoken.Service) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tempTokens = svc
+}
+
+// cleanupFlow deletes the flow row and any temp tokens minted for it. Called
+// on every terminal transition (success or any failure) so the auth-page
+// link stops working as soon as the work it authorized ends.
+//
+// Detached from the caller's context via WithoutCancel so a client cancellation
+// (e.g. the browser closing the tab after the upstream OAuth bounce) can't
+// short-circuit the deletes and leave the rows alive until the sweep. Mirrors
+// the pattern used by markExpiredIfPermanent in this file.
+func (p *OAuth2Provider) cleanupFlow(ctx context.Context, sessionID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := p.configStore.DeleteOauthUserSession(cleanupCtx, sessionID); err != nil {
+		logger.Warn("per-user OAuth flow row cleanup failed: session_id=%s err=%v", sessionID, err)
+	}
+	if p.tempTokens != nil {
+		if _, err := p.tempTokens.DeleteByResourceID(cleanupCtx, temptoken.MCPAuthScopeName, sessionID); err != nil {
+			logger.Warn("per-user OAuth temp-token cleanup failed: session_id=%s err=%v", sessionID, err)
+		}
 	}
 }
 
@@ -591,34 +632,94 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	return nil
 }
 
-// buildAuthorizeURLWithPKCE constructs the OAuth authorization URL with PKCE parameters
-func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string) string {
-	params := url.Values{}
-	params.Set("response_type", "code")
-	params.Set("client_id", clientID)
-	params.Set("redirect_uri", redirectURI)
-	params.Set("state", state)
-	params.Set("code_challenge", codeChallenge)
-	params.Set("code_challenge_method", "S256") // SHA-256 hashing
-	if len(scopes) > 0 {
-		params.Set("scope", strings.Join(scopes, " "))
+// BuildUpstreamAuthorizeURL reconstructs the upstream provider authorization
+// URL for a pending per-user OAuth flow. Called by the frontend sessions tab
+// when the user clicks "Authenticate" — at which point the flow row already
+// exists (from a prior InitiateUserOAuthFlow), the CSRF state + PKCE verifier
+// are stored on it, and we just need to hand the user the upstream redirect.
+//
+// The code_challenge is recomputed deterministically from the stored verifier
+// so we don't have to persist it separately.
+func (p *OAuth2Provider) BuildUpstreamAuthorizeURL(ctx context.Context, flowID string) (string, error) {
+	flow, err := p.configStore.GetOauthUserSessionByID(ctx, flowID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load pending oauth flow: %w", err)
 	}
+	if flow == nil {
+		return "", schemas.ErrOAuth2NotPerUserSession
+	}
+	if flow.Status != "pending" {
+		return "", fmt.Errorf("oauth flow %s is %s: %w", flowID, flow.Status, schemas.ErrOAuth2FlowNotPending)
+	}
+	if time.Now().After(flow.ExpiresAt) {
+		return "", fmt.Errorf("oauth flow %s: %w", flowID, schemas.ErrOAuth2FlowExpired)
+	}
+	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, flow.OauthConfigID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load template oauth config: %w", err)
+	}
+	if templateConfig == nil {
+		return "", schemas.ErrOAuth2ConfigNotFound
+	}
+	// Recompute the PKCE challenge from the stored verifier (deterministic).
+	hash := sha256.Sum256([]byte(flow.CodeVerifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	return authorizeURL + "?" + params.Encode()
+	var scopes []string
+	if templateConfig.Scopes != "" {
+		if err := json.Unmarshal([]byte(templateConfig.Scopes), &scopes); err != nil {
+			return "", fmt.Errorf("failed to parse oauth scopes for flow %s: %w", flowID, err)
+		}
+	}
+	redirectURI := flow.RedirectURI
+	if redirectURI == "" {
+		redirectURI = templateConfig.RedirectURI
+	}
+	return p.buildAuthorizeURLWithPKCE(
+		templateConfig.AuthorizeURL,
+		templateConfig.GetResolvedClientID(),
+		redirectURI,
+		flow.State,
+		codeChallenge,
+		scopes,
+	), nil
 }
 
-// exchangeCodeForTokens exchanges authorization code for access/refresh tokens
-func (p *OAuth2Provider) exchangeCodeForTokens(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI string) (*schemas.OAuth2TokenExchangeResponse, error) {
-	data := url.Values{}
-	data.Set("grant_type", "authorization_code")
-	data.Set("code", code)
-	data.Set("redirect_uri", redirectURI)
-	data.Set("client_id", clientID)
-	if clientSecret != "" {
-		data.Set("client_secret", clientSecret)
+// buildAuthorizeURLWithPKCE constructs the OAuth authorization URL with PKCE
+// parameters, preserving any query params already present on the stored
+// authorizeURL. Naive "authorizeURL + ?" + params.Encode() concatenation
+// would produce malformed URLs like "...?existing=1?response_type=code" when
+// the provider's stored URL is already parameterized.
+func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string) string {
+	parsed, err := url.Parse(authorizeURL)
+	if err != nil {
+		// Fall back to the naive form rather than dropping the auth URL —
+		// callers expect a non-empty return. The OAuth provider will reject
+		// a malformed URL, which is the same end state as not redirecting.
+		params := url.Values{}
+		params.Set("response_type", "code")
+		params.Set("client_id", clientID)
+		params.Set("redirect_uri", redirectURI)
+		params.Set("state", state)
+		params.Set("code_challenge", codeChallenge)
+		params.Set("code_challenge_method", "S256")
+		if len(scopes) > 0 {
+			params.Set("scope", strings.Join(scopes, " "))
+		}
+		return authorizeURL + "?" + params.Encode()
 	}
-
-	return p.callTokenEndpoint(ctx, tokenURL, data)
+	q := parsed.Query()
+	q.Set("response_type", "code")
+	q.Set("client_id", clientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("state", state)
+	q.Set("code_challenge", codeChallenge)
+	q.Set("code_challenge_method", "S256") // SHA-256 hashing
+	if len(scopes) > 0 {
+		q.Set("scope", strings.Join(scopes, " "))
+	}
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
 }
 
 // exchangeCodeForTokensWithPKCE exchanges authorization code for access/refresh tokens with PKCE verifier
@@ -783,21 +884,21 @@ func generateSecureRandomString(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(bytes)[:length], nil
 }
 
-// generateSessionToken generates a cryptographically secure opaque session token (hex-encoded)
-func generateSessionToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("failed to generate session token: %w", err)
-	}
-	return fmt.Sprintf("%x", bytes), nil
-}
-
 // ---------- Per-User OAuth Methods ----------
 
-// InitiateUserOAuthFlow creates a per-user OAuth session and returns the authorization URL.
-// It reuses the template OAuth config (which holds client_id, token_url, etc.) to build the flow.
-func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string) (*schemas.OAuth2FlowInitiation, string, error) {
-	// Load the template OAuth config
+// InitiateUserOAuthFlow creates or refreshes the per-user OAuth flow row for a
+// given (mode, identity, mcp_client) binding and returns the auth landing URL.
+//
+// Determinism: there is exactly one flow row per binding. If one already exists
+// (from a prior auth attempt), it's updated in place — fresh CSRF state, fresh
+// PKCE verifier, status reset to 'pending'. Otherwise a new row is inserted.
+// Reauth never duplicates rows; revoke deletes them.
+//
+// The function errors out cleanly on any misconfig (missing identity, unknown
+// mode, missing template config) — no fallbacks, no generated identities.
+func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
+
+	// 1. Load template OAuth config.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to load template oauth config: %w", err)
@@ -806,112 +907,145 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		return nil, "", schemas.ErrOAuth2ConfigNotFound
 	}
 
-	// Generate state token for CSRF protection
+	// 2. Resolve identity from context for the given mode. Required (no
+	//    fallbacks). Each mode populates exactly one of (vkId, uid, sessionID).
+	var (
+		vkId, uid           *string
+		sessionID, lookupID string
+	)
+	switch flowMode {
+	case schemas.MCPAuthModeUser:
+		v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+		if v == "" {
+			// Deferred-fill: external MCP client OAuth init where the user
+			// identity is stamped at completion time. No identity → no
+			// existing-row lookup; we always insert a fresh row.
+			uid = nil
+		} else {
+			uid = &v
+			lookupID = v
+		}
+	case schemas.MCPAuthModeVK:
+		v, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+		if v == "" {
+			return nil, "", fmt.Errorf("vk-mode flow requires a resolved virtual key in context")
+		}
+		vkId = &v
+		lookupID = v
+	case schemas.MCPAuthModeSession:
+		v, _ := ctx.Value(schemas.BifrostContextKeyMCPSessionID).(string)
+		if v == "" {
+			return nil, "", fmt.Errorf("session-mode flow requires x-bf-mcp-session-id in context")
+		}
+		sessionID = v
+		lookupID = v
+	default:
+		return nil, "", fmt.Errorf("unknown auth mode for flow: %s", flowMode)
+	}
+
+	// 3. Generate fresh CSRF state + PKCE verifier for this attempt.
 	state, err := generateSecureRandomString(32)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate state token: %w", err)
 	}
-
-	// Generate PKCE challenge
-	codeVerifier, codeChallenge, err := GeneratePKCEChallenge()
+	codeVerifier, _, err := GeneratePKCEChallenge()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate PKCE challenge: %w", err)
 	}
-
-	// Parse scopes from template config
-	var scopes []string
-	if templateConfig.Scopes != "" {
-		json.Unmarshal([]byte(templateConfig.Scopes), &scopes)
-	}
-
-	// Create per-user OAuth session
-	sessionID := uuid.New().String()
 	expiresAt := time.Now().Add(15 * time.Minute)
 
-	// Propagate identity from context so the callback can link the token to the user
-	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
-	// For OSS: prefer X-Bf-User-Id header as user identity
-	if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
-		userID = mcpUserID
-	}
-
-	// If a Bifrost MCP session token is present in context, reuse it as the session token
-	// so the MCP server token is stored under the same key used for subsequent lookups.
-	// Otherwise generate a fresh token.
-	sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
-	if sessionToken == "" {
-		sessionToken, err = generateSessionToken()
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to generate session token: %w", err)
+	// 4. Single canonical lookup: one flow row per (mode, identity, mcp_client).
+	//    Deferred-fill user-mode (lookupID empty) always inserts a fresh row.
+	//
+	//    Only treat a 'pending' hit as reusable. A 'claiming' row means an
+	//    upstream callback is mid-flight for this binding — rotating its
+	//    state/PKCE here would invalidate that callback's state token and
+	//    leave the user with an "OAuth flow not found" error. Falling through
+	//    to insert a fresh row lets both flows complete independently.
+	var existing *tables.TableOauthUserSession
+	if lookupID != "" {
+		found, lookupErr := p.configStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, flowMode, lookupID, mcpClientID)
+		if lookupErr != nil {
+			return nil, "", fmt.Errorf("failed to look up existing flow row: %w", lookupErr)
+		}
+		if found != nil && found.Status == "pending" {
+			existing = found
 		}
 	}
-	var vkId *string
-	if virtualKeyID != "" {
-		vkId = &virtualKeyID
-	}
-	var uid *string
-	if userID != "" {
-		uid = &userID
-	}
-	// session_token_hash has a unique index, so if the user is re-authenticating
-	// with a session token that already has a row (e.g. after a previous
-	// authorized flow whose tokens later got purged), we must update the
-	// existing row rather than insert a fresh one — otherwise INSERT trips the
-	// unique constraint. The CSRF state, PKCE verifier, and flow expiry are
-	// always rotated; identity fields refresh from the current context.
-	existing, err := p.configStore.GetOauthUserSessionBySessionToken(ctx, sessionToken)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to lookup per-user oauth session for re-auth: %w", err)
-	}
+
+	var rowID string
 	if existing != nil {
-		existing.MCPClientID = mcpClientID
+		// Reauth path: update the same row in place. Identity columns already
+		// match (we looked them up); only rotate the OAuth-dance fields.
 		existing.OauthConfigID = oauthConfigID
 		existing.State = state
 		existing.RedirectURI = redirectURI
 		existing.CodeVerifier = codeVerifier
-		existing.VirtualKeyID = vkId
-		existing.UserID = uid
 		existing.Status = "pending"
 		existing.ExpiresAt = expiresAt
 		if err := p.configStore.UpdateOauthUserSession(ctx, existing); err != nil {
-			return nil, "", fmt.Errorf("failed to update per-user oauth session for re-auth: %w", err)
+			return nil, "", fmt.Errorf("failed to update flow row for reauth: %w", err)
 		}
-		sessionID = existing.ID
+		rowID = existing.ID
 	} else {
-		session := &tables.TableOauthUserSession{
-			ID:            sessionID,
+		// First-time auth (or deferred-fill user): insert a new row. SessionID
+		// is populated only for session-mode (the caller's x-bf-mcp-session-id);
+		// vk/user-mode rows have an empty SessionID — their identity lives in
+		// virtual_key_id / user_id.
+		row := &tables.TableOauthUserSession{
+			ID:            uuid.New().String(),
 			MCPClientID:   mcpClientID,
 			OauthConfigID: oauthConfigID,
 			State:         state,
 			RedirectURI:   redirectURI,
 			CodeVerifier:  codeVerifier,
-			SessionToken:  sessionToken,
+			SessionID:     sessionID,
 			VirtualKeyID:  vkId,
 			UserID:        uid,
+			FlowMode:      string(flowMode),
 			Status:        "pending",
 			ExpiresAt:     expiresAt,
 		}
-		if err := p.configStore.CreateOauthUserSession(ctx, session); err != nil {
-			return nil, "", fmt.Errorf("failed to create per-user oauth session: %w", err)
+		if err := p.configStore.CreateOauthUserSession(ctx, row); err != nil {
+			return nil, "", fmt.Errorf("failed to create flow row: %w", err)
+		}
+		rowID = row.ID
+	}
+	sessionID = rowID
+
+	// Frontend URL the user (or their teammate) opens in a browser. The
+	// upstream provider URL is reconstructed on demand by the /flows/:id/start
+	// endpoint using the stored CSRF state + PKCE verifier — we don't pin it
+	// here so the row stays the single source of truth for those fields.
+	//
+	// Derive the Bifrost base URL from the OAuth callback redirect URI passed
+	// in by the caller — it always has the shape "{base}/api/oauth/callback".
+	// Flow ID rides as a query param to match the flat-route convention used
+	// elsewhere in the dashboard UI.
+	frontendURL := strings.TrimSuffix(redirectURI, "/api/oauth/callback") + "/workspace/mcp-sessions/auth?flow=" + sessionID
+
+	// Mint a mcp_auth temp token bound to this flow's row ID and embed it in
+	// the URL as a fragment so a browser hitting the auth page without a
+	// dashboard session can still call the per-user flow endpoints. The
+	// fragment never leaves the browser (not in server logs, not in the
+	// upstream-OAuth Referer), unlike a query param.
+	if p.tempTokens != nil {
+		ttl := time.Until(expiresAt)
+		if ttl > 0 {
+			plaintext, mintErr := p.tempTokens.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
+			if mintErr != nil {
+				logger.Warn("Failed to mint mcp_auth temp token for flow %s: %v (link still usable for dashboard-authenticated callers)", sessionID, mintErr)
+			} else {
+				frontendURL = frontendURL + "#t=" + plaintext
+			}
 		}
 	}
-
-	// Build authorize URL with PKCE
-	authURL := p.buildAuthorizeURLWithPKCE(
-		templateConfig.AuthorizeURL,
-		templateConfig.GetResolvedClientID(),
-		redirectURI,
-		state,
-		codeChallenge,
-		scopes,
-	)
 
 	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", sessionID, mcpClientID)
 
 	return &schemas.OAuth2FlowInitiation{
 		OauthConfigID: oauthConfigID,
-		AuthorizeURL:  authURL,
+		AuthorizeURL:  frontendURL,
 		State:         state,
 		ExpiresAt:     expiresAt,
 	}, sessionID, nil
@@ -930,19 +1064,27 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		return "", schemas.ErrOAuth2NotPerUserSession
 	}
 
-	// Check expiry
+	// Check expiry. Flow rows are deleted on every terminal transition
+	// (authorized / failed / expired) so the table doesn't accumulate
+	// dead rows. The UI sees 404 on flow-detail and renders "expired
+	// or already completed" — no audit trail to preserve here.
 	if time.Now().After(session.ExpiresAt) {
-		session.Status = "expired"
-		p.configStore.UpdateOauthUserSession(ctx, session)
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("per-user oauth flow expired")
 	}
 
-	// Load template OAuth config for token_url, client_id, etc.
+	// Load template OAuth config for token_url, client_id, etc. Split the
+	// nil-config case from a real lookup failure — otherwise wrapping a nil
+	// error with %w produces a useless "%!w(<nil>)" string and the real cause
+	// (config row missing) is hidden.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, session.OauthConfigID)
-	if err != nil || templateConfig == nil {
-		session.Status = "failed"
-		p.configStore.UpdateOauthUserSession(ctx, session)
+	if err != nil {
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("failed to load template oauth config: %w", err)
+	}
+	if templateConfig == nil {
+		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+		return "", schemas.ErrOAuth2ConfigNotFound
 	}
 	// Exchange code for tokens with PKCE verifier
 	// Use the redirect URI stored in the session (same one used in authorize step)
@@ -961,22 +1103,14 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		session.CodeVerifier,
 	)
 	if err != nil {
-		session.Status = "failed"
-		p.configStore.UpdateOauthUserSession(ctx, session)
+		p.cleanupFlow(ctx, session.ID)
 		return "", fmt.Errorf("per-user token exchange failed: %w", err)
 	}
 
-	// Use existing session token if set (e.g., Bifrost session ID from MCP spec OAuth flow),
-	// otherwise generate a new one (for standalone per-user OAuth).
-	sessionToken := session.SessionToken
-	if sessionToken == "" {
-		sessionToken, err = generateSessionToken()
-		if err != nil {
-			session.Status = "failed"
-			p.configStore.UpdateOauthUserSession(ctx, session)
-			return "", err
-		}
-	}
+	// SessionID is carried from the flow row as-is: populated for session-mode
+	// flows (the caller's x-bf-mcp-session-id) and empty for vk/user-mode.
+	// No fallback generation — identity for vk/user lives in their own columns.
+	sessionID := session.SessionID
 
 	// Parse scopes
 	var scopes []string
@@ -985,7 +1119,47 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	}
 	scopesJSON, _ := json.Marshal(scopes)
 
-	// Create per-user OAuth token record, propagating identity from session
+	// Resolve identity columns from the flow row, honoring its flow_mode. Only
+	// the column that matches the mode is populated on the token row; the others
+	// stay nil to maintain the single-identity invariant. For user-mode flows
+	// where the row's UserID was deferred at init time, stamp from completer
+	// context here.
+	flowMode := schemas.MCPAuthMode(session.FlowMode)
+	var (
+		tokenVKID   *string
+		tokenUserID *string
+	)
+	switch flowMode {
+	case schemas.MCPAuthModeUser:
+		tokenUserID = session.UserID
+		if tokenUserID == nil || *tokenUserID == "" {
+			// Deferred fill: pull from completer context.
+			if v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); v != "" {
+				tokenUserID = &v
+			}
+		}
+		if tokenUserID == nil || *tokenUserID == "" {
+			p.cleanupFlow(ctx, session.ID)
+			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion (neither flow nor completer context)")
+		}
+		// Stamp the resolved user_id back on the flow for audit.
+		session.UserID = tokenUserID
+	case schemas.MCPAuthModeVK:
+		tokenVKID = session.VirtualKeyID
+		if tokenVKID == nil || *tokenVKID == "" {
+			p.cleanupFlow(ctx, session.ID)
+			return "", fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
+		}
+	case schemas.MCPAuthModeSession:
+		// Both identity columns left nil; row is keyed by session_id.
+	default:
+		// Bogus flow_mode on the row — drop it so a fresh flow can start
+		// instead of leaving the row stuck in 'claiming' forever.
+		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
+		return "", fmt.Errorf("invalid flow mode on session: %s", session.ID)
+	}
+
+	// Create per-user OAuth token record
 	var expiresAt *time.Time
 	if tokenResponse.ExpiresIn > 0 {
 		exp := time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
@@ -993,9 +1167,9 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	}
 	tokenRecord := &tables.TableOauthUserToken{
 		ID:            uuid.New().String(),
-		SessionToken:  sessionToken,
-		VirtualKeyID:  session.VirtualKeyID,
-		UserID:        session.UserID,
+		SessionID:     sessionID,
+		VirtualKeyID:  tokenVKID,
+		UserID:        tokenUserID,
 		MCPClientID:   session.MCPClientID,
 		OauthConfigID: session.OauthConfigID,
 		AccessToken:   strings.TrimSpace(tokenResponse.AccessToken),
@@ -1003,41 +1177,49 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		TokenType:     tokenResponse.TokenType,
 		ExpiresAt:     expiresAt,
 		Scopes:        string(scopesJSON),
+		AuthMode:      string(flowMode),
+		Status:        "active",
 	}
 	if err := p.configStore.CreateOauthUserToken(ctx, tokenRecord); err != nil {
+		// The flow row has already been claimed and the auth code has been
+		// exchanged; leaving the row in 'claiming' state would block the
+		// next initiation for this binding indefinitely. Drop it so the
+		// caller can restart cleanly.
+		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
 		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
 
-	// Update session with session token and mark as authorized
-	session.SessionToken = sessionToken
-	session.Status = "authorized"
-	if err := p.configStore.UpdateOauthUserSession(ctx, session); err != nil {
-		return "", fmt.Errorf("failed to update per-user oauth session: %w", err)
-	}
+	// Token row is written; the flow row's purpose ends here. cleanupFlow
+	// deletes both the flow row (transient PKCE/state carrier — the token
+	// row is the durable record now) and the mcp_auth temp token bound to
+	// it, so the auth-page link stops working immediately. The UI shows
+	// "expired or already completed" on the resulting 404, which is the
+	// truthful read.
+	p.cleanupFlow(ctx, session.ID)
 
 	logger.Debug("Per-user OAuth flow completed: session_id=%s, mcp_client_id=%s", session.ID, session.MCPClientID)
 
-	return sessionToken, nil
+	return sessionID, nil
 }
 
-// GetUserAccessToken retrieves the access token for a per-user OAuth session.
-// If the token is expired, it automatically attempts a refresh.
-func (p *OAuth2Provider) GetUserAccessToken(ctx context.Context, sessionToken string) (string, error) {
-	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+// GetUserAccessTokenByMode retrieves the upstream access token using exactly
+// one identity column determined by mode. No fallback chain. Filters
+// status='active' so orphaned rows never satisfy a lookup.
+func (p *OAuth2Provider) GetUserAccessTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (string, error) {
+	token, err := p.configStore.GetOauthUserTokenByMode(ctx, mode, identity, mcpClientID)
 	if err != nil {
-		return "", fmt.Errorf("failed to load per-user oauth token: %w", err)
+		return "", fmt.Errorf("failed to load per-user oauth token (mode=%s): %w", mode, err)
 	}
 	if token == nil {
-		return "", fmt.Errorf("per-user oauth token not found for session")
+		return "", schemas.ErrOAuth2TokenNotFound
 	}
 
 	// Refresh only when known-expired and refresh token exists.
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
-		if err := p.RefreshUserAccessToken(ctx, sessionToken); err != nil {
+		if err := p.RefreshUserAccessToken(ctx, token.ID); err != nil {
 			return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
 		}
-		// Reload token after refresh
-		token, err = p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+		token, err = p.configStore.GetOauthUserTokenByMode(ctx, mode, identity, mcpClientID)
 		if err != nil || token == nil {
 			return "", fmt.Errorf("failed to reload per-user token after refresh")
 		}
@@ -1053,63 +1235,30 @@ func (p *OAuth2Provider) GetUserAccessToken(ctx context.Context, sessionToken st
 	return accessToken, nil
 }
 
-// GetUserAccessTokenByIdentity retrieves the upstream access token for a user
-// identified by virtualKeyID, userID, or sessionToken (fallback), for a specific
-// MCP client. Identity-based lookups persist tokens across sessions so users don't
-// need to re-authenticate with upstream providers on reconnect.
-func (p *OAuth2Provider) GetUserAccessTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (string, error) {
-	token, err := p.configStore.GetOauthUserTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, mcpClientID)
-	if err != nil {
-		return "", fmt.Errorf("failed to load per-user oauth token by identity: %w", err)
-	}
-	if token == nil {
-		return "", schemas.ErrOAuth2TokenNotFound
-	}
-
-	// Refresh only when known-expired and refresh token exists.
-	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
-		if token.SessionToken != "" {
-			if err := p.RefreshUserAccessToken(ctx, token.SessionToken); err != nil {
-				return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
-			}
-			// Reload after refresh
-			token, err = p.configStore.GetOauthUserTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, mcpClientID)
-			if err != nil || token == nil {
-				return "", fmt.Errorf("failed to reload per-user token after refresh")
-			}
-		} else {
-			return "", fmt.Errorf("per-user token expired and no session token available for refresh")
-		}
-	}
-	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
-		return "", fmt.Errorf("per-user token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
-	}
-
-	accessToken := strings.TrimSpace(token.AccessToken)
-	if accessToken == "" {
-		return "", fmt.Errorf("per-user access token is empty after sanitization")
-	}
-	return accessToken, nil
-}
-
-// RefreshUserAccessToken refreshes a per-user OAuth access token.
-func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToken string) error {
+// RefreshUserAccessToken refreshes a per-user OAuth access token, looked up
+// by the token row's primary-key ID.
+func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, tokenID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+	token, err := p.configStore.GetOauthUserTokenByID(ctx, tokenID)
 	if err != nil || token == nil {
 		return fmt.Errorf("per-user oauth token not found: %w", err)
 	}
 
 	if token.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available for per-user oauth session")
+		return fmt.Errorf("no refresh token available for per-user oauth token")
 	}
 
-	// Load template OAuth config for token_url, client_id, etc.
+	// Load template OAuth config for token_url, client_id, etc. Split nil
+	// from a real lookup failure so a missing config doesn't surface as a
+	// useless "%!w(<nil>)" wrapped error.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, token.OauthConfigID)
-	if err != nil || templateConfig == nil {
+	if err != nil {
 		return fmt.Errorf("failed to load template oauth config for refresh: %w", err)
+	}
+	if templateConfig == nil {
+		return schemas.ErrOAuth2ConfigNotFound
 	}
 
 	// Exchange refresh token
@@ -1124,34 +1273,26 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 		// Permanent rejection (HTTP 401, or 400 with invalid_grant /
 		// unauthorized_client per RFC 6749 §5.2) means the refresh token is
 		// dead — revoked, expired, or bound to a grant the AS no longer
-		// honors. Purge the row and signal re-authentication via the
-		// ErrOAuth2TokenExpired sentinel, which ResolvePerUserOAuthToken
+		// honors. Flip the row to 'needs_reauth' and signal re-authentication
+		// via the ErrOAuth2TokenExpired sentinel, which ResolvePerUserOAuthToken
 		// converts into an inline MCPUserOAuthRequiredError with auth URL.
+		// Keeping the row (rather than deleting) preserves binding identity +
+		// audit history; the OAuth callback at re-auth completion upserts
+		// the same row back to 'active' with fresh access/refresh tokens.
 		var permErr *PermanentOAuthError
 		if errors.As(err, &permErr) {
-			// The delete is load-bearing: without it, the dead refresh token
-			// row survives and the caller's subsequent reauth can collide
-			// with it (or replay the rejected refresh). If purge fails,
-			// surface the error rather than misleadingly returning the
-			// "re-authentication required" sentinel.
-			if delErr := p.configStore.DeleteOauthUserToken(ctx, token.ID); delErr != nil {
-				return fmt.Errorf("per-user oauth refresh permanently rejected but token cleanup failed (mcp_client=%s upstream_status=%d): %w",
-					token.MCPClientID, permErr.StatusCode, delErr)
+			// Use context.Background for the terminal status flip — the
+			// caller's ctx may already be canceled (request abort, upstream
+			// timeout) by the time we get the 'invalid_grant' / 401, and if
+			// the UPDATE fails because of that, the row stays 'active' and
+			// every subsequent inference call keeps retrying a dead refresh
+			// token instead of surfacing the re-auth requirement.
+			if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID); markErr != nil {
+				return fmt.Errorf("per-user oauth refresh permanently rejected but status update failed (mcp_client=%s upstream_status=%d): %w",
+					token.MCPClientID, permErr.StatusCode, markErr)
 			}
-			logger.Debug("Per-user OAuth refresh permanently rejected; token purged — re-authentication required: mcp_client=%s upstream_status=%d",
+			logger.Debug("Per-user OAuth refresh permanently rejected; row marked needs_reauth: mcp_client=%s upstream_status=%d",
 				token.MCPClientID, permErr.StatusCode)
-			// Surface the state on the session row so dashboards /
-			// observability can show "this user needs to reconnect". The token
-			// delete above is the load-bearing action; this update never gates
-			// the OAuth flow, so a failure here is logged and ignored.
-			if token.SessionToken != "" {
-				if sess, sessErr := p.configStore.GetOauthUserSessionBySessionToken(ctx, token.SessionToken); sessErr == nil && sess != nil {
-					sess.Status = "needs_reauth"
-					if updErr := p.configStore.UpdateOauthUserSession(ctx, sess); updErr != nil {
-						logger.Warn("Failed to mark session needs_reauth after permanent refresh failure: session_id=%s err=%v", sess.ID, updErr)
-					}
-				}
-			}
 			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
 		}
 		// Transient failure (5xx, network blip, non-permanent 400) — keep the
@@ -1176,32 +1317,6 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 		return fmt.Errorf("failed to update per-user token after refresh: %w", err)
 	}
 
-	logger.Debug("Per-user OAuth token refreshed: session_token=...%s", sessionToken[len(sessionToken)-4:])
-	return nil
-}
-
-// RevokeUserToken revokes a per-user OAuth token and marks the session as revoked.
-func (p *OAuth2Provider) RevokeUserToken(ctx context.Context, sessionToken string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
-	if err != nil || token == nil {
-		return fmt.Errorf("per-user oauth token not found: %w", err)
-	}
-
-	// Delete the token
-	if err := p.configStore.DeleteOauthUserToken(ctx, token.ID); err != nil {
-		return fmt.Errorf("failed to delete per-user oauth token: %w", err)
-	}
-
-	// Update session status
-	session, err := p.configStore.GetOauthUserSessionBySessionToken(ctx, sessionToken)
-	if err == nil && session != nil {
-		session.Status = "revoked"
-		p.configStore.UpdateOauthUserSession(ctx, session)
-	}
-
-	logger.Debug("Per-user OAuth token revoked: session_token=...%s", sessionToken[len(sessionToken)-4:])
+	logger.Debug("Per-user OAuth token refreshed: token_id=%s", token.ID)
 	return nil
 }

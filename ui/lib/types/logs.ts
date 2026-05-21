@@ -585,6 +585,7 @@ export interface LogFilters {
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
+	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 	user_ids?: string[];
@@ -1076,8 +1077,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 

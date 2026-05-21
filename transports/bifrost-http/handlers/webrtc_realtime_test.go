@@ -33,7 +33,9 @@ func (s testHandlerStore) GetMCPExternalServerURL() string                  { re
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
 
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
-	_, _, _, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	_, _, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err == nil {
 		t.Fatal("expected provider/model validation error")
 	}
@@ -43,7 +45,9 @@ func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) 
 }
 
 func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
-	provider, model, normalized, err := resolveRealtimeSDPTarget("/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	provider, model, normalized, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +72,9 @@ func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
 }
 
 func TestResolveRealtimeSDPTarget_OpenAIRouteDefaultsProvider(t *testing.T) {
-	provider, model, _, err := resolveRealtimeSDPTarget("/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	var ctx fasthttp.RequestCtx
+	cfg := &lib.Config{}
+	provider, model, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +93,7 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	ctx.Request.Header.SetContentType("application/sdp")
 	ctx.Request.SetBodyString("v=0\r\n")
 
-	sdpOffer, provider, model, session, err := parseCallsWebRTCRequest(&ctx)
+	sdpOffer, provider, model, session, err := parseCallsWebRTCRequest(&ctx, &lib.Config{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

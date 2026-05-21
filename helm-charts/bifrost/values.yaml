@@ -192,6 +192,25 @@ bifrost:
     usernameKey: "username"
     passwordKey: "password"
 
+  # Feature flag boot overrides. Flags themselves are code-declared inside
+  # Bifrost (via featureflags.Register); this map only sets their initial
+  # values. Anything set here is rendered as a "locked" flag in the UI —
+  # operators must edit values.yaml (and redeploy) to change it, which
+  # matches the GitOps invariant that Helm-managed values are authoritative.
+  #
+  # Each key is a flag name; each value carries `enabled`. The `enabled`
+  # field accepts either a literal boolean OR an "env.NAME" string so the
+  # actual on/off decision can come from a container env var without
+  # re-templating the chart.
+  #
+  # Example:
+  #   featureFlags:
+  #     experimental.streaming-mux:
+  #       enabled: true
+  #     audit.verbose:
+  #       enabled: "env.BIFROST_AUDIT_VERBOSE"
+  featureFlags: {}
+
   # Client configuration
   client:
     dropExcessRequests: false
@@ -237,6 +256,8 @@ bifrost:
     pricing:
       # Custom pricing URL for model cost data
       pricingUrl: "https://getbifrost.ai/datasheet"
+      # Custom model parameters URL
+      modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
 
@@ -420,7 +441,6 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: false
-        cleanup_on_shutdown: false
         vector_store_namespace: ""
 
     otel:
@@ -598,7 +618,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra, keycloak
+    # Provider: okta, entra, keycloak, zitadel, google
     provider: ""
     config: {}
       # Okta configuration:
@@ -610,6 +630,20 @@ bifrost:
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # # Attribute -> role/team/business-unit mappings (requires Custom Authorization Server;
+      # # the free Org Auth Server does not support claim expressions).
+      # attributeRoleMappings:
+      #   - attribute: "groups"
+      #     value: "bifrost-admins"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "*"            # pass-through: every group becomes a team
+      #     team: ""              # ignored when value is "*"
+      # attributeBusinessUnitMappings:
+      #   - attribute: "department"
+      #     value: "platform"
+      #     business_unit: "Platform"
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -621,6 +655,15 @@ bifrost:
       # userIdField: "oid"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "roles"
+      #     value: "BifrostAdmin"
+      #     role: "admin"
+      # attributeTeamMappings:
+      #   - attribute: "groups"
+      #     value: "<group-object-id>"
+      #     team: "platform-team"
+      # attributeBusinessUnitMappings: []
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -631,6 +674,40 @@ bifrost:
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # attributeRoleMappings:
+      #   - attribute: "realm_access.roles"
+      #     value: "bifrost-admin"
+      #     role: "admin"
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Zitadel configuration:
+      # domain: "my-instance.zitadel.cloud"      # no scheme
+      # clientId: ""
+      # clientSecret: ""                          # optional, for confidential clients
+      # projectId: ""                             # optional, for project-scoped role claims
+      # audience: ""
+      # serviceAccountClientId: ""                # required for user provisioning
+      # serviceAccountClientSecret: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      #
+      # Google Workspace configuration:
+      # domain: "company.com"
+      # clientId: ""
+      # clientSecret: ""
+      # credentialMode: "inherit"                 # "inherit" (ADC), "env", or "file"
+      # serviceAccountEnvVar: "GOOGLE_SA_JSON"    # required when credentialMode is "env"
+      # serviceAccountFile: "/etc/bifrost/sa.json" # required when credentialMode is "file"
+      # adminEmail: "admin@company.com"           # required for Directory API (domain-wide delegation)
+      # impersonateServiceAccount: ""             # optional, for Workload Identity
+      # audience: ""
+      # teamIdsField: "groups"
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
@@ -649,6 +726,7 @@ bifrost:
       #   apply_to: "input"
       #   sampling_rate: 100
       #   timeout: 1000
+      #   max_turns_to_send: 0
     providers: []
       # - id: 1
       #   provider_name: "bedrock"

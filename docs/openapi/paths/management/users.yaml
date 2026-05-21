@@ -66,6 +66,46 @@ users:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+users-email-virtual-keys:
+  get:
+    operationId: getUserVirtualKeysByEmail
+    summary: Get user's virtual keys by email
+    description: >
+      **Enterprise only.**
+
+      Returns all virtual keys associated with a user, looked up by email
+      address. Returns an empty `virtual_keys` array when the user exists but
+      has no virtual keys assigned. Intended for MDM and credential-helper
+      integrations that need to resolve a user's keys without knowing their
+      internal ID.
+    tags:
+      - Users
+    parameters:
+      - name: email
+        in: path
+        required: true
+        description: URL-encoded email address of the user
+        schema:
+          type: string
+          format: email
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserVirtualKeyLookupResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: User not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 users-by-id:
   delete:
     operationId: deleteUser

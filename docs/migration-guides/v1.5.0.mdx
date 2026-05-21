@@ -690,6 +690,117 @@ The supported `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` path c
 
 ---
 
+## Breaking Change 15: Semantic Cache Clear API is Now Cache-ID Based
+
+The semantic cache "clear by request ID" API has been removed. Storage IDs in the cache are deterministic UUIDv5 hashes derived from the request payload (so the same prompt across many requests maps to a single cache entry), which made the previous request-ID-based delete unable to match anything written by the direct-search path.
+
+The replacement is keyed on the cache entry's storage ID, which is now stamped on every response in `extra_fields.cache_debug.cache_id` — on cache hits **and** cache misses. Hold onto that ID from the response if you ever need to invalidate the entry.
+
+### REST API
+
+| Before (v1.4.x) | After (v1.5.0) |
+|---|---|
+| `DELETE /api/cache/clear/{requestId}` | `DELETE /api/cache/clear/{cacheId}` |
+
+The path parameter name and meaning both changed. The cache key endpoint (`DELETE /api/cache/clear-by-key/{cacheKey}`) is unchanged.
+
+**Before:**
+```bash
+curl -X DELETE localhost:8080/api/cache/clear/req-aaa-bbb-ccc
+```
+
+**After:**
+```bash
+# Read the cache ID from a prior response
+CACHE_ID=$(curl ... | jq -r '.extra_fields.cache_debug.cache_id')
+
+curl -X DELETE localhost:8080/api/cache/clear/$CACHE_ID
+```
+
+### Go SDK
+
+The `ClearCacheForRequestID` method on `*semanticcache.Plugin` has been removed and replaced by `ClearCacheForCacheID`.
+
+**Before:**
+```go
+err := plugin.ClearCacheForRequestID(requestID)
+```
+
+**After:**
+```go
+// On hit or miss, the storage ID is exposed via CacheDebug.CacheID
+cacheID := response.ExtraFields.CacheDebug.CacheID
+if cacheID != nil {
+    err := plugin.ClearCacheForCacheID(*cacheID)
+}
+```
+
+### Why the rename
+
+A single cache entry is reused across many request IDs (that is the point of caching). A request-ID-based delete only ever made sense for the original writer of the entry, and even that broke once direct search switched to deterministic storage IDs. The cache ID is the only stable handle that works for both writers and readers, so the API now reflects that.
+
+### CacheDebug on misses
+
+`extra_fields.cache_debug` is now populated on cache misses too — previously it was only emitted when semantic search ran. The new fields on a miss:
+
+- `cache_hit: false`
+- `cache_id`: the storage ID where the entry was written (use this with `ClearCacheForCacheID`)
+- `provider_used` / `model_used` / `input_tokens`: only present when semantic search actually ran (i.e. embedding model was invoked)
+
+If you parse `cache_debug` and assumed it was either absent or had `cache_hit: true`, update your consumer to handle the `cache_hit: false` shape.
+
+---
+
+## Breaking Change 16: Semantic Cache `cleanup_on_shutdown` Removed
+
+The `cleanup_on_shutdown` option on the semantic cache plugin config has been removed. Cache entries and the vector store namespace are no longer deleted when Bifrost shuts down — cache data always persists between restarts.
+
+**Before:**
+```json
+{
+  "plugins": {
+    "semantic_cache": {
+      "config": {
+        "ttl": "5m",
+        "cleanup_on_shutdown": true
+      }
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "plugins": {
+    "semantic_cache": {
+      "config": {
+        "ttl": "5m"
+      }
+    }
+  }
+}
+```
+
+The field is no longer part of the config schema and will be rejected by validation. Remove it from `config.json`, Helm values, and any `PUT /api/config` payloads.
+
+### How to clear cache data
+
+If you previously relied on `cleanup_on_shutdown: true` to drop the cache on restart, use one of the supported invalidation paths instead:
+
+- `DELETE /api/cache/clear/{cacheId}` — invalidate a single entry
+- `DELETE /api/cache/clear-by-key/{cacheKey}` — invalidate all entries for a cache key
+- Drop the vector store class/collection or point `vector_store_namespace` at a fresh name to start clean
+
+### Dimension / provider / model changes
+
+The previous `cleanup_on_shutdown: true` + restart workflow was the documented escape hatch for changing `dimension` (or switching to an embedding `provider`/`model` that produces a different vector size). That option is gone. To rotate the namespace now, either:
+
+- point `vector_store_namespace` at a fresh name, or
+- drop the existing class/index in your vector store before restarting
+
+---
+
 ## Opting Out: `version: 1` Compatibility Mode
 
 If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
@@ -787,6 +898,14 @@ If your code reads `selected_key_id` / `selected_key_name` from the request cont
 
 <Step title="Migrate direct-key callers off both surfaces">
 Remove `allow_direct_keys` from `config.json` and any `PUT /api/config` payloads. Audit HTTP callers that sent provider keys in `Authorization` / `x-api-key` / `x-goog-api-key` / `x-bf-bedrock-*` / `x-bf-azure-endpoint` headers — those keys are no longer forwarded. Audit Go SDK callers for any reference to `schemas.BifrostContextKeyDirectKey` — the constant is removed and code referencing it will not compile. Replace both flavours with a Bifrost-managed provider key, optionally pinned per request via `BifrostContextKeyAPIKeyID` / `BifrostContextKeyAPIKeyName` (Go SDK) or a virtual key (`sk-bf-*`, HTTP).
+</Step>
+
+<Step title="Switch semantic cache invalidation to cache IDs">
+Replace `DELETE /api/cache/clear/{requestId}` with `DELETE /api/cache/clear/{cacheId}`, and replace `plugin.ClearCacheForRequestID(...)` with `plugin.ClearCacheForCacheID(...)`. Read the cache ID from `extra_fields.cache_debug.cache_id` on the response (now populated on misses too).
+</Step>
+
+<Step title="Remove cleanup_on_shutdown from semantic cache config">
+Drop the `cleanup_on_shutdown` field from the semantic cache plugin config in `config.json`, Helm values, and any API payloads — it is no longer part of the schema. Cache data now always persists across restarts; use the cache clear endpoints or rotate `vector_store_namespace` to drop entries.
 </Step>
 </Steps>
 

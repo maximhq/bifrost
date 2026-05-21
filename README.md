@@ -78,25 +78,25 @@ In addition to private networking, custom security controls, and governance, ent
 
 ### Core Infrastructure
 
-- **[Unified Interface](https://docs.getbifrost.ai/features/unified-interface)** - Single OpenAI-compatible API for all providers
+- **[Unified Interface](https://docs.getbifrost.ai/providers/supported-providers/overview)** - Single OpenAI-compatible API for all providers
 - **[Multi-Provider Support](https://docs.getbifrost.ai/quickstart/gateway/provider-configuration)** - OpenAI, Anthropic, AWS Bedrock, Google Vertex, Azure, Cerebras, Cohere, Mistral, Ollama, Groq, and more
-- **[Automatic Fallbacks](https://docs.getbifrost.ai/features/fallbacks)** - Seamless failover between providers and models with zero downtime
-- **[Load Balancing](https://docs.getbifrost.ai/features/fallbacks)** - Intelligent request distribution across multiple API keys and providers
+- **[Automatic Fallbacks](https://docs.getbifrost.ai/features/retries-and-fallbacks)** - Seamless failover between providers and models with zero downtime
+- **[Load Balancing](https://docs.getbifrost.ai/features/retries-and-fallbacks)** - Intelligent request distribution across multiple API keys and providers
 
 ### Advanced Features
 
-- **[Model Context Protocol (MCP)](https://docs.getbifrost.ai/features/mcp)** - Enable AI models to use external tools (filesystem, web search, databases)
+- **[Model Context Protocol (MCP)](https://docs.getbifrost.ai/mcp/overview)** - Enable AI models to use external tools (filesystem, web search, databases)
 - **[Semantic Caching](https://docs.getbifrost.ai/features/semantic-caching)** - Intelligent response caching based on semantic similarity to reduce costs and latency
 - **[Multimodal Support](https://docs.getbifrost.ai/quickstart/gateway/streaming)** - Support for text,images, audio, and streaming, all behind a common interface.
 - **[Custom Plugins](https://docs.getbifrost.ai/enterprise/custom-plugins)** - Extensible middleware architecture for analytics, monitoring, and custom logic
-- **[Governance](https://docs.getbifrost.ai/features/governance)** - Usage tracking, rate limiting, and fine-grained access control
+- **[Governance](https://docs.getbifrost.ai/features/governance/virtual-keys)** - Usage tracking, rate limiting, and fine-grained access control
 
 ### Enterprise & Security
 
-- **[Budget Management](https://docs.getbifrost.ai/features/governance)** - Hierarchical cost control with virtual keys, teams, and customer budgets
+- **[Budget Management](https://docs.getbifrost.ai/features/governance/budget-and-limits)** - Hierarchical cost control with virtual keys, teams, and customer budgets
 - **[SSO Integration](https://docs.getbifrost.ai/features/sso-with-google-github)** - Google and GitHub authentication support
-- **[Observability](https://docs.getbifrost.ai/features/observability)** - Native Prometheus metrics, distributed tracing, and comprehensive logging
-- **[Vault Support](https://docs.getbifrost.ai/enterprise/vault-support)** - Secure API key management with HashiCorp Vault integration
+- **[Observability](https://docs.getbifrost.ai/features/observability/default)** - Native Prometheus metrics, distributed tracing, and comprehensive logging
+- **[Secrets Management](https://docs.getbifrost.ai/deployment-guides/config-json#environment-variable-references)** - Secure API key management with environment variables and deployment secrets
 
 ### Developer Experience
 
@@ -227,18 +227,18 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 
 ### Features
 
-- [Multi-Provider Support](https://docs.getbifrost.ai/features/unified-interface) - Single API for all providers
-- [MCP Integration](https://docs.getbifrost.ai/features/mcp) - External tool calling
+- [Multi-Provider Support](https://docs.getbifrost.ai/providers/supported-providers/overview) - Single API for all providers
+- [MCP Integration](https://docs.getbifrost.ai/mcp/overview) - External tool calling
 - [Semantic Caching](https://docs.getbifrost.ai/features/semantic-caching) - Intelligent response caching
-- [Fallbacks & Load Balancing](https://docs.getbifrost.ai/features/fallbacks) - Reliability features
-- [Budget Management](https://docs.getbifrost.ai/features/governance) - Cost control and governance
+- [Fallbacks & Load Balancing](https://docs.getbifrost.ai/features/retries-and-fallbacks) - Reliability features
+- [Budget Management](https://docs.getbifrost.ai/features/governance/budget-and-limits) - Cost control and governance
 
 ### Integrations
 
-- [OpenAI SDK](https://docs.getbifrost.ai/integrations/openai-sdk) - Drop-in OpenAI replacement
-- [Anthropic SDK](https://docs.getbifrost.ai/integrations/anthropic-sdk) - Drop-in Anthropic replacement
-- [AWS Bedrock SDK](https://docs.getbifrost.ai/integrations/bedrock-sdk) - AWS Bedrock integration
-- [Google GenAI SDK](https://docs.getbifrost.ai/integrations/genai-sdk) - Drop-in GenAI replacement
+- [OpenAI SDK](https://docs.getbifrost.ai/integrations/openai-sdk/overview) - Drop-in OpenAI replacement
+- [Anthropic SDK](https://docs.getbifrost.ai/integrations/anthropic-sdk/overview) - Drop-in Anthropic replacement
+- [AWS Bedrock SDK](https://docs.getbifrost.ai/integrations/bedrock-sdk/overview) - AWS Bedrock integration
+- [Google GenAI SDK](https://docs.getbifrost.ai/integrations/genai-sdk/overview) - Drop-in GenAI replacement
 - [LiteLLM SDK](https://docs.getbifrost.ai/integrations/litellm-sdk) - LiteLLM integration
 - [Langchain SDK](https://docs.getbifrost.ai/integrations/langchain-sdk) - Langchain integration
 
@@ -246,8 +246,8 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 
 - [Custom Plugins](https://docs.getbifrost.ai/enterprise/custom-plugins) - Extend functionality
 - [Clustering](https://docs.getbifrost.ai/enterprise/clustering) - Multi-node deployment
-- [Vault Support](https://docs.getbifrost.ai/enterprise/vault-support) - Secure key management
-- [Production Deployment](https://docs.getbifrost.ai/deployment/docker-setup) - Scaling and monitoring
+- [Secrets Management](https://docs.getbifrost.ai/deployment-guides/config-json#environment-variable-references) - Secure key management
+- [Production Deployment](https://docs.getbifrost.ai/deployment-guides/k8s) - Scaling and monitoring
 
 ---
 

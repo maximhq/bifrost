@@ -292,6 +292,7 @@ type LoggerPlugin struct {
 	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
+	clusterNodeID          atomic.Value         // Cluster node ID (string) for log attribution in clustered deployments
 }
 
 // Init creates new logger plugin with given log store
@@ -348,6 +349,14 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
+// Used in clustered deployments to attribute log entries to specific nodes for
+// disconnected node usage recovery. Uses atomic.Value since it is written at
+// startup and read concurrently from request hot paths.
+func (p *LoggerPlugin) SetClusterNodeID(nodeID string) {
+	p.clusterNodeID.Store(nodeID)
 }
 
 // cleanupWorker periodically removes old processing logs
@@ -528,6 +537,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.RealtimeRequest:
 			if req.ResponsesRequest != nil {
 				initialData.Params = req.ResponsesRequest.Params
+				if req.ResponsesRequest.Params != nil {
+					var tools []schemas.ChatTool
+					for _, tool := range req.ResponsesRequest.Params.Tools {
+						tools = append(tools, *tool.ToChatTool())
+					}
+					initialData.Tools = tools
+				}
 			}
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
@@ -781,6 +797,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
+			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+				entry.ClusterNodeID = &nodeID
+			}
 			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
@@ -790,11 +809,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	pending := pendingVal.(*PendingLogData)
-	if requestType == schemas.RealtimeRequest {
-		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
-			pending.ParentRequestID = resolvedRealtimeSessionID
-		}
-	}
 
 	// Should never happen, but just in case
 	// Fallback to request type from pending data if request type is not set
@@ -821,21 +835,47 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// responses need a DB write.
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest && !isFinalChunk && result != nil && bifrostErr == nil {
 		if tracer != nil && traceID != "" {
-			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
+			tracer.ProcessStreamingChunk(ctx, traceID, false, result, bifrostErr)
 		}
 		return result, bifrostErr, nil
 	}
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
+	if requestType == schemas.RealtimeRequest {
+		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
+			pending.ParentRequestID = resolvedRealtimeSessionID
+		}
+		pending.InitialData.Metadata = mergeRealtimeMetadata(pending.InitialData.Metadata, ctx)
+		if routingEngines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok {
+			pending.InitialData.RoutingEngineUsed = routingEngines
+			pending.RoutingEnginesUsed = routingEngines
+		}
+	}
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
-	// Apply common output fields
+	// Apply common output fields. For cache hits, prefer the cache-serve
+	// latency stamped by the semantic cache plugin over the original provider
+	// latency preserved in the cached response.
 	var latency int64
 	if result != nil {
-		latency = result.GetExtraFields().Latency
+		ef := result.GetExtraFields()
+		latency = ef.Latency
+		if ef.CacheDebug != nil && ef.CacheDebug.CacheHit && ef.CacheDebug.CacheHitLatency != nil {
+			latency = *ef.CacheDebug.CacheHitLatency
+		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	// Attach cluster governance metadata for disconnected node usage recovery
+	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+		entry.ClusterNodeID = &nodeID
+	}
+	if budgetIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBudgetIDs).([]string); ok && len(budgetIDs) > 0 {
+		entry.BudgetIDsParsed = budgetIDs
+	}
+	if rateLimitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok && len(rateLimitIDs) > 0 {
+		entry.RateLimitIDsParsed = rateLimitIDs
+	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
@@ -855,7 +895,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			requestType != schemas.RealtimeRequest &&
 			tracer != nil &&
 			traceID != "" {
-			if accResult := tracer.ProcessStreamingChunk(traceID, true, result, bifrostErr); accResult != nil {
+			if accResult := tracer.ProcessStreamingChunk(ctx, traceID, true, result, bifrostErr); accResult != nil {
 				if streamResponse := convertToProcessedStreamResponse(accResult, requestType); streamResponse != nil {
 					p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
 				}
@@ -895,7 +935,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest {
 		var streamResponse *streaming.ProcessedStreamResponse
 		if tracer != nil && traceID != "" {
-			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
+			accResult := tracer.ProcessStreamingChunk(ctx, traceID, isFinalChunk, result, bifrostErr)
 			if accResult != nil {
 				streamResponse = convertToProcessedStreamResponse(accResult, requestType)
 			}

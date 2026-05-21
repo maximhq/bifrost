@@ -240,15 +240,17 @@ export default function Providers() {
 									})}
 								</div>
 							)}
-							{hasProviderCreateAccess ? <div className="pb-4">
-								<AddProviderDropdown
-									disabled={!hasProviderCreateAccess}
-									existingInSidebar={existingInSidebarNames}
-									knownProviders={knownProviders}
-									onSelectKnownProvider={handleSelectKnownProvider}
-									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
-								/>
-							</div> : null}
+							{hasProviderCreateAccess ? (
+								<div className="pb-4">
+									<AddProviderDropdown
+										disabled={!hasProviderCreateAccess}
+										existingInSidebar={existingInSidebarNames}
+										knownProviders={knownProviders}
+										onSelectKnownProvider={handleSelectKnownProvider}
+										onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+									/>
+								</div>
+							) : null}
 						</div>
 					</div>
 				</TooltipProvider>

@@ -295,6 +295,7 @@ interface ComboboxSelectBaseProps {
 	hideClear?: boolean;
 	className?: string;
 	emptyMessage?: string;
+	"data-testid"?: string;
 }
 
 interface ComboboxSelectSingleProps extends ComboboxSelectBaseProps {
@@ -319,7 +320,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		disableSearch = false,
 		className,
 		emptyMessage = "No results found.",
-		noPortal
+		noPortal,
+		"data-testid": dataTestId,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -442,6 +444,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					role="combobox"
 					aria-expanded={open}
 					disabled={disabled}
+					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 						!selectedLabel && "text-muted-foreground",
@@ -518,8 +521,7 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator
+	ComboboxSeparator,
 };
 
 export type { ComboboxSelectOption, ComboboxSelectProps };
-

@@ -3837,10 +3837,12 @@ func (p *dynamicFallbackPlugin) Cleanup() error  { return nil }
 func (p *dynamicFallbackPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	if idx == 0 && req.ChatRequest != nil {
-		req.ChatRequest.Fallbacks = []schemas.Fallback{{
+		replacement := req.Clone()
+		replacement.ChatRequest.Fallbacks = []schemas.Fallback{{
 			Provider: p.fallbackProvider,
 			Model:    p.fallbackModel,
 		}}
+		req = &replacement
 	}
 
 	provider, _, _ := req.GetRequestFields()

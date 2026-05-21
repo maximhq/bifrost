@@ -94,6 +94,10 @@ var ignoreGoFields = map[string]string{
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
 	"/properties/mcp/properties/client_configs/items|oauth_client_secret": "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
+	// source_id is a stable external identifier for teams provisioned by an
+	// integrating system (PR #3395). It is assigned through the API by that
+	// system, never authored in config.json.
+	"/properties/governance/properties/teams/items|source_id": "external identifier set via API by integrating systems; not authored in config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

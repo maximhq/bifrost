@@ -82,6 +82,160 @@ func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
+	reasoningText := "Let me think about this step by step."
+	signature := "sig_abc"
+
+	messages := []ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{
+						Type:      ResponsesOutputMessageContentTypeReasoning,
+						Text:      &reasoningText,
+						Signature: &signature,
+					},
+				},
+			},
+		},
+		{
+			Role:    Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages (reasoning absorbed into assistant), got %d", len(chatMessages))
+	}
+	assistant := chatMessages[1]
+	if assistant.Role != ChatMessageRoleAssistant {
+		t.Fatalf("expected assistant role, got %q", assistant.Role)
+	}
+	if assistant.ChatAssistantMessage == nil {
+		t.Fatal("expected ChatAssistantMessage attached to carry reasoning")
+	}
+	if assistant.ChatAssistantMessage.Reasoning == nil || *assistant.ChatAssistantMessage.Reasoning != reasoningText {
+		t.Fatalf("expected reasoning %q, got %#v", reasoningText, assistant.ChatAssistantMessage.Reasoning)
+	}
+	if len(assistant.ChatAssistantMessage.ReasoningDetails) != 1 {
+		t.Fatalf("expected 1 reasoning detail, got %d", len(assistant.ChatAssistantMessage.ReasoningDetails))
+	}
+	if assistant.ChatAssistantMessage.ReasoningDetails[0].Signature == nil || *assistant.ChatAssistantMessage.ReasoningDetails[0].Signature != signature {
+		t.Fatalf("expected signature %q preserved, got %#v", signature, assistant.ChatAssistantMessage.ReasoningDetails[0].Signature)
+	}
+}
+
+func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T) {
+	reasoningText := "I need to call the search tool."
+
+	messages := []ResponsesMessage{
+		{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &reasoningText},
+				},
+			},
+		},
+		{
+			Type: Ptr(ResponsesMessageTypeFunctionCall),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID:    Ptr("call_1"),
+				Name:      Ptr("search"),
+				Arguments: Ptr(`{"q":"x"}`),
+			},
+		},
+		{
+			Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call_1"),
+				Output: &ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: Ptr("done")},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages (tool-call assistant + tool result), got %d", len(chatMessages))
+	}
+	assistant := chatMessages[0]
+	if assistant.ChatAssistantMessage == nil {
+		t.Fatal("expected tool-call assistant message")
+	}
+	if len(assistant.ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(assistant.ChatAssistantMessage.ToolCalls))
+	}
+	if assistant.ChatAssistantMessage.Reasoning == nil || *assistant.ChatAssistantMessage.Reasoning != reasoningText {
+		t.Fatalf("expected reasoning %q on tool-call assistant, got %#v", reasoningText, assistant.ChatAssistantMessage.Reasoning)
+	}
+}
+
+func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) {
+	reasoning := "I should call Bash to list the directory."
+	cm := &ChatMessage{
+		Role: ChatMessageRoleAssistant,
+		ChatAssistantMessage: &ChatAssistantMessage{
+			Reasoning: &reasoning,
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{
+					ID:   Ptr("call_1"),
+					Type: Ptr("function"),
+					Function: ChatAssistantMessageToolCallFunction{
+						Name: Ptr("Bash"),
+					},
+				},
+			},
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages (reasoning + function_call), got %d", len(out))
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected first message to be reasoning, got %#v", out[0].Type)
+	}
+	if out[0].Content == nil || len(out[0].Content.ContentBlocks) != 1 {
+		t.Fatal("expected reasoning message to carry a single content block")
+	}
+	if out[0].Content.ContentBlocks[0].Text == nil || *out[0].Content.ContentBlocks[0].Text != reasoning {
+		t.Fatalf("expected reasoning text %q, got %#v", reasoning, out[0].Content.ContentBlocks[0].Text)
+	}
+	if out[1].Type == nil || *out[1].Type != ResponsesMessageTypeFunctionCall {
+		t.Fatalf("expected second message to be function_call, got %#v", out[1].Type)
+	}
+}
+
+func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T) {
+	reasoning := "Thinking about how to summarize."
+	cm := &ChatMessage{
+		Role: ChatMessageRoleAssistant,
+		Content: &ChatMessageContent{
+			ContentStr: Ptr("Here's the summary."),
+		},
+		ChatAssistantMessage: &ChatAssistantMessage{
+			Reasoning: &reasoning,
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages (reasoning + assistant text), got %d", len(out))
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected first message to be reasoning, got %#v", out[0].Type)
+	}
+	if out[1].Type == nil || *out[1].Type != ResponsesMessageTypeMessage {
+		t.Fatalf("expected second message to be a regular assistant message, got %#v", out[1].Type)
+	}
+}
+
 func TestToChatRequest_FiltersUnsupportedResponsesToolsForFallback(t *testing.T) {
 	validName := "valid_tool"
 	invalidName := "  "

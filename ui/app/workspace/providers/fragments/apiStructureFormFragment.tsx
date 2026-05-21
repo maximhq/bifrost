@@ -96,7 +96,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 p-0">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6 pb-6">
 				<div className="flex flex-col gap-4">
 					<FormField
 						control={form.control}
@@ -166,11 +166,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									type="submit"
-									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
-									isLoading={isUpdatingProvider}
-								>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save API Structure Configuration
 								</Button>
 							</TooltipTrigger>

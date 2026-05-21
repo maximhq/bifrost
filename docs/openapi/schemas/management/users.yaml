@@ -293,3 +293,38 @@ AddTeamMemberRequest:
     user_id:
       type: string
       description: ID of the user to add to the team
+
+# ---- User Virtual Key Lookup ----
+
+UserVirtualKeySummary:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Virtual key ID
+    name:
+      type: string
+      description: Virtual key display name
+    value:
+      type: string
+      description: Virtual key token value
+    is_active:
+      type: boolean
+      nullable: true
+      description: Whether the virtual key is currently active
+
+UserVirtualKeyLookupResponse:
+  type: object
+  properties:
+    user_id:
+      type: string
+      description: Internal ID of the resolved user
+    email:
+      type: string
+      format: email
+      description: Email address of the resolved user
+    virtual_keys:
+      type: array
+      description: Virtual keys assigned to this user
+      items:
+        $ref: '#/UserVirtualKeySummary'

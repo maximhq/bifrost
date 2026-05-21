@@ -501,11 +501,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									type="submit"
-									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
-									isLoading={isUpdatingProvider}
-								>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save Network Configuration
 								</Button>
 							</TooltipTrigger>

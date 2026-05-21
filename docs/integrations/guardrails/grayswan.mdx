@@ -28,6 +28,27 @@ Bifrost integrates with **GraySwan Cygnal Monitor** to provide AI safety monitor
 | `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
 | `rules` | object | No | - | Custom natural language rules as key-value pairs |
 
+## Request Header Metadata
+
+For each GraySwan monitor call, Bifrost includes sanitized incoming request headers in GraySwan `metadata.headers`. This gives GraySwan request context for correlation and policy analysis, such as `x-request-id`, `x-correlation-id`, `traceparent`, `x-tenant-id`, `x-org-id`, `content-type`, and `content-length`.
+
+Credential-bearing headers are excluded. Bifrost does not send `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `x-bf-vk`, `x-bf-api-key`, `x-bf-api-key-id`, `cookie`, `set-cookie`, or `grayswan-api-key` in GraySwan metadata.
+
+This is metadata only: these values are added to the JSON body sent to GraySwan, not forwarded as outbound HTTP headers, and they cannot override the configured GraySwan API key.
+
+```json
+{
+  "metadata": {
+    "headers": {
+      "x-request-id": "req-123",
+      "traceparent": "00-...",
+      "x-tenant-id": "tenant-123",
+      "content-type": "application/json"
+    }
+  }
+}
+```
+
 ## Custom Rules Example
 
 ![GraySwan custom rules](/media/guardrails/gray-swan-custom-rule.png)

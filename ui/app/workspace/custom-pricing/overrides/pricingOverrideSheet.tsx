@@ -533,8 +533,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 				providerKeyID: scopeLock.providerKeyID ?? "",
 				scopeRoot:
 					scopeLock.scopeKind === "virtual_key" ||
-						scopeLock.scopeKind === "virtual_key_provider" ||
-						scopeLock.scopeKind === "virtual_key_provider_key"
+					scopeLock.scopeKind === "virtual_key_provider" ||
+					scopeLock.scopeKind === "virtual_key_provider_key"
 						? "virtual_key"
 						: "global",
 			});
@@ -790,10 +790,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														}}
 													>
 														<FormControl>
-															<SelectTrigger
-																data-testid="pricing-override-scope-root-select"
-																className="w-full"
-															>
+															<SelectTrigger data-testid="pricing-override-scope-root-select" className="w-full">
 																<SelectValue />
 															</SelectTrigger>
 														</FormControl>
@@ -868,7 +865,11 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																		<span className="text-muted-foreground">Loading...</span>
 																	) : field.value ? (
 																		<div className="flex items-center gap-1.5">
-																			<RenderProviderIcon provider={field.value as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
+																			<RenderProviderIcon
+																				provider={field.value as ProviderIconType}
+																				size="sm"
+																				className="h-4 w-4 shrink-0"
+																			/>
 																			<span>{getProviderLabel(field.value)}</span>
 																		</div>
 																	) : (
@@ -881,7 +882,11 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																{providers.map((provider) => (
 																	<SelectItem key={provider.name} value={provider.name}>
 																		<div className="flex items-center gap-1.5">
-																			<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4 shrink-0" />
+																			<RenderProviderIcon
+																				provider={provider.name as ProviderIconType}
+																				size="sm"
+																				className="h-4 w-4 shrink-0"
+																			/>
 																			<span>{getProviderLabel(provider.name)}</span>
 																		</div>
 																	</SelectItem>
@@ -940,10 +945,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 													}}
 												>
 													<FormControl>
-														<SelectTrigger
-															data-testid="pricing-override-match-type-select"
-															className="w-full"
-														>
+														<SelectTrigger data-testid="pricing-override-match-type-select" className="w-full">
 															<SelectValue placeholder="Select match type" />
 														</SelectTrigger>
 													</FormControl>
@@ -1103,7 +1105,13 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 						</div>
 
 						<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-7 py-4">
-							<Button data-testid="pricing-override-cancel-btn" type="button" variant="outline" onClick={handleCloseDrawer} disabled={isSaving}>
+							<Button
+								data-testid="pricing-override-cancel-btn"
+								type="button"
+								variant="outline"
+								onClick={handleCloseDrawer}
+								disabled={isSaving}
+							>
 								<X className="h-4 w-4" />
 								Cancel
 							</Button>

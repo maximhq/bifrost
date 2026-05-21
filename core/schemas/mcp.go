@@ -28,7 +28,8 @@ var (
 	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
 	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
 	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
-	ErrPerUserOAuthPendingFlowExpired = errors.New("per-user oauth pending flow has expired")
+	ErrOAuth2FlowNotPending           = errors.New("oauth flow is not in pending state")
+	ErrOAuth2FlowExpired              = errors.New("oauth flow has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream

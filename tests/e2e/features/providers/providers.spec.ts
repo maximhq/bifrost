@@ -1,785 +1,979 @@
-import { expect, test } from '../../core/fixtures/base.fixture';
-import { createCustomProviderData, createProviderKeyData } from './providers.data';
+import { expect, test } from "../../core/fixtures/base.fixture";
+import {
+  createCustomProviderData,
+  createProviderKeyData,
+} from "./providers.data";
 
 // Track created resources for cleanup
-const createdKeys: { provider: string; keyName: string }[] = []
-const createdProviders: string[] = []
+const createdKeys: { provider: string; keyName: string }[] = [];
+const createdProviders: string[] = [];
 
-test.describe('Providers', () => {
-  test.describe.configure({ mode: 'serial' })
+test.describe("Providers", () => {
+  test.describe.configure({ mode: "serial" });
 
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-  })
+    await providersPage.goto();
+  });
 
   test.afterEach(async ({ providersPage }) => {
     // Clean up any keys created during tests
     for (const { provider, keyName } of [...createdKeys]) {
       try {
-        await providersPage.selectProvider(provider)
-        const exists = await providersPage.keyExists(keyName, 2000)
+        await providersPage.selectProvider(provider);
+        const exists = await providersPage.keyExists(keyName, 2000);
         if (exists) {
-          await providersPage.deleteKey(keyName)
+          await providersPage.deleteKey(keyName);
         }
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[CLEANUP ERROR] Failed to delete provider key ${provider}/${keyName}: ${errorMsg}`)
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[CLEANUP ERROR] Failed to delete provider key ${provider}/${keyName}: ${errorMsg}`,
+        );
       }
     }
-    createdKeys.length = 0
+    createdKeys.length = 0;
 
     // Clean up any custom providers created during tests (skip toast wait so cleanup does not fail if toast is missing)
     for (const providerName of [...createdProviders]) {
       try {
-        await providersPage.deleteProvider(providerName, { skipToastWait: true })
+        await providersPage.deleteProvider(providerName, {
+          skipToastWait: true,
+        });
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[CLEANUP ERROR] Failed to delete provider ${providerName}: ${errorMsg}`)
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[CLEANUP ERROR] Failed to delete provider ${providerName}: ${errorMsg}`,
+        );
       }
     }
-    createdProviders.length = 0
-  })
+    createdProviders.length = 0;
+  });
 
-  test.describe('Provider Navigation', () => {
-    test('should display standard providers in sidebar', async ({ providersPage }) => {
+  test.describe("Provider Navigation", () => {
+    test("should display standard providers in sidebar", async ({
+      providersPage,
+    }) => {
       // Check that OpenAI provider is visible
-      const openaiProvider = providersPage.getProviderItem('openai')
-      await expect(openaiProvider).toBeVisible()
+      const openaiProvider = providersPage.getProviderItem("openai");
+      await expect(openaiProvider).toBeVisible();
 
       // Check that Anthropic provider is visible
-      const anthropicProvider = providersPage.getProviderItem('anthropic')
-      await expect(anthropicProvider).toBeVisible()
-    })
+      const anthropicProvider = providersPage.getProviderItem("anthropic");
+      await expect(anthropicProvider).toBeVisible();
+    });
 
-    test('should select a provider from the sidebar', async ({ providersPage }) => {
-      await providersPage.selectProvider('openai')
+    test("should select a provider from the sidebar", async ({
+      providersPage,
+    }) => {
+      await providersPage.selectProvider("openai");
 
       // Verify URL contains provider param
-      await expect(providersPage.page).toHaveURL(/provider=openai/)
-    })
+      await expect(providersPage.page).toHaveURL(/provider=openai/);
+    });
 
-    test('should switch between providers', async ({ providersPage }) => {
+    test("should switch between providers", async ({ providersPage }) => {
       // Select OpenAI first
-      await providersPage.selectProvider('openai')
-      await expect(providersPage.page).toHaveURL(/provider=openai/)
+      await providersPage.selectProvider("openai");
+      await expect(providersPage.page).toHaveURL(/provider=openai/);
 
       // Switch to Anthropic
-      await providersPage.selectProvider('anthropic')
-      await expect(providersPage.page).toHaveURL(/provider=anthropic/)
-    })
-  })
+      await providersPage.selectProvider("anthropic");
+      await expect(providersPage.page).toHaveURL(/provider=anthropic/);
+    });
+  });
 
-  test.describe('Provider Keys', () => {
-    test('should add a new key to OpenAI provider', async ({ providersPage }) => {
+  test.describe("Provider Keys", () => {
+    test("should add a new key to OpenAI provider", async ({
+      providersPage,
+    }) => {
       // Select OpenAI provider
-      await providersPage.selectProvider('openai')
+      await providersPage.selectProvider("openai");
 
       // Create test key data with unique name (no spaces for easier locating)
       const keyData = createProviderKeyData({
         name: `E2E-Test-Key-${Date.now()}`,
-        value: 'sk-test-e2e-key-12345',
+        value: "sk-test-e2e-key-12345",
         weight: 1.0,
-      })
+      });
 
       // Track for cleanup
-      createdKeys.push({ provider: 'openai', keyName: keyData.name })
+      createdKeys.push({ provider: "openai", keyName: keyData.name });
 
       // Add the key
-      await providersPage.addKey(keyData)
+      await providersPage.addKey(keyData);
 
       // Verify key appears in table (with waiting)
-      const keyExists = await providersPage.keyExists(keyData.name)
-      expect(keyExists).toBe(true)
-    })
+      const keyExists = await providersPage.keyExists(keyData.name);
+      expect(keyExists).toBe(true);
+    });
 
-    test('should add a key with custom weight', async ({ providersPage }) => {
-      await providersPage.selectProvider('openai')
+    test("should add a key with custom weight", async ({ providersPage }) => {
+      await providersPage.selectProvider("openai");
 
       const keyData = createProviderKeyData({
         name: `Weight-Key-${Date.now()}`,
-        value: 'sk-test-weight-key-12345',
+        value: "sk-test-weight-key-12345",
         weight: 0.5,
-      })
+      });
 
       // Track for cleanup
-      createdKeys.push({ provider: 'openai', keyName: keyData.name })
+      createdKeys.push({ provider: "openai", keyName: keyData.name });
 
-      await providersPage.addKey(keyData)
+      await providersPage.addKey(keyData);
 
-      const keyExists = await providersPage.keyExists(keyData.name)
-      expect(keyExists).toBe(true)
-    })
+      const keyExists = await providersPage.keyExists(keyData.name);
+      expect(keyExists).toBe(true);
+    });
 
-    test('should display empty state when no keys configured', async ({ providersPage }) => {
+    test("should display empty state when no keys configured", async ({
+      providersPage,
+    }) => {
       // Add Nebius from the dropdown if not already in sidebar (created with no keys)
-      if (!(await providersPage.providerExists('nebius'))) {
-        await providersPage.addKnownProviderFromDropdown('nebius')
-        createdProviders.push('nebius')
+      if (!(await providersPage.providerExists("nebius"))) {
+        await providersPage.addKnownProviderFromDropdown("nebius");
+        createdProviders.push("nebius");
       }
       // Select Nebius (it has zero keys)
-      const providerItem = providersPage.getProviderItem('nebius')
-      await expect(providerItem).toBeVisible({ timeout: 15000 })
-      await providersPage.selectProvider('nebius')
-      const keyCount = await providersPage.getKeyCount()
-      expect(keyCount).toBe(0)
+      const providerItem = providersPage.getProviderItem("nebius");
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider("nebius");
+      const keyCount = await providersPage.getKeyCount();
+      expect(keyCount).toBe(0);
 
       // Empty state row should be visible
-      await expect(providersPage.keysTableEmptyState).toBeVisible()
-    })
-  })
+      await expect(providersPage.keysTableEmptyState).toBeVisible();
+    });
+  });
 
-  test.describe('Custom Providers', () => {
-    test('should open custom provider creation sheet', async ({ providersPage }) => {
-      await providersPage.openCustomProviderSheet()
+  test.describe("Custom Providers", () => {
+    test("should open custom provider creation sheet", async ({
+      providersPage,
+    }) => {
+      await providersPage.openCustomProviderSheet();
 
       // Verify form fields are present
-      await expect(providersPage.customProviderNameInput).toBeVisible()
-      await expect(providersPage.baseProviderSelect).toBeVisible()
-      await expect(providersPage.baseUrlInput).toBeVisible()
-    })
+      await expect(providersPage.customProviderNameInput).toBeVisible();
+      await expect(providersPage.baseProviderSelect).toBeVisible();
+      await expect(providersPage.baseUrlInput).toBeVisible();
+    });
 
-    test('should create a custom OpenAI-compatible provider', async ({ providersPage }) => {
+    test("should create a custom OpenAI-compatible provider", async ({
+      providersPage,
+    }) => {
       const providerData = createCustomProviderData({
         name: `test-openai-${Date.now()}`,
-        baseProviderType: 'openai',
-        baseUrl: 'https://api.test-provider.com/v1',
-      })
+        baseProviderType: "openai",
+        baseUrl: "https://api.test-provider.com/v1",
+      });
 
       // Track for cleanup
-      createdProviders.push(providerData.name)
+      createdProviders.push(providerData.name);
 
-      await providersPage.createProvider(providerData)
+      await providersPage.createProvider(providerData);
 
       // Wait for provider to appear in sidebar
-      const providerItem = providersPage.getProviderItem(providerData.name)
-      await expect(providerItem).toBeVisible({ timeout: 15000 })
-    })
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+    });
 
-    test('should create a custom Anthropic-compatible provider', async ({ providersPage }) => {
+    test("should create a custom Anthropic-compatible provider", async ({
+      providersPage,
+    }) => {
       const providerData = createCustomProviderData({
         name: `test-anthropic-${Date.now()}`,
-        baseProviderType: 'anthropic',
-        baseUrl: 'https://api.anthropic-proxy.com',
-      })
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic-proxy.com",
+      });
 
       // Track for cleanup
-      createdProviders.push(providerData.name)
+      createdProviders.push(providerData.name);
 
-      await providersPage.createProvider(providerData)
+      await providersPage.createProvider(providerData);
 
       // Wait for provider to appear in sidebar
-      const providerItem = providersPage.getProviderItem(providerData.name)
-      await expect(providerItem).toBeVisible({ timeout: 15000 })
-    })
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+    });
 
-    test('should cancel custom provider creation', async ({ providersPage }) => {
-      await providersPage.openCustomProviderSheet()
+    test("should cancel custom provider creation", async ({
+      providersPage,
+    }) => {
+      await providersPage.openCustomProviderSheet();
 
       // Fill some data
-      await providersPage.customProviderNameInput.fill('cancelled-provider')
+      await providersPage.customProviderNameInput.fill("cancelled-provider");
 
       // Cancel
-      await providersPage.customProviderCancelBtn.click()
+      await providersPage.customProviderCancelBtn.click();
 
       // Sheet should close
-      await expect(providersPage.customProviderSheet).not.toBeVisible()
+      await expect(providersPage.customProviderSheet).not.toBeVisible();
 
       // Provider should not exist
-      const providerExists = await providersPage.providerExists('cancelled-provider')
-      expect(providerExists).toBe(false)
-    })
+      const providerExists =
+        await providersPage.providerExists("cancelled-provider");
+      expect(providerExists).toBe(false);
+    });
 
-    test('should delete custom provider and update UI', async ({ providersPage }) => {
+    test("should delete custom provider and update UI", async ({
+      providersPage,
+    }) => {
       const providerData = createCustomProviderData({
         name: `delete-test-${Date.now()}`,
-        baseProviderType: 'openai',
-        baseUrl: 'https://api.delete-test.com/v1',
-      })
-      createdProviders.push(providerData.name)
+        baseProviderType: "openai",
+        baseUrl: "https://api.delete-test.com/v1",
+      });
+      createdProviders.push(providerData.name);
 
-      await providersPage.createProvider(providerData)
+      await providersPage.createProvider(providerData);
 
-      const providerItem = providersPage.getProviderItem(providerData.name)
-      await expect(providerItem).toBeVisible({ timeout: 15000 })
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
 
-      await providersPage.deleteProvider(providerData.name, { skipToastWait: true })
+      await providersPage.deleteProvider(providerData.name, {
+        skipToastWait: true,
+      });
 
-      const idx = createdProviders.indexOf(providerData.name)
-      if (idx >= 0) createdProviders.splice(idx, 1)
+      const idx = createdProviders.indexOf(providerData.name);
+      if (idx >= 0) createdProviders.splice(idx, 1);
 
       // Assert provider is no longer in the configured providers list (do not rely on toast)
-      await expect(providerItem).not.toBeVisible({ timeout: 5000 })
-    })
-  })
+      await expect(providerItem).not.toBeVisible({ timeout: 5000 });
+    });
+  });
 
-  test.describe('Form Validation', () => {
-    test('should require name for custom provider', async ({ providersPage }) => {
-      await providersPage.openCustomProviderSheet()
+  test.describe("Form Validation", () => {
+    test("should require name for custom provider", async ({
+      providersPage,
+    }) => {
+      await providersPage.openCustomProviderSheet();
 
       // Try to save without name
-      await providersPage.baseUrlInput.fill('https://api.example.com')
+      await providersPage.baseUrlInput.fill("https://api.example.com");
 
       // The save button should be disabled or show error
-      const saveBtn = providersPage.customProviderSaveBtn
-      await saveBtn.click()
+      const saveBtn = providersPage.customProviderSaveBtn;
+      await saveBtn.click();
 
       // Form should still be visible (not submitted)
-      await expect(providersPage.customProviderSheet).toBeVisible()
-    })
+      await expect(providersPage.customProviderSheet).toBeVisible();
+    });
 
-    test('should require base URL for custom provider', async ({ providersPage }) => {
-      await providersPage.openCustomProviderSheet()
+    test("should require base URL for custom provider", async ({
+      providersPage,
+    }) => {
+      await providersPage.openCustomProviderSheet();
 
       // Fill only name
-      await providersPage.customProviderNameInput.fill('test-provider')
+      await providersPage.customProviderNameInput.fill("test-provider");
 
       // Try to save
-      await providersPage.customProviderSaveBtn.click()
+      await providersPage.customProviderSaveBtn.click();
 
       // Form should still be visible
-      await expect(providersPage.customProviderSheet).toBeVisible()
-    })
-  })
-})
+      await expect(providersPage.customProviderSheet).toBeVisible();
+    });
+  });
+});
 
-test.describe('Provider Key Management', () => {
-  test.describe.configure({ mode: 'serial' })
+test.describe("Provider Key Management", () => {
+  test.describe.configure({ mode: "serial" });
 
   // Track keys for cleanup in this test suite
-  const managementKeys: string[] = []
+  const managementKeys: string[] = [];
 
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
   test.afterEach(async ({ providersPage }) => {
     // Clean up any keys created during tests
     for (const keyName of [...managementKeys]) {
       try {
-        const exists = await providersPage.keyExists(keyName, 2000)
+        const exists = await providersPage.keyExists(keyName, 2000);
         if (exists) {
-          await providersPage.deleteKey(keyName)
+          await providersPage.deleteKey(keyName);
         }
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[CLEANUP ERROR] Failed to delete provider key ${keyName}: ${errorMsg}`)
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[CLEANUP ERROR] Failed to delete provider key ${keyName}: ${errorMsg}`,
+        );
       }
     }
-    managementKeys.length = 0
-  })
+    managementKeys.length = 0;
+  });
 
-  test('should edit an existing key', async ({ providersPage }) => {
+  test("should edit an existing key", async ({ providersPage }) => {
     // First add a key
     const keyData = createProviderKeyData({
       name: `Edit-Test-Key-${Date.now()}`,
-      value: 'sk-test-edit-key',
-    })
+      value: "sk-test-edit-key",
+    });
 
     // Track for cleanup
-    managementKeys.push(keyData.name)
+    managementKeys.push(keyData.name);
 
-    await providersPage.addKey(keyData)
+    await providersPage.addKey(keyData);
 
     // Now edit it - set weight to 0.7
     await providersPage.editKey(keyData.name, {
       weight: 0.7,
-    })
+    });
 
     // Verify weight was saved and displayed (wait for table to refresh after save)
-    const keyRow = providersPage.getKeyRow(keyData.name)
-    await expect(keyRow.getByTestId('key-weight-value')).toContainText('0.7', { timeout: 10000 })
-  })
+    const keyRow = providersPage.getKeyRow(keyData.name);
+    await expect(keyRow.getByTestId("key-weight-value")).toContainText("0.7", {
+      timeout: 10000,
+    });
+  });
 
-  test('should delete a key', async ({ providersPage }) => {
+  test("should delete a key", async ({ providersPage }) => {
     // First add a key
     const keyData = createProviderKeyData({
       name: `Delete-Test-Key-${Date.now()}`,
-      value: 'sk-test-delete-key',
-    })
+      value: "sk-test-delete-key",
+    });
 
     // Don't track for cleanup - we're testing delete
 
-    await providersPage.addKey(keyData)
+    await providersPage.addKey(keyData);
 
     // Verify it exists
-    let keyExists = await providersPage.keyExists(keyData.name)
-    expect(keyExists).toBe(true)
+    let keyExists = await providersPage.keyExists(keyData.name);
+    expect(keyExists).toBe(true);
 
     // Delete it
-    await providersPage.deleteKey(keyData.name)
+    await providersPage.deleteKey(keyData.name);
 
     // Verify it's gone (use short timeout since we expect it to be gone)
-    keyExists = await providersPage.keyExists(keyData.name, 1000)
-    expect(keyExists).toBe(false)
-  })
+    keyExists = await providersPage.keyExists(keyData.name, 1000);
+    expect(keyExists).toBe(false);
+  });
 
-  test('should toggle key enabled state', async ({ providersPage }) => {
+  test("should toggle key enabled state", async ({ providersPage }) => {
     // First add a key
     const keyData = createProviderKeyData({
       name: `Toggle-Test-Key-${Date.now()}`,
-      value: 'sk-test-toggle-key',
-    })
+      value: "sk-test-toggle-key",
+    });
 
     // Track for cleanup
-    managementKeys.push(keyData.name)
+    managementKeys.push(keyData.name);
 
-    await providersPage.addKey(keyData)
+    await providersPage.addKey(keyData);
 
     // Key starts enabled
-    let isEnabled = await providersPage.getKeyEnabledState(keyData.name)
-    expect(isEnabled).toBe(true)
+    let isEnabled = await providersPage.getKeyEnabledState(keyData.name);
+    expect(isEnabled).toBe(true);
 
     // Toggle to disabled
-    await providersPage.toggleKeyEnabled(keyData.name)
-    await providersPage.page.waitForTimeout(9000)
-    isEnabled = await providersPage.getKeyEnabledState(keyData.name)
-    expect(isEnabled).toBe(false)
-  })
-})
+    await providersPage.toggleKeyEnabled(keyData.name);
+    await expect
+        .poll(async () => providersPage.getKeyEnabledState(keyData.name), {
+            timeout: 10000,
+        })
+      .toBe(false);
+    isEnabled = await providersPage.getKeyEnabledState(keyData.name);
+    expect(isEnabled).toBe(false);
+  });
 
-test.describe('Provider Configuration', () => {
+  test("should display Allowed Models field when adding a key", async ({
+    providersPage,
+  }) => {
+    await providersPage.addKeyBtn.click();
+    await expect(providersPage.keyForm).toBeVisible();
+
+    const allowedModels = providersPage.page.getByTestId(
+      "api-keys-models-multiselect",
+    );
+    await expect(allowedModels).toBeVisible();
+
+    // "All Models" should be selected by default
+    await expect(allowedModels.getByText("All Models")).toBeVisible();
+
+    await providersPage.keyCancelBtn.click();
+  });
+
+  test("should display Blocked Models field when adding a key", async ({
+    providersPage,
+  }) => {
+    await providersPage.addKeyBtn.click();
+    await expect(providersPage.keyForm).toBeVisible();
+
+    const blockedModelsField = providersPage.page.getByTestId(
+      "apikey-blacklisted-models-field",
+    );
+    await expect(blockedModelsField).toBeVisible();
+
+    const blockedModelsMultiselect = providersPage.page.getByTestId(
+      "api-keys-blocked-models-multiselect",
+    );
+    await expect(blockedModelsMultiselect).toBeVisible();
+
+    await providersPage.keyCancelBtn.click();
+  });
+});
+
+test.describe("Provider Configuration", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-  })
+    await providersPage.goto();
+  });
 
-  test('should view provider configuration', async ({ providersPage }) => {
+  test("should view provider configuration", async ({ providersPage }) => {
     // Select OpenAI provider
-    await providersPage.selectProvider('openai')
+    await providersPage.selectProvider("openai");
 
     // Should see the provider's key table
-    await expect(providersPage.keysTable).toBeVisible()
+    await expect(providersPage.keysTable).toBeVisible();
 
     // Should see the add key button
-    await expect(providersPage.addKeyBtn).toBeVisible()
-  })
+    await expect(providersPage.addKeyBtn).toBeVisible();
+  });
 
-  test('should show provider models list', async ({ providersPage }) => {
+  test("should show provider models list", async ({ providersPage }) => {
     // Select OpenAI provider
-    await providersPage.selectProvider('openai')
+    await providersPage.selectProvider("openai");
 
     // Models section should be visible for selected provider
-    const modelsSection = providersPage.page.getByText(/Models/i).first()
-    await expect(modelsSection).toBeVisible()
-  })
-})
+    const modelsSection = providersPage.page.getByText(/Models/i).first();
+    await expect(modelsSection).toBeVisible();
+  });
+});
 
-test.describe('Performance Tuning', () => {
+test.describe("Performance Tuning", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
-  test('should display performance tuning tab', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('performance')
+  test("should display performance tuning tab", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("performance");
 
     // Should see concurrency and buffer size inputs
-    await expect(providersPage.getConcurrencyInput()).toBeVisible()
-    await expect(providersPage.getBufferSizeInput()).toBeVisible()
-  })
+    await expect(providersPage.getConcurrencyInput()).toBeVisible();
+    await expect(providersPage.getBufferSizeInput()).toBeVisible();
+  });
 
-  test('should display raw request/response toggles', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('debugging')
+  test("should display raw request/response toggles", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("debugging");
 
     // Should see raw request and response toggles (Debugging tab labels)
-    const rawRequestLabel = providersPage.page.getByText('Send Back Raw Request')
-    const rawResponseLabel = providersPage.page.getByText('Send Back Raw Response')
+    const rawRequestLabel = providersPage.page.getByText(
+      "Send Back Raw Request",
+    );
+    const rawResponseLabel = providersPage.page.getByText(
+      "Send Back Raw Response",
+    );
 
-    await expect(rawRequestLabel).toBeVisible()
-    await expect(rawResponseLabel).toBeVisible()
-  })
+    await expect(rawRequestLabel).toBeVisible();
+    await expect(rawResponseLabel).toBeVisible();
+  });
 
-  test('should update concurrency value', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('performance')
+  test("should update concurrency value", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("performance");
 
-    const concurrencyInput = providersPage.getConcurrencyInput()
-    const originalValue = await concurrencyInput.inputValue()
+    const concurrencyInput = providersPage.getConcurrencyInput();
+    const originalValue = await concurrencyInput.inputValue();
 
     // Use a small value that is always <= buffer size
-    const newValue = '5'
+    const newValue = "5";
 
-    await providersPage.fillNumberInput(concurrencyInput, newValue)
+    await providersPage.fillNumberInput(concurrencyInput, newValue);
 
     // Verify value changed
-    const currentValue = await concurrencyInput.inputValue()
-    expect(currentValue).toBe(newValue)
+    const currentValue = await concurrencyInput.inputValue();
+    expect(currentValue).toBe(newValue);
     // Blur the input
-    await concurrencyInput.blur()
+    await concurrencyInput.blur();
     // No validation error should appear
-    await expect(providersPage.page.getByText('Concurrency must be a number')).not.toBeVisible()
-    await expect(providersPage.page.getByText('Concurrency must be greater than 0')).not.toBeVisible()
-    await expect(providersPage.page.getByText('Concurrency must be less than or equal to buffer size')).not.toBeVisible()
+    await expect(
+      providersPage.page.getByText("Concurrency must be a number"),
+    ).not.toBeVisible();
+    await expect(
+      providersPage.page.getByText("Concurrency must be greater than 0"),
+    ).not.toBeVisible();
+    await expect(
+      providersPage.page.getByText(
+        "Concurrency must be less than or equal to buffer size",
+      ),
+    ).not.toBeVisible();
 
     // Save and verify success
-    const saveBtn = providersPage.getConfigSaveBtn('performance')
-    await expect(saveBtn).toBeEnabled()
-    await providersPage.savePerformanceConfig()
+    const saveBtn = providersPage.getConfigSaveBtn("performance");
+    await expect(saveBtn).toBeEnabled();
+    await providersPage.savePerformanceConfig();
 
     // Verify value persisted after save (reload would be ideal but we restore instead)
-    const afterSaveValue = await concurrencyInput.inputValue()
-    expect(afterSaveValue).toBe(newValue)
+    const afterSaveValue = await concurrencyInput.inputValue();
+    expect(afterSaveValue).toBe(newValue);
 
     // Restore original value
-    await providersPage.fillNumberInput(concurrencyInput, originalValue)
+    await providersPage.fillNumberInput(concurrencyInput, originalValue);
     // Blur the input
-    await concurrencyInput.blur()
-    await providersPage.savePerformanceConfig()
-  })
+    await concurrencyInput.blur();
+    await providersPage.savePerformanceConfig();
+  });
 
-  test('should update buffer size value', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('performance')
+  test("should update buffer size value", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("performance");
 
-    const bufferSizeInput = providersPage.getBufferSizeInput()
-    const originalValue = await bufferSizeInput.inputValue()
+    const bufferSizeInput = providersPage.getBufferSizeInput();
+    const originalValue = await bufferSizeInput.inputValue();
 
     // Use a large value that is always >= concurrency
-    const newValue = '6000'
+    const newValue = "6000";
 
-    await providersPage.fillNumberInput(bufferSizeInput, newValue)
+    await providersPage.fillNumberInput(bufferSizeInput, newValue);
 
     // Verify value changed
-    const currentValue = await bufferSizeInput.inputValue()
-    expect(currentValue).toBe(newValue)
+    const currentValue = await bufferSizeInput.inputValue();
+    expect(currentValue).toBe(newValue);
 
     // Blur the input
-    await bufferSizeInput.blur()
+    await bufferSizeInput.blur();
 
     // No validation error should appear
-    await expect(providersPage.page.getByText('Buffer size must be a number')).not.toBeVisible()
-    await expect(providersPage.page.getByText('Buffer size must be greater than 0')).not.toBeVisible()
-    await expect(providersPage.page.getByText('Concurrency must be less than or equal to buffer size')).not.toBeVisible()
+    await expect(
+      providersPage.page.getByText("Buffer size must be a number"),
+    ).not.toBeVisible();
+    await expect(
+      providersPage.page.getByText("Buffer size must be greater than 0"),
+    ).not.toBeVisible();
+    await expect(
+      providersPage.page.getByText(
+        "Concurrency must be less than or equal to buffer size",
+      ),
+    ).not.toBeVisible();
 
     // Save and verify success
-    const saveBtn = providersPage.getConfigSaveBtn('performance')
-    await expect(saveBtn).toBeEnabled()
-    await providersPage.savePerformanceConfig()
+    const saveBtn = providersPage.getConfigSaveBtn("performance");
+    await expect(saveBtn).toBeEnabled();
+    await providersPage.savePerformanceConfig();
 
     // Restore original value
-    await providersPage.fillNumberInput(bufferSizeInput, originalValue)
+    await providersPage.fillNumberInput(bufferSizeInput, originalValue);
     // Blur the input
-    await bufferSizeInput.blur()
-    await providersPage.savePerformanceConfig()
-  })
+    await bufferSizeInput.blur();
+    await providersPage.savePerformanceConfig();
+  });
 
-  test('should toggle and save raw request/response', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('debugging')
+  test("should toggle and save raw request/response", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("debugging");
 
-    const rawRequestSwitch = providersPage.getRawRequestSwitch()
-    const rawResponseSwitch = providersPage.getRawResponseSwitch()
+    const rawRequestSwitch = providersPage.getRawRequestSwitch();
+    const rawResponseSwitch = providersPage.getRawResponseSwitch();
 
     // Capture original states
-    const originalRawRequest = await rawRequestSwitch.getAttribute('data-state') === 'checked'
-    const originalRawResponse = await rawResponseSwitch.getAttribute('data-state') === 'checked'
+    const originalRawRequest =
+      (await rawRequestSwitch.getAttribute("data-state")) === "checked";
+    const originalRawResponse =
+      (await rawResponseSwitch.getAttribute("data-state")) === "checked";
 
     // Toggle both switches
-    await rawRequestSwitch.click()
-    await rawResponseSwitch.click()
+    await rawRequestSwitch.click();
+    await rawResponseSwitch.click();
 
     // Save and verify success
-    const saveBtn = providersPage.getConfigSaveBtn('debugging')
-    await expect(saveBtn).toBeEnabled()
-    await providersPage.saveDebuggingConfig()
+    const saveBtn = providersPage.getConfigSaveBtn("debugging");
+    await expect(saveBtn).toBeEnabled();
+    await providersPage.saveDebuggingConfig();
 
     // Restore original states
-    const currentRawRequest = await rawRequestSwitch.getAttribute('data-state') === 'checked'
-    const currentRawResponse = await rawResponseSwitch.getAttribute('data-state') === 'checked'
+    const currentRawRequest =
+      (await rawRequestSwitch.getAttribute("data-state")) === "checked";
+    const currentRawResponse =
+      (await rawResponseSwitch.getAttribute("data-state")) === "checked";
 
     if (currentRawRequest !== originalRawRequest) {
-      await rawRequestSwitch.click()
+      await rawRequestSwitch.click();
     }
     if (currentRawResponse !== originalRawResponse) {
-      await rawResponseSwitch.click()
+      await rawResponseSwitch.click();
     }
 
-    await providersPage.saveDebuggingConfig()
-  })
-})
+    await providersPage.saveDebuggingConfig();
+  });
+});
 
-test.describe('Proxy Configuration', () => {
+test.describe("Proxy Configuration", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
-  test('should display proxy config tab', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('proxy')
+  test("should display proxy config tab", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("proxy");
 
     // Should see proxy type selector
-    const proxyTypeLabel = providersPage.page.getByText('Proxy Type')
-    await expect(proxyTypeLabel).toBeVisible()
-  })
+    const proxyTypeLabel = providersPage.page.getByText("Proxy Type");
+    await expect(proxyTypeLabel).toBeVisible();
+  });
 
-  test('should show proxy type options', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('proxy')
+  test("should show proxy type options", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("proxy");
 
     // Open the proxy type dropdown
-    const proxySelect = providersPage.getProxyTypeSelect()
-    await proxySelect.click()
+    const proxySelect = providersPage.getProxyTypeSelect();
+    await proxySelect.click();
 
     // Should see HTTP, SOCKS5, Environment options
-    await expect(providersPage.page.getByRole('option', { name: /HTTP/i })).toBeVisible()
-    await expect(providersPage.page.getByRole('option', { name: /SOCKS5/i })).toBeVisible()
-    await expect(providersPage.page.getByRole('option', { name: /Environment/i })).toBeVisible()
+    await expect(
+      providersPage.page.getByRole("option", { name: /HTTP/i }),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByRole("option", { name: /SOCKS5/i }),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByRole("option", { name: /Environment/i }),
+    ).toBeVisible();
 
     // Close dropdown
-    await providersPage.page.keyboard.press('Escape')
-  })
+    await providersPage.page.keyboard.press("Escape");
+  });
 
-  test('should show URL fields when HTTP proxy selected', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('proxy')
+  test("should show URL fields when HTTP proxy selected", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("proxy");
 
     // Select HTTP proxy type
-    const proxySelect = providersPage.getProxyTypeSelect()
-    await proxySelect.click()
-    await providersPage.page.getByRole('option', { name: /HTTP/i }).click()
+    const proxySelect = providersPage.getProxyTypeSelect();
+    await proxySelect.click();
+    await providersPage.page.getByRole("option", { name: /HTTP/i }).click();
 
     // Should show URL, username, password fields
-    await expect(providersPage.page.getByLabel('Proxy URL')).toBeVisible()
-    await expect(providersPage.page.getByLabel('Username')).toBeVisible()
-    await expect(providersPage.page.getByLabel('Password')).toBeVisible()
-  })
-})
+    await expect(providersPage.page.getByLabel("Proxy URL")).toBeVisible();
+    await expect(providersPage.page.getByLabel("Username")).toBeVisible();
+    await expect(providersPage.page.getByLabel("Password")).toBeVisible();
+  });
+});
 
-test.describe('Network Configuration', () => {
+test.describe("Network Configuration", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
-  test('should display network config tab', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('network')
+  test("should display network config tab", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("network");
 
     // Should see timeout and retry settings
-    await expect(providersPage.page.getByLabel(/Timeout/i)).toBeVisible()
-    await expect(providersPage.page.getByLabel(/Max Retries/i)).toBeVisible()
-  })
+    await expect(
+      providersPage.page.getByLabel("Timeout (seconds)", { exact: true }),
+    ).toBeVisible();
+    await expect(providersPage.page.getByLabel(/Max Retries/i)).toBeVisible();
+  });
 
-  test('should display backoff settings', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('network')
+  test("should display backoff settings", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("network");
 
     // Should see backoff configuration
-    await expect(providersPage.page.getByLabel(/Initial Backoff/i)).toBeVisible()
-    await expect(providersPage.page.getByLabel(/Max Backoff/i)).toBeVisible()
-  })
+    await expect(
+      providersPage.page.getByLabel(/Initial Backoff/i),
+    ).toBeVisible();
+    await expect(providersPage.page.getByLabel(/Max Backoff/i)).toBeVisible();
+  });
 
-  test('should update timeout value', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('network')
-
-    // Ensure backoff fields are valid (minimum 100ms) so form validation passes
-    const initialBackoff = providersPage.page.getByLabel(/Initial Backoff/i)
-    const maxBackoff = providersPage.page.getByLabel(/Max Backoff/i)
-    const ibVal = await initialBackoff.inputValue()
-    const mbVal = await maxBackoff.inputValue()
-    if (Number(ibVal) < 100) {
-      await providersPage.fillNumberInput(initialBackoff, '500')
-    }
-    if (Number(mbVal) < 100) {
-      await providersPage.fillNumberInput(maxBackoff, '10000')
-    }
-
-    const timeoutInput = providersPage.page.getByLabel(/Timeout/i)
-    const originalValue = await timeoutInput.inputValue()
-    const newValue = originalValue === '30' ? '60' : '30'
-
-    await providersPage.fillNumberInput(timeoutInput, newValue)
-
-    // Verify value changed
-    const currentValue = await timeoutInput.inputValue()
-    expect(currentValue).toBe(newValue)
-
-    // Save button should be enabled
-    const saveBtn = providersPage.getConfigSaveBtn('network')
-    await expect(saveBtn).toBeEnabled()
-    await providersPage.saveNetworkConfig()
-
-    // Restore original value to avoid leaving form dirty
-    await providersPage.fillNumberInput(timeoutInput, originalValue)
-    await providersPage.saveNetworkConfig()
-
-  })
-
-  test('should update max retries value', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('network')
+  test("should update timeout value", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("network");
 
     // Ensure backoff fields are valid (minimum 100ms) so form validation passes
-    const initialBackoff = providersPage.page.getByLabel(/Initial Backoff/i)
-    const maxBackoff = providersPage.page.getByLabel(/Max Backoff/i)
-    const ibVal = await initialBackoff.inputValue()
-    const mbVal = await maxBackoff.inputValue()
+    const initialBackoff = providersPage.page.getByLabel(/Initial Backoff/i);
+    const maxBackoff = providersPage.page.getByLabel(/Max Backoff/i);
+    const ibVal = await initialBackoff.inputValue();
+    const mbVal = await maxBackoff.inputValue();
     if (Number(ibVal) < 100) {
-      await providersPage.fillNumberInput(initialBackoff, '500')
+      await providersPage.fillNumberInput(initialBackoff, "500");
     }
     if (Number(mbVal) < 100) {
-      await providersPage.fillNumberInput(maxBackoff, '10000')
+      await providersPage.fillNumberInput(maxBackoff, "10000");
     }
 
-    const retriesInput = providersPage.page.getByLabel(/Max Retries/i)
-    const originalValue = await retriesInput.inputValue()
-    const newValue = originalValue === '0' ? '3' : '0'
+    const timeoutInput = providersPage.page.getByLabel("Timeout (seconds)", {
+      exact: true,
+    });
+    const originalValue = await timeoutInput.inputValue();
+    const newValue = originalValue === "30" ? "60" : "30";
 
-    await providersPage.fillNumberInput(retriesInput, newValue)
+    await providersPage.fillNumberInput(timeoutInput, newValue);
 
     // Verify value changed
-    const currentValue = await retriesInput.inputValue()
-    expect(currentValue).toBe(newValue)
+    const currentValue = await timeoutInput.inputValue();
+    expect(currentValue).toBe(newValue);
 
     // Save button should be enabled
-    const saveBtn = providersPage.getConfigSaveBtn('network')
-    await expect(saveBtn).toBeEnabled()
-    await providersPage.saveNetworkConfig()
+    const saveBtn = providersPage.getConfigSaveBtn("network");
+    await expect(saveBtn).toBeEnabled();
+    await providersPage.saveNetworkConfig();
 
     // Restore original value to avoid leaving form dirty
-    await providersPage.fillNumberInput(retriesInput, originalValue)
-    await providersPage.saveNetworkConfig()
-  })
-})
+    await providersPage.fillNumberInput(timeoutInput, originalValue);
+    await providersPage.saveNetworkConfig();
+  });
 
-test.describe('Governance (Budget & Rate Limits)', () => {
+  test("should update max retries value", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("network");
+
+    // Ensure backoff fields are valid (minimum 100ms) so form validation passes
+    const initialBackoff = providersPage.page.getByLabel(/Initial Backoff/i);
+    const maxBackoff = providersPage.page.getByLabel(/Max Backoff/i);
+    const ibVal = await initialBackoff.inputValue();
+    const mbVal = await maxBackoff.inputValue();
+    if (Number(ibVal) < 100) {
+      await providersPage.fillNumberInput(initialBackoff, "500");
+    }
+    if (Number(mbVal) < 100) {
+      await providersPage.fillNumberInput(maxBackoff, "10000");
+    }
+
+    const retriesInput = providersPage.page.getByLabel(/Max Retries/i);
+    const originalValue = await retriesInput.inputValue();
+    const newValue = originalValue === "0" ? "3" : "0";
+
+    await providersPage.fillNumberInput(retriesInput, newValue);
+
+    // Verify value changed
+    const currentValue = await retriesInput.inputValue();
+    expect(currentValue).toBe(newValue);
+
+    // Save button should be enabled
+    const saveBtn = providersPage.getConfigSaveBtn("network");
+    await expect(saveBtn).toBeEnabled();
+    await providersPage.saveNetworkConfig();
+
+    // Restore original value to avoid leaving form dirty
+    await providersPage.fillNumberInput(retriesInput, originalValue);
+    await providersPage.saveNetworkConfig();
+  });
+});
+
+test.describe("Governance (Budget & Rate Limits)", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
-  test('should display governance tab', async ({ providersPage }) => {
-    const isVisible = await providersPage.isGovernanceTabVisible()
+  test("should display governance tab", async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab('governance')
+      await providersPage.selectConfigTab("governance");
 
       // Should see budget configuration section
-      await expect(providersPage.page.getByText('Budget Configuration')).toBeVisible()
+      await expect(
+        providersPage.page.getByText("Budget Configuration"),
+      ).toBeVisible();
     }
-  })
+  });
 
-  test('should display budget configuration', async ({ providersPage }) => {
-    const isVisible = await providersPage.isGovernanceTabVisible()
+  test("should display budget configuration", async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab('governance')
+      await providersPage.selectConfigTab("governance");
 
       // Should see budget limit input
-      const budgetInput = providersPage.page.locator('#providerBudgetMaxLimit')
-      await expect(budgetInput).toBeVisible()
+      const budgetInput = providersPage.page.locator("#providerBudgetMaxLimit");
+      await expect(budgetInput).toBeVisible();
     }
-  })
+  });
 
-  test('should display rate limiting configuration', async ({ providersPage }) => {
-    const isVisible = await providersPage.isGovernanceTabVisible()
+  test("should display rate limiting configuration", async ({
+    providersPage,
+  }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab('governance')
+      await providersPage.selectConfigTab("governance");
 
       // Should see rate limiting section
-      await expect(providersPage.page.getByText('Rate Limiting Configuration')).toBeVisible()
+      await expect(
+        providersPage.page.getByText("Rate Limiting Configuration"),
+      ).toBeVisible();
 
       // Should see token and request limit inputs
-      const tokenInput = providersPage.page.locator('#providerTokenMaxLimit')
-      const requestInput = providersPage.page.locator('#providerRequestMaxLimit')
+      const tokenInput = providersPage.page.locator("#providerTokenMaxLimit");
+      const requestInput = providersPage.page.locator(
+        "#providerRequestMaxLimit",
+      );
 
-      await expect(tokenInput).toBeVisible()
-      await expect(requestInput).toBeVisible()
+      await expect(tokenInput).toBeVisible();
+      await expect(requestInput).toBeVisible();
     }
-  })
+  });
 
-  test('should set budget limit', async ({ providersPage }) => {
-    const isVisible = await providersPage.isGovernanceTabVisible()
+  test("should set budget limit", async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab('governance')
+      await providersPage.selectConfigTab("governance");
 
-      const budgetInput = providersPage.page.locator('#providerBudgetMaxLimit')
-      await budgetInput.click()
-      await budgetInput.fill('')
+      const budgetInput = providersPage.page.locator("#providerBudgetMaxLimit");
+      await budgetInput.click();
+      await budgetInput.fill("");
       // Type character by character to trigger React's onChange
-      await budgetInput.pressSequentially('100')
+      await budgetInput.pressSequentially("100");
 
       // Verify value
-      const value = await budgetInput.inputValue()
-      expect(value).toBe('100')
+      const value = await budgetInput.inputValue();
+      expect(value).toBe("100");
 
       // Form should now be dirty - save button should be enabled
-      const saveBtn = providersPage.getConfigSaveBtn('governance')
+      const saveBtn = providersPage.getConfigSaveBtn("governance");
       // Give React time to update the form state
-      await providersPage.page.waitForTimeout(500)
-      await expect(saveBtn).toBeEnabled({ timeout: 5000 })
+      await providersPage.page.waitForTimeout(500);
+      await expect(saveBtn).toBeEnabled({ timeout: 5000 });
     }
-  })
+  });
 
-  test('should set rate limits', async ({ providersPage }) => {
-    const isVisible = await providersPage.isGovernanceTabVisible()
+  test("should set rate limits", async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab('governance')
+      await providersPage.selectConfigTab("governance");
 
       // Set token limit - use pressSequentially for proper React onChange
-      const tokenInput = providersPage.page.locator('#providerTokenMaxLimit')
-      await tokenInput.click()
-      await tokenInput.fill('')
-      await tokenInput.pressSequentially('100000')
+      const tokenInput = providersPage.page.locator("#providerTokenMaxLimit");
+      await tokenInput.click();
+      await tokenInput.fill("");
+      await tokenInput.pressSequentially("100000");
 
       // Set request limit
-      const requestInput = providersPage.page.locator('#providerRequestMaxLimit')
-      await requestInput.click()
-      await requestInput.fill('')
-      await requestInput.pressSequentially('1000')
+      const requestInput = providersPage.page.locator(
+        "#providerRequestMaxLimit",
+      );
+      await requestInput.click();
+      await requestInput.fill("");
+      await requestInput.pressSequentially("1000");
 
       // Verify values
-      expect(await tokenInput.inputValue()).toBe('100000')
-      expect(await requestInput.inputValue()).toBe('1000')
+      expect(await tokenInput.inputValue()).toBe("100000");
+      expect(await requestInput.inputValue()).toBe("1000");
     }
-  })
-})
+  });
+});
 
-test.describe('Debugging Tab', () => {
+test.describe("Debugging Tab", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-    await providersPage.selectProvider('openai')
-  })
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
 
-  test('should display debugging tab', async ({ providersPage }) => {
-    await providersPage.openConfigSheet()
-    const debuggingTab = providersPage.page.getByTestId('provider-tab-debugging')
-    await expect(debuggingTab).toBeVisible()
-  })
+  test("should display debugging tab", async ({ providersPage }) => {
+    await providersPage.openConfigSheet();
+    const debuggingTab = providersPage.page.getByTestId(
+      "provider-tab-debugging",
+    );
+    await expect(debuggingTab).toBeVisible();
+  });
 
-  test('should navigate to debugging tab', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('debugging')
+  test("should navigate to debugging tab", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("debugging");
 
-    const debuggingTab = providersPage.page.getByTestId('provider-tab-debugging')
-    await expect(debuggingTab).toHaveAttribute('data-state', 'active')
-    const debuggingContent = providersPage.page.getByTestId('provider-config-debugging-content')
-    await expect(debuggingContent).toBeVisible()
-  })
-})
+    const debuggingTab = providersPage.page.getByTestId(
+      "provider-tab-debugging",
+    );
+    await expect(debuggingTab).toHaveAttribute("data-state", "active");
+    const debuggingContent = providersPage.page.getByTestId(
+      "provider-config-debugging-content",
+    );
+    await expect(debuggingContent).toBeVisible();
+  });
+});
 
-test.describe('vLLM Provider', () => {
+test.describe("Provider specific configuration", () => {
   test.beforeEach(async ({ providersPage }) => {
-    await providersPage.goto()
-  })
+    await providersPage.goto();
+  });
 
-  test('should display vLLM-specific key fields when adding key to vLLM provider', async ({ providersPage }) => {
-    const vllmAvailable = await providersPage.providerExists('vllm')
+  test("should display vLLM-specific key fields when adding key to vLLM provider", async ({
+    providersPage,
+  }) => {
+    const vllmAvailable = await providersPage.providerExists("vllm");
     if (!vllmAvailable) {
-      test.skip(true, 'vLLM provider not in sidebar (add from dropdown first)')
-      return
+      test.skip(true, "vLLM provider not in sidebar (add from dropdown first)");
+      return;
     }
 
-    await providersPage.selectProvider('vllm')
-    await providersPage.addKeyBtn.click()
+    await providersPage.selectProvider("vllm");
+    await providersPage.addKeyBtn.click();
 
-    const vllmUrlInput = providersPage.page.getByTestId('key-input-vllm-url')
-    const vllmModelInput = providersPage.page.getByTestId('key-input-vllm-model-name')
+    const vllmUrlInput = providersPage.page.getByTestId("key-input-vllm-url");
+    const vllmModelInput = providersPage.page.getByTestId(
+      "key-input-vllm-model-name",
+    );
 
-    const urlVisible = await vllmUrlInput.isVisible().catch(() => false)
-    const modelVisible = await vllmModelInput.isVisible().catch(() => false)
+    const urlVisible = await vllmUrlInput.isVisible().catch(() => false);
+    const modelVisible = await vllmModelInput.isVisible().catch(() => false);
 
     if (!urlVisible && !modelVisible) {
-      test.skip(true, 'vLLM key form fields not shown (provider may use standard key form)')
-      return
+      test.skip(
+        true,
+        "vLLM key form fields not shown (provider may use standard key form)",
+      );
+      return;
     }
-    await expect(vllmUrlInput).toBeVisible()
-    await expect(vllmModelInput).toBeVisible()
+    await expect(vllmUrlInput).toBeVisible();
+    await expect(vllmModelInput).toBeVisible();
 
-    await providersPage.keyCancelBtn.click()
-  })
-})
+    await providersPage.keyCancelBtn.click();
+  });
+
+  test("should display Ollama-specific key fields when adding key to Ollama provider", async ({
+    providersPage,
+  }) => {
+    const available = await providersPage.providerExists("ollama");
+    if (!available) {
+      test.skip(
+        true,
+        "Ollama provider not in sidebar (add from dropdown first)",
+      );
+      return;
+    }
+
+    await providersPage.selectProvider("ollama");
+    await providersPage.addKeyBtn.click();
+
+    const urlInput = providersPage.page.getByTestId("key-input-ollama-url");
+    const urlVisible = await urlInput.isVisible().catch(() => false);
+    if (!urlVisible) {
+      test.skip(true, "Ollama key form fields not shown");
+      return;
+    }
+
+    await expect(urlInput).toBeVisible();
+    await providersPage.keyCancelBtn.click();
+  });
+
+  test("should display SGLang-specific key fields when adding key to SGLang provider", async ({
+    providersPage,
+  }) => {
+    const available = await providersPage.providerExists("sgl");
+    if (!available) {
+      test.skip(
+        true,
+        "SGLang provider not in sidebar (add from dropdown first)",
+      );
+      return;
+    }
+
+    await providersPage.selectProvider("sgl");
+    await providersPage.addKeyBtn.click();
+
+    const urlInput = providersPage.page.getByTestId("key-input-sgl-url");
+    const urlVisible = await urlInput.isVisible().catch(() => false);
+    if (!urlVisible) {
+      test.skip(true, "SGLang key form fields not shown");
+      return;
+    }
+
+    await expect(urlInput).toBeVisible();
+    await providersPage.keyCancelBtn.click();
+  });
+});

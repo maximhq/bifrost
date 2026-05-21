@@ -3500,6 +3500,12 @@ compare_postgres_snapshots() {
   # during startup (see framework/modelcatalog/sync.go) - row count grows from seed-only to full catalog
   local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters"
 
+  # Tables intentionally removed by migrations — their disappearance is by design,
+  # not data loss. The four oauth_per_user_* tables backed the Bifrost-as-OAuth-server
+  # flow and were dropped by migrationDropLegacyOAuthServerTables when Bifrost became
+  # strictly an OAuth client; any rows present were orphans of a deleted code path.
+  local dropped_tables="oauth_per_user_clients oauth_per_user_codes oauth_per_user_pending_flows oauth_per_user_sessions"
+
   # Columns to ignore when comparing (these are expected to change during migration)
   # - updated_at: timestamps are updated when records are touched
   # - config_hash: recomputed when config is synced
@@ -3540,6 +3546,10 @@ compare_postgres_snapshots() {
 
     # Check if table still exists after migration
     if [ ! -f "$after_file" ]; then
+      if [[ " $dropped_tables " == *" $table "* ]]; then
+        log_info "  Skipping $table (intentionally dropped by migration)"
+        continue
+      fi
       log_error "Table $table missing after migration!"
       failed=1
       continue
@@ -3582,13 +3592,33 @@ compare_postgres_snapshots() {
     if [ "$table" = "governance_teams" ]; then
       dropped_columns="$dropped_columns budget_id"
     fi
-    # calendar_aligned was dropped from governance_budgets in prerelease2 (add_multi_budget_tables) but
-    # re-added in prerelease4 (migrateCalendarAlignedToBudgetsAndRateLimitsTable) - no longer dropped
+    # calendar_aligned was dropped from governance_budgets and governance_rate_limits by
+    # migrationDropLegacyCalendarAlignedColumns. Calendar alignment is now a VK-level
+    # (and team-level) setting; budget and rate-limit reset logic derives the value from
+    # the owning VK/team at reset time, so the column is intentionally removed. (History:
+    # added to governance_budgets in prerelease1, dropped in prerelease2, re-added to both
+    # tables in prerelease4, then dropped again here.)
+    if [ "$table" = "governance_budgets" ] || [ "$table" = "governance_rate_limits" ]; then
+      dropped_columns="$dropped_columns calendar_aligned"
+    fi
+    # session_token / session_token_hash were replaced by session_id in both
+    # oauth_user_sessions and oauth_user_tokens; gateway_session_id was additionally
+    # dropped from oauth_user_sessions. The per-user OAuth refactor removed the
+    # Bifrost-as-OAuth-server flow (migrationReplaceOauthSessionTokenWithSessionID
+    # and migrationDropLegacyOAuthServerTables); identity is now keyed by session_id.
+    if [ "$table" = "oauth_user_sessions" ]; then
+      dropped_columns="$dropped_columns session_token session_token_hash gateway_session_id"
+    fi
+    if [ "$table" = "oauth_user_tokens" ]; then
+      dropped_columns="$dropped_columns session_token session_token_hash"
+    fi
     # enable_litellm_fallbacks (dropped from config_client in latest cut - behavior moved elsewhere)
     # allow_direct_keys (dropped from config_client in v1.5.0 - direct-keys-only mode removed; HTTP header
     # pass-through is no longer accepted)
+    # mcp_external_server_url (dropped by migrationDropMCPExternalServerURL - Bifrost no longer acts as an
+    # OAuth authorization server, so the .well-known / WWW-Authenticate advertise URL is dead)
     if [ "$table" = "config_client" ]; then
-      dropped_columns="$dropped_columns enable_litellm_fallbacks allow_direct_keys"
+      dropped_columns="$dropped_columns enable_litellm_fallbacks allow_direct_keys mcp_external_server_url"
     fi
 
     local before_col_array

@@ -12,6 +12,12 @@ const (
 	ConfigHeaderFilterKey           = "header_filter_config"
 )
 
+// Keys for the ClientConfig.MetadataJSON blob.
+// These live inside the metadata JSON map on config_client, not as governance_config rows.
+const (
+	MetadataKeyOnboardingDismissed = "onboarding_dismissed"
+)
+
 // RestartRequiredConfig represents the restart required configuration
 // This is set when a config change requires a server restart to take effect
 type RestartRequiredConfig struct {

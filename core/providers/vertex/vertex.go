@@ -585,6 +585,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
+	if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+		request.Params != nil && request.Params.ServiceTier != nil {
+		if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+			req.Header.Set(VertexServiceTierHeader, v)
+		}
+	}
 	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
 	// anthropic_beta body field instead, and other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
@@ -844,6 +850,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -901,6 +908,16 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		headers := map[string]string{
 			"Accept":        "text/event-stream",
 			"Cache-Control": "no-cache",
+		}
+
+		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
+				if request.Params != nil && request.Params.ServiceTier != nil {
+					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+						headers[VertexServiceTierHeader] = v
+					}
+				}
+			}
 		}
 
 		// If no auth query, use OAuth2 token
@@ -975,6 +992,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			request,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
@@ -997,7 +1015,6 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-
 		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -1025,6 +1042,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
 
 		// Getting oauth2 token
 		tokenSource, err := getAuthTokenSource(key)
@@ -1167,6 +1190,13 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
+		if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+			request.Params != nil && request.Params.ServiceTier != nil {
+			if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+				req.Header.Set(VertexServiceTierHeader, v)
+			}
+		}
+
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 		// If auth query is set, add it to the URL
@@ -1305,6 +1335,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			jsonBody,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -1375,6 +1406,16 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers := map[string]string{
 			"Accept":        "text/event-stream",
 			"Cache-Control": "no-cache",
+		}
+
+		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
+				if request.Params != nil && request.Params.ServiceTier != nil {
+					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+						headers[VertexServiceTierHeader] = v
+					}
+				}
+			}
 		}
 
 		// If no auth query, use OAuth2 token
@@ -2515,6 +2556,8 @@ func (provider *VertexProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
+	// Strip service tier — Vertex uses HTTP headers for this, not the request body.
+	requestBody.ServiceTier = ""
 	for _, content := range requestBody.Contents {
 		for _, part := range content.Parts {
 			// Remove id from function_call
@@ -2565,6 +2608,13 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 		contentIndex++
 		return true
 	})
+
+	// Strip top-level serviceTier — Vertex uses HTTP headers for this, not the request body.
+	if providerUtils.JSONFieldExists(out, "serviceTier") {
+		if updated, err := providerUtils.DeleteJSONField(out, "serviceTier"); err == nil {
+			out = updated
+		}
+	}
 
 	return out
 }
@@ -3063,13 +3113,13 @@ func (provider *VertexProvider) PassthroughStream(
 		tokenSource, err := getAuthTokenSource(key)
 		if err != nil {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
-			providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
-			providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
 		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
@@ -3098,7 +3148,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	if err := activeClient.Do(fasthttpReq, resp); err != nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -3124,7 +3174,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	bodyStream := resp.BodyStream()
 	if bodyStream == nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, providerUtils.NewBifrostOperationError(
 			"provider returned an empty stream body",
 			fmt.Errorf("provider returned an empty stream body"))
@@ -3135,7 +3185,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	// Wrap body with idle timeout to detect stalled streams.
 	rawBodyStream := bodyStream
-	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(bodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
+	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(bodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx), ctx)
 
 	// Cancellation must close the raw stream to unblock reads.
 	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
@@ -3154,7 +3204,7 @@ func (provider *VertexProvider) PassthroughStream(
 			}
 			close(ch)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		defer stopIdleTimeout()
 		defer stopCancellation()
 		streamStart := time.Now()
@@ -3207,9 +3257,11 @@ func (provider *VertexProvider) PassthroughStream(
 				if ctx.Err() != nil {
 					return // let defer handle cancel/timeout
 				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(streamStart).Milliseconds()
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					extraFields.Latency = time.Since(streamStart).Milliseconds()
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
+				}
 				return
 			}
 		}
