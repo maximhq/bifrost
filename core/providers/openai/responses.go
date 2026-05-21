@@ -281,8 +281,10 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			req.Tools = normalizedTools
 		}
 
-		// Filter out tools that OpenAI doesn't support
-		req.filterUnsupportedTools()
+		// Filter out tools that OpenAI doesn't support.
+		// Pass the model so provider-specific fields (e.g. max_uses for Anthropic)
+		// are preserved when routing through OpenRouter.
+		req.filterUnsupportedTools(bifrostReq.Model)
 	}
 
 	if bifrostReq.Params != nil {
@@ -291,8 +293,11 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 	return req
 }
 
-// filterUnsupportedTools removes tool types that OpenAI doesn't support
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+// filterUnsupportedTools removes tool types that OpenAI doesn't support and strips
+// provider-specific fields that OpenAI does not accept (e.g. max_uses).
+// When model is an Anthropic model routed via OpenRouter (prefix "anthropic/"),
+// Anthropic-specific fields are preserved so OpenRouter can forward them correctly.
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(model string) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -335,7 +340,10 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 				newTool := tool
 				newWebSearch := &schemas.ResponsesToolWebSearch{}
 
-				// MaxUses is intentionally omitted (nil) - OpenAI doesn't support it
+				// MaxUses: preserve for Anthropic models routed via OpenRouter; strip for native OpenAI.
+				if strings.HasPrefix(model, "anthropic/") && tool.ResponsesToolWebSearch.MaxUses != nil {
+					newWebSearch.MaxUses = tool.ResponsesToolWebSearch.MaxUses
+				}
 
 				// Handle Filters: OpenAI doesn't support BlockedDomains or TimeRangeFilter
 				if tool.ResponsesToolWebSearch.Filters != nil {
