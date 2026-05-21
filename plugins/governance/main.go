@@ -1313,6 +1313,13 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// Handle decision
 	switch result.Decision {
 	case DecisionAllow:
+		// Clear any prior rejection flag (e.g. from a failed primary attempt
+		// before a fallback retry). Without this, PostLLMHook would see the
+		// stale flag and skip budget/rate-limit ID collection for the
+		// successful fallback attempt.
+		if ctx != nil {
+			ctx.ClearValue(governanceRejectedContextKey)
+		}
 		return result, nil
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
