@@ -126,6 +126,7 @@ type SearchStats struct {
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
@@ -1544,11 +1545,14 @@ type UserRankingResult struct {
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.
-// Timestamp alone is not unique, so LogID is used as a stable tiebreaker once a
-// previous row has been processed.
+// The initial scan uses Timestamp + LogID because each ghost has a timestamp
+// lower bound. Once rows written with IncNumber are seen, subsequent scans use
+// IncNumber because it is assigned by the database at insert time and therefore
+// does not skip late async log writes.
 type NodeUsageCursor struct {
 	Timestamp time.Time `json:"timestamp"`
 	LogID     string    `json:"log_id"`
+	IncNumber *int64    `json:"inc_number,omitempty"`
 }
 
 // NodeUsageAggregate represents aggregated usage for a specific node from the logs table,

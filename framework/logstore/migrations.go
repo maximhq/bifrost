@@ -333,6 +333,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddClusterGovernanceColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddLogIncNumberColumn(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
@@ -2496,6 +2499,11 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_cluster_node_usage",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_usage ON logs(cluster_node_id, status, timestamp, id) WHERE cluster_node_id IS NOT NULL",
 	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_inc_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -3236,6 +3244,64 @@ func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB) erro
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding cluster governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLogIncNumberColumn adds a database-assigned monotonic cursor to
+// logs. Existing rows remain NULL; new rows receive values from a PostgreSQL
+// sequence at insert time. Ghost reconciliation uses this column after its
+// initial timestamp query to avoid missing rows flushed late by the async log
+// writer.
+func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_inc_number_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.AddColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("CREATE SEQUENCE IF NOT EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to create logs_inc_number_seq: %w", err)
+				}
+				if err := tx.Exec("ALTER SEQUENCE logs_inc_number_seq OWNED BY logs.inc_number").Error; err != nil {
+					return fmt.Errorf("failed to set logs_inc_number_seq ownership: %w", err)
+				}
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number SET DEFAULT nextval('logs_inc_number_seq')").Error; err != nil {
+					return fmt.Errorf("failed to set inc_number default: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number DROP DEFAULT").Error; err != nil {
+					return fmt.Errorf("failed to drop inc_number default: %w", err)
+				}
+				if err := tx.Exec("DROP SEQUENCE IF EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to drop logs_inc_number_seq: %w", err)
+				}
+			}
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.DropColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding log inc_number column: %s", err.Error())
 	}
 	return nil
 }
