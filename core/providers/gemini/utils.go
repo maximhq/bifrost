@@ -367,6 +367,42 @@ func mapGeminiServiceTierToBifrost(tier ServiceTier) schemas.BifrostServiceTier 
 	}
 }
 
+// mapGeminiTrafficTypeToBifrost converts a Vertex AI usageMetadata.trafficType to a BifrostServiceTier.
+// Returns nil for empty or unrecognised values.
+func mapGeminiTrafficTypeToBifrost(trafficType TrafficType) *schemas.BifrostServiceTier {
+	var tier schemas.BifrostServiceTier
+	switch trafficType {
+	case TrafficTypeOnDemand:
+		tier = schemas.BifrostServiceTierDefault
+	case TrafficTypeOnDemandPriority:
+		tier = schemas.BifrostServiceTierPriority
+	case TrafficTypeOnDemandFlex:
+		tier = schemas.BifrostServiceTierFlex
+	case TrafficTypeProvisionedThroughput:
+		tier = schemas.BifrostServiceTierProvisioned
+	default:
+		return nil
+	}
+	return &tier
+}
+
+// mapBifrostServiceTierToVertexTrafficType converts a BifrostServiceTier to a Vertex AI trafficType string.
+// Returns "" for auto (unresolved) since the actual traffic type cannot be determined.
+func mapBifrostServiceTierToVertexTrafficType(tier schemas.BifrostServiceTier) TrafficType {
+	switch tier {
+	case schemas.BifrostServiceTierDefault:
+		return TrafficTypeOnDemand
+	case schemas.BifrostServiceTierPriority:
+		return TrafficTypeOnDemandPriority
+	case schemas.BifrostServiceTierFlex:
+		return TrafficTypeOnDemandFlex
+	case schemas.BifrostServiceTierProvisioned:
+		return TrafficTypeProvisionedThroughput
+	default:
+		return ""
+	}
+}
+
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
 func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{

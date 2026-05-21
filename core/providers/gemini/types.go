@@ -827,6 +827,16 @@ const (
 	ServiceTierPriority ServiceTier = "priority"
 )
 
+type TrafficType string
+
+const (
+	TrafficTypeUnspecified          TrafficType = "TRAFFIC_TYPE_UNSPECIFIED"
+	TrafficTypeOnDemand             TrafficType = "ON_DEMAND"
+	TrafficTypeOnDemandPriority     TrafficType = "ON_DEMAND_PRIORITY"
+	TrafficTypeOnDemandFlex         TrafficType = "ON_DEMAND_FLEX"
+	TrafficTypeProvisionedThroughput TrafficType = "PROVISIONED_THROUGHPUT"
+)
+
 // GenerationConfig represents generation configuration. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
 // and https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/content-generation-parameters.
 type GenerationConfig struct {
@@ -1920,7 +1930,7 @@ type GenerateContentResponseUsageMetadata struct {
 	TotalTokenCount int32 `json:"totalTokenCount,omitempty"`
 	// Output only. Traffic type. This shows whether a request consumes Pay-As-You-Go or
 	// Provisioned Throughput quota.
-	TrafficType string `json:"trafficType,omitempty"`
+	TrafficType TrafficType `json:"trafficType,omitempty"`
 	// Output only. The service tier used to serve the request.
 	ServiceTier ServiceTier `json:"serviceTier,omitempty"`
 }

@@ -281,9 +281,13 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 
-	if response.UsageMetadata != nil && response.UsageMetadata.ServiceTier != "" {
-		tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
-		bifrostResp.ServiceTier = &tier
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
 	}
 
 	return bifrostResp
@@ -504,7 +508,9 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
-		if response.UsageMetadata.ServiceTier != "" {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			streamResponse.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
 			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
 			streamResponse.ServiceTier = &tier
 		}
