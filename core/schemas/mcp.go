@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -21,15 +22,15 @@ import (
 
 // OAuth-related errors
 var (
-	ErrOAuth2ConfigNotFound           = errors.New("oauth2 config not found")
-	ErrOAuth2ProviderNotAvailable     = errors.New("oauth2 provider not available")
-	ErrOAuth2TokenExpired             = errors.New("oauth2 token expired")
-	ErrOAuth2TokenInvalid             = errors.New("oauth2 token invalid")
-	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
-	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
-	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
-	ErrOAuth2FlowNotPending           = errors.New("oauth flow is not in pending state")
-	ErrOAuth2FlowExpired              = errors.New("oauth flow has expired")
+	ErrOAuth2ConfigNotFound       = errors.New("oauth2 config not found")
+	ErrOAuth2ProviderNotAvailable = errors.New("oauth2 provider not available")
+	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
+	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
+	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
+	ErrOAuth2NotPerUserSession    = errors.New("state does not match a per-user oauth session")
+	ErrOAuth2TokenNotFound        = errors.New("per-user oauth token not found for this identity and mcp server")
+	ErrOAuth2FlowNotPending       = errors.New("oauth flow is not in pending state")
+	ErrOAuth2FlowExpired          = errors.New("oauth flow has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream
@@ -49,6 +50,53 @@ type MCPUserOAuthRequiredError struct {
 
 func (e *MCPUserOAuthRequiredError) Error() string {
 	return e.Message
+}
+
+// MCPCredentialStore is the single source of truth for MCP credential resolution.
+// It exposes three predicates that MCPManager consumes uniformly:
+//
+//   - ConnectionHeaders         — headers attached to opening an upstream transport
+//   - RequestHeaders            — per-message headers on an already-open transport
+//   - RequiresPerCallConnection — whether each call needs an ephemeral transport
+//
+// Storage lifecycle (orphaning on VK reassignment, cascade on client delete)
+// is NOT part of this interface — those concerns stay in the configstore
+// layer where transactional atomicity is preserved.
+type MCPCredentialStore interface {
+	// ConnectionHeaders returns the headers to attach when opening an upstream
+	// transport. Called from two sites:
+	//
+	//  1. At AddClient / Reconnect / UpdateClientConnection for shared-
+	//     connection auth types (none, headers, server_oauth). The caller
+	//     wraps the Bifrost lifecycle context into a synthetic BifrostContext
+	//     with no identity, so the resolver returns admin-level headers
+	//     (static config + admin Bearer for server_oauth).
+	//
+	//  2. Per call inside the ephemeral-transport path for per-user auth
+	//     types. The caller passes the real request BifrostContext, and the
+	//     resolver returns the caller's full set (static + filtered
+	//     context-extras + per-user auth).
+	//
+	// May return *MCPUserOAuthRequiredError when a per-user credential is
+	// missing and the caller must complete an auth flow before retrying.
+	ConnectionHeaders(ctx *BifrostContext, config *MCPClientConfig) (http.Header, error)
+
+	// RequestHeaders returns the per-message headers attached to each
+	// CallTool / ListTools / Ping that flows over an already-open
+	// transport — currently just the filtered context-extras
+	// (BifrostContextKeyMCPExtraHeaders, scoped by config.AllowedExtraHeaders).
+	//
+	// Only meaningful when the connection is shared
+	// (RequiresPerCallConnection is false). Per-user types embed all
+	// caller-specific headers in the ephemeral transport itself via
+	// ConnectionHeaders; the caller skips RequestHeaders in that path.
+	RequestHeaders(ctx *BifrostContext, config *MCPClientConfig) (http.Header, error)
+
+	// RequiresPerCallConnection reports whether each tool invocation needs a
+	// freshly-built ephemeral upstream connection (rather than reusing a
+	// shared persistent one). True for per-user auth types; false for
+	// shared (none, headers, oauth-server-level).
+	RequiresPerCallConnection(config *MCPClientConfig) bool
 }
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
@@ -334,50 +382,6 @@ func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
 		return nil
 	}
 	return &config
-}
-
-// HttpHeaders returns the HTTP headers for the MCP client config.
-func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2Provider) (map[string]string, error) {
-	headers := make(map[string]string)
-
-	switch c.AuthType {
-	case MCPAuthTypeOauth:
-		if c.OauthConfigID == nil {
-			return nil, ErrOAuth2ConfigNotFound
-		}
-		if oauth2Provider == nil {
-			return nil, ErrOAuth2ProviderNotAvailable
-		}
-		accessToken, err := oauth2Provider.GetAccessToken(ctx, *c.OauthConfigID)
-		if err != nil {
-			return nil, err
-		}
-		// Validate token format - trim whitespace and check for invalid characters
-		accessToken = strings.TrimSpace(accessToken)
-		if accessToken == "" {
-			return nil, errors.New("access token is empty")
-		}
-		if strings.ContainsAny(accessToken, "\n\r\t") {
-			return nil, errors.New("access token contains invalid characters")
-		}
-		headers["Authorization"] = "Bearer " + accessToken
-	case MCPAuthTypeHeaders:
-		for key, value := range c.Headers {
-			headers[key] = value.GetValue()
-		}
-	case MCPAuthTypePerUserOauth:
-		// Per-user OAuth: headers are injected per-call in executeToolInternal, not at connection level
-		return headers, nil
-	case MCPAuthTypeNone:
-		// No headers to add
-	default:
-		// Default to headers behavior for backward compatibility
-		for key, value := range c.Headers {
-			headers[key] = value.GetValue()
-		}
-	}
-
-	return headers, nil
 }
 
 // MCPConnectionType defines the communication protocol for MCP connections

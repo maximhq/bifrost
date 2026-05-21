@@ -12,7 +12,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
-	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -522,17 +521,6 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	startTime := time.Now()
 	toolNameToCall := originalToolName
 
-	callRequest := mcp.CallToolRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodToolsCall),
-		},
-		Params: mcp.CallToolParams{
-			Name:      toolNameToCall,
-			Arguments: args,
-		},
-		Header: utils.GetHeadersForToolExecution(nestedCtx, client),
-	}
-
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 	toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
 	defer cancel()
@@ -540,24 +528,34 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	var toolResponse *mcp.CallToolResult
 	var callErr error
 
-	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		accessToken, err := utils.ResolvePerUserOAuthToken(nestedCtx, client, s.oauth2Provider)
+	if s.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
+		// Per-user auth types: ephemeral upstream connection per call carries
+		// the full credential set (static + extras + per-user auth).
+		connHeaders, err := s.credStore.ConnectionHeaders(nestedCtx, client.ExecutionConfig)
 		if err != nil {
 			return nil, err
 		}
-
-		if client.Conn == nil {
-			// Per-user OAuth with no persistent connection — use a temporary connection.
-			// Assign to outer toolResponse/callErr so the shared logging + post-hooks path runs.
-			toolResponse, callErr = codemcp.ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, toolNameToCall, args, accessToken, s.logger)
-			if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
-				callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
-			}
-		} else {
-			callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
-			toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
+		toolResponse, callErr = codemcp.OpenConnectionAndExecuteTool(toolCtx, client.ExecutionConfig, toolNameToCall, args, connHeaders)
+		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
+			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
 		}
 	} else {
+		// Shared persistent connection — admin credentials are on the
+		// transport; the per-call request only carries filtered extras.
+		reqHeaders, err := s.credStore.RequestHeaders(nestedCtx, client.ExecutionConfig)
+		if err != nil {
+			return nil, err
+		}
+		callRequest := mcp.CallToolRequest{
+			Request: mcp.Request{
+				Method: string(mcp.MethodToolsCall),
+			},
+			Params: mcp.CallToolParams{
+				Name:      toolNameToCall,
+				Arguments: args,
+			},
+			Header: reqHeaders,
+		}
 		toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
 	}
 

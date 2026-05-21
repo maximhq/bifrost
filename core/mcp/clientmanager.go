@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -60,11 +61,12 @@ func (m *MCPManager) ReconnectClient(id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	// Per-user OAuth clients do not maintain a persistent upstream connection.
-	// Reconnect is not applicable because auth is resolved per request/user identity.
-	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+	// Per-user auth types do not maintain a persistent upstream connection —
+	// auth is resolved per request/user identity, so there's nothing to
+	// reconnect.
+	if client.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
 		m.mu.Unlock()
-		return fmt.Errorf("per-user OAuth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
+		return fmt.Errorf("per-user auth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
 	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()
@@ -118,8 +120,8 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 			ToolNameMapping: make(map[string]string),
 			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 		}
-		// Persisted tools for per_user_oauth survive restarts in ExecutionConfig.
-		if config.AuthType == schemas.MCPAuthTypePerUserOauth && len(config.DiscoveredTools) > 0 {
+		// Persisted tools for per-user auth types survive restarts in ExecutionConfig.
+		if m.credStore.RequiresPerCallConnection(config) && len(config.DiscoveredTools) > 0 {
 			for toolName, tool := range config.DiscoveredTools {
 				clientState.ToolMap[toolName] = tool
 			}
@@ -150,10 +152,10 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
-	// Per-user OAuth: skip persistent connection. Auth is per-request at runtime.
-	// The admin verifies the configuration via a sample login before this is called,
-	// and tools are populated separately via SetClientTools().
-	if configCopy.AuthType == schemas.MCPAuthTypePerUserOauth {
+	// Per-user auth types: skip persistent connection. Auth is per-request at
+	// runtime. The admin verifies the configuration via a sample login before
+	// this is called, and tools are populated separately via SetClientTools().
+	if m.credStore.RequiresPerCallConnection(configCopy) {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -451,10 +453,11 @@ func (m *MCPManager) DisableClient(id string) error {
 		clientState.Conn = nil
 	}
 
-	// Per-user OAuth clients have no persistent connection — their ToolMap holds
-	// tools discovered via OAuth that can only be recovered by re-running the OAuth
-	// flow. Preserve the ToolMap so re-enabling restores tools immediately.
-	if clientState.ExecutionConfig.AuthType != schemas.MCPAuthTypePerUserOauth {
+	// Per-user auth clients have no persistent connection — their ToolMap
+	// holds tools discovered via the admin verification step that can only
+	// be recovered by re-running it. Preserve the ToolMap so re-enabling
+	// restores tools immediately.
+	if !m.credStore.RequiresPerCallConnection(clientState.ExecutionConfig) {
 		clientState.ToolMap = make(map[string]schemas.ChatTool)
 		clientState.ToolNameMapping = make(map[string]string)
 	}
@@ -490,10 +493,10 @@ func (m *MCPManager) EnableClient(id string) error {
 
 	m.logger.Debug("%s Enabling MCP client '%s'", MCPLogPrefix, configCopy.Name)
 
-	// Per-user OAuth clients have no persistent connection — auth is per-request.
-	// Mirror the AddClient early-return path: just restore the runtime state based
-	// on whether tools were previously discovered.
-	if configCopy.AuthType == schemas.MCPAuthTypePerUserOauth {
+	// Per-user auth clients have no persistent connection — auth is per-request.
+	// Mirror the AddClient early-return path: just restore the runtime state
+	// based on whether tools were previously discovered.
+	if m.credStore.RequiresPerCallConnection(configCopy) {
 		m.mu.Lock()
 		if cs, exists := m.clientMap[id]; exists {
 			if len(cs.ToolMap) > 0 {
@@ -503,7 +506,7 @@ func (m *MCPManager) EnableClient(id string) error {
 			}
 		}
 		m.mu.Unlock()
-		m.logger.Debug("%s Per-user OAuth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
+		m.logger.Debug("%s Per-user auth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
 		return nil
 	}
 
@@ -694,10 +697,10 @@ func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPCli
 		m.mu.RUnlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	// Per-user OAuth clients have no persistent connection — reconnect is not applicable.
-	if client.ExecutionConfig != nil && client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+	// Per-user auth clients have no persistent connection — reconnect/update is not applicable.
+	if client.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
 		m.mu.RUnlock()
-		return fmt.Errorf("connection update is not supported for per_user_oauth clients")
+		return fmt.Errorf("connection update is not supported for per-user auth clients")
 	}
 	if client.ExecutionConfig == nil {
 		m.mu.RUnlock()
@@ -936,12 +939,19 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	}
 	var authHeader string // captured for re-injection after PreHooks
 	if config.ConnectionType == schemas.MCPConnectionTypeHTTP || config.ConnectionType == schemas.MCPConnectionTypeSSE {
-		if h, hErr := config.HttpHeaders(m.ctx, m.oauth2Provider); hErr == nil {
-			if auth, ok := h["Authorization"]; ok {
+		// Connection-time has no caller identity; wrap m.ctx into a synthetic
+		// BifrostContext so the CredentialStore can be invoked uniformly.
+		// Shared resolvers ignore identity; per-user resolvers won't be
+		// called here because the per-user code path skips persistent
+		// connections entirely (RequiresPerCallConnection).
+		bfCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
+		if h, hErr := m.credStore.ConnectionHeaders(bfCtx, config); hErr == nil {
+			flat := utils.FlattenHeaders(h)
+			if auth, ok := flat["Authorization"]; ok {
 				authHeader = auth
-				delete(h, "Authorization")
+				delete(flat, "Authorization")
 			}
-			connectReq.Headers = h
+			connectReq.Headers = flat
 		}
 	}
 	if config.StdioConfig != nil {
@@ -1243,11 +1253,12 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	if overrides != nil && overrides.Headers != nil {
 		headers = overrides.Headers
 	} else {
-		h, err := config.HttpHeaders(ctx, m.oauth2Provider)
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		h, err := m.credStore.ConnectionHeaders(bfCtx, config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 		}
-		headers = h
+		headers = utils.FlattenHeaders(h)
 	}
 
 	// Create StreamableHTTP transport
@@ -1319,11 +1330,12 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 	if overrides != nil && overrides.Headers != nil {
 		headers = overrides.Headers
 	} else {
-		h, err := config.HttpHeaders(ctx, m.oauth2Provider)
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		h, err := m.credStore.ConnectionHeaders(bfCtx, config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 		}
-		headers = h
+		headers = utils.FlattenHeaders(h)
 	}
 
 	sseTransport, err := transport.NewSSE(url, transport.WithHeaders(headers))
