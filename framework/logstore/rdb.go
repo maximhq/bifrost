@@ -284,13 +284,27 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 
 // Create inserts a new log entry into the database.
 func (s *RDBLogStore) Create(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Create(entry).Error
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Create(entry).Error
 }
 
 // CreateIfNotExists inserts a new log entry only if it doesn't already exist.
 // Uses ON CONFLICT DO NOTHING to handle duplicate key errors gracefully.
 func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(entry).Error
@@ -302,7 +316,11 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(&entries).Error
@@ -353,13 +371,15 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 }
 
 // GetNodeUsageAfter returns per-budget cost and per-rate-limit request/token usage
-// for a specific cluster node after a stable composite cursor. Timestamp alone is
-// not unique, so once a cursor has a log ID, same-timestamp rows with greater IDs
-// are included to avoid skipping late async log writes.
+// for a specific cluster node after a stable cursor. The first scan uses the
+// timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
+// inc_number values are observed, subsequent scans use inc_number so rows flushed
+// late by the async log writer are not skipped.
 func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
 	type logRow struct {
 		ID           string    `gorm:"column:id"`
 		Timestamp    time.Time `gorm:"column:timestamp"`
+		IncNumber    *int64    `gorm:"column:inc_number"`
 		Cost         float64   `gorm:"column:cost"`
 		TotalTokens  int64     `gorm:"column:total_tokens"`
 		BudgetIDs    *string   `gorm:"column:budget_ids"`
@@ -370,15 +390,19 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 	query := s.db.WithContext(ctx).Model(&Log{}).
 		Where("cluster_node_id = ?", nodeID).
 		Where("status = ?", "success")
-	if cursor.LogID != "" {
+	orderBy := "timestamp ASC, id ASC"
+	if cursor.IncNumber != nil {
+		query = query.Where("inc_number > ?", *cursor.IncNumber)
+		orderBy = "inc_number ASC"
+	} else if cursor.LogID != "" {
 		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
 	} else {
 		query = query.Where("timestamp > ?", cursor.Timestamp)
 	}
 
 	err := query.
-		Select("id, timestamp, COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
-		Order("timestamp ASC, id ASC").
+		Select("id, timestamp, inc_number, COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Order(orderBy).
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node usage aggregate: %w", err)
@@ -392,7 +416,12 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 	for i := range rows {
 		row := &rows[i]
 		if row.Timestamp.After(maxCursor.Timestamp) || (row.Timestamp.Equal(maxCursor.Timestamp) && row.ID > maxCursor.LogID) {
-			maxCursor = NodeUsageCursor{Timestamp: row.Timestamp, LogID: row.ID}
+			maxCursor.Timestamp = row.Timestamp
+			maxCursor.LogID = row.ID
+		}
+		if row.IncNumber != nil && (maxCursor.IncNumber == nil || *row.IncNumber > *maxCursor.IncNumber) {
+			incNumber := *row.IncNumber
+			maxCursor.IncNumber = &incNumber
 		}
 
 		// Attribute cost to each budget that governed this request.

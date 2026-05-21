@@ -81,6 +81,48 @@ func TestLogCreateSerializesFields(t *testing.T) {
 	if logEntry.CreatedAt.IsZero() {
 		t.Fatalf("expected CreatedAt to be populated")
 	}
+	if logEntry.IncNumber != nil {
+		t.Fatalf("expected SQLite Create to leave inc_number nil, got %v", logEntry.IncNumber)
+	}
+}
+
+func TestSQLiteCreateLeavesIncNumberNull(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	entries := []*Log{
+		{
+			ID:        "inc-null-1",
+			Timestamp: time.Now().UTC(),
+			Object:    "chat_completion",
+			Provider:  "openai",
+			Model:     "gpt-4o-mini",
+			Status:    "success",
+		},
+		{
+			ID:        "inc-null-2",
+			Timestamp: time.Now().UTC(),
+			Object:    "chat_completion",
+			Provider:  "openai",
+			Model:     "gpt-4o-mini",
+			Status:    "success",
+		},
+	}
+	if err := store.BatchCreateIfNotExists(ctx, entries); err != nil {
+		t.Fatalf("BatchCreateIfNotExists() error = %v", err)
+	}
+
+	first, err := store.FindByID(ctx, "inc-null-1")
+	if err != nil {
+		t.Fatalf("FindByID(inc-null-1) error = %v", err)
+	}
+	second, err := store.FindByID(ctx, "inc-null-2")
+	if err != nil {
+		t.Fatalf("FindByID(inc-null-2) error = %v", err)
+	}
+	if first.IncNumber != nil || second.IncNumber != nil {
+		t.Fatalf("expected SQLite batch insert to leave inc_numbers nil, got first=%v second=%v", first.IncNumber, second.IncNumber)
+	}
 }
 
 func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
@@ -94,10 +136,14 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 	cost1 := 1.25
 	cost2 := 2.50
 	otherCost := 99.0
+	inc1 := int64(1)
+	inc2 := int64(2)
+	inc3 := int64(3)
 
 	entries := []*Log{
 		{
 			ID:                 "usage-1",
+			IncNumber:          &inc1,
 			Timestamp:          base.Add(time.Second),
 			Object:             "chat.completion",
 			Provider:           "openai",
@@ -111,6 +157,7 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 		},
 		{
 			ID:                 "usage-2",
+			IncNumber:          &inc2,
 			Timestamp:          base.Add(2 * time.Second),
 			Object:             "chat.completion",
 			Provider:           "openai",
@@ -164,8 +211,41 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 	if usage.MaxLogID != "usage-2" {
 		t.Fatalf("expected max log ID usage-2, got %s", usage.MaxLogID)
 	}
-	if usage.NextCursor.Timestamp != usage.MaxTimestamp || usage.NextCursor.LogID != usage.MaxLogID {
-		t.Fatalf("expected next cursor to match max row, got %+v", usage.NextCursor)
+	if usage.NextCursor.Timestamp != usage.MaxTimestamp || usage.NextCursor.LogID != usage.MaxLogID || usage.NextCursor.IncNumber == nil || *usage.NextCursor.IncNumber != inc2 {
+		t.Fatalf("expected next cursor to match max row and inc_number, got %+v", usage.NextCursor)
+	}
+
+	lateCost := 3.75
+	lateEntry := &Log{
+		ID:                 "usage-late",
+		IncNumber:          &inc3,
+		Timestamp:          base.Add(time.Second),
+		Object:             "chat.completion",
+		Provider:           "openai",
+		Model:              "gpt-4o-mini",
+		Status:             "success",
+		ClusterNodeID:      &nodeID,
+		BudgetIDsParsed:    budgetIDs,
+		RateLimitIDsParsed: rateLimitIDs,
+		Cost:               &lateCost,
+		TotalTokens:        30,
+	}
+	if err := store.Create(ctx, lateEntry); err != nil {
+		t.Fatalf("Create(%s) error = %v", lateEntry.ID, err)
+	}
+
+	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor)
+	if err != nil {
+		t.Fatalf("GetNodeUsageAfter(after inc cursor) error = %v", err)
+	}
+	if usage.RowCount != 1 {
+		t.Fatalf("expected late row with higher inc_number, got rows=%d", usage.RowCount)
+	}
+	if got := usage.BudgetCosts["budget-1"]; got != lateCost {
+		t.Fatalf("expected late budget cost %.2f, got %.2f", lateCost, got)
+	}
+	if usage.NextCursor.IncNumber == nil || *usage.NextCursor.IncNumber != inc3 {
+		t.Fatalf("expected next cursor inc_number %d, got %+v", inc3, usage.NextCursor)
 	}
 
 	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor)
@@ -176,7 +256,7 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 		t.Fatalf("expected no rows after exclusive cursor, got rows=%d", usage.RowCount)
 	}
 	// When no rows are returned, NextCursor should preserve the incoming cursor (not rewind).
-	if !usage.NextCursor.Timestamp.Equal(base.Add(2*time.Second)) || usage.NextCursor.LogID != "usage-2" {
+	if !usage.NextCursor.Timestamp.Equal(base.Add(2*time.Second)) || usage.NextCursor.LogID != "usage-2" || usage.NextCursor.IncNumber == nil || *usage.NextCursor.IncNumber != inc3 {
 		t.Fatalf("expected cursor to be preserved when no rows returned, got %+v", usage.NextCursor)
 	}
 }
