@@ -659,8 +659,8 @@ export default function VirtualKeysTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="space-y-4">
-				<div className="flex items-center justify-between">
+			<div className="flex min-h-0 w-full grow flex-col gap-4 overflow-hidden">
+				<div className="flex shrink-0 items-center justify-between">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
@@ -689,7 +689,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="flex items-center gap-3">
+				<div className="flex shrink-0 items-center gap-3">
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -720,9 +720,9 @@ export default function VirtualKeysTable({
 					/>
 				</div>
 
-				<div className="rounded-sm border">
-					<Table className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
-						<TableHeader>
+				<div className="min-h-0 grow overflow-hidden rounded-sm border">
+					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
+						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[48px]">
 									<Checkbox
@@ -744,7 +744,7 @@ export default function VirtualKeysTable({
 								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -824,7 +824,7 @@ export default function VirtualKeysTable({
 												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 											</TableCell>
 											<TableCell
-												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
 												<VKActionsMenu
@@ -846,8 +846,8 @@ export default function VirtualKeysTable({
 
 				{/* Pagination */}
 				{totalCount > 0 && (
-					<div className="flex items-center justify-between px-2">
-						<p className="text-muted-foreground text-sm">
+					<div className="flex shrink-0 items-center justify-between px-2 text-xs">
+						<p className="text-muted-foreground">
 							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
 						</p>
 						<div className="flex gap-2">
