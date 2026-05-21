@@ -92,10 +92,9 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID          *string                 `json:"team_id,omitempty"`           // Mutually exclusive with CustomerID and AccessProfileID
-	CustomerID      *string                 `json:"customer_id,omitempty"`       // Mutually exclusive with TeamID and AccessProfileID
-	AccessProfileID *uint                   `json:"access_profile_id,omitempty"` // Mutually exclusive with TeamID and CustomerID
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`           // Multi-budget: each must have a unique reset_duration
+	TeamID          *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID      *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
@@ -122,7 +121,6 @@ type UpdateVirtualKeyRequest struct {
 	} `json:"mcp_configs,omitempty"`
 	TeamID           *string                 `json:"team_id,omitempty"`
 	CustomerID       *string                 `json:"customer_id,omitempty"`
-	AccessProfileID  *uint                   `json:"access_profile_id,omitempty"`
 	Budgets          []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive         *bool                   `json:"is_active,omitempty"`
@@ -477,13 +475,12 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
-	accessProfileIDStr := string(ctx.QueryArgs().Peek("access_profile_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || accessProfileIDStr != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -493,18 +490,6 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			Order:                              order,
 			Export:                             isExport,
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
-		}
-		if accessProfileIDStr != "" {
-			apID, err := strconv.ParseUint(accessProfileIDStr, 10, 0)
-			if err != nil {
-				SendError(ctx, 400, "Invalid access_profile_id parameter: must be a number")
-				return
-			}
-			if (customerID != "" || teamID != "") && apID > 0 {
-				SendError(ctx, 400, "access_profile_id cannot be combined with team_id or customer_id filters")
-				return
-			}
-			params.AccessProfileID = uint(apID)
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
@@ -580,19 +565,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Virtual key name is required")
 		return
 	}
-	// Validate mutually exclusive TeamID, CustomerID, and AccessProfileID
-	entityCount := 0
-	if req.TeamID != nil {
-		entityCount++
-	}
-	if req.CustomerID != nil {
-		entityCount++
-	}
-	if req.AccessProfileID != nil && *req.AccessProfileID > 0 {
-		entityCount++
-	}
-	if entityCount > 1 {
-		SendError(ctx, 400, "VirtualKey can only be attached to one of: Team, Customer, or AccessProfile")
+	// Validate mutually exclusive TeamID and CustomerID
+	if req.TeamID != nil && req.CustomerID != nil {
+		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
 	// Validate budgets if provided
@@ -638,7 +613,6 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
-			AccessProfileID: req.AccessProfileID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
 		}
@@ -870,19 +844,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	// Validate mutually exclusive TeamID, CustomerID, and AccessProfileID
-	entityCount := 0
-	if req.TeamID != nil {
-		entityCount++
-	}
-	if req.CustomerID != nil {
-		entityCount++
-	}
-	if req.AccessProfileID != nil && *req.AccessProfileID > 0 {
-		entityCount++
-	}
-	if entityCount > 1 {
-		SendError(ctx, 400, "VirtualKey can only be attached to one of: Team, Customer, or AccessProfile")
+	// Validate mutually exclusive TeamID and CustomerID
+	if req.TeamID != nil && req.CustomerID != nil {
+		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
@@ -934,21 +898,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.TeamID != nil {
 			vk.TeamID = req.TeamID
-			vk.CustomerID = nil
-			vk.AccessProfileID = nil
-		} else if req.CustomerID != nil {
+			vk.CustomerID = nil // Clear CustomerID if setting TeamID
+		}
+		if req.CustomerID != nil {
 			vk.CustomerID = req.CustomerID
-			vk.TeamID = nil
-			vk.AccessProfileID = nil
-		} else if req.AccessProfileID != nil {
-			vk.AccessProfileID = req.AccessProfileID
-			vk.TeamID = nil
-			vk.CustomerID = nil
-		} else {
-			// All nil — clear entity assignment
+			vk.TeamID = nil // Clear TeamID if setting CustomerID
+		}
+		// When both TeamID and CustomerID are nil
+		if req.TeamID == nil && req.CustomerID == nil {
 			vk.TeamID = nil
 			vk.CustomerID = nil
-			vk.AccessProfileID = nil
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
@@ -1083,13 +1042,6 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 		if err := h.configStore.UpdateVirtualKey(ctx, vk, tx); err != nil {
 			return err
-		}
-		// UpdateVirtualKey's Select list excludes access_profile_id to protect config-sync paths.
-		// Persist it separately so API-driven entity assignment is always saved.
-		if err := tx.Model(&configstoreTables.TableVirtualKey{}).
-			Where("id = ?", vk.ID).
-			Updates(map[string]interface{}{"access_profile_id": vk.AccessProfileID}).Error; err != nil {
-			return fmt.Errorf("failed to update virtual key access_profile_id: %w", err)
 		}
 		if req.ProviderConfigs != nil {
 			// Get existing provider configs for comparison
