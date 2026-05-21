@@ -497,6 +497,9 @@ func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
 	if resp.IncompleteDetails.Reason != "max_output_tokens" {
 		t.Fatalf("expected incomplete_details.reason %q, got %q", "max_output_tokens", resp.IncompleteDetails.Reason)
 	}
+	if resp.StopReason == nil || *resp.StopReason != length {
+		t.Fatalf("expected stop_reason %q, got %v", length, resp.StopReason)
+	}
 }
 
 func TestToBifrostResponsesResponse_MapsToolCallsToCompleted(t *testing.T) {
@@ -515,6 +518,9 @@ func TestToBifrostResponsesResponse_MapsToolCallsToCompleted(t *testing.T) {
 	}
 	if resp.IncompleteDetails != nil {
 		t.Fatal("expected incomplete_details to be nil")
+	}
+	if resp.StopReason == nil || *resp.StopReason != toolCalls {
+		t.Fatalf("expected stop_reason %q, got %v", toolCalls, resp.StopReason)
 	}
 }
 
@@ -555,6 +561,9 @@ func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *test
 	}
 	if resp.IncompleteDetails != nil {
 		t.Fatal("expected incomplete_details to be nil")
+	}
+	if resp.StopReason != nil {
+		t.Fatalf("expected stop_reason to be nil, got %q", *resp.StopReason)
 	}
 }
 
@@ -664,6 +673,9 @@ func TestToBifrostResponsesStreamResponse_IncludesFunctionCallsInCompletedOutput
 
 	if completed == nil || completed.Response == nil {
 		t.Fatal("expected response.completed event")
+	}
+	if completed.Response.StopReason == nil || *completed.Response.StopReason != toolCallsFinish {
+		t.Fatalf("expected completed stop_reason %q, got %v", toolCallsFinish, completed.Response.StopReason)
 	}
 
 	output := completed.Response.Output
@@ -855,6 +867,9 @@ func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing
 	}
 	if incomplete.Response.IncompleteDetails == nil || incomplete.Response.IncompleteDetails.Reason != "max_output_tokens" {
 		t.Fatal("expected incomplete_details.reason to be max_output_tokens")
+	}
+	if incomplete.Response.StopReason == nil || *incomplete.Response.StopReason != length {
+		t.Fatalf("expected stop_reason %q, got %v", length, incomplete.Response.StopReason)
 	}
 }
 
