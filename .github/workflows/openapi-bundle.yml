@@ -7,10 +7,6 @@ on:
       - ".github/workflows/openapi-bundle.yml"
       - "docs/openapi/**"
       - "!docs/openapi/openapi.json"
-  pull_request:
-    paths:
-      - "docs/openapi/**"
-      - "!docs/openapi/openapi.json"
 
 permissions:
   contents: write
