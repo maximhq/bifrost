@@ -15757,13 +15757,14 @@ var excludedGoFields = map[string]map[string]bool{
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
-		"budgets":     true, // GORM relation (budgets have virtual_key_id FK)
-		"rate_limit":  true, // GORM relation
-		"team":        true, // GORM relation
-		"customer":    true, // GORM relation
+		"config_hash":        true,
+		"created_at":         true,
+		"updated_at":         true,
+		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
+		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":         true, // GORM relation
+		"team":               true, // GORM relation
+		"customer":           true, // GORM relation
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation

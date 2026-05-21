@@ -98,6 +98,9 @@ var ignoreGoFields = map[string]string{
 	// integrating system (PR #3395). It is assigned through the API by that
 	// system, never authored in config.json.
 	"/properties/governance/properties/teams/items|source_id": "external identifier set via API by integrating systems; not authored in config.json",
+	// created_by_user_id is DB ownership metadata set by the API/session layer,
+	// never authored in config.json.
+	"/properties/governance/properties/virtual_keys/items|created_by_user_id": "DB ownership metadata; set by API/session layer, not authored in config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -281,13 +284,13 @@ func printReport(w interface{ Write([]byte) (int, error) }, findings []Finding) 
 		groups[f.Category] = append(groups[f.Category], f)
 	}
 	titles := map[string]string{
-		"missing-in-schema":      "Missing in config.schema.json (Go has field, schema doesn't) — ERRORS",
-		"missing-in-go":          "Missing in Go (schema has property, ConfigData doesn't) — WARNINGS",
-		"enum-drift":             "Enum drift (Go constants vs schema enum array)",
-		"enum-no-schema":         "Go enum types with no schema `enum` constraint — WARNINGS",
-		"envvar-no-secret":       "EnvVar fields lacking chart-native Secret support — WARNINGS",
-		"schema-path-not-found":  "Schema path not found for a walked Go type — ERRORS",
-		"entrypoint":             "Entrypoint problems — ERRORS",
+		"missing-in-schema":     "Missing in config.schema.json (Go has field, schema doesn't) — ERRORS",
+		"missing-in-go":         "Missing in Go (schema has property, ConfigData doesn't) — WARNINGS",
+		"enum-drift":            "Enum drift (Go constants vs schema enum array)",
+		"enum-no-schema":        "Go enum types with no schema `enum` constraint — WARNINGS",
+		"envvar-no-secret":      "EnvVar fields lacking chart-native Secret support — WARNINGS",
+		"schema-path-not-found": "Schema path not found for a walked Go type — ERRORS",
+		"entrypoint":            "Entrypoint problems — ERRORS",
 	}
 	for _, cat := range order {
 		items := groups[cat]
