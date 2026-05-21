@@ -24,12 +24,13 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID            uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID  string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider      string            `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        *float64          `json:"weight"`
-	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	ID                uint                `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID      string              `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider          string              `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight            *float64            `json:"weight"`
+	AllowedModels     schemas.WhiteList   `gorm:"type:text;serializer:json" json:"allowed_models"`         // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels schemas.BlackList   `gorm:"type:text;serializer:json" json:"blacklisted_models"`     // ["*"] blocks all models; empty blocks none
+	AllowAllKeys      bool                `gorm:"default:false" json:"allow_all_keys"`                     // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
 	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
@@ -77,30 +78,39 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BeforeSave validates WhiteList fields before GORM persists the record.
+// BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_models: %w", err)
 	}
+	if err := pc.BlacklistedModels.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models: %w", err)
+	}
 	return nil
 }
 
-// MarshalJSON custom marshaller to ensure AllowedModels is always an array (never null)
+// MarshalJSON custom marshaller to ensure AllowedModels and BlacklistedModels are always arrays (never null)
 func (pc TableVirtualKeyProviderConfig) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKeyProviderConfig
 
-	// Ensure AllowedModels is an empty slice instead of nil
+	// Ensure arrays are empty slices instead of nil
 	allowedModels := pc.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
 	}
+	blacklistedModels := pc.BlacklistedModels
+	if blacklistedModels == nil {
+		blacklistedModels = []string{}
+	}
 
 	return json.Marshal(&struct {
 		Alias
-		AllowedModels []string `json:"allowed_models"`
+		AllowedModels     []string `json:"allowed_models"`
+		BlacklistedModels []string `json:"blacklisted_models"`
 	}{
-		Alias:         Alias(pc),
-		AllowedModels: allowedModels,
+		Alias:             Alias(pc),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
 	})
 }
 

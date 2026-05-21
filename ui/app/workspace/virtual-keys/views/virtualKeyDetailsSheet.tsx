@@ -191,6 +191,29 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 												</div>
 
 												<div className="grid grid-cols-3 items-start gap-4">
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
+													<div className="col-span-2">
+														{config.blacklisted_models?.includes("*") ? (
+															<Badge variant="destructive" className="text-xs">
+																All Models Blocked
+															</Badge>
+														) : config.blacklisted_models && config.blacklisted_models.length > 0 ? (
+															<div className="flex flex-wrap gap-1">
+																{config.blacklisted_models.map((model) => (
+																	<Badge key={model} variant="destructive" className="text-xs">
+																		{model}
+																	</Badge>
+																))}
+															</div>
+														) : (
+															<Badge variant="secondary" className="text-xs">
+																No models blocked
+															</Badge>
+														)}
+													</div>
+												</div>
+
+												<div className="grid grid-cols-3 items-start gap-4">
 													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Keys</span>
 													<div className="col-span-2">
 														{config.allow_all_keys ? (
@@ -255,11 +278,11 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																	/>
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
 																		<span>
-																				Resets {parseResetPeriod(config.rate_limit.token_reset_duration || "")}
-																				{virtualKey.calendar_aligned &&
-																					supportsCalendarAlignment(config.rate_limit.token_reset_duration || "") &&
-																					" (calendar)"}
-																			</span>
+																			Resets {parseResetPeriod(config.rate_limit.token_reset_duration || "")}
+																			{virtualKey.calendar_aligned &&
+																				supportsCalendarAlignment(config.rate_limit.token_reset_duration || "") &&
+																				" (calendar)"}
+																		</span>
 																		{config.rate_limit.token_last_reset ? (
 																			<span>
 																				Last reset {formatDistanceToNow(new Date(config.rate_limit.token_last_reset), { addSuffix: true })}
@@ -280,11 +303,11 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																	/>
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
 																		<span>
-																				Resets {parseResetPeriod(config.rate_limit.request_reset_duration || "")}
-																				{virtualKey.calendar_aligned &&
-																					supportsCalendarAlignment(config.rate_limit.request_reset_duration || "") &&
-																					" (calendar)"}
-																			</span>
+																			Resets {parseResetPeriod(config.rate_limit.request_reset_duration || "")}
+																			{virtualKey.calendar_aligned &&
+																				supportsCalendarAlignment(config.rate_limit.request_reset_duration || "") &&
+																				" (calendar)"}
+																		</span>
 																		{config.rate_limit.request_last_reset ? (
 																			<span>
 																				Last reset{" "}

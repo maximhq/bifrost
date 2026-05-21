@@ -796,6 +796,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8536,6 +8539,63 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_temp_tokens_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyBlacklistedModelsColumn adds the blacklisted_models JSON column
+// to governance_virtual_key_provider_configs, matching the provider-key blacklist pattern.
+func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_provider_config_blacklisted_models_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to add blacklisted_models column: %w", err)
+				}
+				// Backfill empty arrays for existing rows (only when column is newly added)
+				if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
+					return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
+				}
+				// Recompute config_hash for all VKs affected by the backfill so they
+				// do not appear stale after upgrade (same pattern as allow_all_keys migration).
+				var virtualKeys []tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					Find(&virtualKeys).Error; err != nil {
+					return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+				}
+				for _, vk := range virtualKeys {
+					newHash, err := GenerateVirtualKeyHash(vk)
+					if err != nil {
+						return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+					}
+					if err := tx.Model(&tables.TableVirtualKey{}).
+						Where("id = ?", vk.ID).
+						Update("config_hash", newHash).Error; err != nil {
+						return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
 	}
 	return nil
 }

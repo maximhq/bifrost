@@ -91,6 +91,7 @@ export interface VirtualKeyProviderConfig {
 	provider: string;
 	weight: number | null;
 	allowed_models: string[];
+	blacklisted_models: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
@@ -135,6 +136,7 @@ export interface VirtualKeyProviderConfigRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
+	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
@@ -145,6 +147,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
+	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
