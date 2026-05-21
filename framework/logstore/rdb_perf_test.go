@@ -83,6 +83,184 @@ func TestLogCreateSerializesFields(t *testing.T) {
 	}
 }
 
+func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	nodeID := "node-ghost"
+	otherNodeID := "node-other"
+	budgetIDs := []string{"budget-1"}
+	rateLimitIDs := []string{"rl-1"}
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	cost1 := 1.25
+	cost2 := 2.50
+	otherCost := 99.0
+
+	entries := []*Log{
+		{
+			ID:                 "usage-1",
+			Timestamp:          base.Add(time.Second),
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &nodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &cost1,
+			TotalTokens:        10,
+		},
+		{
+			ID:                 "usage-2",
+			Timestamp:          base.Add(2 * time.Second),
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &nodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &cost2,
+			TotalTokens:        20,
+		},
+		{
+			ID:                 "usage-other-node",
+			Timestamp:          base.Add(3 * time.Second),
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &otherNodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &otherCost,
+			TotalTokens:        100,
+		},
+	}
+	for _, entry := range entries {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base})
+	if err != nil {
+		t.Fatalf("GetNodeUsageSince() error = %v", err)
+	}
+	if usage.RowCount != 2 {
+		t.Fatalf("expected 2 rows, got %d", usage.RowCount)
+	}
+	if got := usage.BudgetCosts["budget-1"]; got != cost1+cost2 {
+		t.Fatalf("expected budget cost %.2f, got %.2f", cost1+cost2, got)
+	}
+	if got := usage.RateLimitRequests["rl-1"]; got != 2 {
+		t.Fatalf("expected 2 rate-limit requests, got %d", got)
+	}
+	if got := usage.RateLimitTokens["rl-1"]; got != 30 {
+		t.Fatalf("expected 30 rate-limit tokens, got %d", got)
+	}
+	if !usage.MaxTimestamp.Equal(base.Add(2 * time.Second)) {
+		t.Fatalf("expected max timestamp %s, got %s", base.Add(2*time.Second), usage.MaxTimestamp)
+	}
+	if usage.MaxLogID != "usage-2" {
+		t.Fatalf("expected max log ID usage-2, got %s", usage.MaxLogID)
+	}
+	if usage.NextCursor.Timestamp != usage.MaxTimestamp || usage.NextCursor.LogID != usage.MaxLogID {
+		t.Fatalf("expected next cursor to match max row, got %+v", usage.NextCursor)
+	}
+
+	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor)
+	if err != nil {
+		t.Fatalf("GetNodeUsageAfter(after max) error = %v", err)
+	}
+	if usage.RowCount != 0 {
+		t.Fatalf("expected no rows after exclusive cursor, got rows=%d", usage.RowCount)
+	}
+	// When no rows are returned, NextCursor should preserve the incoming cursor (not rewind).
+	if !usage.NextCursor.Timestamp.Equal(base.Add(2*time.Second)) || usage.NextCursor.LogID != "usage-2" {
+		t.Fatalf("expected cursor to be preserved when no rows returned, got %+v", usage.NextCursor)
+	}
+}
+
+func TestGetNodeUsageAfterIncludesSameTimestampGreaterLogIDs(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	nodeID := "node-ghost"
+	budgetIDs := []string{"budget-1"}
+	rateLimitIDs := []string{"rl-1"}
+	timestamp := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	cost1 := 1.0
+	cost2 := 2.0
+	cost3 := 4.0
+
+	entries := []*Log{
+		{
+			ID:                 "usage-1",
+			Timestamp:          timestamp,
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &nodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &cost1,
+			TotalTokens:        10,
+		},
+		{
+			ID:                 "usage-2",
+			Timestamp:          timestamp,
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &nodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &cost2,
+			TotalTokens:        20,
+		},
+		{
+			ID:                 "usage-3",
+			Timestamp:          timestamp,
+			Object:             "chat.completion",
+			Provider:           "openai",
+			Model:              "gpt-4o-mini",
+			Status:             "success",
+			ClusterNodeID:      &nodeID,
+			BudgetIDsParsed:    budgetIDs,
+			RateLimitIDsParsed: rateLimitIDs,
+			Cost:               &cost3,
+			TotalTokens:        40,
+		},
+	}
+	for _, entry := range entries {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	// Cursor after usage-1: should get usage-2 and usage-3 (same timestamp, greater IDs)
+	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: timestamp, LogID: "usage-1"})
+	if err != nil {
+		t.Fatalf("GetNodeUsageAfter() error = %v", err)
+	}
+	if usage.RowCount != 2 {
+		t.Fatalf("expected 2 same-timestamp rows after usage-1, got %d", usage.RowCount)
+	}
+	if got := usage.BudgetCosts["budget-1"]; got != cost2+cost3 {
+		t.Fatalf("expected budget cost %.2f, got %.2f", cost2+cost3, got)
+	}
+	if got := usage.RateLimitRequests["rl-1"]; got != 2 {
+		t.Fatalf("expected 2 rate-limit requests, got %d", got)
+	}
+	if got := usage.RateLimitTokens["rl-1"]; got != 60 {
+		t.Fatalf("expected 60 rate-limit tokens, got %d", got)
+	}
+	if !usage.MaxTimestamp.Equal(timestamp) || usage.MaxLogID != "usage-3" {
+		t.Fatalf("expected cursor %s/usage-3, got %s/%s", timestamp, usage.MaxTimestamp, usage.MaxLogID)
+	}
+}
+
 func TestMCPToolLogCreateSerializesFields(t *testing.T) {
 	store := newTestSQLiteStore(t)
 

@@ -51,6 +51,7 @@ func setupEncryptionTestStore(t *testing.T) (*RDBConfigStore, *gorm.DB) {
 		&tables.TableClientConfig{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableModel{},
+		&tables.TempToken{},
 	)
 	require.NoError(t, err)
 

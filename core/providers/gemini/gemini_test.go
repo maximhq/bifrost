@@ -1273,6 +1273,139 @@ func TestStructuredOutputConversion(t *testing.T) {
 	}
 }
 
+// TestStructuredOutputWithToolsConflict verifies that responseMimeType
+// "application/json" is dropped for Gemini 2.5 and earlier when tools are present
+// (those models reject that pairing), while responseJsonSchema is still
+// forwarded. Gemini 3.x keeps both since it supports the combination.
+func TestStructuredOutputWithToolsConflict(t *testing.T) {
+	makeTool := func() []schemas.ChatTool {
+		return []schemas.ChatTool{
+			{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "get_weather",
+					Description: schemas.Ptr("Get the weather for a city"),
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("city", map[string]interface{}{
+								"type": "string",
+							}),
+						),
+						Required: []string{"city"},
+					},
+				},
+			},
+		}
+	}
+	jsonObjectFormat := func() *interface{} {
+		return schemas.Ptr[interface{}](map[string]interface{}{
+			"type": "json_object",
+		})
+	}
+	jsonSchemaFormat := func() *interface{} {
+		return schemas.Ptr[interface{}](map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name": "Result",
+				"schema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"answer": map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		})
+	}
+	userMsg := []schemas.ChatMessage{
+		{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: schemas.Ptr("What's the weather?"),
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		input    *schemas.BifrostChatRequest
+		validate func(t *testing.T, result *gemini.GeminiGenerationRequest)
+	}{
+		{
+			name: "Gemini2.5_ToolsWithJSONObject_DropsResponseMimeType",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.5-flash",
+				Input: userMsg,
+				Params: &schemas.ChatParameters{
+					Tools:          makeTool(),
+					ResponseFormat: jsonObjectFormat(),
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				assert.Empty(t, result.GenerationConfig.ResponseMIMEType, "responseMimeType should be dropped for Gemini 2.5 when tools are present")
+				// json_object carries no schema, so there is nothing to forward.
+				assert.Nil(t, result.GenerationConfig.ResponseJSONSchema)
+				assert.NotEmpty(t, result.Tools, "tools should be retained")
+			},
+		},
+		{
+			name: "Gemini2.5_ToolsWithJSONSchema_DropsResponseMimeType",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.5-flash",
+				Input: userMsg,
+				Params: &schemas.ChatParameters{
+					Tools:          makeTool(),
+					ResponseFormat: jsonSchemaFormat(),
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				assert.Empty(t, result.GenerationConfig.ResponseMIMEType, "responseMimeType should be dropped for Gemini 2.5 when tools are present")
+				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema, "responseJsonSchema should still be forwarded")
+				assert.NotEmpty(t, result.Tools, "tools should be retained")
+			},
+		},
+		{
+			name: "Gemini3_ToolsWithJSONSchema_KeepsResponseFormat",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-3.5-flash",
+				Input: userMsg,
+				Params: &schemas.ChatParameters{
+					Tools:          makeTool(),
+					ResponseFormat: jsonSchemaFormat(),
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType, "Gemini 3.x supports tools + structured output")
+				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
+				assert.NotEmpty(t, result.Tools)
+			},
+		},
+		{
+			name: "Gemini2.5_JSONSchemaWithoutTools_KeepsResponseFormat",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.5-flash",
+				Input: userMsg,
+				Params: &schemas.ChatParameters{
+					ResponseFormat: jsonSchemaFormat(),
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType, "structured output is fine when no tools are present")
+				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, result, "Conversion should not return nil")
+			tt.validate(t, result)
+		})
+	}
+}
+
 // TestResponsesStructuredOutputConversion tests that Responses API text config with union types is properly handled
 func TestResponsesStructuredOutputConversion(t *testing.T) {
 	tests := []struct {
