@@ -1965,6 +1965,76 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			providersToAdd = append(providersToAdd, configData.Governance.Providers[i])
 		}
 	}
+	// Diff global limits from config file against DB state.
+	globalBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+	globalBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+	var globalRLToCreate *configstoreTables.TableRateLimit
+	var globalRLToUpdate *configstoreTables.TableRateLimit
+	if configData.Governance.GlobalLimits != nil {
+		dbGlobal := governanceConfig.GlobalLimits
+		for _, entry := range configData.Governance.GlobalLimits.Budgets {
+			budget := configstoreTables.TableBudget{
+				ID:            configstore.GlobalBudgetID(entry.ResetDuration),
+				MaxLimit:      entry.MaxLimit,
+				ResetDuration: entry.ResetDuration,
+				IsGlobal:      true,
+			}
+			fileHash, err := configstore.GenerateBudgetHash(budget)
+			if err != nil {
+				logger.Warn("failed to generate hash for global budget %s: %v", entry.ResetDuration, err)
+				continue
+			}
+			budget.ConfigHash = fileHash
+			found := false
+			if dbGlobal != nil {
+				for _, dbEntry := range dbGlobal.Budgets {
+					if dbEntry.ResetDuration == entry.ResetDuration {
+						found = true
+						if dbEntry.ConfigHash != fileHash {
+							logger.Debug("config hash mismatch for global budget %s, syncing from config file", entry.ResetDuration)
+							globalBudgetsToUpdate = append(globalBudgetsToUpdate, budget)
+						} else {
+							logger.Debug("config hash matches for global budget %s, keeping DB config", entry.ResetDuration)
+						}
+						break
+					}
+				}
+			}
+			if !found {
+				globalBudgetsToAdd = append(globalBudgetsToAdd, budget)
+			}
+		}
+		if configData.Governance.GlobalLimits.RateLimit != nil {
+			entry := configData.Governance.GlobalLimits.RateLimit
+			rl := configstoreTables.TableRateLimit{
+				ID:              configstore.GlobalRateLimitID,
+				IsGlobal:        true,
+				TokenMaxLimit:   entry.TokenMaxLimit,
+				RequestMaxLimit: entry.RequestMaxLimit,
+			}
+			if entry.TokenMaxLimit != nil && entry.TokenResetDuration != "" {
+				rl.TokenResetDuration = &entry.TokenResetDuration
+			}
+			if entry.RequestMaxLimit != nil && entry.RequestResetDuration != "" {
+				rl.RequestResetDuration = &entry.RequestResetDuration
+			}
+			fileHash, err := configstore.GenerateRateLimitHash(rl)
+			if err != nil {
+				logger.Warn("failed to generate hash for global rate limit: %v", err)
+			} else {
+				rl.ConfigHash = fileHash
+				if dbGlobal == nil || dbGlobal.RateLimit == nil {
+					globalRLToCreate = &rl
+				} else if dbGlobal.RateLimit.ConfigHash != fileHash {
+					logger.Debug("config hash mismatch for global rate limit, syncing from config file")
+					globalRLToUpdate = &rl
+				} else {
+					logger.Debug("config hash matches for global rate limit, keeping DB config")
+				}
+			}
+		}
+	}
+
 	// Add merged items to config
 	config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 	config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
@@ -1984,7 +2054,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
 		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0 ||
 		len(modelConfigsToAdd) > 0 || len(modelConfigsToUpdate) > 0 ||
-		len(providersToAdd) > 0 || len(providersToUpdate) > 0
+		len(providersToAdd) > 0 || len(providersToUpdate) > 0 ||
+		len(globalBudgetsToAdd) > 0 || len(globalBudgetsToUpdate) > 0 ||
+		globalRLToCreate != nil || globalRLToUpdate != nil
 	if config.ConfigStore != nil && hasChanges {
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
@@ -1995,7 +2067,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			routingRulesToAdd, routingRulesToUpdate,
 			pricingOverridesToAdd, pricingOverridesToUpdate,
 			modelConfigsToAdd, modelConfigsToUpdate,
-			providersToAdd, providersToUpdate)
+			providersToAdd, providersToUpdate,
+			globalBudgetsToAdd, globalBudgetsToUpdate,
+			globalRLToCreate, globalRLToUpdate)
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
@@ -2040,6 +2114,10 @@ func updateGovernanceConfigInStore(
 	modelConfigsToUpdate []configstoreTables.TableModelConfig,
 	providersToAdd []configstoreTables.TableProvider,
 	providersToUpdate []configstoreTables.TableProvider,
+	globalBudgetsToAdd []configstoreTables.TableBudget,
+	globalBudgetsToUpdate []configstoreTables.TableBudget,
+	globalRLToCreate *configstoreTables.TableRateLimit,
+	globalRLToUpdate *configstoreTables.TableRateLimit,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -2316,6 +2394,34 @@ func updateGovernanceConfigInStore(
 					provider.BudgetID,
 					provider.RateLimitID,
 				)
+			}
+		}
+
+		// Create global budgets (singleton-enforcing path)
+		for _, budget := range globalBudgetsToAdd {
+			if err := config.ConfigStore.CreateGlobalBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create global budget %s: %w", budget.ResetDuration, err)
+			}
+		}
+
+		// Update global budgets (config.json changed)
+		for _, budget := range globalBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update global budget %s: %w", budget.ResetDuration, err)
+			}
+		}
+
+		// Create global rate limit (singleton-enforcing path)
+		if globalRLToCreate != nil {
+			if err := config.ConfigStore.CreateGlobalRateLimit(ctx, globalRLToCreate, tx); err != nil {
+				return fmt.Errorf("failed to create global rate limit: %w", err)
+			}
+		}
+
+		// Update global rate limit (config.json changed)
+		if globalRLToUpdate != nil {
+			if err := config.ConfigStore.UpdateRateLimit(ctx, globalRLToUpdate, tx); err != nil {
+				return fmt.Errorf("failed to update global rate limit: %w", err)
 			}
 		}
 
@@ -2675,6 +2781,51 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			override.ConfigHash = overrideHash
 			if err := config.ConfigStore.CreatePricingOverride(ctx, override, tx); err != nil {
 				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
+			}
+		}
+
+		// Create global limits
+		if config.GovernanceConfig.GlobalLimits != nil {
+			for _, entry := range config.GovernanceConfig.GlobalLimits.Budgets {
+				budget := configstoreTables.TableBudget{
+					ID:            configstore.GlobalBudgetID(entry.ResetDuration),
+					MaxLimit:      entry.MaxLimit,
+					ResetDuration: entry.ResetDuration,
+					IsGlobal:      true,
+				}
+				budgetHash, err := configstore.GenerateBudgetHash(budget)
+				if err != nil {
+					logger.Warn("failed to generate hash for global budget %s: %v", entry.ResetDuration, err)
+				} else {
+					budget.ConfigHash = budgetHash
+				}
+				if err := config.ConfigStore.CreateGlobalBudget(ctx, &budget, tx); err != nil {
+					return fmt.Errorf("failed to create global budget %s: %w", entry.ResetDuration, err)
+				}
+			}
+			if config.GovernanceConfig.GlobalLimits.RateLimit != nil {
+				entry := config.GovernanceConfig.GlobalLimits.RateLimit
+				rl := configstoreTables.TableRateLimit{
+					ID:              configstore.GlobalRateLimitID,
+					IsGlobal:        true,
+					TokenMaxLimit:   entry.TokenMaxLimit,
+					RequestMaxLimit: entry.RequestMaxLimit,
+				}
+				if entry.TokenMaxLimit != nil && entry.TokenResetDuration != "" {
+					rl.TokenResetDuration = &entry.TokenResetDuration
+				}
+				if entry.RequestMaxLimit != nil && entry.RequestResetDuration != "" {
+					rl.RequestResetDuration = &entry.RequestResetDuration
+				}
+				rlHash, err := configstore.GenerateRateLimitHash(rl)
+				if err != nil {
+					logger.Warn("failed to generate hash for global rate limit: %v", err)
+				} else {
+					rl.ConfigHash = rlHash
+				}
+				if err := config.ConfigStore.CreateGlobalRateLimit(ctx, &rl, tx); err != nil {
+					return fmt.Errorf("failed to create global rate limit: %w", err)
+				}
 			}
 		}
 

@@ -215,6 +215,15 @@ type ConfigStore interface {
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
 	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
 
+	// Global governance CRUD (is_global=true records)
+	GetGlobalBudgets(ctx context.Context) ([]tables.TableBudget, error)
+	GetGlobalRateLimit(ctx context.Context) (*tables.TableRateLimit, error)
+	CreateGlobalBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
+	CreateGlobalRateLimit(ctx context.Context, rl *tables.TableRateLimit, tx ...*gorm.DB) error
+	DeleteGlobalBudget(ctx context.Context, id string, tx ...*gorm.DB) error
+	DeleteAllGlobalBudgets(ctx context.Context, tx ...*gorm.DB) error
+	DeleteGlobalRateLimit(ctx context.Context, tx ...*gorm.DB) error
+
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)
 	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)

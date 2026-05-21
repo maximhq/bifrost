@@ -80,6 +80,7 @@ type ServerCallbacks interface {
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	// Governance related callbacks
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
+	ReloadGlobalGovernance(ctx context.Context) error
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
@@ -944,6 +945,17 @@ func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string
 	s.Config.ModelCatalog.DeletePricingOverride(id)
 	return nil
 }
+
+// ReloadGlobalGovernance re-reads global budgets and rate limit from DB and
+// updates the in-memory store. Enterprise overrides this to also broadcast.
+func (s *BifrostHTTPServer) ReloadGlobalGovernance(ctx context.Context) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	return governancePlugin.GetGovernanceStore().LoadGlobalGovernanceFromDB(ctx)
+}
+
 
 // ReloadProxyConfig reloads the proxy configuration
 func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {

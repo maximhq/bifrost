@@ -1131,6 +1131,35 @@ func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, t
 	return nil
 }
 
+// Global governance
+func (m *MockConfigStore) GetGlobalBudgets(ctx context.Context) ([]tables.TableBudget, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetGlobalRateLimit(ctx context.Context) (*tables.TableRateLimit, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateGlobalBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateGlobalRateLimit(ctx context.Context, rl *tables.TableRateLimit, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteGlobalBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteAllGlobalBudgets(ctx context.Context, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteGlobalRateLimit(ctx context.Context, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Distributed locks
 func (m *MockConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
 	return true, nil
@@ -12691,6 +12720,8 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
+			nil, nil, // global budgets
+			nil, nil, // global rate limit
 		)
 	}
 

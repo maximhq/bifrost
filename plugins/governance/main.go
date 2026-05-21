@@ -1217,8 +1217,27 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 	p.cfgMutex.RUnlock()
 
-	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
-	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
+	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
+	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
+
+	// Step 0: Global governance — evaluated before provider/model/VK/hierarchy checks.
+	// Runs after the auth gate so invalid-VK requests still get 401, but authenticated
+	// requests over the instance ceiling get 402/429 before any entity check runs.
+	var result *EvaluationResult
+	if !skipBudgetsAndRateLimits {
+		result = p.resolver.EvaluateGlobalRequest(ctx)
+	}
+
+	// Model/provider budget + rate-limit checks are part of the budget/rate-limit tier;
+	// skip them when the caller has set BifrostContextKeySkipBudgetAndRateLimits.
+	if !skipBudgetsAndRateLimits && (result == nil || result.Decision == DecisionAllow) {
+		result = p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	}
+	// Ensure result is always non-nil beyond this point.
+	if result == nil {
+		result = &EvaluationResult{Decision: DecisionAllow}
+	}
 
 	// The flow for governance checks is:
 	//   VK (identity + VK-level budget/rate-limit) -> Customer -> Team -> User
@@ -1235,10 +1254,6 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			hierarchyVK = vk
 		}
 	}
-
-	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
-	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
-	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
 
 	// Step 1: Evaluate virtual key (identity + VK-level budget/rate-limit hierarchy).
 	// Short-circuits with VirtualKeyBlocked / ProviderBlocked / ModelBlocked before

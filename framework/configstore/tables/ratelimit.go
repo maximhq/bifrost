@@ -23,6 +23,10 @@ type TableRateLimit struct {
 	RequestCurrentUsage  int64     `gorm:"default:0" json:"request_current_usage"`                   // Current request usage
 	RequestLastReset     time.Time `gorm:"index" json:"request_last_reset"`                          // Last time request counter was reset
 
+	// IsGlobal marks this as the instance-level rate limit (no owner FK).
+	// At most one global rate limit is expected.
+	IsGlobal bool `gorm:"default:false;index" json:"is_global,omitempty"`
+
 	// Deprecated: set calendar_aligned on the parent access profile / VK / team
 	// instead. Kept for backward compatibility with older config.json files;
 	// the OSS applyV1Compat path and the enterprise access-profile reconciler

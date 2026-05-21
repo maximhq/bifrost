@@ -534,3 +534,14 @@ export interface GetProviderGovernanceResponse {
 	providers: ProviderGovernance[];
 	count: number;
 }
+
+export interface GlobalGovernance {
+	budgets: Budget[];
+	rate_limit?: RateLimit;
+}
+
+export interface UpdateGlobalGovernanceRequest {
+	budgets?: CreateBudgetRequest[];
+	rate_limit?: UpdateRateLimitRequest | null;
+	reset_budget_usage?: boolean;
+}

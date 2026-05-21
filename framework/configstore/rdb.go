@@ -3742,6 +3742,101 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 	return nil
 }
 
+// GetGlobalBudgets returns all budgets marked as global (is_global=true).
+func (s *RDBConfigStore) GetGlobalBudgets(ctx context.Context) ([]tables.TableBudget, error) {
+	var budgets []tables.TableBudget
+	if err := s.DB().WithContext(ctx).Where("is_global = ?", true).Find(&budgets).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return budgets, nil
+}
+
+// GetGlobalRateLimit returns the global rate limit (is_global=true), or nil if none exists.
+func (s *RDBConfigStore) GetGlobalRateLimit(ctx context.Context) (*tables.TableRateLimit, error) {
+	var rl tables.TableRateLimit
+	err := s.DB().WithContext(ctx).Where("is_global = ?", true).First(&rl).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return &rl, nil
+}
+
+// CreateGlobalBudget creates a new global budget (forces is_global=true, clears all owner FKs).
+func (s *RDBConfigStore) CreateGlobalBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
+	if budget == nil {
+		return fmt.Errorf("nil budget payload")
+	}
+	budget.IsGlobal = true
+	budget.TeamID = nil
+	budget.VirtualKeyID = nil
+	budget.ProviderConfigID = nil
+	return s.CreateBudget(ctx, budget, tx...)
+}
+
+// CreateGlobalRateLimit creates the global rate limit (forces is_global=true).
+// It enforces singleton at write time: returns ErrAlreadyExists if a global row
+// is already present. The DB-level partial unique index provides a second line
+// of defence against concurrent inserts.
+func (s *RDBConfigStore) CreateGlobalRateLimit(ctx context.Context, rl *tables.TableRateLimit, tx ...*gorm.DB) error {
+	if rl == nil {
+		return fmt.Errorf("nil rate limit payload")
+	}
+	rl.IsGlobal = true
+
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+
+	var existing tables.TableRateLimit
+	err := db.WithContext(ctx).Where("is_global = ?", true).First(&existing).Error
+	if err == nil {
+		return fmt.Errorf("a global rate limit already exists %w", ErrAlreadyExists)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return s.parseGormError(err)
+	}
+
+	return s.CreateRateLimit(ctx, rl, db)
+}
+
+// DeleteInstanceBudget deletes a single global budget by ID.
+func (s *RDBConfigStore) DeleteGlobalBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).Where("id = ? AND is_global = ?", id, true).Delete(&tables.TableBudget{})
+	if result.Error != nil {
+		return s.parseGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAllGlobalBudgets deletes all global budgets.
+func (s *RDBConfigStore) DeleteAllGlobalBudgets(ctx context.Context, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	return s.parseGormError(db.WithContext(ctx).Where("is_global = ?", true).Delete(&tables.TableBudget{}).Error)
+}
+
+// DeleteGlobalRateLimit deletes the global rate limit.
+func (s *RDBConfigStore) DeleteGlobalRateLimit(ctx context.Context, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	return s.parseGormError(db.WithContext(ctx).Where("is_global = ?", true).Delete(&tables.TableRateLimit{}).Error)
+}
+
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
@@ -4233,6 +4328,48 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(modelConfigs) == 0 && len(providers) == 0 && len(governanceConfigs) == 0 && len(routingRules) == 0 && len(pricingOverrides) == 0 {
 		return nil, nil
 	}
+
+	// Separate global rows into their own field so the config-sync path can use
+	// the singleton-enforcing DB methods (CreateGlobalBudget / CreateGlobalRateLimit)
+	// and avoid double-processing through the regular budget/rate-limit merge loop.
+	nonGlobalBudgets := make([]tables.TableBudget, 0, len(budgets))
+	var globalBudgetEntries []GlobalBudgetEntry
+	for _, b := range budgets {
+		if b.IsGlobal {
+			globalBudgetEntries = append(globalBudgetEntries, GlobalBudgetEntry{
+				MaxLimit:      b.MaxLimit,
+				ResetDuration: b.ResetDuration,
+				ConfigHash:    b.ConfigHash,
+			})
+		} else {
+			nonGlobalBudgets = append(nonGlobalBudgets, b)
+		}
+	}
+	nonGlobalRateLimits := make([]tables.TableRateLimit, 0, len(rateLimits))
+	var globalRLEntry *GlobalRateLimitEntry
+	for _, rl := range rateLimits {
+		if rl.IsGlobal {
+			entry := &GlobalRateLimitEntry{ConfigHash: rl.ConfigHash}
+			entry.TokenMaxLimit = rl.TokenMaxLimit
+			if rl.TokenResetDuration != nil {
+				entry.TokenResetDuration = *rl.TokenResetDuration
+			}
+			entry.RequestMaxLimit = rl.RequestMaxLimit
+			if rl.RequestResetDuration != nil {
+				entry.RequestResetDuration = *rl.RequestResetDuration
+			}
+			globalRLEntry = entry
+		} else {
+			nonGlobalRateLimits = append(nonGlobalRateLimits, rl)
+		}
+	}
+	var globalLimits *GlobalLimitsConfig
+	if len(globalBudgetEntries) > 0 || globalRLEntry != nil {
+		globalLimits = &GlobalLimitsConfig{
+			Budgets:   globalBudgetEntries,
+			RateLimit: globalRLEntry,
+		}
+	}
 	var authConfig *AuthConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
@@ -4265,13 +4402,14 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		VirtualKeys:      virtualKeys,
 		Teams:            teams,
 		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
+		Budgets:          nonGlobalBudgets,
+		RateLimits:       nonGlobalRateLimits,
 		ModelConfigs:     modelConfigs,
 		Providers:        providers,
 		RoutingRules:     routingRules,
 		PricingOverrides: pricingOverrides,
 		AuthConfig:       authConfig,
+		GlobalLimits:     globalLimits,
 	}, nil
 }
 

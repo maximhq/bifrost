@@ -747,6 +747,55 @@
             },
             "required": ["name"]
           }
+        },
+        "global_limits": {
+          "type": "object",
+          "description": "Instance-wide spend and throughput limits evaluated before any virtual-key, team, or model check",
+          "properties": {
+            "budgets": {
+              "type": "array",
+              "description": "Global spend budgets. Each entry must have a unique reset_duration; no id is required (one is derived automatically).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "max_limit": {
+                    "type": "number",
+                    "description": "Maximum spend in dollars"
+                  },
+                  "reset_duration": {
+                    "type": "string",
+                    "description": "Budget reset duration (e.g., '1h', '1d', '1w', '1M')"
+                  }
+                },
+                "required": ["max_limit", "reset_duration"],
+                "additionalProperties": false
+              }
+            },
+            "rate_limit": {
+              "type": "object",
+              "description": "Global rate-limit singleton. At most one may exist per instance.",
+              "properties": {
+                "token_max_limit": {
+                  "type": "integer",
+                  "description": "Maximum tokens allowed per reset period"
+                },
+                "token_reset_duration": {
+                  "type": "string",
+                  "description": "Token counter reset duration (e.g., '1h', '1d')"
+                },
+                "request_max_limit": {
+                  "type": "integer",
+                  "description": "Maximum requests allowed per reset period"
+                },
+                "request_reset_duration": {
+                  "type": "string",
+                  "description": "Request counter reset duration (e.g., '1h', '1d')"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

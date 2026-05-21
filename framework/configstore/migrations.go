@@ -813,6 +813,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddIsGlobalToGovernanceTables(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8891,6 +8894,63 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddIsGlobalToGovernanceTables adds the is_global column to
+// governance_budgets and governance_rate_limits, and enforces the rate-limit
+// singleton with a partial unique index (only one row may have is_global=true).
+func migrationAddIsGlobalToGovernanceTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_is_global_to_governance_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// governance_budgets.is_global
+			if !tx.Migrator().HasColumn(&tables.TableBudget{}, "is_global") {
+				if err := tx.Exec("ALTER TABLE governance_budgets ADD COLUMN is_global BOOLEAN NOT NULL DEFAULT FALSE").Error; err != nil {
+					return fmt.Errorf("failed to add is_global column to governance_budgets: %w", err)
+				}
+			}
+			if !tx.Migrator().HasIndex(&tables.TableBudget{}, "idx_governance_budgets_is_global") {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_governance_budgets_is_global ON governance_budgets (is_global)").Error; err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.is_global: %w", err)
+				}
+			}
+
+			// governance_rate_limits.is_global
+			if !tx.Migrator().HasColumn(&tables.TableRateLimit{}, "is_global") {
+				if err := tx.Exec("ALTER TABLE governance_rate_limits ADD COLUMN is_global BOOLEAN NOT NULL DEFAULT FALSE").Error; err != nil {
+					return fmt.Errorf("failed to add is_global column to governance_rate_limits: %w", err)
+				}
+			}
+			// Partial unique index: enforces singleton at DB level — at most one
+			// rate-limit row may have is_global=true, preventing race-condition
+			// duplicates when two nodes simultaneously call CreateGlobalRateLimit.
+			if !tx.Migrator().HasIndex(&tables.TableRateLimit{}, "idx_governance_rate_limits_global_singleton") {
+				if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_governance_rate_limits_global_singleton ON governance_rate_limits (is_global) WHERE is_global = TRUE").Error; err != nil {
+					return fmt.Errorf("failed to create singleton index on governance_rate_limits.is_global: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_governance_rate_limits_global_singleton")
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_governance_budgets_is_global")
+			if tx.Migrator().HasColumn(&tables.TableRateLimit{}, "is_global") {
+				_ = tx.Exec("ALTER TABLE governance_rate_limits DROP COLUMN is_global")
+			}
+			if tx.Migrator().HasColumn(&tables.TableBudget{}, "is_global") {
+				_ = tx.Exec("ALTER TABLE governance_budgets DROP COLUMN is_global")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_is_global_to_governance_tables migration: %s", err.Error())
 	}
 	return nil
 }

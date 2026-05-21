@@ -53,6 +53,7 @@ type GovernanceManager interface {
 	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	ReloadGlobalGovernance(ctx context.Context) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -381,6 +382,22 @@ type UpdateProviderGovernanceRequest struct {
 	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
+// GlobalGovernanceResponse is returned by GET /api/governance/global
+type GlobalGovernanceResponse struct {
+	Budgets   []configstoreTables.TableBudget   `json:"budgets"`
+	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+}
+
+// UpdateGlobalGovernanceRequest is the body for PUT /api/governance/global.
+// Budgets is the desired full list: entries with ID update, entries without ID create,
+// entries absent from the list but present in DB are deleted.
+// RateLimit nil = no change; empty object (all zero/nil fields) = delete.
+type UpdateGlobalGovernanceRequest struct {
+	Budgets          []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	ResetBudgetUsage *bool                   `json:"reset_budget_usage,omitempty"`
+}
+
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Virtual Key CRUD operations
@@ -423,6 +440,11 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
 	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
 	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
+
+	// Global governance operations (evaluated before all other tiers)
+	r.GET("/api/governance/global", lib.ChainMiddlewares(h.getGlobalGovernance, middlewares...))
+	r.PUT("/api/governance/global", lib.ChainMiddlewares(h.updateGlobalGovernance, middlewares...))
+	r.DELETE("/api/governance/global", lib.ChainMiddlewares(h.deleteGlobalGovernance, middlewares...))
 
 	// Provider Governance operations
 	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
@@ -4231,4 +4253,254 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"rate_limit":       vk.RateLimit,
 		"provider_configs": vk.ProviderConfigs,
 	})
+}
+
+// ── Global governance ──────────────────────────────────────────────────────
+
+// getGlobalGovernance handles GET /api/governance/global
+func (h *GovernanceHandler) getGlobalGovernance(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData(ctx)
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		var budgets []configstoreTables.TableBudget
+		for _, id := range data.GlobalBudgetIDs {
+			if b, ok := data.Budgets[id]; ok && b != nil {
+				budgets = append(budgets, *b)
+			}
+		}
+		var rl *configstoreTables.TableRateLimit
+		if data.GlobalRateLimitID != nil {
+			if r, ok := data.RateLimits[*data.GlobalRateLimitID]; ok && r != nil {
+				rl = r
+			}
+		}
+		if budgets == nil {
+			budgets = []configstoreTables.TableBudget{}
+		}
+		SendJSON(ctx, GlobalGovernanceResponse{Budgets: budgets, RateLimit: rl})
+		return
+	}
+	budgets, err := h.configStore.GetGlobalBudgets(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve global budgets: %v", err)
+		SendError(ctx, 500, "Failed to retrieve global budgets")
+		return
+	}
+	rl, err := h.configStore.GetGlobalRateLimit(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve global rate limit: %v", err)
+		SendError(ctx, 500, "Failed to retrieve global rate limit")
+		return
+	}
+	if budgets == nil {
+		budgets = []configstoreTables.TableBudget{}
+	}
+	SendJSON(ctx, GlobalGovernanceResponse{Budgets: budgets, RateLimit: rl})
+}
+
+// updateGlobalGovernance handles PUT /api/governance/global
+func (h *GovernanceHandler) updateGlobalGovernance(ctx *fasthttp.RequestCtx) {
+	var req UpdateGlobalGovernanceRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	// clientError wraps validation mistakes so the outer handler maps them to 400.
+	type clientError struct{ msg string }
+
+	var txClientErr *clientError
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Read existing state inside the transaction for a consistent snapshot.
+		var existingBudgets []configstoreTables.TableBudget
+		if err := tx.WithContext(ctx).Where("is_global = ?", true).Find(&existingBudgets).Error; err != nil {
+			return err
+		}
+		var existingRL *configstoreTables.TableRateLimit
+		{
+			var rl configstoreTables.TableRateLimit
+			err := tx.WithContext(ctx).Where("is_global = ?", true).First(&rl).Error
+			if err == nil {
+				existingRL = &rl
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		}
+
+		// ── Budgets reconciliation ──────────────────────────────────────────
+		if req.Budgets != nil {
+			existingByID := make(map[string]configstoreTables.TableBudget, len(existingBudgets))
+			for _, b := range existingBudgets {
+				existingByID[b.ID] = b
+			}
+			wantedIDs := make(map[string]bool)
+			seenResetDurations := make(map[string]bool)
+
+			for _, entry := range req.Budgets {
+				if entry.MaxLimit <= 0 || entry.ResetDuration == "" {
+					txClientErr = &clientError{"both max_limit (>0) and reset_duration are required for each budget"}
+					return fmt.Errorf("%s", txClientErr.msg)
+				}
+				if seenResetDurations[entry.ResetDuration] {
+					txClientErr = &clientError{fmt.Sprintf("duplicate reset_duration in budgets: %s", entry.ResetDuration)}
+					return fmt.Errorf("%s", txClientErr.msg)
+				}
+				seenResetDurations[entry.ResetDuration] = true
+				if entry.ID != "" {
+					existing, ok := existingByID[entry.ID]
+					if !ok {
+						txClientErr = &clientError{fmt.Sprintf("budget %s not found", entry.ID)}
+						return fmt.Errorf("%s", txClientErr.msg)
+					}
+					existing.MaxLimit = entry.MaxLimit
+					existing.ResetDuration = entry.ResetDuration
+					resetBudgetUsageIfRequested(&existing, req.ResetBudgetUsage != nil && *req.ResetBudgetUsage, false)
+					if err := validateBudget(&existing); err != nil {
+						txClientErr = &clientError{err.Error()}
+						return err
+					}
+					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
+						return err
+					}
+					wantedIDs[entry.ID] = true
+				} else {
+					budget := configstoreTables.TableBudget{
+						ID:            uuid.NewString(),
+						MaxLimit:      entry.MaxLimit,
+						ResetDuration: entry.ResetDuration,
+						LastReset:     budgetLastReset(false, entry.ResetDuration),
+						CurrentUsage:  0,
+						IsGlobal:      true,
+					}
+					if err := validateBudget(&budget); err != nil {
+						txClientErr = &clientError{err.Error()}
+						return err
+					}
+					if err := h.configStore.CreateGlobalBudget(ctx, &budget, tx); err != nil {
+						return err
+					}
+					wantedIDs[budget.ID] = true
+				}
+			}
+
+			for _, b := range existingBudgets {
+				if !wantedIDs[b.ID] {
+					if err := h.configStore.DeleteGlobalBudget(ctx, b.ID, tx); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		// ── Rate limit reconciliation ───────────────────────────────────────
+		if req.RateLimit != nil {
+			if isRateLimitRemovalRequest(req.RateLimit) {
+				if existingRL != nil {
+					if err := h.configStore.DeleteGlobalRateLimit(ctx, tx); err != nil {
+						return err
+					}
+				}
+			} else if existingRL != nil {
+				if req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil {
+					txClientErr = &clientError{"at least one of token_max_limit or request_max_limit is required; send an empty rate_limit object to delete"}
+					return fmt.Errorf("%s", txClientErr.msg)
+				}
+				existingRL.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				existingRL.TokenResetDuration = req.RateLimit.TokenResetDuration
+				existingRL.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				existingRL.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(existingRL); err != nil {
+					txClientErr = &clientError{err.Error()}
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, existingRL, tx); err != nil {
+					return err
+				}
+			} else {
+				// Reject partial requests (e.g. only reset_duration, no limits).
+				if req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil {
+					txClientErr = &clientError{"at least one of token_max_limit or request_max_limit is required"}
+					return fmt.Errorf("%s", txClientErr.msg)
+				}
+				rl := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+					IsGlobal:             true,
+				}
+				if err := validateRateLimit(&rl); err != nil {
+					txClientErr = &clientError{err.Error()}
+					return err
+				}
+				if err := h.configStore.CreateGlobalRateLimit(ctx, &rl, tx); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}); err != nil {
+		if txClientErr != nil {
+			SendError(ctx, 400, txClientErr.msg)
+		} else {
+			logger.Error("failed to update global governance: %v", err)
+			SendError(ctx, 500, fmt.Sprintf("Failed to update global governance: %v", err))
+		}
+		return
+	}
+
+	// Reload in-memory on this node (enterprise override also broadcasts to peers).
+	if err := h.governanceManager.ReloadGlobalGovernance(ctx); err != nil {
+		logger.Error("failed to reload global governance in-memory after update: %v", err)
+	}
+
+	SendJSON(ctx, map[string]string{"message": "Global governance updated successfully"})
+}
+
+// deleteGlobalGovernance handles DELETE /api/governance/global
+//
+// Optional query params for selective deletion:
+//   - ?target=budget&budget_id=<id>  — delete one global budget by ID
+//   - ?target=rate_limit             — delete only the global rate limit
+//
+// With no target param (or target=all) the entire global governance config is removed.
+func (h *GovernanceHandler) deleteGlobalGovernance(ctx *fasthttp.RequestCtx) {
+	target := string(ctx.QueryArgs().Peek("target"))
+	budgetID := string(ctx.QueryArgs().Peek("budget_id"))
+
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		switch target {
+		case "budget":
+			if budgetID == "" {
+				return fmt.Errorf("budget_id query param is required when target=budget")
+			}
+			return h.configStore.DeleteGlobalBudget(ctx, budgetID, tx)
+		case "rate_limit":
+			return h.configStore.DeleteGlobalRateLimit(ctx, tx)
+		default:
+			if err := h.configStore.DeleteAllGlobalBudgets(ctx, tx); err != nil {
+				return err
+			}
+			return h.configStore.DeleteGlobalRateLimit(ctx, tx)
+		}
+	}); err != nil {
+		logger.Error("failed to delete global governance: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to delete global governance: %v", err))
+		return
+	}
+
+	// Non-fatal: DB delete already committed; follow log-and-continue pattern.
+	if err := h.governanceManager.ReloadGlobalGovernance(ctx); err != nil {
+		logger.Error("failed to reload global governance in-memory after delete: %v", err)
+	}
+
+	SendJSON(ctx, map[string]string{"message": "Global governance deleted successfully"})
 }

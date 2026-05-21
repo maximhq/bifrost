@@ -1,7 +1,6 @@
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { DottedSeparator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -18,14 +17,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { UsageLine } from "@/components/ui/usageLine";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
-import { cn } from "@/lib/utils";
 import {
-  calculateUsagePercentage,
   formatCurrency,
   parseResetPeriod,
 } from "@/lib/utils/governance";
@@ -33,54 +31,6 @@ import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/mana
 import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
-
-function usageBarClass(pct: number, exhausted: boolean) {
-  if (exhausted) return "[&>div]:bg-red-500/70";
-  if (pct > 80) return "[&>div]:bg-amber-500/70";
-  return "[&>div]:bg-emerald-500/70";
-}
-
-function UsageLine({
-  current,
-  max,
-  format,
-}: {
-  current: number;
-  max: number;
-  format: (n: number) => string;
-}) {
-  const pct = calculateUsagePercentage(current, max);
-  const exhausted = max > 0 && current >= max;
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-mono text-sm">
-          {format(current)} <span className="text-muted-foreground">/</span>{" "}
-          {format(max)}
-        </span>
-        <span
-          className={cn(
-            "text-xs font-medium tabular-nums",
-            exhausted
-              ? "text-red-500"
-              : pct > 80
-                ? "text-amber-500"
-                : "text-muted-foreground",
-          )}
-        >
-          {pct}%
-        </span>
-      </div>
-      <Progress
-        value={Math.min(pct, 100)}
-        className={cn(
-          "bg-muted/70 dark:bg-muted/30 h-1.5",
-          usageBarClass(pct, exhausted),
-        )}
-      />
-    </div>
-  );
-}
 
 interface VirtualKeyDetailSheetProps {
   virtualKey: VirtualKey;

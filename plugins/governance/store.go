@@ -41,6 +41,13 @@ type LocalGovernanceStore struct {
 	LastDBUsagesRequestsRateLimits   map[string]int64   // Map for last DB usages for rate limits requests
 	LastDBUsagesTokensRateLimits     map[string]int64   // Map for last DB usages for rate limits tokens
 
+	// Instance-level governance (is_global=true records).
+	// Actual objects live in the budgets/rateLimits sync.Maps — gossip, dump,
+	// and reset loops include them automatically.
+	globalBudgetIDsMu sync.RWMutex
+	globalBudgetIDs   []string // IDs of global budgets
+	globalRateLimitID *string  // ID of the global rate limit (at most one)
+
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
 	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
@@ -65,6 +72,10 @@ type GovernanceData struct {
 	RoutingRules map[string]*configstoreTables.TableRoutingRule `json:"routing_rules"`
 	ModelConfigs []*configstoreTables.TableModelConfig          `json:"model_configs"`
 	Providers    []*configstoreTables.TableProvider             `json:"providers"`
+
+	// Instance-level governance (evaluated before all other tiers)
+	GlobalBudgetIDs   []string `json:"instance_budget_ids,omitempty"`
+	GlobalRateLimitID *string  `json:"instance_rate_limit_id,omitempty"`
 }
 
 // BusinessUnitGovernance holds in-memory budget and rate limit data for a business unit
@@ -185,6 +196,16 @@ type GovernanceStore interface {
 	// reconciliation can attribute cost and tokens to the correct governance
 	// entities.
 	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+
+	// Global governance (is_global=true, evaluated before all other tiers).
+	GetGlobalBudgets(ctx context.Context) []*configstoreTables.TableBudget
+	GetGlobalRateLimit(ctx context.Context) *configstoreTables.TableRateLimit
+	LoadGlobalGovernanceFromDB(ctx context.Context) error
+	UpsertGlobalGovernanceInMemory(ctx context.Context, budgets []*configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
+	CheckGlobalBudget(ctx context.Context, baselines map[string]float64) (Decision, error)
+	CheckGlobalRateLimit(ctx context.Context, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
+	UpdateGlobalBudgetUsageInMemory(ctx context.Context, cost float64) error
+	UpdateGlobalRateLimitUsageInMemory(ctx context.Context, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -790,15 +811,23 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 	sort.Slice(providersList, func(i, j int) bool {
 		return providersList[i].CreatedAt.Before(providersList[j].CreatedAt)
 	})
+	gs.globalBudgetIDsMu.RLock()
+	globalBudgetIDs := make([]string, len(gs.globalBudgetIDs))
+	copy(globalBudgetIDs, gs.globalBudgetIDs)
+	globalRateLimitID := gs.globalRateLimitID
+	gs.globalBudgetIDsMu.RUnlock()
+
 	return &GovernanceData{
-		VirtualKeys:  virtualKeys,
-		Teams:        teams,
-		Customers:    customers,
-		Budgets:      budgets,
-		RateLimits:   rateLimits,
-		RoutingRules: routingRules,
-		ModelConfigs: modelConfigsList,
-		Providers:    providersList,
+		VirtualKeys:         virtualKeys,
+		Teams:               teams,
+		Customers:           customers,
+		Budgets:             budgets,
+		RateLimits:          rateLimits,
+		RoutingRules:        routingRules,
+		ModelConfigs:        modelConfigsList,
+		Providers:           providersList,
+		GlobalBudgetIDs:   globalBudgetIDs,
+		GlobalRateLimitID: globalRateLimitID,
 	}
 }
 
@@ -1767,6 +1796,11 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	// Rebuild in-memory structures (lock-free)
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
 
+	// Load global governance (is_global=true records)
+	if err := gs.LoadGlobalGovernanceFromDB(ctx); err != nil {
+		return fmt.Errorf("failed to load global governance from DB: %w", err)
+	}
+
 	return nil
 }
 
@@ -1899,7 +1933,31 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Rebuild in-memory structures (lock-free)
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
 
+	// Populate global governance tracking from the loaded budgets/rateLimits
+	// (config-memory mode has no DB, so LoadGlobalGovernanceFromDB is not called).
+	gs.seedGlobalGovernanceFromLoadedData(ctx, budgets, rateLimits)
+
 	return nil
+}
+
+// seedGlobalGovernanceFromLoadedData scans already-loaded slices for is_global=true
+// records and installs them via UpsertGlobalGovernanceInMemory. Used by
+// loadFromConfigMemory which bypasses the DB path.
+func (gs *LocalGovernanceStore) seedGlobalGovernanceFromLoadedData(ctx context.Context, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit) {
+	var globalBudgets []*configstoreTables.TableBudget
+	for i := range budgets {
+		if budgets[i].IsGlobal {
+			globalBudgets = append(globalBudgets, &budgets[i])
+		}
+	}
+	var globalRL *configstoreTables.TableRateLimit
+	for i := range rateLimits {
+		if rateLimits[i].IsGlobal {
+			globalRL = &rateLimits[i]
+			break
+		}
+	}
+	gs.UpsertGlobalGovernanceInMemory(ctx, globalBudgets, globalRL)
 }
 
 // rebuildInMemoryStructures rebuilds all in-memory data structures (lock-free)
@@ -2262,6 +2320,20 @@ func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Contex
 func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
 	seenBudgets := map[string]bool{}
 	seenRateLimits := map[string]bool{}
+
+	// --- Instance-level (always first) ---
+	gs.globalBudgetIDsMu.RLock()
+	for _, id := range gs.globalBudgetIDs {
+		if !seenBudgets[id] {
+			budgetIDs = append(budgetIDs, id)
+			seenBudgets[id] = true
+		}
+	}
+	if gs.globalRateLimitID != nil && !seenRateLimits[*gs.globalRateLimitID] {
+		rateLimitIDs = append(rateLimitIDs, *gs.globalRateLimitID)
+		seenRateLimits[*gs.globalRateLimitID] = true
+	}
+	gs.globalBudgetIDsMu.RUnlock()
 
 	// --- Provider-level ---
 	if provider != "" {
@@ -3597,4 +3669,211 @@ func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(ctx context.Context, i
 	// Invalidate compiled program cache for this rule
 	gs.compiledRoutingPrograms.Delete(id)
 	return nil
+}
+
+// ── Global governance (is_global=true) ────────────────────────────────────
+
+// LoadGlobalGovernanceFromDB re-reads global budgets and rate limit from DB
+// and installs them into the in-memory store. Called on startup and on cluster reload.
+func (gs *LocalGovernanceStore) LoadGlobalGovernanceFromDB(ctx context.Context) error {
+	if gs.configStore == nil {
+		return nil
+	}
+	budgets, err := gs.configStore.GetGlobalBudgets(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load global budgets: %w", err)
+	}
+	rl, err := gs.configStore.GetGlobalRateLimit(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load global rate limit: %w", err)
+	}
+	ptrs := make([]*configstoreTables.TableBudget, len(budgets))
+	for i := range budgets {
+		ptrs[i] = &budgets[i]
+	}
+	gs.UpsertGlobalGovernanceInMemory(ctx, ptrs, rl)
+	return nil
+}
+
+// UpsertGlobalGovernanceInMemory installs global budgets and rate limit into the
+// in-memory store, preserving existing usage counters via UpsertBudgetConfig /
+// UpsertRateLimitConfig so in-flight increments are not clobbered.
+func (gs *LocalGovernanceStore) UpsertGlobalGovernanceInMemory(ctx context.Context, budgets []*configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	// Compute the incoming set.
+	incoming := make(map[string]bool, len(budgets))
+	for _, b := range budgets {
+		if b != nil {
+			incoming[b.ID] = true
+		}
+	}
+
+	// Upsert new configs first — outside the lock so sync.Map CAS loops do not
+	// stall readers waiting on globalBudgetIDsMu.
+	for _, b := range budgets {
+		if b != nil {
+			gs.UpsertBudgetConfig(ctx, b.ID, b)
+		}
+	}
+	if rateLimit != nil {
+		gs.UpsertRateLimitConfig(ctx, rateLimit.ID, rateLimit)
+	}
+
+	// Update ID tracking under the lock, collecting stale IDs for cleanup.
+	var budgetsToDelete []string
+	var rlToDelete *string
+
+	gs.globalBudgetIDsMu.Lock()
+
+	for _, id := range gs.globalBudgetIDs {
+		if !incoming[id] {
+			budgetsToDelete = append(budgetsToDelete, id)
+		}
+	}
+	gs.globalBudgetIDs = nil
+	for _, b := range budgets {
+		if b != nil {
+			gs.globalBudgetIDs = append(gs.globalBudgetIDs, b.ID)
+		}
+	}
+
+	prevRLID := gs.globalRateLimitID
+	if rateLimit != nil {
+		gs.globalRateLimitID = &rateLimit.ID
+		if prevRLID != nil && *prevRLID != rateLimit.ID {
+			rlToDelete = prevRLID
+		}
+	} else {
+		gs.globalRateLimitID = nil
+		rlToDelete = prevRLID
+	}
+
+	gs.globalBudgetIDsMu.Unlock()
+
+	// Perform deletions outside the lock.
+	for _, id := range budgetsToDelete {
+		gs.DeleteBudget(ctx, id)
+	}
+	if rlToDelete != nil {
+		gs.DeleteRateLimit(ctx, *rlToDelete)
+	}
+}
+
+// DeleteGlobalBudgetInMemory removes a global budget from tracking.
+// Pass an empty budgetID to remove all global budgets.
+func (gs *LocalGovernanceStore) DeleteGlobalBudgetInMemory(ctx context.Context, budgetID string) {
+	gs.globalBudgetIDsMu.Lock()
+	if budgetID == "" {
+		toDelete := make([]string, len(gs.globalBudgetIDs))
+		copy(toDelete, gs.globalBudgetIDs)
+		gs.globalBudgetIDs = nil
+		gs.globalBudgetIDsMu.Unlock()
+		for _, id := range toDelete {
+			gs.DeleteBudget(ctx, id) // cleans up LastDBUsagesBudgets baseline
+		}
+	} else {
+		filtered := gs.globalBudgetIDs[:0]
+		for _, id := range gs.globalBudgetIDs {
+			if id != budgetID {
+				filtered = append(filtered, id)
+			}
+		}
+		gs.globalBudgetIDs = filtered
+		gs.globalBudgetIDsMu.Unlock()
+		gs.DeleteBudget(ctx, budgetID) // cleans up LastDBUsagesBudgets baseline
+	}
+}
+
+// DeleteGlobalRateLimitInMemory removes the global rate limit from tracking.
+func (gs *LocalGovernanceStore) DeleteGlobalRateLimitInMemory(ctx context.Context) {
+	gs.globalBudgetIDsMu.Lock()
+	id := gs.globalRateLimitID
+	gs.globalRateLimitID = nil
+	gs.globalBudgetIDsMu.Unlock()
+	if id != nil {
+		gs.DeleteRateLimit(ctx, *id) // cleans up LastDBUsages*RateLimits baselines
+	}
+}
+
+// GetGlobalBudgets returns the live global budget objects from the in-memory store.
+func (gs *LocalGovernanceStore) GetGlobalBudgets(ctx context.Context) []*configstoreTables.TableBudget {
+	gs.globalBudgetIDsMu.RLock()
+	ids := make([]string, len(gs.globalBudgetIDs))
+	copy(ids, gs.globalBudgetIDs)
+	gs.globalBudgetIDsMu.RUnlock()
+
+	var result []*configstoreTables.TableBudget
+	for _, id := range ids {
+		if b := gs.LoadBudget(ctx, id); b != nil {
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
+// GetGlobalRateLimit returns the live global rate limit from the in-memory store.
+func (gs *LocalGovernanceStore) GetGlobalRateLimit(ctx context.Context) *configstoreTables.TableRateLimit {
+	gs.globalBudgetIDsMu.RLock()
+	id := gs.globalRateLimitID
+	gs.globalBudgetIDsMu.RUnlock()
+	if id == nil {
+		return nil
+	}
+	return gs.LoadRateLimit(ctx, *id)
+}
+
+// CheckGlobalBudget checks all global budgets and returns a denial if any is exceeded.
+func (gs *LocalGovernanceStore) CheckGlobalBudget(ctx context.Context, baselines map[string]float64) (Decision, error) {
+	if baselines == nil {
+		baselines = map[string]float64{}
+	}
+	budgets := gs.GetGlobalBudgets(ctx)
+	if len(budgets) == 0 {
+		return DecisionAllow, nil
+	}
+	list := make(EntityWiseBudgets)
+	for _, b := range budgets {
+		list["Instance"] = append(list["Instance"], b)
+	}
+	return gs.CheckBudget(ctx, list, baselines)
+}
+
+// CheckGlobalRateLimit checks the global rate limit and returns a denial if exceeded.
+func (gs *LocalGovernanceStore) CheckGlobalRateLimit(ctx context.Context, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
+	if tokensBaselines == nil {
+		tokensBaselines = map[string]int64{}
+	}
+	if requestsBaselines == nil {
+		requestsBaselines = map[string]int64{}
+	}
+	rl := gs.GetGlobalRateLimit(ctx)
+	if rl == nil {
+		return DecisionAllow, nil
+	}
+	return gs.CheckRateLimit(ctx, EntityWiseRateLimits{"Instance": {rl}}, tokensBaselines, requestsBaselines)
+}
+
+// UpdateGlobalBudgetUsageInMemory increments all global budget counters.
+func (gs *LocalGovernanceStore) UpdateGlobalBudgetUsageInMemory(ctx context.Context, cost float64) error {
+	gs.globalBudgetIDsMu.RLock()
+	ids := make([]string, len(gs.globalBudgetIDs))
+	copy(ids, gs.globalBudgetIDs)
+	gs.globalBudgetIDsMu.RUnlock()
+
+	for _, id := range ids {
+		if err := gs.BumpBudgetUsage(ctx, id, cost); err != nil {
+			gs.logger.Error("failed to bump global budget usage for %s: %v", id, err)
+		}
+	}
+	return nil
+}
+
+// UpdateGlobalRateLimitUsageInMemory increments the global rate-limit counters.
+func (gs *LocalGovernanceStore) UpdateGlobalRateLimitUsageInMemory(ctx context.Context, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
+	gs.globalBudgetIDsMu.RLock()
+	id := gs.globalRateLimitID
+	gs.globalBudgetIDsMu.RUnlock()
+	if id == nil {
+		return nil
+	}
+	return gs.BumpRateLimitUsage(ctx, *id, tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
 }

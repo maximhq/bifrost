@@ -160,6 +160,7 @@ export const baseApi = createApi({
     "BaseModels",
     "ModelConfigs",
     "ProviderGovernance",
+    "GlobalGovernance",
     "Plugins",
     "SCIMProviders",
     "User",

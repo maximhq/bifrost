@@ -921,6 +921,11 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 	// Hash ResetDuration
 	hash.Write([]byte(b.ResetDuration))
 
+	// Hash IsGlobal
+	if b.IsGlobal {
+		hash.Write([]byte("global"))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -959,6 +964,11 @@ func GenerateRateLimitHash(rl tables.TableRateLimit) (string, error) {
 	// Hash RequestResetDuration
 	if rl.RequestResetDuration != nil {
 		hash.Write([]byte(*rl.RequestResetDuration))
+	}
+
+	// Hash IsGlobal
+	if rl.IsGlobal {
+		hash.Write([]byte("global"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -1371,6 +1381,61 @@ type AuthConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// GlobalBudgetEntry is the config.json representation of a single global spend budget.
+// No ID is required; a stable ID is derived from the reset_duration so the hash-based
+// sync can detect changes across config reloads.
+// ConfigHash is populated from the DB when loading existing state and is never written
+// to config.json (json:"-").
+type GlobalBudgetEntry struct {
+	MaxLimit      float64 `json:"max_limit"`
+	ResetDuration string  `json:"reset_duration"`
+	ConfigHash    string  `json:"-"`
+}
+
+// GlobalRateLimitEntry is the config.json representation of the global rate-limit singleton.
+// ConfigHash is populated from the DB when loading existing state and is never written
+// to config.json (json:"-").
+type GlobalRateLimitEntry struct {
+	TokenMaxLimit        *int64 `json:"token_max_limit,omitempty"`
+	TokenResetDuration   string `json:"token_reset_duration,omitempty"`
+	RequestMaxLimit      *int64 `json:"request_max_limit,omitempty"`
+	RequestResetDuration string `json:"request_reset_duration,omitempty"`
+	ConfigHash           string `json:"-"`
+}
+
+// GlobalLimitsConfig is the config.json block for instance-wide spend and throughput limits.
+// These are evaluated before any virtual-key, team, or model check.
+//
+// Example config.json:
+//
+//	"governance": {
+//	  "global_limits": {
+//	    "budgets": [
+//	      { "max_limit": 1000, "reset_duration": "1M" },
+//	      { "max_limit": 200,  "reset_duration": "1d" }
+//	    ],
+//	    "rate_limit": {
+//	      "token_max_limit": 1000000,
+//	      "token_reset_duration": "1h",
+//	      "request_max_limit": 5000,
+//	      "request_reset_duration": "1h"
+//	    }
+//	  }
+//	}
+type GlobalLimitsConfig struct {
+	Budgets   []GlobalBudgetEntry   `json:"budgets,omitempty"`
+	RateLimit *GlobalRateLimitEntry `json:"rate_limit,omitempty"`
+}
+
+// GlobalBudgetID returns a stable, deterministic primary key for a global budget.
+// The reset_duration is the natural key (no two global budgets may share one).
+func GlobalBudgetID(resetDuration string) string {
+	return "global-budget-" + resetDuration
+}
+
+// GlobalRateLimitID is the fixed primary key for the global rate-limit singleton.
+const GlobalRateLimitID = "global-rate-limit"
+
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
@@ -1384,4 +1449,8 @@ type GovernanceConfig struct {
 	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
 	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
 	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	// GlobalLimits holds instance-wide spend and throughput limits from config.json.
+	// It is kept separate from Budgets/RateLimits so the sync path can use the
+	// dedicated singleton-enforcing DB methods.
+	GlobalLimits *GlobalLimitsConfig `json:"global_limits,omitempty"`
 }

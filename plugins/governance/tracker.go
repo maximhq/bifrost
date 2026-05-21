@@ -79,6 +79,20 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	shouldUpdateRequests := !update.IsStreaming || (update.IsStreaming && update.IsFinalChunk)
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
+	// 0. Update global counters — applies to every successful request
+	// regardless of VK, model, provider, team, or customer.
+	// Note: global rate limit is updated unconditionally (no Provider/Model guard)
+	// so that MCP and other non-provider paths count against the ceiling they are
+	// checked against in EvaluateGlobalRequest.
+	if shouldUpdateBudget && update.Cost > 0 {
+		if err := t.store.UpdateGlobalBudgetUsageInMemory(ctx, update.Cost); err != nil {
+			t.logger.Error("failed to update global budget usage: %v", err)
+		}
+	}
+	if err := t.store.UpdateGlobalRateLimitUsageInMemory(ctx, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		t.logger.Error("failed to update global rate limit usage: %v", err)
+	}
+
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
 	// Guard: only update when both Provider and Model are set (MCP paths may not have these)

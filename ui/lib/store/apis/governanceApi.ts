@@ -18,6 +18,8 @@ import {
 	GetPricingOverridesResponse,
 	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
+	GlobalGovernance,
+	UpdateGlobalGovernanceRequest,
 	GetTeamsParams,
 	GetTeamsResponse,
 	GetUsageStatsResponse,
@@ -797,6 +799,92 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Global limits
+		getGlobalGovernance: builder.query<GlobalGovernance, { fromMemory?: boolean } | void>({
+			query: (params) => ({
+				url: "/governance/global",
+				params: params ? { from_memory: params.fromMemory } : undefined,
+			}),
+			providesTags: ["GlobalGovernance"],
+		}),
+
+		updateGlobalGovernance: builder.mutation<{ message: string }, UpdateGlobalGovernanceRequest>({
+			query: (data) => ({
+				url: "/governance/global",
+				method: "PUT",
+				body: data,
+			}),
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					// Patch both cache keys (plain fetch and from_memory variant) so neither
+					// triggers a refetch that could hit a stale peer in a cluster.
+					for (const queryArg of [undefined, { fromMemory: true }] as const) {
+						dispatch(
+							governanceApi.util.updateQueryData("getGlobalGovernance", queryArg, (draft) => {
+								if (arg.budgets !== undefined) {
+									draft.budgets = arg.budgets.map((b) => {
+										const existing = draft.budgets?.find((e) => e.id === b.id);
+										return {
+											id: b.id ?? "",
+											max_limit: b.max_limit,
+											reset_duration: b.reset_duration,
+											current_usage: existing?.current_usage ?? 0,
+											last_reset: existing?.last_reset ?? new Date().toISOString(),
+										};
+									});
+								}
+								if (arg.rate_limit !== undefined) {
+									const rl = arg.rate_limit; // may be null (deletion signal)
+									const isRemoval = !rl || (!rl.token_max_limit && !rl.request_max_limit);
+									if (isRemoval) {
+										draft.rate_limit = undefined;
+									} else if (rl) {
+										const prev = draft.rate_limit;
+										draft.rate_limit = {
+											id: prev?.id ?? "",
+											token_max_limit: rl.token_max_limit ?? undefined,
+											token_reset_duration: rl.token_reset_duration ?? undefined,
+											token_current_usage: prev?.token_current_usage ?? 0,
+											token_last_reset: prev?.token_last_reset ?? new Date().toISOString(),
+											request_max_limit: rl.request_max_limit ?? undefined,
+											request_reset_duration: rl.request_reset_duration ?? undefined,
+											request_current_usage: prev?.request_current_usage ?? 0,
+											request_last_reset: prev?.request_last_reset ?? new Date().toISOString(),
+										};
+									}
+								}
+							}),
+						);
+					}
+				} catch {
+					// mutation failed — cache unchanged, UI stays consistent
+				}
+			},
+		}),
+
+		deleteGlobalGovernance: builder.mutation<{ message: string }, void>({
+			query: () => ({
+				url: "/governance/global",
+				method: "DELETE",
+			}),
+			async onQueryStarted(_, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					for (const queryArg of [undefined, { fromMemory: true }] as const) {
+						dispatch(
+							governanceApi.util.updateQueryData("getGlobalGovernance", queryArg, (draft) => {
+								draft.budgets = [];
+								draft.rate_limit = undefined;
+							}),
+						);
+					}
+				} catch {
+					// mutation failed — cache unchanged
+				}
+			},
+		}),
 	}),
 });
 
@@ -859,6 +947,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Global Limits
+	useGetGlobalGovernanceQuery,
+	useUpdateGlobalGovernanceMutation,
+	useDeleteGlobalGovernanceMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,
