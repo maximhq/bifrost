@@ -5155,9 +5155,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	}
 
-	anthropicTool := &AnthropicTool{
-		Type: schemas.Ptr(AnthropicToolTypeCustom), // Custom tools require type: "custom"
-	}
+	anthropicTool := &AnthropicTool{}
 
 	if tool.Name != nil {
 		anthropicTool.Name = *tool.Name
