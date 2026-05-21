@@ -771,6 +771,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropVKAccessProfileIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
@@ -8418,41 +8421,7 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
-// so that existing VKs can be attached directly to an access profile template (enterprise feature).
-func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_access_profile_id_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
-				}
-			}
-			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
-				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				return mig.DropColumn(&tables.TableVirtualKey{}, "access_profile_id")
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
-	}
-	return nil
-}
-
+// migrationAddModelParametersURLColumn adds the model_parameters_url column to framework_configs.
 func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_model_parameters_url_column",
@@ -8579,6 +8548,56 @@ func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm
 						Update("config_hash", newHash).Error; err != nil {
 						return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
 					}
+
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVKAccessProfileIDColumn adds the access_profile_id column to governance_virtual_keys.
+func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropVKAccessProfileIDColumn drops the access_profile_id column and its
+// index from governance_virtual_keys, reverting migrationAddVKAccessProfileIDColumn.
+func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// DROP INDEX IF EXISTS avoids aborting the Postgres transaction when
+			// the index was never created (e.g. fresh installs where the add
+			// migration ran as a no-op).
+			if err := tx.Exec("DROP INDEX IF EXISTS idx_governance_virtual_keys_access_profile_id").Error; err != nil {
+				return fmt.Errorf("failed to drop index idx_governance_virtual_keys_access_profile_id: %w", err)
+			}
+			// Use raw ALTER TABLE instead of GORM's DropColumn: GORM's SQLite
+			// DropColumn does a full table rebuild inside a transaction where
+			// PRAGMA foreign_keys cannot be disabled, causing FK checks on
+			// unrelated columns to fail against test data.
+			// ALTER TABLE DROP COLUMN (SQLite 3.35+) modifies the schema in place.
+			if tx.Migrator().HasColumn("governance_virtual_keys", "access_profile_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN access_profile_id").Error; err != nil {
+					return fmt.Errorf("failed to drop access_profile_id column from governance_virtual_keys: %w", err)
 				}
 			}
 			return nil
@@ -8595,7 +8614,7 @@ func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
+		return fmt.Errorf("error running drop_vk_access_profile_id_column migration: %s", err.Error())
 	}
 	return nil
 }
