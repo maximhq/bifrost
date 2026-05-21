@@ -1,17 +1,53 @@
 package utils
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+var errPanicReader = errors.New("panic reader called")
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) {
+	panic(errPanicReader)
+}
+
+type blockingCloserSpy struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingCloserSpy() *blockingCloserSpy {
+	return &blockingCloserSpy{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (c *blockingCloserSpy) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c *blockingCloserSpy) Close() error {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return nil
+}
+
+func (c *blockingCloserSpy) unblock() {
+	close(c.release)
+}
 
 // readCloserSpy implements io.ReadCloser and records how many times Close() was called.
 type readCloserSpy struct {
@@ -280,5 +316,74 @@ func TestIdleTimeoutReader_ErrorFromClosedPipe(t *testing.T) {
 	if !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, io.EOF) {
 		// Some implementations return io.ErrClosedPipe, others EOF.
 		t.Logf("got error: %v (acceptable)", err)
+	}
+}
+
+func TestIdleTimeoutReader_NilContextDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	wrapped, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, &readCloserSpy{}, time.Second, nil)
+	defer cleanup()
+
+	_, err := wrapped.Read(make([]byte, 1))
+	if err != io.EOF {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+}
+
+func TestIdleTimeoutReader_ClosedContextReturnsError(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, time.Second, ctx)
+	defer cleanup()
+
+	_, err := wrapped.Read(make([]byte, 1))
+	if !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("expected ErrStreamClosed, got %v", err)
+	}
+}
+
+func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
+	t.Parallel()
+	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, 10*time.Millisecond, nil)
+	defer cleanup()
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, err := wrapped.Read(make([]byte, 1))
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
+	}
+}
+
+func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
+	t.Parallel()
+	body := newBlockingCloserSpy()
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+
+	select {
+	case <-body.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected idle timeout callback to start closing the body")
+	}
+
+	cleanupDone := make(chan struct{})
+	go func() {
+		cleanup()
+		close(cleanupDone)
+	}()
+
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup returned before the running timer callback finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	body.unblock()
+
+	select {
+	case <-cleanupDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cleanup did not return after timer callback finished")
 	}
 }
