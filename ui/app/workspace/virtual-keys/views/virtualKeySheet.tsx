@@ -1013,7 +1013,7 @@ export default function VirtualKeySheet({
             onSubmit={form.handleSubmit(onSubmit)}
             className="flex h-full flex-col gap-6"
           >
-            <div className="space-y-4 px-8">
+            <div className="space-y-4 px-8 grow">
               {isManagedByProfile && (
                 <Alert variant="info">
                   <Lock className="h-4 w-4" />
