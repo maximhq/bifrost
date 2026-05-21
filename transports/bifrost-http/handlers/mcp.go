@@ -99,143 +99,18 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Check if pagination params are present — if so, use paginated DB path
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	searchStr := string(ctx.QueryArgs().Peek("search"))
 
-	if limitStr != "" || offsetStr != "" || searchStr != "" {
-		h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
-		return
-	}
-
-	// Non-paginated path: read from in-memory config
-	configsInStore := h.store.MCPConfig
-	if configsInStore == nil {
-		SendJSON(ctx, emptyResponse)
-		return
-	}
-	// Get actual connected clients from Bifrost
-	clientsInBifrost, err := h.client.GetMCPClients()
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP clients from Bifrost: %v", err))
-		return
-	}
-	// Create a map of connected clients for quick lookup
-	connectedClientsMap := make(map[string]schemas.MCPClient)
-	for _, client := range clientsInBifrost {
-		connectedClientsMap[client.Config.ID] = client
-	}
-
-	// Build VK id→name lookup from in-memory governance data
-	vkNameByID := make(map[string]string)
-	if h.governanceManager != nil {
-		if gd := h.governanceManager.GetGovernanceData(ctx); gd != nil {
-			for _, vk := range gd.VirtualKeys {
-				vkNameByID[vk.ID] = vk.Name
-			}
-		}
-	}
-
-	// Batch-fetch all VK assignments for these clients in a single query
-	assignmentsByClientStringID := make(map[string][]configstoreTables.TableVirtualKeyMCPConfig)
-	if h.store.ConfigStore != nil {
-		clientIDs := make([]string, 0, len(configsInStore.ClientConfigs))
-		for _, c := range configsInStore.ClientConfigs {
-			clientIDs = append(clientIDs, c.ID)
-		}
-		allAssignments, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx, clientIDs)
-		if err != nil {
-			logger.Error("failed to fetch VK assignments for MCP clients: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve MCP client virtual key assignments")
-			return
-		}
-		for _, a := range allAssignments {
-			id := a.MCPClient.ClientID
-			assignmentsByClientStringID[id] = append(assignmentsByClientStringID[id], a)
-		}
-	}
-
-	// Batch-fetch OAuth configs for clients that have one (avoids N+1 queries)
-	oauthConfigsByID := make(map[string]*configstoreTables.TableOauthConfig)
-	if h.store.ConfigStore != nil {
-		oauthIDs := make([]string, 0)
-		for _, c := range configsInStore.ClientConfigs {
-			if c.OauthConfigID != nil && *c.OauthConfigID != "" {
-				oauthIDs = append(oauthIDs, *c.OauthConfigID)
-			}
-		}
-		if len(oauthIDs) > 0 {
-			fetched, err := h.store.ConfigStore.GetOauthConfigsByIDs(ctx, oauthIDs)
-			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to fetch OAuth configs: %v", err))
-				return
-			}
-			oauthConfigsByID = fetched
-		}
-	}
-
-	// Build the final client list, including errored clients
-	clients := make([]MCPClientResponse, 0, len(configsInStore.ClientConfigs))
-
-	for _, configClient := range configsInStore.ClientConfigs {
-		// Copy to avoid mutating the in-memory store config, then populate OAuth credentials
-		configClientCopy := *configClient
-		if configClient.OauthConfigID != nil {
-			if oauthCfg, ok := oauthConfigsByID[*configClient.OauthConfigID]; ok {
-				configClientCopy.OauthClientID = oauthCfg.ClientID
-				configClientCopy.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
-			}
-		}
-		// Redact sensitive fields before sending to UI
-		redactedConfig := h.store.RedactMCPClientConfig(&configClientCopy)
-
-		vkConfigs := []MCPVKConfigResponse{}
-		for _, a := range assignmentsByClientStringID[configClient.ID] {
-			vkConfigs = append(vkConfigs, MCPVKConfigResponse{
-				VirtualKeyID:   a.VirtualKeyID,
-				VirtualKeyName: vkNameByID[a.VirtualKeyID],
-				ToolsToExecute: a.ToolsToExecute,
-			})
-		}
-
-		if connectedClient, exists := connectedClientsMap[configClient.ID]; exists {
-			// Sort tools alphabetically by name
-			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
-			copy(sortedTools, connectedClient.Tools)
-			sort.Slice(sortedTools, func(i, j int) bool {
-				return sortedTools[i].Name < sortedTools[j].Name
-			})
-
-			clients = append(clients, MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     sortedTools,
-				State:     connectedClient.State,
-				VKConfigs: vkConfigs,
-			})
-		} else {
-			// Client is in config but not connected, mark as errored
-			clients = append(clients, MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     []schemas.ChatToolFunction{}, // No tools available since connection failed
-				State:     schemas.MCPConnectionStateError,
-				VKConfigs: vkConfigs,
-			})
-		}
-	}
-	SendJSON(ctx, map[string]interface{}{
-		"clients":     clients,
-		"count":       len(clients),
-		"total_count": len(clients),
-		"limit":       len(clients),
-		"offset":      0,
-	})
+	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
 }
 
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
 func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr string) {
 	params := configstore.MCPClientsQueryParams{
 		Search: searchStr,
+		Limit:  100,
 	}
 	if limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
