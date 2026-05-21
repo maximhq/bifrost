@@ -4488,6 +4488,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
+	// PreLLMHook can attach request-scoped fallbacks while preparing the
+	// primary attempt. Refresh the local snapshot before deciding/logging
+	// whether to iterate fallbacks.
+	_, _, fallbacks = req.GetRequestFields()
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -4574,6 +4578,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
+	// PreLLMHook can attach request-scoped fallbacks while preparing the
+	// primary attempt. Refresh the local snapshot before deciding whether
+	// to iterate fallbacks.
+	_, _, fallbacks = req.GetRequestFields()
 
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)

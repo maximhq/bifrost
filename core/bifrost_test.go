@@ -3678,6 +3678,186 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 	}
 }
 
+// TestFallbacksAddedByPreLLMHookAreRetried verifies request-scoped fallbacks
+// added by plugin hooks during the primary attempt are used by the core
+// fallback loop. Production's provider-chain plugin builds fallbacks this way:
+// the inbound request has no static fallback list, then PreLLMHook resolves
+// tenant provider config and attaches the fallbacks before dispatch.
+func TestFallbacksAddedByPreLLMHookAreRetried(t *testing.T) {
+	const (
+		primaryAlias  = schemas.ModelProvider("dynamic-primary")
+		fallbackAlias = schemas.ModelProvider("dynamic-fallback")
+		fallbackModel = "gpt-4o-mini"
+	)
+
+	t.Run("NonStreaming", func(t *testing.T) {
+		var primaryHits, fallbackHits atomic.Int32
+		primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			primaryHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream 503","type":"server_error"}}`))
+		}))
+		defer primaryServer.Close()
+
+		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse(fallbackModel))
+		}))
+		defer fallbackServer.Close()
+
+		bf := initDynamicFallbackBifrost(t, primaryAlias, fallbackAlias, fallbackModel, primaryServer.URL, fallbackServer.URL)
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: primaryAlias,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("expected dynamically attached fallback to succeed, got error: %+v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response from dynamically attached fallback")
+		}
+		if primaryHits.Load() == 0 {
+			t.Error("primary server was never hit")
+		}
+		if fallbackHits.Load() == 0 {
+			t.Error("fallback server was never hit; dynamically attached fallbacks were not iterated")
+		}
+	})
+
+	t.Run("Streaming", func(t *testing.T) {
+		const fallbackSSE = "data: {\"id\":\"chatcmpl-fb\",\"object\":\"chat.completion.chunk\"," +
+			"\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
+			"\"content\":\"hello-from-dynamic-fallback\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-fb\",\"object\":\"chat.completion.chunk\"," +
+			"\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{}," +
+			"\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n"
+
+		var primaryHits, fallbackHits atomic.Int32
+		primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			primaryHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream 503","type":"server_error"}}`))
+		}))
+		defer primaryServer.Close()
+
+		fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fallbackHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(fallbackSSE))
+		}))
+		defer fallbackServer.Close()
+
+		bf := initDynamicFallbackBifrost(t, primaryAlias, fallbackAlias, fallbackModel, primaryServer.URL, fallbackServer.URL)
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: primaryAlias,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("expected dynamically attached stream fallback to succeed, got error: %+v", bifrostErr)
+		}
+		if ch == nil {
+			t.Fatal("expected non-nil stream channel from dynamically attached fallback")
+		}
+
+		var got strings.Builder
+		for chunk := range ch {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream returned terminal error instead of fallback content: %+v", chunk.BifrostError)
+			}
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			for _, choice := range chunk.BifrostChatResponse.Choices {
+				if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+					got.WriteString(*choice.ChatStreamResponseChoice.Delta.Content)
+				}
+			}
+		}
+		if got.String() != "hello-from-dynamic-fallback" {
+			t.Errorf("stream content: got %q, want %q", got.String(), "hello-from-dynamic-fallback")
+		}
+		if primaryHits.Load() == 0 {
+			t.Error("primary server was never hit")
+		}
+		if fallbackHits.Load() == 0 {
+			t.Error("fallback server was never hit; dynamically attached stream fallbacks were not iterated")
+		}
+	})
+}
+
+func initDynamicFallbackBifrost(t *testing.T, primaryAlias, fallbackAlias schemas.ModelProvider, fallbackModel, primaryURL, fallbackURL string) *Bifrost {
+	t.Helper()
+
+	account := NewMockAccount()
+	plugin := &dynamicFallbackPlugin{
+		fallbackProvider: fallbackAlias,
+		fallbackModel:    fallbackModel,
+		byAlias: map[schemas.ModelProvider]aliasRoute{
+			primaryAlias:  {key: "sk-primary", baseURL: primaryURL},
+			fallbackAlias: {key: "sk-fallback", baseURL: fallbackURL},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+	return bf
+}
+
+type dynamicFallbackPlugin struct {
+	fallbackProvider schemas.ModelProvider
+	fallbackModel    string
+	byAlias          map[schemas.ModelProvider]aliasRoute
+}
+
+func (p *dynamicFallbackPlugin) GetName() string { return "dynamic-fallback-test-plugin" }
+func (p *dynamicFallbackPlugin) Cleanup() error  { return nil }
+
+func (p *dynamicFallbackPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	if idx == 0 && req.ChatRequest != nil {
+		req.ChatRequest.Fallbacks = []schemas.Fallback{{
+			Provider: p.fallbackProvider,
+			Model:    p.fallbackModel,
+		}}
+	}
+
+	provider, _, _ := req.GetRequestFields()
+	route, ok := p.byAlias[provider]
+	if !ok {
+		return req, nil, nil
+	}
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
+	req.UpdateProviderBaseURL(route.baseURL)
+	req.UpdateBaseProviderType(schemas.OpenAI)
+	return req, nil, nil
+}
+
+func (p *dynamicFallbackPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
 // TestBifrostRequestClone verifies that Clone returns an independent copy: mutations
 // to scalar fields (Provider, Model) and ProviderOverride on the clone do not affect
 // the original, and vice versa.
