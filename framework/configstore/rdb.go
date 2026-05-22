@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -1503,6 +1504,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -1543,6 +1545,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -1628,6 +1631,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 	}, nil
 }
 
@@ -1679,7 +1683,13 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-			Disabled:                  clientConfigCopy.Disabled,
+			// PerUserHeaderKeys is the admin-declared schema for
+			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
+			// hook persists an empty column, and on restart AddClient's
+			// validation rejects the row (empty PerUserHeaderKeys is
+			// invalid for per_user_headers), leaving the client orphaned.
+			PerUserHeaderKeys: clientConfigCopy.PerUserHeaderKeys,
+			Disabled:          clientConfigCopy.Disabled,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1778,6 +1788,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			}
 			toolNameMappingJSON = string(data)
 		}
+		// Mirror BeforeSave for PerUserHeaderKeys — same map-based update
+		// path that bypasses GORM hooks for the other virtual fields.
+		perUserHeaderKeysJSON := ""
+		if clientConfig.PerUserHeaderKeys != nil {
+			data, marshalErr := json.Marshal(clientConfig.PerUserHeaderKeys)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal per_user_header_keys: %w", marshalErr)
+			}
+			perUserHeaderKeysJSON = string(data)
+		}
 
 		headersJSONStr := string(headersJSON)
 		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
@@ -1814,6 +1834,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		if toolNameMappingJSON != "" {
 			updates["tool_name_mapping_json"] = toolNameMappingJSON
+		}
+		// Always persist PerUserHeaderKeys (empty string clears when the
+		// caller is dropping all keys). Treat absent (nil) as "preserve" by
+		// only writing when PerUserHeaderKeys was explicitly set on the
+		// update payload.
+		if clientConfig.PerUserHeaderKeys != nil {
+			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
 		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.
@@ -1879,14 +1906,21 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			}
 		}
 
-		// Delete per-user OAuth token + flow rows for this MCP client. Token
-		// rows reference mcp_client_id by the string client_id; nothing
+		// Delete per-user OAuth token + flow rows AND per-user header
+		// credentials + per-user header flow rows for this MCP client. All
+		// four reference mcp_client_id by the string client_id; nothing
 		// auto-cascades, so we do it explicitly inside the same transaction
 		// to keep cleanup atomic.
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
 			return err
 		}
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
 			return err
 		}
 
@@ -2722,6 +2756,18 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete upstream OAuth user tokens tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
+			return err
+		}
+		// Delete per-user MCP header credentials tied to this VK
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+			return err
+		}
+		// Delete per-user MCP header flows tied to this VK — mirrors the
+		// OAuth session purge above. A pending flow's temp-token is valid
+		// for ~15 min; without this delete, a submission in flight could
+		// upsert a credential row pointing at the just-deleted VK and
+		// re-grant access after explicit revocation.
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
 			return err
 		}
 		// Delete budgets owned by this virtual key
@@ -5154,6 +5200,316 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 		Delete(&tables.TableOauthUserToken{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// ---------- Per-User MCP Header Credentials ----------
+
+// GetMCPPerUserHeaderCredentialByMode looks up a usable per-user header
+// credential by a single identity dimension. Returns both 'active' and
+// 'needs_update' rows; the runtime resolver's missing-keys check
+// distinguishes them — needs_update rows that genuinely lack keys for the
+// current schema trigger the auth-required flow, while rows where the
+// schema only narrowed still satisfy and get used. Orphaned rows are
+// filtered at SQL because they mean the user lost grant: neither runtime
+// resolution nor the flow-detail prefill UX should surface them. Mirrors
+// GetOauthUserTokenByMode (which is stricter — OAuth has no needs_update
+// equivalent because tokens are opaque and resubmission is the full IdP
+// dance).
+func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	if identity == "" || mcpClientID == "" {
+		return nil, nil
+	}
+	var cred tables.TableMCPPerUserHeaderCredential
+	var result *gorm.DB
+	statuses := []string{"active", "needs_update"}
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeUser), identity, mcpClientID, statuses).
+			First(&cred)
+	case schemas.MCPAuthModeVK:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeVK), identity, mcpClientID, statuses).
+			First(&cred)
+	case schemas.MCPAuthModeSession:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, statuses).
+			First(&cred)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header credential by mode %s: %w", mode, result.Error)
+	}
+	return &cred, nil
+}
+
+// GetMCPPerUserHeaderCredentialByID looks up a single row by primary key.
+// Returns nil, nil when not found.
+func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var cred tables.TableMCPPerUserHeaderCredential
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&cred).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header credential by id %s: %w", id, err)
+	}
+	return &cred, nil
+}
+
+// UpsertMCPPerUserHeaderCredential atomically inserts or updates a credential
+// row keyed by (auth_mode, identity, mcp_client_id). Mirrors
+// CreateOauthUserToken — the row represents the (identity, mcp_client)
+// binding, so a re-submit preserves CreatedAt.
+func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableMCPPerUserHeaderCredential
+		var lookupErr error
+		switch {
+		case cred.UserID != nil && *cred.UserID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
+				First(&existing).Error
+		case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
+				First(&existing).Error
+		case cred.SessionID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
+				First(&existing).Error
+		default:
+			lookupErr = gorm.ErrRecordNotFound
+		}
+
+		if lookupErr == nil {
+			cred.ID = existing.ID
+			cred.CreatedAt = existing.CreatedAt
+			return tx.Save(cred).Error
+		}
+		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
+		}
+		if cred.ID == "" {
+			cred.ID = uuid.New().String()
+		}
+		if err := tx.Create(cred).Error; err != nil {
+			return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteMCPPerUserHeaderCredential removes a credential row by its primary key.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete mcp per-user header credential: %w", result.Error)
+	}
+	return nil
+}
+
+// ListAllMCPPerUserHeaderCredentials returns every row regardless of status.
+// The sessions UI surfaces non-active states (needs_update / orphaned) with
+// distinct affordances; filtering here would only hide rows the user needs to
+// act on. Runtime lookups apply their own status='active' filter and don't go
+// through this method.
+func (s *RDBConfigStore) ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	var creds []tables.TableMCPPerUserHeaderCredential
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Order("created_at DESC").
+		Find(&creds).Error; err != nil {
+		return nil, fmt.Errorf("failed to list all mcp per-user header credentials: %w", err)
+	}
+	return creds, nil
+}
+
+// MarkMCPPerUserHeaderCredentialsNeedsUpdate flips status to 'needs_update'
+// for every active row tied to mcpClientID. Called when the admin changes
+// PerUserHeaderKeys on the MCP client config.
+func (s *RDBConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPPerUserHeaderCredential{}).
+		Where("mcp_client_id = ? AND status = ?", mcpClientID, "active").
+		Update("status", "needs_update")
+	if result.Error != nil {
+		return fmt.Errorf("failed to mark mcp per-user header credentials needs_update for client %s: %w", mcpClientID, result.Error)
+	}
+	return nil
+}
+
+// DeleteOrphanedMCPPerUserHeaderCredentials hard-deletes rows in 'orphaned'
+// state longer than olderThan. Skipped silently when olderThan is zero or
+// negative.
+func (s *RDBConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-olderThan)
+	result := s.DB().WithContext(ctx).
+		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
+		Delete(&tables.TableMCPPerUserHeaderCredential{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete orphaned mcp per-user header credentials: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// CreateMCPPerUserHeaderFlow persists a pending per-user-headers submission
+// flow row. ID is set by the caller (typically a fresh UUID).
+func (s *RDBConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	if flow == nil {
+		return fmt.Errorf("flow is nil")
+	}
+	if err := s.DB().WithContext(ctx).Create(flow).Error; err != nil {
+		return fmt.Errorf("failed to create mcp per-user header flow: %w", err)
+	}
+	return nil
+}
+
+// GetMCPPerUserHeaderFlowByID looks up a flow row by primary key.
+// Returns nil, nil when not found.
+func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var flow tables.TableMCPPerUserHeaderFlow
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB {
+			return db.Select("client_id, name, headers_json, allowed_extra_headers_json, per_user_header_keys_json")
+		}).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Where("id = ?", id).First(&flow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header flow by id %s: %w", id, err)
+	}
+	return &flow, nil
+}
+
+// DeleteMCPPerUserHeaderFlow hard-deletes a single flow row by primary key.
+// Called on submit-success and on revoke; no-op when the row is absent so
+// terminal-state transitions are idempotent.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user header flow %s: %w", id, err)
+	}
+	return nil
+}
+
+// GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient returns the canonical
+// pending flow row for the (mode, identity, mcp_client) triple, or nil
+// when none exists. Mirrors GetOauthUserSessionByModeIdentityAndMCPClient.
+// Used by InitiateUserSubmissionFlow to keep at most one pending row per
+// binding (re-init updates in place instead of inserting a duplicate).
+func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	if identity == "" || mcpClientID == "" {
+		return nil, nil
+	}
+	q := s.DB().WithContext(ctx).
+		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	var flow tables.TableMCPPerUserHeaderFlow
+	if err := q.First(&flow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header flow by mode/identity/mcp_client: %w", err)
+	}
+	return &flow, nil
+}
+
+// UpdateMCPPerUserHeaderFlow updates a flow row in place.
+func (s *RDBConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	if flow == nil || flow.ID == "" {
+		return fmt.Errorf("flow id is required")
+	}
+	if err := s.DB().WithContext(ctx).Save(flow).Error; err != nil {
+		return fmt.Errorf("failed to update mcp per-user header flow: %w", err)
+	}
+	return nil
+}
+
+// DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient hard-deletes any
+// flow rows matching the binding. Mirrors
+// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	if identity == "" || mcpClientID == "" {
+		return nil
+	}
+	q := s.DB().WithContext(ctx).
+		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	if err := q.Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user header flows by mode/identity/mcp_client: %w", err)
+	}
+	return nil
+}
+
+// ListAllPendingMCPPerUserHeaderFlows returns all pending header-submission
+// flow rows whose expiry is in the future. Mirrors
+// ListAllPendingOauthUserSessions. Visibility scoping is handled by the
+// enterprise configstore layer via DAC; OSS sees everything.
+func (s *RDBConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	var flows []tables.TableMCPPerUserHeaderFlow
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Where("status = ? AND expires_at > ?", "pending", time.Now()).
+		Order("created_at DESC").
+		Find(&flows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list all pending mcp per-user header flows: %w", err)
+	}
+	return flows, nil
+}
+
+// DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
+// ExpiresAt has passed. Status filter excludes already-completed rows
+// (which the submit path deletes immediately anyway).
+func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
+	result := s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status = ?", time.Now(), "pending").
+		Delete(&tables.TableMCPPerUserHeaderFlow{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete expired mcp per-user header flows: %w", result.Error)
 	}
 	return result.RowsAffected, nil
 }

@@ -53,7 +53,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		if config.OauthConfigID == nil || *config.OauthConfigID == "" {
 			return nil, fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", config.Name)
 		}
-		redirectURI := utils.BuildRedirectURIFromContext(ctx)
+		redirectURI := utils.BuildOAuthRedirectURIFromContext(ctx)
 		if redirectURI == "" {
 			return nil, fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
 		}
@@ -61,7 +61,8 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		if flowErr != nil {
 			return nil, fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", config.Name, flowErr)
 		}
-		return nil, &schemas.MCPUserOAuthRequiredError{
+		return nil, &schemas.MCPAuthRequiredError{
+			Kind:          schemas.MCPAuthRequiredKindOAuth,
 			MCPClientID:   config.ID,
 			MCPClientName: config.Name,
 			AuthorizeURL:  flowInitiation.AuthorizeURL,
@@ -82,23 +83,3 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 }
 
 func (r *perUserOAuthResolver) RequiresPerCallConnection() bool { return true }
-
-// identityForMCPAuthMode returns the identity string to look up by, given the
-// derived mode. Mirrors the priority used by ctx.MCPAuthMode().
-func identityForMCPAuthMode(ctx *schemas.BifrostContext, mode schemas.MCPAuthMode) string {
-	switch mode {
-	case schemas.MCPAuthModeUser:
-		if v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); v != "" {
-			return v
-		}
-	case schemas.MCPAuthModeVK:
-		if v, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); v != "" {
-			return v
-		}
-	case schemas.MCPAuthModeSession:
-		if v, _ := ctx.Value(schemas.BifrostContextKeyMCPSessionID).(string); v != "" {
-			return v
-		}
-	}
-	return ""
-}

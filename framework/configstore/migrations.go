@@ -807,6 +807,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAzureAPIVersionColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPerUserHeadersTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8690,6 +8696,143 @@ func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserHeadersTables creates the mcp_per_user_header_credentials
+// table and adds the per_user_header_keys_json column to config_mcp_clients.
+// Mirrors the partial-unique-index pattern from
+// migrationAddOAuthAuthModeColumns so the per-user-headers credentials are
+// keyed by (auth_mode, identity, mcp_client_id) the same way per-user OAuth
+// tokens are. Forward-only on data — no rows exist yet.
+func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_per_user_header_credentials_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1) config_mcp_clients.per_user_header_keys_json (admin-defined
+			//    schema of required header names; nullable / empty for all
+			//    other auth types).
+			if !mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				if err := mg.AddColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
+					return fmt.Errorf("add per_user_header_keys_json column to config_mcp_clients: %w", err)
+				}
+			}
+
+			// 2) mcp_per_user_header_credentials table.
+			if !mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
+					return fmt.Errorf("create mcp_per_user_header_credentials table: %w", err)
+				}
+			}
+
+			// 3) Partial unique indexes per auth_mode — matches the
+			//    oauth_user_tokens layout so the cascade / orphan logic stays
+			//    parallel.
+			partialUniques := []string{
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_user_mcp
+					ON mcp_per_user_header_credentials (user_id, mcp_client_id)
+					WHERE auth_mode = 'user' AND user_id IS NOT NULL AND user_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_vk_mcp
+					ON mcp_per_user_header_credentials (virtual_key_id, mcp_client_id)
+					WHERE auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_session_mcp
+					ON mcp_per_user_header_credentials (session_id, mcp_client_id)
+					WHERE auth_mode = 'session' AND session_id IS NOT NULL AND session_id != ''`,
+			}
+			for _, stmt := range partialUniques {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create partial unique index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+
+			// 4) Status-scoped partial indexes for cheap UI / cleanup queries.
+			statusIndexes := []string{
+				`CREATE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_orphaned
+					ON mcp_per_user_header_credentials (status)
+					WHERE status = 'orphaned'`,
+				`CREATE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_needs_update
+					ON mcp_per_user_header_credentials (mcp_client_id)
+					WHERE status = 'needs_update'`,
+			}
+			for _, stmt := range statusIndexes {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create status partial index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, name := range []string{
+				"idx_mcp_per_user_header_credentials_user_mcp",
+				"idx_mcp_per_user_header_credentials_vk_mcp",
+				"idx_mcp_per_user_header_credentials_session_mcp",
+				"idx_mcp_per_user_header_credentials_orphaned",
+				"idx_mcp_per_user_header_credentials_needs_update",
+			} {
+				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+					return fmt.Errorf("drop %s: %w", name, err)
+				}
+			}
+			if mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := mg.DropTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
+					return fmt.Errorf("drop mcp_per_user_header_credentials: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				if err := mg.DropColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
+					return fmt.Errorf("drop per_user_header_keys_json column from config_mcp_clients: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_per_user_header_credentials_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserHeadersFlowsTable creates the
+// mcp_per_user_header_flows table. Pending submission flow rows that
+// mirror oauth_user_sessions for the per-user-headers surface — the
+// resolver creates one when the inline-401 fires; the submit endpoint
+// deletes the row on success; the sweep worker reaps expired pending
+// rows. Lives in its own migration so it can land on DBs that already
+// applied migrationAddPerUserHeadersTables (which only created the
+// credentials table).
+func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_per_user_header_flows_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
+					return fmt.Errorf("create mcp_per_user_header_flows table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				if err := mg.DropTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
+					return fmt.Errorf("drop mcp_per_user_header_flows: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_per_user_header_flows_table migration: %s", err.Error())
 	}
 	return nil
 }

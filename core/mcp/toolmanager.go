@@ -152,7 +152,7 @@ func NewToolsManagerWithCodeMode(
 	// transparently for None / StaticHeaders auth and surfaces a clear
 	// "OAuth2 provider not available" error for OAuth-flavored clients.
 	if credStore == nil {
-		credStore = credstore.NewCredStore(nil, logger)
+		credStore = credstore.NewCredStore(nil, nil, logger)
 	}
 
 	agentModeExecutor := &AgentModeExecutor{

@@ -367,10 +367,21 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
-				if err.ExtraFields.MCPAuthRequired != nil {
+				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+					// Two surfaces share this error: per-user OAuth uses
+					// AuthorizeURL (the upstream provider's authorize page);
+					// per-user headers uses SubmitURL (the workspace landing
+					// page where the user submits their header values).
+					// Pick whichever Kind populated.
+					url := authReq.AuthorizeURL
+					action := "connect your account"
+					if authReq.Kind == schemas.MCPAuthRequiredKindHeaders {
+						url = authReq.SubmitURL
+						action = "submit the required headers"
+					}
 					return mcp.NewToolResultError(fmt.Sprintf(
-						"Authentication required for %s. Open this URL to connect your account: %s",
-						err.ExtraFields.MCPAuthRequired.MCPClientName, err.ExtraFields.MCPAuthRequired.AuthorizeURL,
+						"Authentication required for %s. Open this URL to %s: %s",
+						authReq.MCPClientName, action, url,
 					)), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
