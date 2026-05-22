@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -16,6 +17,163 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// AcquireClientConn returns a live upstream MCP client connection for the
+// given client state, along with a release function the caller must invoke
+// (typically via defer).
+//
+// For shared-connection auth types (none, headers, server_oauth) the
+// connection is the persistent state.Conn and the release is a no-op — the
+// caller MUST NOT close it.
+//
+// For per-user auth types (per_user_oauth, …) a fresh ephemeral connection
+// is opened per call. The opening is wrapped in the connect-plugin gate
+// (runConnectWithPluginPipeline) just like AddClient/Reconnect does for
+// shared connections — PreConnectionHook plugins observe the admin-configured
+// static headers and may mutate them; credstore-resolved auth headers are
+// layered on top AFTER the plugin gate, so the bearer token is never
+// observable by plugins. Credential-resolution errors (including
+// *MCPUserOAuthRequiredError) surface from this method without opening any
+// connection.
+func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	if state == nil || state.ExecutionConfig == nil {
+		return nil, nil, fmt.Errorf("client state is required")
+	}
+	config := state.ExecutionConfig
+
+	if !m.credStore.RequiresPerCallConnection(config) {
+		if state.Conn == nil {
+			return nil, nil, fmt.Errorf("MCP client %s has no active connection", config.Name)
+		}
+		return state.Conn, func() {}, nil
+	}
+
+	// Per-user: open an ephemeral transport per call, wrapped in the
+	// connect-plugin gate for parity with shared-connection setup.
+	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
+		return nil, nil, fmt.Errorf("connection URL is required for ephemeral MCP execution")
+	}
+	url := config.ConnectionString.GetValue()
+
+	connectReq := &schemas.BifrostMCPConnectRequest{
+		ClientName:       config.Name,
+		ConnectionType:   config.ConnectionType,
+		AuthType:         config.AuthType,
+		ConnectionString: &url,
+		Headers:          utils.FlattenHeaders(utils.StaticConfigHeaders(config)),
+	}
+
+	// Closure-captured outputs from the op so the caller can CallTool on the
+	// live client after the gate returns.
+	var tempClient *client.Client
+	// MCPUserOAuthRequiredError is wrapped into a generic BifrostError by the
+	// pipeline before PostConnectionHook runs, so capture it out-of-band to
+	// preserve the typed-error info for the envelope path.
+	var oauthErr *schemas.MCPUserOAuthRequiredError
+	start := time.Now()
+
+	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
+		// Resolve auth headers AFTER PreConnectionHook ran. Plugins never see
+		// the Authorization header — it lives only on the wire transport.
+		authHeaders, credErr := m.credStore.ConnectionHeaders(ctx, config)
+		if credErr != nil {
+			errors.As(credErr, &oauthErr)
+			return nil, credErr
+		}
+
+		// Compose final transport headers: plugin-mutated static base + auth on top.
+		finalHeaders := make(map[string]string, len(preReq.Headers)+len(authHeaders))
+		maps.Copy(finalHeaders, preReq.Headers)
+		for k, vals := range authHeaders {
+			if len(vals) > 0 {
+				finalHeaders[k] = vals[0]
+			}
+		}
+
+		targetURL := url
+		if preReq.ConnectionString != nil && *preReq.ConnectionString != "" {
+			targetURL = *preReq.ConnectionString
+		}
+
+		httpTransport, err := transport.NewStreamableHTTP(targetURL, transport.WithHTTPHeaders(finalHeaders))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
+		}
+		tempClient = client.NewClient(httpTransport)
+		if err := tempClient.Start(ctx); err != nil {
+			return nil, fmt.Errorf("failed to start ephemeral MCP connection: %w", err)
+		}
+
+		initRequest := mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+				Capabilities:    mcp.ClientCapabilities{},
+				ClientInfo: mcp.Implementation{
+					Name:    fmt.Sprintf("Bifrost-%s-user", config.Name),
+					Version: "1.0.0",
+				},
+			},
+		}
+		initResult, err := tempClient.Initialize(ctx, initRequest)
+		if err != nil {
+			_ = tempClient.Close()
+			tempClient = nil
+			return nil, fmt.Errorf("failed to initialize ephemeral MCP connection: %w", err)
+		}
+
+		// Build the gate response from the captured initialize result so
+		// PostConnectionHook plugins observe what the upstream advertised.
+		resp := &schemas.BifrostMCPConnectResponse{
+			ConnectionInfo: &schemas.MCPClientConnectionInfo{
+				Type:          config.ConnectionType,
+				ConnectionURL: &targetURL,
+			},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{
+				Latency: time.Since(start).Milliseconds(),
+			},
+		}
+		if initResult != nil {
+			resp.ProtocolVersion = initResult.ProtocolVersion
+			resp.ServerInfo = &schemas.MCPServerInfo{
+				Name:    initResult.ServerInfo.Name,
+				Version: initResult.ServerInfo.Version,
+			}
+			resp.ServerCapabilities = &schemas.MCPServerCapabilities{
+				Tools:     initResult.Capabilities.Tools != nil,
+				Resources: initResult.Capabilities.Resources != nil,
+				Prompts:   initResult.Capabilities.Prompts != nil,
+				Logging:   initResult.Capabilities.Logging != nil,
+			}
+		}
+		return resp, nil
+	})
+
+	if gateErr != nil {
+		if tempClient != nil {
+			_ = tempClient.Close()
+		}
+		if oauthErr != nil {
+			return nil, nil, oauthErr
+		}
+		if gateErr.Error != nil {
+			return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
+		}
+		return nil, nil, fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
+	}
+
+	if tempClient == nil {
+		// Plugin short-circuited connect with a synthetic success response and
+		// no live transport — we have nothing to execute against.
+		return nil, nil, fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
+	}
+
+	release := func() {
+		if err := tempClient.Close(); err != nil {
+			m.logger.Warn("%s Failed to close ephemeral client for %s: %v", MCPLogPrefix, config.Name, err)
+		}
+	}
+	return tempClient, release, nil
+}
 
 // GetClients returns all MCP clients managed by the manager.
 //
@@ -937,22 +1095,14 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		u := config.ConnectionString.GetValue()
 		connectReq.ConnectionString = &u
 	}
-	var authHeader string // captured for re-injection after PreHooks
+	// Plugin-visible headers are ONLY the admin-configured static headers
+	// (config.Headers). Credentials from the CredStore (Bearer tokens, signing
+	// headers) are layered AFTER the connect-plugin gate runs, inside the op
+	// closure — plugins can mutate static headers but never observe or
+	// interfere with auth. This is the structural guarantee that replaces
+	// the older strip-and-reinject Authorization dance.
 	if config.ConnectionType == schemas.MCPConnectionTypeHTTP || config.ConnectionType == schemas.MCPConnectionTypeSSE {
-		// Connection-time has no caller identity; wrap m.ctx into a synthetic
-		// BifrostContext so the CredentialStore can be invoked uniformly.
-		// Shared resolvers ignore identity; per-user resolvers won't be
-		// called here because the per-user code path skips persistent
-		// connections entirely (RequiresPerCallConnection).
-		bfCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
-		if h, hErr := m.credStore.ConnectionHeaders(bfCtx, config); hErr == nil {
-			flat := utils.FlattenHeaders(h)
-			if auth, ok := flat["Authorization"]; ok {
-				authHeader = auth
-				delete(flat, "Authorization")
-			}
-			connectReq.Headers = flat
-		}
+		connectReq.Headers = utils.FlattenHeaders(utils.StaticConfigHeaders(config))
 	}
 	if config.StdioConfig != nil {
 		cmd := config.StdioConfig.Command
@@ -970,14 +1120,24 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(gateCtx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
-		// Re-inject Authorization after PreHooks. Use a shallow-cloned overrides
-		// struct so the merged headers don't leak back into the request object that
-		// plugins captured in PreHook (which they may still reference in PostHook).
+		// Layer credstore-resolved auth headers onto the plugin-mutated static
+		// headers. Build a shallow clone so the merged result doesn't leak back
+		// into the request object that plugins captured in PreHook (which they
+		// may still reference in PostHook).
 		mutForWire := preReq
-		if authHeader != "" {
-			merged := make(map[string]string, len(preReq.Headers)+1)
+		if config.ConnectionType == schemas.MCPConnectionTypeHTTP || config.ConnectionType == schemas.MCPConnectionTypeSSE {
+			bfCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
+			authHeaders, credErr := m.credStore.ConnectionHeaders(bfCtx, config)
+			if credErr != nil {
+				return nil, credErr
+			}
+			merged := make(map[string]string, len(preReq.Headers)+len(authHeaders))
 			maps.Copy(merged, preReq.Headers)
-			merged["Authorization"] = authHeader
+			for k, vals := range authHeaders {
+				if len(vals) > 0 {
+					merged[k] = vals[0]
+				}
+			}
 			clone := *preReq
 			clone.Headers = merged
 			mutForWire = &clone
@@ -1248,17 +1408,25 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 		url = *overrides.ConnectionString
 	}
 
-	// Resolve headers (override wins)
+	// Resolve headers (override wins). The override path is used when the
+	// connect-plugin gate has already supplied final headers (static + plugin
+	// mutations + auth). The fallback path is for direct callers that bypass
+	// the gate; it composes static config headers with credstore auth here.
 	var headers map[string]string
 	if overrides != nil && overrides.Headers != nil {
 		headers = overrides.Headers
 	} else {
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		h, err := m.credStore.ConnectionHeaders(bfCtx, config)
+		authHeaders, err := m.credStore.ConnectionHeaders(bfCtx, config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 		}
-		headers = utils.FlattenHeaders(h)
+		headers = utils.FlattenHeaders(utils.StaticConfigHeaders(config))
+		for k, vals := range authHeaders {
+			if len(vals) > 0 {
+				headers[k] = vals[0]
+			}
+		}
 	}
 
 	// Create StreamableHTTP transport
@@ -1326,16 +1494,23 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 		url = *overrides.ConnectionString
 	}
 
+	// Same composition rule as createHTTPConnection: override wins (gate-supplied
+	// final headers); otherwise compose static + credstore auth.
 	var headers map[string]string
 	if overrides != nil && overrides.Headers != nil {
 		headers = overrides.Headers
 	} else {
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		h, err := m.credStore.ConnectionHeaders(bfCtx, config)
+		authHeaders, err := m.credStore.ConnectionHeaders(bfCtx, config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 		}
-		headers = utils.FlattenHeaders(h)
+		headers = utils.FlattenHeaders(utils.StaticConfigHeaders(config))
+		for k, vals := range authHeaders {
+			if len(vals) > 0 {
+				headers[k] = vals[0]
+			}
+		}
 	}
 
 	sseTransport, err := transport.NewSSE(url, transport.WithHeaders(headers))
