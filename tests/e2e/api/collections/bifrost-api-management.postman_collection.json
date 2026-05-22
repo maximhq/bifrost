@@ -82,7 +82,7 @@
           "}",
           "",
           "// Handle 405 for unimplemented cache endpoints",
-          "var unimplementedEndpoints = ['Clear Cache by Request ID', 'Clear Cache by Key'];",
+          "var unimplementedEndpoints = ['Clear Cache by Cache ID (Coverage Probe)', 'Clear Cache by Key (Coverage Probe)'];",
           "if (unimplementedEndpoints.indexOf(requestName) !== -1 && code === 405) {",
           "  pass = true;",
           "}",
@@ -233,11 +233,9 @@
           "  'Get Version': true",
           "};",
           "var rawTextShapes = {",
-          "  'Clear Cache by Request ID': true,",
-          "  'Clear Cache by Key': true,",
-          "  'Per User OAuth Register (Coverage Probe)': true,",
-          "  'Per User OAuth Authorize (Coverage Probe)': true,",
-          "  'Per User OAuth Token (Coverage Probe)': true",
+          "  'Clear Cache by Cache ID (Coverage Probe)': true,",
+          "  'Clear Cache by Key (Coverage Probe)': true,",
+          "  'OAuth Callback (Coverage Probe)': true",
           "};",
           "pm.test('Response structure matches handler contract', function () {",
           "  var body = parseJSONOrNull();",
@@ -2156,7 +2154,7 @@
       "name": "Cache",
       "item": [
         {
-          "name": "Clear Cache by Request ID",
+          "name": "Clear Cache by Cache ID (Coverage Probe)",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -2175,7 +2173,7 @@
           }
         },
         {
-          "name": "Clear Cache by Key",
+          "name": "Clear Cache by Key (Coverage Probe)",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -2770,40 +2768,12 @@
           }
         },
         {
-          "name": "Per User OAuth Register (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/register",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "register"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"redirect_uris\":[\"http://localhost/callback\"],\"client_name\":\"coverage-probe\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User OAuth Authorize (Coverage Probe)",
+          "name": "Per User OAuth Flow Detail (Coverage Probe)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/authorize?client_id=coverage-probe-client&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback&response_type=code&state=coverage-probe-state",
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow",
               "host": [
                 "{{base_url}}"
               ],
@@ -2811,46 +2781,19 @@
                 "api",
                 "oauth",
                 "per-user",
-                "authorize?client_id=coverage-probe-client&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback&response_type=code&state=coverage-probe-state"
+                "flows",
+                "coverage-probe-flow"
               ]
             }
           }
         },
         {
-          "name": "Per User OAuth Token (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/token",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "token"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"grant_type\":\"authorization_code\",\"code\":\"coverage-probe-code\",\"redirect_uri\":\"http://localhost/callback\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User OAuth Upstream Authorize (Coverage Probe)",
+          "name": "Per User OAuth Flow Start (Coverage Probe)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/upstream/authorize?state=coverage-probe-state",
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow/start",
               "host": [
                 "{{base_url}}"
               ],
@@ -2858,125 +2801,10 @@
                 "api",
                 "oauth",
                 "per-user",
-                "upstream",
-                "authorize?state=coverage-probe-state"
+                "flows",
+                "coverage-probe-flow",
+                "start"
               ]
-            }
-          }
-        },
-        {
-          "name": "Per User Consent VK (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/vk",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "vk"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\",\"virtual_key\":\"coverage-probe-vk\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent User ID (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/user-id",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "user-id"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\",\"user_id\":\"coverage-probe-user\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent Skip (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/skip",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "skip"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent Submit (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/submit",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "submit"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\"}"
             }
           }
         },
