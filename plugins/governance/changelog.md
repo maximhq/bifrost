@@ -1,2 +1,0 @@
-- feat: virtual key blocked-models enforcement — reject requests when the requested model is blocked at the VK provider-config level (#3653)
-- fix: clear stale `governanceRejectedContextKey` on an allow decision so successful fallback retries count toward budgets and rate limits (#3645)
