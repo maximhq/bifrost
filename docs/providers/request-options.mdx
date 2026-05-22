@@ -687,11 +687,31 @@ Input: messages,
 
 The headers `x-bf-eh-user-id` and `x-bf-eh-tracking-id` are forwarded to the provider as `user-id` and `tracking-id` respectively.
 
+When the OTel plugin is enabled, each forwarded header is also attached to the `llm.call` span as a `gen_ai.request.extra_header.<name>` attribute, so the same metadata you send to the provider is searchable in your observability backend without extra wiring.
+
 **Example use cases:**
 - User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
 - Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
 - Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
 - A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
+**Example: forwarding a session ID**
+
+Send a stable `session-id` for each user session so every LLM call shares the same value on both the provider request and the OTel span:
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-eh-session-id: sess-abc-123' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+Result:
+- Provider receives `session-id: sess-abc-123` in the request headers.
+- OTel `llm.call` span gets attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"` so you can filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc.
 
 ## Semantic Cache Options
 
