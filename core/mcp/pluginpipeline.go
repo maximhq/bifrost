@@ -38,7 +38,7 @@ func (m *MCPManager) runWithPluginPipeline(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostMCPRequest,
 	op MCPOpFunc,
-) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+) (finalResponse *schemas.BifrostMCPResponse, finalError *schemas.BifrostError) {
 	// Ensure a request ID exists so plugin hooks have something to correlate on.
 	// Connect/ping/list_tools fire from background contexts that typically lack one.
 	if ctx != nil {
@@ -57,9 +57,51 @@ func (m *MCPManager) runWithPluginPipeline(
 			spanName = fmt.Sprintf("%s.%s", spanName, req.ClientName)
 		}
 		_, spanHandle = tracer.StartSpan(ctx, spanName, schemas.SpanKindMCPClient)
+		// Emit OTel GenAI tool-execution attributes on execute-tool spans so downstream
+		// backends can correlate tool calls with their requesting llm.call.
+		if req != nil && req.RequestType.IsExecuteTool() {
+			tracer.SetAttribute(spanHandle, schemas.AttrOperationName, schemas.OTelOperationNameExecuteTool)
+			tracer.SetAttribute(spanHandle, schemas.AttrToolType, "function")
+			if name := req.GetToolName(); name != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolName, name)
+			}
+			// GetToolArguments returns interface{}; the Responses branch boxes a
+			// *string, so a nil pointer survives the != nil guard. Unwrap and skip
+			// it explicitly, and deref non-nil so the attribute is the JSON string.
+			if args := req.GetToolArguments(); args != nil {
+				if p, ok := args.(*string); ok {
+					if p != nil {
+						tracer.SetAttribute(spanHandle, schemas.AttrToolCallArguments, *p)
+					}
+				} else {
+					tracer.SetAttribute(spanHandle, schemas.AttrToolCallArguments, args)
+				}
+			}
+			if req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.ID != nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallID, *req.ChatAssistantMessageToolCall.ID)
+			} else if req.ResponsesToolMessage != nil && req.ResponsesToolMessage.CallID != nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallID, *req.ResponsesToolMessage.CallID)
+			}
+		}
 	}
 	defer func() {
-		if tracer != nil {
+		if tracer == nil {
+			return
+		}
+		// Tool-call result captured via named returns — set just before EndSpan so the
+		// attribute lands on the open span before it's frozen.
+		if finalResponse != nil && req != nil && req.RequestType.IsExecuteTool() {
+			if data, err := schemas.MarshalString(finalResponse); err == nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallResult, data)
+			}
+		}
+		if finalError != nil {
+			msg := ""
+			if finalError.Error != nil {
+				msg = finalError.Error.Message
+			}
+			tracer.EndSpan(spanHandle, schemas.SpanStatusError, msg)
+		} else {
 			tracer.EndSpan(spanHandle, schemas.SpanStatusOk, "")
 		}
 	}()
