@@ -1700,6 +1700,60 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
+// before the connect-plugin gate releases control to the credential-store
+// resolver. This is the only point in the MCP connect lifecycle where we can
+// turn the raw x-bf-vk header into the resolved VK row ID — anything later
+// (PreMCPHook / PostMCPHook) runs after the resolver has already needed that
+// row ID, and per-user auth types (per_user_oauth, per_user_headers) key
+// their stored credentials by it.
+//
+// The hook is intentionally narrow: it ONLY populates the identity context
+// keys (VK row ID, name, team / customer fan-out). Policy checks (budget,
+// rate limit, tool allow-list) stay on PreMCPHook for the actual CallTool —
+// Connect is transport setup, not the gated operation.
+//
+// No short-circuit returned even when the VK isn't recognized: bad-VK
+// rejection belongs on the tool-call path so the caller gets a stable
+// error format. An unknown VK here simply leaves the row ID empty, and the
+// resolver will surface the "requires an identity" error itself.
+func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if virtualKeyValue == "" {
+		return req, nil, nil
+	}
+	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || vk == nil {
+		// Unknown VK — leave identity unset; the resolver will surface the
+		// appropriate error on the per-user auth path. For shared-connection
+		// auth types this is a no-op (they don't read these keys).
+		return req, nil, nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+		}
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	}
+	return req, nil, nil
+}
+
+// PostMCPConnectionHook is a pass-through; the identity resolution that
+// PreMCPConnectionHook performs is observation-only and has no post-connect
+// cleanup. Implementing this satisfies MCPConnectionPlugin so the typed
+// PreMCPConnectionHook is dispatched by the plugin pipeline.
+func (p *GovernancePlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
 // Cleanup shuts down all components gracefully
 func (p *GovernancePlugin) Cleanup() error {
 	var cleanupErr error

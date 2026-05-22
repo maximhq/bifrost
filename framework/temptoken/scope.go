@@ -17,6 +17,12 @@ const (
 	// auth page to call the per-user flow endpoints. Bound resource_id is the
 	// OAuth flow ID. See transports/bifrost-http/handlers/temp_token_scopes.go.
 	MCPAuthScopeName = "mcp_auth"
+
+	// MCPHeadersAuthScopeName names the scope that authorizes the MCP
+	// per-user-headers auth page to call the per-user-headers submission
+	// flow endpoints. Bound resource_id is the headers flow ID. Parallel
+	// of MCPAuthScopeName for the per-user-headers surface.
+	MCPHeadersAuthScopeName = "mcp_headers_auth"
 )
 
 // RoutePattern is one (method, path) pair a Scope grants access to. The path

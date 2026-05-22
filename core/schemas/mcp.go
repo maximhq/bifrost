@@ -38,19 +38,58 @@ var (
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
 )
 
-// MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires
-// the user to authenticate before tool execution can proceed.
-type MCPUserOAuthRequiredError struct {
+// MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced
+// to the caller. The value lands in MCPAuthRequiredError.Kind and on the wire
+// under extra_fields.mcp_auth_required.kind.
+const (
+	MCPAuthRequiredKindOAuth   = "oauth"
+	MCPAuthRequiredKindHeaders = "headers"
+)
+
+// MCPAuthRequiredError is returned when a per-user MCP credential is missing
+// and the caller must complete an inline auth flow (OAuth dance or headers
+// submission) before tool execution can proceed.
+//
+// Kind discriminates which set of fields is populated:
+//   - "oauth":   AuthorizeURL, SessionID
+//   - "headers": SubmitURL, SessionID, RequiredHeaderKeys, AdminHeaderKeys
+//
+// SessionID is shared by both Kinds: for "oauth" it is the
+// mcp_per_user_oauth_flows row ID, for "headers" the
+// mcp_per_user_header_flows row ID. Either way it lets the caller
+// reference the pending flow row without parsing the URL fragment.
+//
+// Common fields (MCPClientID, MCPClientName, Message) are always set.
+type MCPAuthRequiredError struct {
+	Kind          string `json:"kind"`
 	MCPClientID   string `json:"mcp_client_id"`
 	MCPClientName string `json:"mcp_client_name"`
-	AuthorizeURL  string `json:"authorize_url"`
-	SessionID     string `json:"session_id"`
 	Message       string `json:"message"`
+
+	// OAuth-specific fields (populated when Kind == "oauth"). SessionID is
+	// also populated for Kind == "headers" — see the type-level comment.
+	AuthorizeURL string `json:"authorize_url,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+
+	// Headers-specific fields (populated when Kind == "headers"). SubmitURL is
+	// the workspace landing page where the user provides values for
+	// RequiredHeaderKeys; AdminHeaderKeys lists the admin-set static headers
+	// (names only, no values) for context display.
+	SubmitURL          string   `json:"submit_url,omitempty"`
+	RequiredHeaderKeys []string `json:"required_header_keys,omitempty"`
+	AdminHeaderKeys    []string `json:"admin_header_keys,omitempty"`
 }
 
-func (e *MCPUserOAuthRequiredError) Error() string {
+func (e *MCPAuthRequiredError) Error() string {
 	return e.Message
 }
+
+// MCPUserOAuthRequiredError is an alias retained for backward compatibility
+// with callers that referenced the OAuth-only error type before headers auth
+// was added. New code should use MCPAuthRequiredError directly.
+//
+// Deprecated: use MCPAuthRequiredError.
+type MCPUserOAuthRequiredError = MCPAuthRequiredError
 
 // MCPCredentialStore is the single source of truth for MCP credential resolution.
 // It exposes three predicates that MCPManager consumes uniformly:
@@ -77,8 +116,9 @@ type MCPCredentialStore interface {
 	//     resolver returns the caller's full set (static + filtered
 	//     context-extras + per-user auth).
 	//
-	// May return *MCPUserOAuthRequiredError when a per-user credential is
-	// missing and the caller must complete an auth flow before retrying.
+	// May return *MCPAuthRequiredError when a per-user credential is missing
+	// and the caller must complete an inline auth flow (OAuth dance or
+	// headers submission) before retrying.
 	ConnectionHeaders(ctx *BifrostContext, config *MCPClientConfig) (http.Header, error)
 
 	// RequestHeaders returns the per-message headers attached to each
@@ -228,26 +268,35 @@ const (
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone         MCPAuthType = "none"           // No authentication
-	MCPAuthTypeHeaders      MCPAuthType = "headers"        // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth        MCPAuthType = "oauth"          // OAuth 2.0 authentication (server-level, admin authenticates once)
-	MCPAuthTypePerUserOauth MCPAuthType = "per_user_oauth" // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypeNone           MCPAuthType = "none"             // No authentication
+	MCPAuthTypeHeaders        MCPAuthType = "headers"          // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth          MCPAuthType = "oauth"            // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth   MCPAuthType = "per_user_oauth"   // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID                  string            `json:"client_id"`                       // Client ID
-	Name                string            `json:"name"`                            // Client name
-	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
-	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
-	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
-	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
-	OauthClientID       *EnvVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret   *EnvVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
-	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
-	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	ID                string            `json:"client_id"`                     // Client ID
+	Name              string            `json:"name"`                          // Client name
+	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
+	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString  *EnvVar           `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig       *MCPStdioConfig   `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
+	AuthType          MCPAuthType       `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
+	OauthConfigID     *string           `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
+	OauthClientID     *EnvVar           `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret *EnvVar           `json:"oauth_client_secret,omitempty"` // Redacted OAuth client secret (populated on GET, not stored here)
+	State             string            `json:"state,omitempty"`               // Connection state (connected, disconnected, error)
+	Headers           map[string]EnvVar `json:"headers,omitempty"`             // Headers to send with the request (for headers auth type)
+	// PerUserHeaderKeys lists the header *names* each caller must supply for
+	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
+	// values live per-user in the mcp_per_user_header_credentials table and
+	// are resolved at call time. Names in this list are stripped from
+	// utils.StaticConfigHeaders so admin-set values in `Headers` with the
+	// same name cannot leak through the plugin gate. Required (non-empty)
+	// when AuthType == per_user_headers; ignored otherwise.
+	PerUserHeaderKeys   []string          `json:"per_user_header_keys,omitempty"`
 	AllowedExtraHeaders WhiteList         `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
 	InProcessServer     *server.MCPServer `json:"-"`                               // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute      WhiteList         `json:"tools_to_execute,omitempty"`      // Include-only list.

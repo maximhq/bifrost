@@ -66,10 +66,12 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// Closure-captured outputs from the op so the caller can CallTool on the
 	// live client after the gate returns.
 	var tempClient *client.Client
-	// MCPUserOAuthRequiredError is wrapped into a generic BifrostError by the
+	// MCPAuthRequiredError is wrapped into a generic BifrostError by the
 	// pipeline before PostConnectionHook runs, so capture it out-of-band to
-	// preserve the typed-error info for the envelope path.
-	var oauthErr *schemas.MCPUserOAuthRequiredError
+	// preserve the typed-error info for the envelope path. Same capture
+	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
+	// (Kind=headers) surfaces.
+	var authRequiredErr *schemas.MCPAuthRequiredError
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -77,7 +79,7 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		// the Authorization header — it lives only on the wire transport.
 		authHeaders, credErr := m.credStore.ConnectionHeaders(ctx, config)
 		if credErr != nil {
-			errors.As(credErr, &oauthErr)
+			errors.As(credErr, &authRequiredErr)
 			return nil, credErr
 		}
 
@@ -152,8 +154,8 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		if tempClient != nil {
 			_ = tempClient.Close()
 		}
-		if oauthErr != nil {
-			return nil, nil, oauthErr
+		if authRequiredErr != nil {
+			return nil, nil, authRequiredErr
 		}
 		if gateErr.Error != nil {
 			return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
@@ -320,17 +322,20 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 				url := config.ConnectionString.GetValue()
 				client.ConnectionInfo.ConnectionURL = &url
 			}
-			// Restore discovered tools from config (persisted in DB across restarts)
+			// Restore discovered tools from config (persisted in DB across restarts).
+			// Applies to every per-call-connection auth type — currently per-user
+			// OAuth and per-user headers — since both populate DiscoveredTools at
+			// admin-test time and never hold a persistent client.Conn.
 			if len(config.DiscoveredTools) > 0 {
 				for toolName, tool := range config.DiscoveredTools {
 					client.ToolMap[toolName] = tool
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				client.State = schemas.MCPConnectionStateConnected
-				m.logger.Debug("%s Per-user OAuth MCP client '%s' restored with %d tools", MCPLogPrefix, config.Name, len(config.DiscoveredTools))
+				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
 				client.State = schemas.MCPConnectionStatePendingTools
-				m.logger.Debug("%s Per-user OAuth MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.Name)
+				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.AuthType, config.Name)
 			}
 		}
 		m.mu.Unlock()
@@ -483,6 +488,145 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 	}
 
 	m.logger.Info("%s Per-user OAuth verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
+	return tools, toolNameMapping, nil
+}
+
+// VerifyHeadersConnection creates a temporary MCP connection using the
+// provided user-submitted header values to verify the server is reachable
+// and discover available tools. The connection is closed after verification.
+//
+// Used in two paths:
+//   - Admin test flow: admin enters sample values during MCP client creation,
+//     this runs an Initialize handshake against the upstream to validate the
+//     schema (PerUserHeaderKeys) + discover tools. The discovered tools then
+//     persist on the MCPClient row; the sample values are discarded.
+//   - User submission flow: an end user submits their own values via the
+//     workspace submit URL surfaced inline by MCPAuthRequiredError. The
+//     handler runs this before upserting the row so a bad submission returns
+//     422 immediately instead of failing on the next tool call.
+//
+// Parameters:
+//   - config: MCP client configuration (connection URL, name, PerUserHeaderKeys, etc.)
+//   - userHeaders: caller-supplied header_name → value map (must cover every
+//     PerUserHeaderKeys entry; the caller validates that before invoking).
+//
+// Returns:
+//   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
+//   - map[string]string: tool name mapping (sanitized → original MCP name)
+//   - error: any error during verification
+func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
+		return nil, nil, fmt.Errorf("connection URL is required for per-user headers verification")
+	}
+	if len(userHeaders) == 0 {
+		return nil, nil, fmt.Errorf("user headers are required for per-user headers verification")
+	}
+
+	// Build prepared inputs for the typed connect plugin gate. Static admin
+	// headers (minus Authorization and minus any PerUserHeaderKeys) are
+	// plugin-visible; user-supplied credentials are layered AFTER PreHooks
+	// run so plugins cannot read or rewrite them. Mirrors
+	// VerifyPerUserOAuthConnection's Authorization-injection pattern.
+	url := config.ConnectionString.GetValue()
+	preparedHeaders := utils.FlattenHeaders(utils.StaticConfigHeaders(config))
+	connectReq := &schemas.BifrostMCPConnectRequest{
+		ClientName:       config.Name,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		AuthType:         config.AuthType,
+		ConnectionString: &url,
+		Headers:          preparedHeaders,
+	}
+
+	verifyCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+	defer cancel()
+	gateCtx := schemas.NewBifrostContext(verifyCtx, schemas.NoDeadline)
+
+	var tempClient *client.Client
+	defer func() {
+		if tempClient != nil {
+			tempClient.Close()
+		}
+	}()
+	start := time.Now()
+
+	_, gateErr := m.runConnectWithPluginPipeline(gateCtx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
+		finalURL := url
+		if preReq.ConnectionString != nil {
+			finalURL = *preReq.ConnectionString
+		}
+
+		// Copy mutated headers, then layer the user's credential values on
+		// top. Copying (rather than mutating preReq.Headers in place) avoids
+		// leaking the values back into the request that PreHook plugins may
+		// still reference.
+		finalHeaders := make(map[string]string, len(preReq.Headers)+len(userHeaders))
+		maps.Copy(finalHeaders, preReq.Headers)
+		for k, v := range userHeaders {
+			finalHeaders[k] = v
+		}
+
+		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, transport.WithHTTPHeaders(finalHeaders))
+		if hErr != nil {
+			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
+		}
+		tempClient = client.NewClient(httpTransport)
+		if startErr := tempClient.Start(verifyCtx); startErr != nil {
+			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
+		}
+
+		initRequest := mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+				Capabilities:    mcp.ClientCapabilities{},
+				ClientInfo: mcp.Implementation{
+					Name:    fmt.Sprintf("Bifrost-%s-verify", config.Name),
+					Version: "1.0.0",
+				},
+			},
+		}
+		initResult, initErr := tempClient.Initialize(verifyCtx, initRequest)
+		if initErr != nil {
+			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
+		}
+
+		resp := &schemas.BifrostMCPConnectResponse{
+			ConnectionInfo: &schemas.MCPClientConnectionInfo{
+				Type:          schemas.MCPConnectionTypeHTTP,
+				ConnectionURL: &finalURL,
+			},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{
+				Latency: time.Since(start).Milliseconds(),
+			},
+		}
+		if initResult != nil {
+			resp.ProtocolVersion = initResult.ProtocolVersion
+			resp.ServerInfo = &schemas.MCPServerInfo{
+				Name:    initResult.ServerInfo.Name,
+				Version: initResult.ServerInfo.Version,
+			}
+			resp.ServerCapabilities = &schemas.MCPServerCapabilities{
+				Tools:     initResult.Capabilities.Tools != nil,
+				Resources: initResult.Capabilities.Resources != nil,
+				Prompts:   initResult.Capabilities.Prompts != nil,
+				Logging:   initResult.Capabilities.Logging != nil,
+			}
+		}
+		return resp, nil
+	})
+
+	if gateErr != nil {
+		return nil, nil, fmt.Errorf("failed to verify MCP connection: %s", gateErr.GetErrorString())
+	}
+	if tempClient == nil {
+		return nil, nil, fmt.Errorf("headers verification was short-circuited by plugin; cannot discover tools without a live connection")
+	}
+
+	tools, toolNameMapping, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to discover tools during verification: %w", err)
+	}
+
+	m.logger.Info("%s Per-user headers verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
 	return tools, toolNameMapping, nil
 }
 

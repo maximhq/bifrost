@@ -22,24 +22,46 @@ func FlattenHeaders(h http.Header) map[string]string {
 	return out
 }
 
-// BuildRedirectURIFromContext extracts the OAuth redirect URI from context.
-func BuildRedirectURIFromContext(ctx *schemas.BifrostContext) string {
-	if uri, ok := ctx.Value(schemas.BifrostContextKeyOAuthRedirectURI).(string); ok && uri != "" {
-		return uri
+// BuildMCPCallbackBaseURL extracts the base URL set on the BifrostContext by
+// the HTTP middleware (e.g. "https://host"). Per-user OAuth and per-user
+// headers resolvers append their respective paths on top.
+func BuildMCPCallbackBaseURL(ctx *schemas.BifrostContext) string {
+	if base, ok := ctx.Value(schemas.BifrostContextKeyMCPCallbackBaseURL).(string); ok && base != "" {
+		return base
 	}
 	return ""
 }
 
+// BuildOAuthRedirectURIFromContext returns the full OAuth callback URL
+// ("<base>/api/oauth/callback") needed by the per-user OAuth flow, or empty
+// if the base URL is unavailable.
+func BuildOAuthRedirectURIFromContext(ctx *schemas.BifrostContext) string {
+	base := BuildMCPCallbackBaseURL(ctx)
+	if base == "" {
+		return ""
+	}
+	return base + "/api/oauth/callback"
+}
+
 // StaticConfigHeaders returns the admin-configured static headers from
-// config.Headers MINUS any Authorization header. These are the headers that
-// are safe to expose to MCP connect-plugins via the PreConnectionHook gate —
-// plugins may add, remove, or rewrite them.
+// config.Headers MINUS any header whose name is a credential — Authorization
+// always, plus any name declared in config.PerUserHeaderKeys. These are the
+// headers that are safe to expose to MCP connect-plugins via the
+// PreConnectionHook gate — plugins may add, remove, or rewrite them.
 //
-// Authorization is excluded by design even when an admin sets it manually
-// in config.Headers (e.g. for MCPAuthTypeHeaders with a hard-coded bearer):
-// it is a credential, and credentials are layered AFTER the plugin gate
-// runs. The CredentialStore resolver for the relevant auth type emits the
-// final Authorization value (either from config or from a dynamic token).
+// Why exclude:
+//   - Authorization: credential by definition. The CredentialStore resolver
+//     for the active auth type emits the final value (config bearer for
+//     MCPAuthTypeHeaders; dynamic token for OAuth-flavored types).
+//   - PerUserHeaderKeys: credential schema for MCPAuthTypePerUserHeaders. If
+//     an admin accidentally (or deliberately) baked one of these names into
+//     config.Headers with a static value, exposing it to plugins would leak
+//     the static fallback. The per-user-headers resolver emits the caller's
+//     value; the static fallback should never reach the wire (and never
+//     reach plugins) for per-user-headers clients.
+//
+// Comparison is case-insensitive because HTTP headers are case-insensitive
+// on the wire but case-sensitive in Go maps.
 func StaticConfigHeaders(config *schemas.MCPClientConfig) http.Header {
 	headers := make(http.Header)
 	if config == nil {
@@ -49,9 +71,24 @@ func StaticConfigHeaders(config *schemas.MCPClientConfig) http.Header {
 		if strings.EqualFold(key, "Authorization") {
 			continue
 		}
+		if matchesPerUserHeaderKey(key, config.PerUserHeaderKeys) {
+			continue
+		}
 		headers.Add(key, value.GetValue())
 	}
 	return headers
+}
+
+// matchesPerUserHeaderKey reports whether name matches any entry in
+// perUserKeys (case-insensitively). Used by StaticConfigHeaders to strip
+// per-user credential keys from the plugin-visible static header set.
+func matchesPerUserHeaderKey(name string, perUserKeys []string) bool {
+	for _, key := range perUserKeys {
+		if strings.EqualFold(name, key) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExtractFilteredExtras returns just the per-request "extra" headers carried

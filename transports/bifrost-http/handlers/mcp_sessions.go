@@ -57,21 +57,27 @@ type userSummary struct {
 	Name string `json:"name,omitempty"`
 }
 
-// mcpSessionRow is the wire shape for both authenticated tokens and pending flows.
+// mcpSessionRow is the wire shape for OAuth tokens, OAuth pending flows,
+// per-user header credentials, and per-user header pending flows. Kind
+// discriminates the row TYPE; AuthKind disambiguates flow rows by auth
+// surface (OAuth vs Headers) so the UI can route "Complete authentication"
+// to the correct landing page. Per-kind-only fields use omitempty.
 type mcpSessionRow struct {
 	ID              string             `json:"id"`
-	Kind            string             `json:"kind"` // "token" | "flow"
+	Kind            string             `json:"kind"`      // "token" | "flow" | "header"
+	AuthKind        string             `json:"auth_kind"` // "oauth" | "headers" — disambiguates flow rows; tokens are always "oauth", header creds are always "headers"
 	AuthMode        string             `json:"auth_mode"`
 	UserID          *string            `json:"user_id,omitempty"`
 	User            *userSummary       `json:"user,omitempty"` // Preloaded by enterprise on user-keyed rows; nil in OSS so UI falls back to user_id
 	VirtualKey      *virtualKeySummary `json:"virtual_key,omitempty"`
 	MCPClient       *mcpClientSummary  `json:"mcp_client,omitempty"`
 	SessionID       *string            `json:"session_id,omitempty"`        // Session-mode identity: caller-issued x-bf-mcp-session-id value
-	Status          string             `json:"status"`                      // 'active' | 'orphaned' | 'pending' | 'needs_reauth'
-	ExpiresAt       *string            `json:"expires_at,omitempty"`        // RFC3339; nil for non-expiring tokens
+	Status          string             `json:"status"`                      // OAuth: 'active' | 'orphaned' | 'pending' | 'needs_reauth'. Headers: 'active' | 'orphaned' | 'needs_update'.
+	ExpiresAt       *string            `json:"expires_at,omitempty"`        // OAuth-only; nil for non-expiring tokens and always nil for headers
 	CreatedAt       string             `json:"created_at"`                  // When the session was first authenticated
-	LastRefreshedAt *string            `json:"last_refreshed_at,omitempty"` // Token rows only; nil if never refreshed
-	OauthConfigID   string             `json:"oauth_config_id,omitempty"`
+	LastRefreshedAt *string            `json:"last_refreshed_at,omitempty"` // OAuth token rows only; nil if never refreshed
+	UpdatedAt       *string            `json:"updated_at,omitempty"`        // Headers rows: timestamp of last submission/edit
+	OauthConfigID   string             `json:"oauth_config_id,omitempty"`   // OAuth rows only
 }
 
 type mcpSessionsListResponse struct {
@@ -88,8 +94,16 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	// used by getVirtualKeys, getPrompts, getTeams, etc.
 	tokens, err := h.store.ConfigStore.ListAllOauthUserTokens(ctx)
 	var flows []tables.TableOauthUserSession
+	var headerCreds []tables.TableMCPPerUserHeaderCredential
+	var headerFlows []tables.TableMCPPerUserHeaderFlow
 	if err == nil {
 		flows, err = h.store.ConfigStore.ListAllPendingOauthUserSessions(ctx)
+	}
+	if err == nil {
+		headerCreds, err = h.store.ConfigStore.ListAllMCPPerUserHeaderCredentials(ctx)
+	}
+	if err == nil {
+		headerFlows, err = h.store.ConfigStore.ListAllPendingMCPPerUserHeaderFlows(ctx)
 	}
 	if err != nil {
 		logger.Error("[mcp/sessions] list failed: %v", err)
@@ -107,8 +121,15 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	for _, t := range tokens {
 		tokenBindings[bindingKeyFromToken(t)] = struct{}{}
 	}
+	// Same de-dup model for headers: a credential row + a pending flow
+	// for the same binding means the user re-initiated submission for an
+	// already-stored credential. Surface the credential row only.
+	headerCredBindings := make(map[sessionBindingKey]struct{}, len(headerCreds))
+	for _, c := range headerCreds {
+		headerCredBindings[bindingKeyFromHeaderCredential(c)] = struct{}{}
+	}
 
-	rows := make([]mcpSessionRow, 0, len(tokens)+len(flows))
+	rows := make([]mcpSessionRow, 0, len(tokens)+len(flows)+len(headerCreds)+len(headerFlows))
 	for _, t := range tokens {
 		rows = append(rows, tokenRow(t))
 	}
@@ -123,6 +144,15 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 			continue
 		}
 		rows = append(rows, flowRow(f))
+	}
+	for _, c := range headerCreds {
+		rows = append(rows, headerCredentialRow(c))
+	}
+	for _, f := range headerFlows {
+		if _, hasCred := headerCredBindings[bindingKeyFromHeaderFlow(f)]; hasCred {
+			continue
+		}
+		rows = append(rows, headerFlowRow(f))
 	}
 	SendJSON(ctx, mcpSessionsListResponse{Sessions: rows})
 }
@@ -167,8 +197,12 @@ func bindingKeyFromFlow(f tables.TableOauthUserSession) sessionBindingKey {
 	return k
 }
 
-// reauth starts a fresh OAuth flow for the MCP client backing the given token
-// row. Returns the authorize URL the user must visit.
+// reauth starts a fresh OAuth flow OR a fresh header-submission flow for
+// the MCP client backing the given session row. The row's table determines
+// the branch — header credential rows mint a header submission flow, OAuth
+// token rows mint an OAuth flow. Returns the URL the caller must visit
+// (authorize_url for OAuth, submit_url for headers) along with the new
+// flow's ID under session_id (kept identical for UI symmetry).
 func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 	rowID, ok := ctx.UserValue("id").(string)
 	if !ok || rowID == "" {
@@ -177,6 +211,13 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 	}
 	bfCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
 	defer cancel()
+
+	// Header credential rows and OAuth token rows are both UUIDs in
+	// separate tables. Try headers first; on miss fall through to OAuth.
+	if headerCred, _ := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID); headerCred != nil {
+		h.reauthHeaderCredential(ctx, bfCtx, headerCred)
+		return
+	}
 
 	tok, err := h.loadRowAuthorizedForCaller(ctx, rowID)
 	if err != nil {
@@ -233,6 +274,64 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// reauthHeaderCredential is the header-credential branch of reauth: creates
+// a fresh per-user-headers submission flow row keyed to the credential's
+// existing identity, then returns the submission URL. Mirrors the OAuth
+// branch's call to InitiateUserOAuthFlow — same shape on the wire so the UI
+// can render a single "click → redirect" affordance for both kinds.
+func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, cred *tables.TableMCPPerUserHeaderCredential) {
+	if cred.Status == "orphaned" {
+		SendError(ctx, fasthttp.StatusForbidden, "Access to this MCP has been revoked. Re-submitting headers will not restore access - contact your administrator.")
+		return
+	}
+	provider := h.store.MCPHeadersProvider
+	if provider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Per-user headers provider not configured")
+		return
+	}
+
+	rowMode := schemas.MCPAuthMode(cred.AuthMode)
+	identity := ""
+	switch rowMode {
+	case schemas.MCPAuthModeUser:
+		if cred.UserID != nil {
+			identity = *cred.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if cred.VirtualKeyID != nil {
+			identity = *cred.VirtualKeyID
+		}
+	case schemas.MCPAuthModeSession:
+		identity = cred.SessionID
+	}
+	if identity == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Credential row is missing an identity column for its auth mode")
+		return
+	}
+
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Could not derive callback base URL")
+		return
+	}
+	initiation, err := provider.InitiateUserSubmissionFlow(bfCtx, rowMode, identity, cred.MCPClientID, baseURL)
+	if err != nil {
+		logger.Error("[mcp/sessions] reauth header flow init failed: cred=%s err=%v", cred.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to initiate header resubmission")
+		return
+	}
+	logger.Debug("[mcp/sessions] reauth header initiated: cred=%s mcp_client=%s mode=%s flow=%s", cred.ID, cred.MCPClientID, rowMode, initiation.FlowID)
+	SendJSON(ctx, map[string]any{
+		// submit_url is set so a future header-specific client can branch
+		// cleanly; authorize_url stays compatible with the existing UI which
+		// already does window.location.href = res.authorize_url.
+		"authorize_url": initiation.FrontendURL,
+		"submit_url":    initiation.FrontendURL,
+		"session_id":    initiation.FlowID,
+		"kind":          "headers",
+	})
+}
+
 // revoke hard-deletes the local token row and any pending flow rows for the
 // same identity + MCP client. Upstream revocation against the OAuth provider
 // is NOT performed — the per-user OAuth template config doesn't carry a
@@ -247,6 +346,55 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	rowID, ok := ctx.UserValue("id").(string)
 	if !ok || rowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid session id")
+		return
+	}
+	// Row IDs from three tables (OAuth tokens, header credentials, header
+	// flows) are all UUIDs. Try headers first (credential, then pending
+	// flow); on miss fall through to OAuth tokens. Each branch returns;
+	// only one delete runs per request.
+	if headerCred, _ := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID); headerCred != nil {
+		// Drop pending submission flow rows for the same binding BEFORE
+		// the credential. If a flow finishes (submit lands) after the
+		// credential is gone, the upsert would mint a fresh credential and
+		// undo the revoke — same race protection as the OAuth revoke path.
+		credMode := schemas.MCPAuthMode(headerCred.AuthMode)
+		credIdentity := ""
+		switch credMode {
+		case schemas.MCPAuthModeUser:
+			if headerCred.UserID != nil {
+				credIdentity = *headerCred.UserID
+			}
+		case schemas.MCPAuthModeVK:
+			if headerCred.VirtualKeyID != nil {
+				credIdentity = *headerCred.VirtualKeyID
+			}
+		case schemas.MCPAuthModeSession:
+			credIdentity = headerCred.SessionID
+		}
+		if credIdentity != "" {
+			if delErr := h.store.ConfigStore.DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx, credMode, credIdentity, headerCred.MCPClientID); delErr != nil {
+				logger.Error("[mcp/sessions] clearing header flow rows failed: cred=%s err=%v", rowID, delErr)
+				SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+				return
+			}
+		}
+		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderCredential(ctx, headerCred.ID); err != nil {
+			logger.Error("[mcp/sessions] delete header credential failed: id=%s err=%v", rowID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+			return
+		}
+		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
+		return
+	}
+	if headerFlow, _ := h.store.ConfigStore.GetMCPPerUserHeaderFlowByID(ctx, rowID); headerFlow != nil {
+		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderFlow(ctx, headerFlow.ID); err != nil {
+			logger.Error("[mcp/sessions] delete header flow failed: id=%s err=%v", rowID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+			return
+		}
+		logger.Debug("[mcp/sessions] revoked header flow: id=%s mcp_client=%s mode=%s", rowID, headerFlow.MCPClientID, headerFlow.FlowMode)
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
 	tok, err := h.loadRowAuthorizedForCaller(ctx, rowID)
@@ -492,6 +640,7 @@ func tokenRow(t tables.TableOauthUserToken) mcpSessionRow {
 	row := mcpSessionRow{
 		ID:            t.ID,
 		Kind:          "token",
+		AuthKind:      "oauth",
 		AuthMode:      t.AuthMode,
 		UserID:        t.UserID,
 		Status:        t.Status,
@@ -532,6 +681,7 @@ func flowRow(f tables.TableOauthUserSession) mcpSessionRow {
 	row := mcpSessionRow{
 		ID:            f.ID,
 		Kind:          "flow",
+		AuthKind:      "oauth",
 		AuthMode:      f.FlowMode,
 		UserID:        f.UserID,
 		Status:        f.Status,
@@ -557,6 +707,114 @@ func flowRow(f tables.TableOauthUserSession) mcpSessionRow {
 		row.SessionID = &s
 	}
 	return row
+}
+
+// headerCredentialRow maps a per-user MCP header credential row to the wire
+// shape. No expires_at / last_refreshed_at / oauth_config_id — those are
+// OAuth-specific. updated_at is included so the UI can show "submitted Xm
+// ago" / "edited Xm ago".
+func headerCredentialRow(c tables.TableMCPPerUserHeaderCredential) mcpSessionRow {
+	updated := c.UpdatedAt.UTC().Format(rfc3339Nano)
+	row := mcpSessionRow{
+		ID:        c.ID,
+		Kind:      "header",
+		AuthKind:  "headers",
+		AuthMode:  c.AuthMode,
+		UserID:    c.UserID,
+		Status:    c.Status,
+		CreatedAt: c.CreatedAt.UTC().Format(rfc3339Nano),
+		UpdatedAt: &updated,
+	}
+	if c.MCPClient != nil {
+		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClient.ClientID, Name: c.MCPClient.Name}
+	} else {
+		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClientID}
+	}
+	if c.VirtualKey != nil {
+		row.VirtualKey = &virtualKeySummary{ID: c.VirtualKey.ID, Name: c.VirtualKey.Name}
+	} else if c.VirtualKeyID != nil {
+		row.VirtualKey = &virtualKeySummary{ID: *c.VirtualKeyID}
+	}
+	if c.User != nil {
+		row.User = &userSummary{ID: c.User.ID, Name: c.User.Name}
+	}
+	if c.AuthMode == string(schemas.MCPAuthModeSession) && c.SessionID != "" {
+		s := c.SessionID
+		row.SessionID = &s
+	}
+	return row
+}
+
+// headerFlowRow maps a pending per-user header submission flow row to the
+// wire shape. Mirrors flowRow for OAuth — same "Pending" kind status so the
+// UI renders it uniformly with OAuth pending flows.
+func headerFlowRow(f tables.TableMCPPerUserHeaderFlow) mcpSessionRow {
+	exp := f.ExpiresAt.UTC().Format(rfc3339Nano)
+	row := mcpSessionRow{
+		ID:        f.ID,
+		Kind:      "flow",
+		AuthKind:  "headers",
+		AuthMode:  f.FlowMode,
+		UserID:    f.UserID,
+		Status:    f.Status,
+		ExpiresAt: &exp,
+		CreatedAt: f.CreatedAt.UTC().Format(rfc3339Nano),
+	}
+	if f.MCPClient != nil {
+		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClient.ClientID, Name: f.MCPClient.Name}
+	} else {
+		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClientID}
+	}
+	if f.VirtualKey != nil {
+		row.VirtualKey = &virtualKeySummary{ID: f.VirtualKey.ID, Name: f.VirtualKey.Name}
+	} else if f.VirtualKeyID != nil {
+		row.VirtualKey = &virtualKeySummary{ID: *f.VirtualKeyID}
+	}
+	if f.User != nil {
+		row.User = &userSummary{ID: f.User.ID, Name: f.User.Name}
+	}
+	if f.FlowMode == string(schemas.MCPAuthModeSession) && f.SessionID != "" {
+		s := f.SessionID
+		row.SessionID = &s
+	}
+	return row
+}
+
+// bindingKeyFromHeaderCredential / bindingKeyFromHeaderFlow build a comparable
+// key for de-dup between credentials and their in-flight resubmission flow.
+// Mirrors bindingKeyFromToken / bindingKeyFromFlow on the OAuth side.
+func bindingKeyFromHeaderCredential(c tables.TableMCPPerUserHeaderCredential) sessionBindingKey {
+	k := sessionBindingKey{Mode: c.AuthMode, MCPClientID: c.MCPClientID}
+	switch schemas.MCPAuthMode(c.AuthMode) {
+	case schemas.MCPAuthModeUser:
+		if c.UserID != nil {
+			k.Identity = *c.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if c.VirtualKeyID != nil {
+			k.Identity = *c.VirtualKeyID
+		}
+	case schemas.MCPAuthModeSession:
+		k.Identity = c.SessionID
+	}
+	return k
+}
+
+func bindingKeyFromHeaderFlow(f tables.TableMCPPerUserHeaderFlow) sessionBindingKey {
+	k := sessionBindingKey{Mode: f.FlowMode, MCPClientID: f.MCPClientID}
+	switch schemas.MCPAuthMode(f.FlowMode) {
+	case schemas.MCPAuthModeUser:
+		if f.UserID != nil {
+			k.Identity = *f.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if f.VirtualKeyID != nil {
+			k.Identity = *f.VirtualKeyID
+		}
+	case schemas.MCPAuthModeSession:
+		k.Identity = f.SessionID
+	}
+	return k
 }
 
 const rfc3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
