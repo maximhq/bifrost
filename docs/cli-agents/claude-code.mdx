@@ -22,11 +22,6 @@ icon: "star-of-life"
 	`Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
 </Note>
 
-<Note>
-	All examples below use `ANTHROPIC_CUSTOM_HEADERS` to pass your Bifrost virtual key. This is the recommended approach and works across all
-	tested Claude Code versions.
-</Note>
-
 ## Installing Claude Code
 
 ```bash
@@ -35,15 +30,38 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 For platform-specific instructions, visit https://code.claude.com/docs/en/overview.
 
+## Authentication Methods
+
+There are two ways to authenticate Claude Code with Bifrost:
+
+### `ANTHROPIC_AUTH_TOKEN` (Recommended)
+
+Set `ANTHROPIC_AUTH_TOKEN` to your Bifrost virtual key. Claude Code sends this token in the `Authorization: Bearer` header automatically. Bifrost recognizes this header and uses the virtual key for routing and authentication.
+
+**Why this is recommended:** You do not need to log in to an Anthropic account. No Anthropic credentials are required, as Bifrost handles everything through the virtual key.
+
+All code snippets below use this method.
+
+### `ANTHROPIC_CUSTOM_HEADERS` (Alternative)
+
+Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the virtual key as a custom header instead of the `Authorization` header.
+
+**Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
+
 ## Configuring Claude Code to work with Bifrost
 
 <Note>
-	**To avoid getting into different caching issues of Claude code** - - Ensure there is no `model` field in `settings.json`. If it's present
-	remove it. This overwrites the `env` model selection. - Once you update the `settings.json`, start claude, and execute /logout. And
-	restart - select use API key even if its not recommended.
-	<Frame>
-		<img src="/media/cli/select-api-claude-code.png" alt="Claude cli API selection" />
-	</Frame>
+	**To avoid caching issues in Claude Code**, follow these steps:
+
+	- Open your `settings.json` and remove the `model` field if it is present. This field overwrites the `env`-based model selection and can cause unexpected behavior.
+	- Save the file.
+	- Start Claude Code, run the `/logout` command, then restart Claude Code.
+	- When prompted to choose an authentication method:
+		- If you are using `ANTHROPIC_AUTH_TOKEN` (recommended), no Anthropic account login is required, so you can skip this step.
+		- If you are using `ANTHROPIC_CUSTOM_HEADERS`, select **"Anthropic Console account · API usage billing"** when prompted.
+		<Frame>
+			<img src="/media/cli/select-api-claude-code.png" alt="Claude cli API selection" />
+		</Frame>
 </Note>
 
 Claude Code supports multiple authentication methods. Choose the one that matches your account type.
@@ -88,7 +106,7 @@ You will need to update the most granular `settings.json`.
 ```json
 "env": {
   "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: your-virtual-key",
+  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-model",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-model"
 }
@@ -103,7 +121,7 @@ Update `settings.json` to pick Anthropic models. For Anthropic models, you don't
 ```json
 "env": {
   "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: your-virtual-key",
+  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-6",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6"
 }
@@ -116,7 +134,7 @@ Update `settings.json` to pick Anthropic models on Bedrock.
 ```json
 "env": {
   "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: your-virtual-key",
+  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "bedrock/global.anthropic.claude-haiku-4-6",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "bedrock/global.anthropic.claude-sonnet-4-6"
 }
@@ -135,7 +153,7 @@ Update `settings.json` to pick Anthropic models on Vertex.
 ```json
 "env": {
   "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: your-virtual-key",
+  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "vertex/claude-haiku-4-6",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/claude-sonnet-4-6"
 }
@@ -148,7 +166,7 @@ Update `settings.json` to pick Anthropic models on Azure.
 ```json
 "env": {
   "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
-  "ANTHROPIC_CUSTOM_HEADERS": "x-bf-vk: your-virtual-key",
+  "ANTHROPIC_AUTH_TOKEN": "your-virtual-key",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-6",
   "ANTHROPIC_DEFAULT_SONNET_MODEL": "azure/claude-sonnet-4-6"
 }
