@@ -5,7 +5,16 @@ export type MCPConnectionType = "http" | "stdio" | "sse";
 
 export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "disabled";
 
-export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth";
+export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers";
+
+// Lifecycle states for a per-user MCP header credential row. Mirrors the
+// status column on mcp_per_user_header_credentials.
+//   - active:       caller-submitted, usable
+//   - orphaned:     caller lost access via VK reassignment; auto-reactivates
+//                   if access is regained
+//   - needs_update: admin changed the PerUserHeaderKeys schema; caller must
+//                   resubmit values
+export type MCPHeadersUserCredentialStatus = "active" | "orphaned" | "needs_update";
 
 export type { EnvVar };
 
@@ -45,6 +54,11 @@ export interface MCPClientConfig {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
+	// per_user_header_keys: admin-declared header *names* that each caller
+	// must supply when auth_type === "per_user_headers". Values live per-user
+	// in the credential store, not on the client config. Required (non-empty)
+	// for per_user_headers auth; ignored for all other auth types.
+	per_user_header_keys?: string[];
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
@@ -77,6 +91,14 @@ export interface CreateMCPClientRequest {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
+	// per_user_headers-only: admin-declared header schema (names only).
+	per_user_header_keys?: string[];
+	// per_user_headers-only: a sample set of header values supplied by the
+	// admin so the server can verify upstream + discover tools in the same
+	// create call. Discarded after verification (never persisted). Mirrors
+	// the per-user OAuth flow where the admin's temp access token plays
+	// the analogous role. Ignored for all other auth types.
+	user_headers?: Record<string, string>;
 	is_ping_available?: boolean;
 }
 
@@ -108,6 +130,11 @@ export interface UpdateMCPClientRequest {
 	name?: string;
 	is_code_mode_client?: boolean;
 	headers?: Record<string, EnvVar>;
+	// Set to a new list (including empty) to replace per-user-headers schema.
+	// Omitted = preserve existing. When this list changes against the stored
+	// value, the backend flips all existing user credential rows to
+	// 'needs_update' so callers re-submit on next tool use.
+	per_user_header_keys?: string[];
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	is_ping_available?: boolean;

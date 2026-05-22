@@ -188,6 +188,7 @@ export const baseApi = createApi({
     "PromptDeployments",
     "AuthType",
     "MCPSessions",
+    "MCPPerUserHeaderCredentials",
     "FeatureFlags",
   ],
   endpoints: () => ({}),

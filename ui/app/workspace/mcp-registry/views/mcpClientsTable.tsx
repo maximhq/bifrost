@@ -30,7 +30,7 @@ function MCPClientActionsMenu({
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
-	isPerUserOAuth,
+	isPerUserAuth,
 	onReconnect,
 	onDelete,
 }: {
@@ -38,7 +38,7 @@ function MCPClientActionsMenu({
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
-	isPerUserOAuth: boolean;
+	isPerUserAuth: boolean;
 	onReconnect: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
@@ -61,7 +61,7 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={isPerUserOAuth || client.config.disabled || isReconnecting}
+						disabled={isPerUserAuth || client.config.disabled || isReconnecting}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -204,6 +204,8 @@ export default function MCPClientsTable({
 				return "OAuth";
 			case "per_user_oauth":
 				return "Per-user OAuth";
+			case "per_user_headers":
+				return "Per-user Headers";
 			default:
 				return type;
 		}
@@ -324,7 +326,11 @@ export default function MCPClientsTable({
 							</TableRow>
 						) : (
 							mcpClients.map((c: MCPClient) => {
-								const isPerUserOAuth = c.config.auth_type === "per_user_oauth";
+								// Per-user auth types (OAuth + headers) don't hold a shared
+								// upstream connection, so reconnect is a no-op for them — the
+								// backend's ReconnectClient rejects with ErrMCPReconnectNotApplicable.
+								const isPerUserAuth =
+									c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
 								const enabledToolsCount =
 									c.state == "connected"
 										? c.config.tools_to_execute?.includes("*")
@@ -389,7 +395,7 @@ export default function MCPClientsTable({
 												hasUpdateAccess={hasUpdateMCPClientAccess}
 												hasDeleteAccess={hasDeleteMCPClientAccess}
 												isReconnecting={reconnectingClients.includes(c.config.client_id)}
-												isPerUserOAuth={isPerUserOAuth}
+												isPerUserAuth={isPerUserAuth}
 												onReconnect={(client) => void handleReconnect(client)}
 												onDelete={setClientToDelete}
 											/>

@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
@@ -20,6 +21,7 @@ import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
+import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
@@ -66,6 +68,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
 	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
+	const [perUserHeaderKeysRaw, setPerUserHeaderKeysRaw] = useState<string>((mcpClient.config.per_user_header_keys || []).join(", "));
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
@@ -86,6 +89,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	useEffect(() => {
 		setAllowedExtraHeadersRaw((mcpClient.config.allowed_extra_headers || []).join(", "));
 	}, [mcpClient.config.allowed_extra_headers]);
+
+	useEffect(() => {
+		setPerUserHeaderKeysRaw((mcpClient.config.per_user_header_keys || []).join(", "));
+	}, [mcpClient.config.per_user_header_keys]);
 
 	// Name lookup: server response names → search results → locally cached names (highest priority)
 	const vkNameByID = useMemo<Record<string, string>>(() => {
@@ -153,6 +160,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
+			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
@@ -174,6 +182,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
+			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
@@ -187,6 +196,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
+			if (mcpClient.config.auth_type === "per_user_headers" && (!data.per_user_header_keys || data.per_user_header_keys.length === 0)) {
+				toast({
+					title: "Header keys required",
+					description: "Declare at least one header name users must supply.",
+					variant: "destructive",
+				});
+				return;
+			}
 			const oauthClientID = data.oauth_config?.client_id;
 			const oauthClientSecret = data.oauth_config?.client_secret;
 			// Only rotate when the user actually changed a credential field.
@@ -202,6 +219,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
 					disabled: data.disabled,
 					headers: data.headers ?? {},
+					per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? data.per_user_header_keys : undefined,
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
@@ -567,6 +585,59 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										</FormItem>
 									)}
 								/>
+								{mcpClient.config.auth_type === "per_user_headers" && (
+									<FormField
+										control={form.control}
+										name="per_user_header_keys"
+										render={({ field }) => (
+											<FormItem className="space-y-1">
+												<div className="space-y-0.5">
+													<div className="flex items-center gap-2">
+														<FormLabel>Required Headers</FormLabel>
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																</TooltipTrigger>
+																<TooltipContent className="max-w-xs">
+																	<p>
+																		Changing this list marks existing per-user header submissions as needing an update, so callers resubmit
+																		values on next use.
+																	</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+													</div>
+													<p className="text-muted-foreground text-sm">
+														Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
+														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user, not stored on this server config.
+													</p>
+												</div>
+												<FormControl>
+													<Textarea
+														id="mcpclient-per-user-header-keys"
+														data-testid="mcpclient-per-user-header-keys-textarea"
+														className="h-24"
+														placeholder="X-API-Key, X-Tenant-ID"
+														name={field.name}
+														ref={field.ref}
+														value={perUserHeaderKeysRaw}
+														onChange={(e) => {
+															const value = e.target.value;
+															setPerUserHeaderKeysRaw(value);
+															form.setValue("per_user_header_keys", parseArrayFromText(value), {
+																shouldDirty: true,
+																shouldValidate: true,
+															});
+														}}
+														onBlur={field.onBlur}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								)}
 								<FormField
 									control={form.control}
 									name="allowed_extra_headers"
