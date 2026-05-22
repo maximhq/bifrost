@@ -3621,6 +3621,27 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
@@ -3671,6 +3692,27 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "required": ["tenantId", "clientId"],
