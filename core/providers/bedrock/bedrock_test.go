@@ -4981,3 +4981,190 @@ func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolC
 	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected forced tool_choice for non-Llama models")
 	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
 }
+
+// ---------------------------------------------------------------------------
+// Structured output (response_format: json_schema) round-trip tests – Bedrock
+// ---------------------------------------------------------------------------
+
+// TestBedrockToBifrostChatResponse_StructuredOutput_FinishReasonStop verifies that when
+// the model returns only the synthetic bf_so_* tool block (no real tool calls),
+// finish_reason is mapped to "stop", not "tool_calls".
+func TestBedrockToBifrostChatResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	const soToolName = "bf_so_my_schema"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"color":"blue","animal":"fox"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostChatResponse(ctx, "claude-opus-4-6")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Choices, 1, "expected exactly one choice")
+
+	choice := result.Choices[0]
+	require.NotNil(t, choice.ChatNonStreamResponseChoice, "expected non-streaming response choice")
+
+	// Content must be the JSON from the SO tool.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	assert.NotNil(t, msg.Content.ContentStr, "expected ContentStr to be set from SO tool input")
+
+	// No real tool calls should be surfaced.
+	if msg.ChatAssistantMessage != nil {
+		assert.Empty(t, msg.ChatAssistantMessage.ToolCalls, "expected no tool calls in output")
+	}
+
+	// Finish reason must be "stop", not "tool_calls".
+	require.NotNil(t, choice.FinishReason)
+	assert.Equal(t, string(schemas.BifrostFinishReasonStop), *choice.FinishReason,
+		"expected finish_reason=stop when only SO tool was consumed")
+}
+
+// TestBedrockToBifrostChatResponse_StructuredOutput_MixedWithRealTools verifies that
+// when both the SO tool and a real tool call appear in the response, finish_reason
+// remains "tool_calls" so the caller knows to handle the real tool.
+func TestBedrockToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	const soToolName = "bf_so_my_schema"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"color":"blue","animal":"fox"}`),
+						},
+					},
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_real_001",
+							Name:      "get_weather",
+							Input:     json.RawMessage(`{"location":"NYC"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostChatResponse(ctx, "claude-opus-4-6")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Choices, 1, "expected exactly one choice")
+
+	choice := result.Choices[0]
+	require.NotNil(t, choice.ChatNonStreamResponseChoice, "expected non-streaming response choice")
+
+	// The real tool call must be surfaced.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	require.NotNil(t, msg.ChatAssistantMessage)
+	assert.NotEmpty(t, msg.ChatAssistantMessage.ToolCalls, "expected real tool calls to be present")
+
+	// Finish reason must remain "tool_calls".
+	require.NotNil(t, choice.FinishReason)
+	assert.Equal(t, string(schemas.BifrostFinishReasonToolCalls), *choice.FinishReason,
+		"expected finish_reason=tool_calls when real tool calls are also present")
+}
+
+// TestBedrockToBifrostResponsesResponse_StructuredOutput_FinishReasonStop verifies that
+// ToBifrostResponsesResponse maps stop_reason to "stop" (not "tool_calls") when only the
+// synthetic SO tool was consumed.
+func TestBedrockToBifrostResponsesResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	const soToolName = "bf_so_user_info"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"name":"John Doe","age":28,"city":"Pune"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.StopReason)
+	assert.Equal(t, "stop", *result.StopReason,
+		"expected stop_reason=stop when only SO tool was consumed")
+}
+
+// TestBedrockToBifrostResponsesResponse_StructuredOutput_MixedWithRealTools verifies that
+// stop_reason stays "tool_calls" when both the SO tool and a real tool call are present.
+func TestBedrockToBifrostResponsesResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	const soToolName = "bf_so_user_info"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"name":"John Doe","age":28,"city":"Pune"}`),
+						},
+					},
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_real_001",
+							Name:      "get_weather",
+							Input:     json.RawMessage(`{"location":"Pune"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.StopReason)
+	assert.Equal(t, "tool_calls", *result.StopReason,
+		"expected stop_reason=tool_calls when real tool calls are also present")
+}
