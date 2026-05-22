@@ -3,7 +3,7 @@
 
 export type AuthMode = "user" | "vk" | "session";
 
-export type MCPSessionKind = "token" | "flow";
+export type MCPSessionKind = "token" | "flow" | "header";
 
 // Status values vary by Kind:
 //   token:  "active" | "orphaned" | "needs_reauth"
@@ -16,7 +16,13 @@ export type MCPSessionKind = "token" | "flow";
 //                       The list endpoint only returns pending flow rows;
 //                       "authorized" / "failed" / "expired" are filtered out
 //                       server-side and never reach the wire here.
-export type MCPSessionStatus = "active" | "orphaned" | "pending" | "needs_reauth";
+//   header: "active" | "orphaned" | "needs_update"
+//     - "active":       caller-submitted headers, usable
+//     - "orphaned":     parallel of OAuth orphaned (lost MCP access via VK
+//                       reassignment); reactivates if access is restored
+//     - "needs_update": admin changed the PerUserHeaderKeys schema; caller
+//                       must resubmit their values
+export type MCPSessionStatus = "active" | "orphaned" | "pending" | "needs_reauth" | "needs_update";
 
 export interface MCPClientSummary {
 	client_id: string;
@@ -40,6 +46,10 @@ export interface UserSummary {
 export interface MCPSessionRow {
 	id: string;
 	kind: MCPSessionKind;
+	// auth_kind disambiguates OAuth vs Headers within "flow" rows so the UI
+	// routes Complete-authentication to the correct landing-page kind. For
+	// "token" rows it's always "oauth"; for "header" rows always "headers".
+	auth_kind: "oauth" | "headers";
 	auth_mode: AuthMode;
 	user_id?: string | null;
 	user?: UserSummary | null;
@@ -50,6 +60,9 @@ export interface MCPSessionRow {
 	expires_at?: string | null;
 	created_at: string;
 	last_refreshed_at?: string | null;
+	// updated_at: header credential rows only — timestamp of the caller's
+	// last submission/edit. OAuth rows omit this field.
+	updated_at?: string | null;
 	oauth_config_id?: string;
 }
 
@@ -58,8 +71,15 @@ export interface MCPSessionsListResponse {
 }
 
 export interface MCPSessionReauthResponse {
+	// authorize_url is the URL the caller should redirect to. For OAuth rows
+	// it's the upstream authorize endpoint; for header credential rows it's
+	// the bifrost auth-landing page that serves the submission form.
 	authorize_url: string;
+	// submit_url is set on header re-auth and matches authorize_url; kept
+	// for callers that want to be explicit about the underlying surface.
+	submit_url?: string;
 	session_id: string;
+	kind?: "oauth" | "headers";
 }
 
 export interface MCPFlowDetail {

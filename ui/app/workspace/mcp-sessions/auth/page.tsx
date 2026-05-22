@@ -1,13 +1,25 @@
 // Auth landing route for inline-401 URLs returned by the inference path.
 //
-// The inference response embeds a frontend URL of the form
-//   {base}/workspace/mcp-sessions/auth?flow={flowId}
-// pointing here. The page fetches the pending flow's metadata, shows the
-// user what they're about to authenticate, and on "Authenticate" click
-// asks the backend for the upstream provider authorize URL and redirects
-// the browser to it. The upstream provider redirects back to
-// /api/oauth/callback which completes the flow server-side.
+// Both per-user-OAuth and per-user-headers flows land here. The URL shape
+// is identical except for the kind discriminator:
+//   - OAuth:   {base}/workspace/mcp-sessions/auth?flow={flowId}#t={token}
+//   - Headers: {base}/workspace/mcp-sessions/auth?flow={flowId}&kind=headers#t={token}
+//
+// The temp token in the URL fragment binds the page request to the flow ID,
+// letting anonymous browser visitors complete the flow without a dashboard
+// session. The page picks the right backend (oauth/per-user/flows vs
+// mcp/per-user-headers/flows) based on the kind param.
+//
+// - OAuth flow:    fetches pending flow metadata, on "Authenticate" click
+//                  requests the upstream authorize URL and redirects the
+//                  browser. Upstream redirects back to /api/oauth/callback
+//                  which completes the flow server-side.
+// - Headers flow:  fetches the same flow row plus the schema and renders
+//                  the values form, submitting back to the flow row's
+//                  PUT endpoint. The backend verifies upstream, upserts
+//                  the credential, and consumes the flow row + temp token.
 
+import HeadersForm from "@/components/headersForm";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,12 +27,16 @@ import { useToast } from "@/hooks/use-toast";
 import {
   getErrorMessage,
   useGetMCPFlowDetailQuery,
+  useGetMCPPerUserHeadersFlowQuery,
   useIsAuthEnabledQuery,
   useStartMCPFlowMutation,
+  useSubmitMCPPerUserHeadersFlowMutation,
 } from "@/lib/store";
 import { MCPFlowDetail } from "@/lib/types/mcpSessions";
+import { MCPHeadersFlowDetail } from "@/lib/types/mcpPerUserHeaders";
 import { Link } from "@tanstack/react-router";
 import {
+  CheckCircle2,
   ExternalLink,
   Fingerprint,
   KeyRound,
@@ -31,6 +47,19 @@ import {
 import { useQueryState } from "nuqs";
 
 export default function MCPSessionsAuthPage() {
+  const [flowId] = useQueryState("flow");
+  const [kind] = useQueryState("kind");
+
+  // Both surfaces ride on ?flow={id}; `kind=headers` selects the headers
+  // backend. Default (no kind / kind=oauth) is the OAuth branch — keeps the
+  // OAuth URL shape unchanged.
+  if (kind === "headers" && flowId) {
+    return <HeadersAuthView flowId={flowId} />;
+  }
+  return <OAuthAuthView />;
+}
+
+function OAuthAuthView() {
   const { toast } = useToast();
   const [flowId] = useQueryState("flow");
   const skip = !flowId;
@@ -191,6 +220,195 @@ export default function MCPSessionsAuthPage() {
       </div>
     </CenteredCard>
   );
+}
+
+// HeadersAuthView renders the per-user-headers submission form. Fetches the
+// pending flow row + schema from /api/mcp/per-user-headers/flows/{id},
+// renders one input per required key, PUTs the values back to the same flow
+// endpoint. On success the backend verifies upstream, upserts the credential
+// row, deletes the flow row + temp token, and we show a success card.
+function HeadersAuthView({ flowId }: { flowId: string }) {
+  const { toast } = useToast();
+  const [submitted, setSubmitted] = useQueryState("submitted");
+  // Skip the GET once the submit has completed — the backend deletes the
+  // flow row on success, so any refetch returns 404 and we'd render the
+  // "expired" view on top of a freshly successful submission.
+  const {
+    data: detail,
+    isLoading,
+    isError,
+    error,
+  } = useGetMCPPerUserHeadersFlowQuery(flowId, { skip: submitted === "true" });
+  const [submit, { isLoading: submitting }] = useSubmitMCPPerUserHeadersFlowMutation();
+
+  if (submitted === "true") {
+    return (
+      <CenteredCard>
+        <div className="mb-5 flex size-12 items-center justify-center rounded-full bg-emerald-500/10">
+          <CheckCircle2 className="size-6 text-emerald-600" />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">Headers saved</h1>
+        <p className="text-muted-foreground mt-2 text-sm">
+          Bifrost verified the connection and stored your credentials. You can
+          close this tab and retry the original action.
+        </p>
+        <div className="mt-6 flex gap-3">
+          <SessionsTabLink />
+        </div>
+      </CenteredCard>
+    );
+  }
+
+  if (isLoading) {
+    return <FullPageLoader />;
+  }
+
+  if (isError || !detail) {
+    const status = (error as { status?: number } | undefined)?.status;
+    if (status === 401) {
+      return <InvalidLinkView />;
+    }
+    if (status === 404 || status === 410) {
+      return (
+        <CenteredCard>
+          <h1 className="text-xl font-semibold">
+            This submission link has expired or been used
+          </h1>
+          <p className="text-muted-foreground mt-2 text-sm">
+            Submission flows expire after a short window. Trigger the original
+            request again to get a fresh link.
+          </p>
+          <div className="mt-6">
+            <SessionsTabLink />
+          </div>
+        </CenteredCard>
+      );
+    }
+    return (
+      <CenteredCard>
+        <h1 className="text-xl font-semibold">
+          Could not load this submission link
+        </h1>
+        <p className="text-muted-foreground mt-2 text-sm">
+          {getErrorMessage(error)}
+        </p>
+      </CenteredCard>
+    );
+  }
+
+  const handleSubmit = async (values: Record<string, string>) => {
+    try {
+      await submit({ flowId, body: { headers: values } }).unwrap();
+      void setSubmitted("true");
+    } catch (err) {
+      toast({
+        title: "Submission failed",
+        description: getErrorMessage(err),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const mcpClientName =
+    detail.mcp_client?.name || detail.mcp_client?.client_id || "MCP server";
+  const isEdit = detail.has_active_credential;
+  const title = isEdit
+    ? `Update credentials for ${mcpClientName}`
+    : `Submit credentials for ${mcpClientName}`;
+
+  return (
+    <CenteredCard>
+      <div className="mb-5 flex size-12 items-center justify-center rounded-full bg-primary/10">
+        <ShieldCheck className="text-primary size-6" />
+      </div>
+      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+      <p className="text-muted-foreground mt-2 text-sm">
+        {isEdit ? (
+          <>
+            This server already has stored credentials for you. Submitting new
+            values <strong>replaces</strong> the existing entry; the server
+            will be re-verified before saving.
+          </>
+        ) : (
+          <>
+            This server requires you to supply your own API keys / tokens. The
+            values you submit are stored encrypted and only used to authenticate
+            your own requests.
+          </>
+        )}
+      </p>
+
+      <dl className="bg-muted/40 mt-6 space-y-3 rounded-sm border p-4 text-sm">
+        <DetailRow
+          label="MCP client"
+          value={mcpClientName}
+          mono={!detail.mcp_client?.name}
+        />
+        <DetailRow
+          label="Bound to"
+          value={<HeadersBindingValue flow={detail} />}
+        />
+        <DetailRow
+          label="Flow expires"
+          value={formatExpiry(detail.expires_at)}
+        />
+      </dl>
+
+      <div className="mt-6">
+        <HeadersForm
+          requiredKeys={detail.required_header_keys}
+          adminHeaderKeys={detail.admin_header_keys}
+          previouslySubmittedKeys={detail.submitted_keys}
+          onSubmit={handleSubmit}
+          busy={submitting}
+          submitLabel={isEdit ? "Save" : "Submit"}
+          testIdPrefix="mcp-headers-submit"
+        />
+      </div>
+    </CenteredCard>
+  );
+}
+
+function HeadersBindingValue({ flow }: { flow: MCPHeadersFlowDetail }) {
+  if (flow.flow_mode === "user") {
+    const userID = flow.user_id;
+    if (!userID) {
+      return (
+        <span className="inline-flex items-center gap-2">
+          <UserRound className="text-muted-foreground size-3.5" />
+          <Badge variant="secondary">First signed-in user</Badge>
+        </span>
+      );
+    }
+    const displayName = flow.user?.name || flow.user?.email;
+    return (
+      <span className="inline-flex items-center gap-2">
+        <UserRound className="text-muted-foreground size-3.5" />
+        {displayName ? (
+          <span>{displayName}</span>
+        ) : (
+          <span className="font-mono">{userID}</span>
+        )}
+      </span>
+    );
+  }
+  if (flow.flow_mode === "vk" && flow.virtual_key) {
+    return (
+      <span className="inline-flex items-center gap-2">
+        <KeyRound className="text-muted-foreground size-3.5" />
+        <span>{flow.virtual_key.name || flow.virtual_key.id}</span>
+      </span>
+    );
+  }
+  if (flow.flow_mode === "session" && flow.session_id) {
+    return (
+      <span className="inline-flex items-center gap-2">
+        <Fingerprint className="text-muted-foreground size-3.5" />
+        <span className="font-mono">{flow.session_id}</span>
+      </span>
+    );
+  }
+  return <span className="text-muted-foreground italic">Unknown</span>;
 }
 
 function CompletedFlowView({ flow }: { flow: MCPFlowDetail }) {

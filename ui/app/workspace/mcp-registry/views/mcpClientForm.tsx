@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
@@ -16,6 +17,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface ClientFormProps {
@@ -58,6 +60,16 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		isPerUserOauth?: boolean;
 	} | null>(null);
 
+	// Per-user-headers admin flow: admin declares the required key names
+	// (perUserHeaderKeys), then on Create the MCPHeadersAuthorizer dialog
+	// runs a sample-values verify and returns discovered tools. The form
+	// then persists the MCP client with those tools attached — first-time
+	// end users skip re-discovery that way. Mirrors the OAuth2Authorizer
+	// flow exactly: nothing is persisted until the test succeeds.
+	const [perUserHeaderKeys, setPerUserHeaderKeys] = useState<string[]>([]);
+	const [newHeaderKeyInput, setNewHeaderKeyInput] = useState("");
+	const [headersFlow, setHeadersFlow] = useState<{ payload: CreateMCPClientRequest } | null>(null);
+
 	const methods = useForm<CreateMCPClientRequest>({ defaultValues: emptyForm });
 	const { control, handleSubmit, setValue, watch, reset, setError, clearErrors } = methods;
 
@@ -84,6 +96,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setEnvsText("");
 			setScopesText("");
 			setOauthFlow(null);
+			setHeadersFlow(null);
+			setPerUserHeaderKeys([]);
+			setNewHeaderKeyInput("");
 			setIsLoading(false);
 		}
 	}, [open, reset]);
@@ -130,6 +145,17 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			}
 		}
 
+		if (authType === "per_user_headers") {
+			if (perUserHeaderKeys.length === 0) {
+				toast({
+					title: "Header keys required",
+					description: "Declare at least one header name users must supply.",
+					variant: "destructive",
+				});
+				hasErrors = true;
+			}
+		}
+
 		if (headersValidationError || hasErrors) return;
 
 		setIsLoading(true);
@@ -159,9 +185,27 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							server_url: data.connection_string?.value || undefined,
 						}
 					: undefined,
-			headers: authType === "headers" && data.headers && Object.keys(data.headers).length > 0 ? data.headers : undefined,
+			// "headers" and "per_user_headers" both can carry static admin
+			// headers on data.headers (per-user values are submitted
+			// separately by end users). Persist when present.
+			headers:
+				(authType === "headers" || authType === "per_user_headers") && data.headers && Object.keys(data.headers).length > 0
+					? data.headers
+					: undefined,
+			per_user_header_keys: authType === "per_user_headers" ? perUserHeaderKeys : undefined,
 			tools_to_execute: ["*"],
 		};
+
+		// Per-user-headers: stash the payload and open the headers test
+		// dialog. The dialog collects sample values and POSTs once to
+		// /api/mcp/client where the server verifies, discovers tools,
+		// and persists in a single round-trip. Mirrors the per-user
+		// OAuth flow's single-call shape.
+		if (authType === "per_user_headers") {
+			setIsLoading(false);
+			setHeadersFlow({ payload });
+			return;
+		}
 
 		try {
 			const response = await createMCPClient(payload).unwrap();
@@ -196,7 +240,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 				<Form {...methods}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-4 overflow-y-auto px-8">
+						<div className="flex-1 space-y-4 overflow-y-auto px-8 pb-8">
 							{/* Name */}
 							<FormField
 								control={control}
@@ -386,6 +430,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														</SelectItem>
 														<SelectItem value="headers" data-testid="auth-type-headers">
 															Headers
+														</SelectItem>												<SelectItem value="per_user_headers" data-testid="auth-type-per-user-headers">
+															Per-User Headers
 														</SelectItem>
 														<SelectItem value="oauth" data-testid="auth-type-oauth">
 															OAuth 2.0
@@ -419,6 +465,64 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												</FormItem>
 											)}
 										/>
+									)}
+
+									{authType === "per_user_headers" && (
+										<div className="space-y-4">
+											{/* Required header keys (admin schema). Same Textarea +
+											    comma-separated pattern as workspace/config security
+											    Required Headers, so the two surfaces stay visually
+											    consistent. End users supply values per-user at first
+											    tool use via the inline auth landing page. */}
+											<div>
+												<div className="space-y-2 rounded-lg border p-4">
+													<div className="space-y-0.5">
+														<label htmlFor="per-user-header-keys" className="text-sm font-medium">
+															Required Headers
+														</label>
+														<p className="text-muted-foreground text-sm">
+															Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
+															<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user — never stored on this server config.
+														</p>
+													</div>
+													<Textarea
+														id="per-user-header-keys"
+														data-testid="per-user-header-keys-textarea"
+														className="h-24"
+														placeholder="X-API-Key, X-Tenant-ID"
+														value={newHeaderKeyInput}
+														onChange={(e) => {
+															setNewHeaderKeyInput(e.target.value);
+															setPerUserHeaderKeys(parseArrayFromText(e.target.value));
+														}}
+													/>
+												</div>
+											</div>
+
+											{/* Optional static admin headers (e.g. a fixed tenant header) */}
+											<FormField
+												control={control}
+												name="headers"
+												render={({ field }) => (
+													<FormItem>
+														<HeadersTable
+															value={field.value || {}}
+															onChange={field.onChange}
+															keyPlaceholder="Header name"
+															valuePlaceholder="Header value"
+															label="Static Headers (optional, applied alongside user values)"
+															useEnvVarInput
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+
+											{/* Sample values are collected in the MCPHeadersAuthorizer
+											    dialog that opens on Create — mirrors the OAuth flow
+											    where the verification step is also a dialog, not an
+											    inline panel. */}
+										</div>
 									)}
 
 									{(authType === "oauth" || authType === "per_user_oauth") && (
@@ -688,6 +792,31 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
 					isPerUserOauth={oauthFlow.isPerUserOauth}
+				/>
+			)}
+
+			{/* Per-user-headers create dialog. Collects sample values inline,
+			    then calls POST /api/mcp/client once — the server verifies
+			    upstream + discovers tools + persists atomically. Mirrors
+			    the per-user OAuth flow's single-call shape. Nothing is
+			    committed if the user cancels or verification fails. */}
+			{headersFlow && (
+				<MCPHeadersAuthorizer
+					open={!!headersFlow}
+					onClose={() => {
+						setHeadersFlow(null);
+					}}
+					onSuccess={() => {
+						setHeadersFlow(null);
+						toast({ title: "Success", description: "MCP server connected with per-user headers" });
+						onSaved();
+						onClose();
+					}}
+					onError={() => {
+						/* error toast handled by the dialog itself */
+					}}
+					payload={headersFlow.payload}
+					perUserHeaderKeys={perUserHeaderKeys}
 				/>
 			)}
 		</Sheet>

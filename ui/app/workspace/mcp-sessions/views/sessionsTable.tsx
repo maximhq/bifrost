@@ -1,18 +1,21 @@
-// Base sessions table: renders token rows + pending flow rows visible to
-// the caller's identity. VK-keyed rows render directly with their VK ID;
-// user-keyed rows show the preloaded user.name (falling back to email,
-// then raw user_id). The `user` field is populated server-side by the
-// enterprise configstore wrapper; OSS leaves it absent and the UI falls
-// back to the raw ID.
+// Base sessions table: renders token rows + pending flow rows + per-user
+// header credential rows visible to the caller's identity. VK-keyed rows
+// render directly with their VK ID; user-keyed rows show the preloaded
+// user.name (falling back to email, then raw user_id). The `user` field
+// is populated server-side by the enterprise configstore wrapper; OSS
+// leaves it absent and the UI falls back to the raw ID.
 //
 // Status badges:
-//   active:       token row, usable
-//   orphaned:     token row; user lost their last granting VK. Credential
-//                 still alive upstream — auto-reactivates when access is
-//                 restored. Re-auth wouldn't help so the action is hidden.
+//   active:       token / header row, usable
+//   orphaned:     credential row (token or header); caller lost their last
+//                 granting VK. Credential still intact — auto-reactivates
+//                 when access is restored. Re-auth / edit wouldn't help so
+//                 the corresponding action is hidden.
 //   needs_reauth: token row; upstream credential dead (refresh failed).
 //                 Re-auth required.
-//   pending:      flow row, user must complete authentication.
+//   needs_update: header row; admin changed the PerUserHeaderKeys schema.
+//                 Caller must resubmit values.
+//   pending:      flow row, user must complete OAuth authentication.
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,7 +37,7 @@ import { Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
-import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, RefreshCcw, Trash2, UserRound } from "lucide-react";
+import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 
 interface SessionsTableProps {
@@ -94,7 +97,7 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">MCP Auth Sessions</h2>
 					<p className="text-muted-foreground text-sm">
-						Per-user OAuth tokens stored for MCP servers, plus any pending authentication flows.
+						Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
 					</p>
 				</div>
 			</div>
@@ -106,20 +109,26 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 							<TableHead>MCP Client</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
+									label="Type"
+									tooltip="OAuth: per-user OAuth token stored after the user completed an upstream sign-in flow. Headers: per-user header values (API keys / signed tokens) submitted directly. Pending: an authentication flow that has not yet completed."
+								/>
+							</TableHead>
+							<TableHead>
+								<HeaderWithTooltip
 									label="Bound to"
-									tooltip="The identity this OAuth token is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
+									tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
 								/>
 							</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
 									label="Status"
-									tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored. Re-auth doesn't help an orphaned row."
+									tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
 								/>
 							</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
 									label="Access token expiry"
-									tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time."
+									tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
 								/>
 							</TableHead>
 							<TableHead>Created</TableHead>
@@ -129,9 +138,9 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 					<TableBody>
 						{sessions.length === 0 ? (
 							<TableRow>
-								<TableCell colSpan={6} className="h-24 text-center">
+								<TableCell colSpan={7} className="h-24 text-center">
 									<span className="text-muted-foreground text-sm">
-										No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user OAuth.
+										No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication (OAuth or header submission).
 									</span>
 								</TableCell>
 							</TableRow>
@@ -139,6 +148,9 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 							sessions.map((row) => (
 								<TableRow key={`${row.kind}-${row.id}`} className="group">
 									<TableCell className="font-medium">{row.mcp_client?.name || row.mcp_client?.client_id || "-"}</TableCell>
+									<TableCell>
+										<TypeBadge kind={row.kind} />
+									</TableCell>
 									<TableCell>
 										<BindingCell row={row} />
 									</TableCell>
@@ -148,9 +160,9 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 									<TableCell className="text-muted-foreground text-sm">
 										<div className="flex flex-col">
 											<span>{formatAccessExpiry(row)}</span>
-											{row.last_refreshed_at ? (
+											{row.last_refreshed_at && (
 												<span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>
-											) : null}
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
@@ -220,6 +232,16 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 	return <span className="text-sm text-muted-foreground">Session-bound</span>;
 }
 
+function TypeBadge({ kind }: { kind: string }) {
+	if (kind === "flow") {
+		return <Badge variant="secondary">Pending</Badge>;
+	}
+	if (kind === "header") {
+		return <Badge variant="outline">Headers</Badge>;
+	}
+	return <Badge variant="outline">OAuth</Badge>;
+}
+
 function StatusBadge({ status, kind }: { status: string; kind: string }) {
 	if (kind === "flow") {
 		return <Badge variant="secondary">Pending</Badge>;
@@ -236,6 +258,11 @@ function StatusBadge({ status, kind }: { status: string; kind: string }) {
 	}
 	if (status === "needs_reauth") {
 		return <Badge variant="destructive">Needs re-auth</Badge>;
+	}
+	if (status === "needs_update") {
+		// Same destructive treatment as needs_reauth — user action required.
+		// Distinct copy so the row affordance ("Edit") matches.
+		return <Badge variant="destructive">Needs update</Badge>;
 	}
 	return <Badge>Active</Badge>;
 }
@@ -278,13 +305,53 @@ function RowActions({ row, reauthing, revoking, onReauth, onRevoke }: RowActions
 							data-testid="mcp-session-complete-auth-menu-item"
 							onSelect={(e) => {
 								e.preventDefault();
-								window.location.href = `/workspace/mcp-sessions/auth?flow=${row.id}`;
+								// Header flows need &kind=headers so the auth landing page
+								// routes to the per-user-headers backend; OAuth flows use
+								// the default branch.
+								const url =
+									row.auth_kind === "headers"
+										? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
+										: `/workspace/mcp-sessions/auth?flow=${row.id}`;
+								window.location.href = url;
 							}}
 						>
 							<ExternalLink className="h-4 w-4" />
 							Complete authentication
 						</DropdownMenuItem>
 					)
+				) : row.kind === "header" ? (
+					<>
+						{row.status !== "orphaned" && (
+							// "Edit values" hits reauth server-side: the handler mints a
+							// fresh header submission flow + temp token and returns the
+							// auth-landing URL. Same single-click → redirect dance as the
+							// OAuth row's "Re-authenticate" action.
+							<DropdownMenuItem
+								className="cursor-pointer"
+								disabled={reauthing}
+								data-testid="mcp-session-edit-headers-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									onReauth();
+								}}
+							>
+								<Pencil className="h-4 w-4" />
+								{row.status === "needs_update" ? "Update values" : "Edit values"}
+							</DropdownMenuItem>
+						)}
+						<DropdownMenuItem
+							variant="destructive"
+							className="cursor-pointer"
+							data-testid="mcp-session-revoke-menu-item"
+							onSelect={(e) => {
+								e.preventDefault();
+								onRevoke();
+							}}
+						>
+							<Trash2 className="h-4 w-4" />
+							Revoke
+						</DropdownMenuItem>
+					</>
 				) : (
 					<>
 						{row.status !== "orphaned" && (
@@ -341,6 +408,13 @@ function formatRelativePast(iso: string): string {
 }
 
 function formatAccessExpiry(row: MCPSessionRow): string {
+	// Header rows don't have an upstream-side expiry — the submitted values
+	// are durable until the user revokes or the schema changes. The status
+	// column already conveys lifecycle state (Active / Needs update /
+	// Orphaned), so this column collapses to a dash for headers.
+	if (row.kind === "header") {
+		return "—";
+	}
 	if (!row.expires_at) return "-";
 	try {
 		const t = new Date(row.expires_at).getTime();
