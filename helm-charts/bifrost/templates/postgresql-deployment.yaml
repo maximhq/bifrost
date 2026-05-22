@@ -37,8 +37,8 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "bifrost.fullname" . }}-postgresql
-                  key: password
+                  name: {{ .Values.postgresql.auth.existingSecret | default (printf "%s-postgresql" (include "bifrost.fullname" .)) }}
+                  key: {{ if .Values.postgresql.auth.existingSecret }}{{ .Values.postgresql.auth.passwordKey | default "password" }}{{ else }}password{{ end }}
             - name: POSTGRES_DB
               value: {{ .Values.postgresql.auth.database | quote }}
             - name: PGDATA
