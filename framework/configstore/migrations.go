@@ -792,6 +792,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationBackfillVirtualKeyBlacklistedModels(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
 		return err
 	}
@@ -5214,7 +5217,11 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 // and backfills existing rows: any provider config with no keys in the join table previously meant
 // "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
 func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+	// opts is a value copy: migrator.DefaultOptions is a shared global pointer,
+	// so mutating it in place would disable transactions for other migrations.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "add_allow_all_keys_to_provider_config",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -8510,6 +8517,9 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 
 // migrationAddVirtualKeyBlacklistedModelsColumn adds the blacklisted_models JSON column
 // to governance_virtual_key_provider_configs, matching the provider-key blacklist pattern.
+// This migration performs the DDL only. The data backfill and config_hash recompute are
+// done by migrationBackfillVirtualKeyBlacklistedModels so the ALTER's ACCESS EXCLUSIVE
+// lock is not held across the backfill SELECT + UPDATE, which can deadlock Postgres.
 func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_vk_provider_config_blacklisted_models_column",
@@ -8520,32 +8530,6 @@ func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm
 				if err := mg.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
 					return fmt.Errorf("failed to add blacklisted_models column: %w", err)
 				}
-				// Backfill empty arrays for existing rows (only when column is newly added)
-				if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
-					return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
-				}
-				// Recompute config_hash for all VKs affected by the backfill so they
-				// do not appear stale after upgrade (same pattern as allow_all_keys migration).
-				var virtualKeys []tables.TableVirtualKey
-				if err := tx.
-					Preload("ProviderConfigs").
-					Preload("ProviderConfigs.Keys").
-					Preload("MCPConfigs").
-					Find(&virtualKeys).Error; err != nil {
-					return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
-				}
-				for _, vk := range virtualKeys {
-					newHash, err := GenerateVirtualKeyHash(vk)
-					if err != nil {
-						return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
-					}
-					if err := tx.Model(&tables.TableVirtualKey{}).
-						Where("id = ?", vk.ID).
-						Update("config_hash", newHash).Error; err != nil {
-						return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
-					}
-
-				}
 			}
 			return nil
 		},
@@ -8555,6 +8539,56 @@ func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillVirtualKeyBlacklistedModels backfills empty JSON arrays into the
+// blacklisted_models column added by migrationAddVirtualKeyBlacklistedModelsColumn and
+// recomputes config_hash for every virtual key so they do not appear stale after upgrade.
+// It is a separate migration from the column-add so the DDL's ACCESS EXCLUSIVE lock is
+// never held across this SELECT + UPDATE backfill.
+func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_vk_provider_config_blacklisted_models",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Backfill empty arrays for existing rows. Idempotent via the WHERE clause.
+			if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
+				return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
+			}
+
+			// Recompute config_hash for all VKs affected by the backfill so they do
+			// not appear stale after upgrade. The hash is deterministic, so this is
+			// safe to re-run.
+			var virtualKeys []tables.TableVirtualKey
+			if err := tx.
+				Preload("ProviderConfigs").
+				Preload("ProviderConfigs.Keys").
+				Preload("MCPConfigs").
+				Find(&virtualKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+			}
+			for _, vk := range virtualKeys {
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_vk_provider_config_blacklisted_models migration: %s", err.Error())
 	}
 	return nil
 }
