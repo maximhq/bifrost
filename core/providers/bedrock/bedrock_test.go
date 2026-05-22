@@ -3923,6 +3923,71 @@ func TestMultiTurnReasoningContentPassthrough(t *testing.T) {
 		assert.True(t, foundReasoning, "Expected reasoning content block in assistant message")
 	})
 
+	t.Run("AssistantMessage_WithReasoningAndToolCalls_ReasoningComesFirst", func(t *testing.T) {
+		reasoningText := "I need to call a tool to answer this."
+		signature := "sig_abc123"
+		assistantContent := "Let me check that for you."
+		toolCallID := "tooluse_abc123"
+
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What time is it?")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ReasoningDetails: []schemas.ChatReasoningDetails{
+							{
+								Index:     0,
+								Type:      schemas.BifrostReasoningDetailsTypeText,
+								Text:      &reasoningText,
+								Signature: &signature,
+							},
+						},
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{
+							{
+								ID:   &toolCallID,
+								Type: schemas.Ptr("function"),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("get_time"),
+									Arguments: "{}",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		assistantMsg := result.Messages[1]
+		// reasoning + text + tool_use = at least 3 blocks
+		require.GreaterOrEqual(t, len(assistantMsg.Content), 3)
+
+		// Reasoning MUST be the first block
+		assert.NotNil(t, assistantMsg.Content[0].ReasoningContent,
+			"reasoning block must be first content block; got %+v", assistantMsg.Content[0])
+
+		// tool_use must appear after reasoning
+		var foundToolUse bool
+		for _, block := range assistantMsg.Content[1:] {
+			if block.ToolUse != nil {
+				foundToolUse = true
+				break
+			}
+		}
+		assert.True(t, foundToolUse, "tool_use block must appear after reasoning block")
+	})
+
 	t.Run("AssistantMessage_WithoutReasoningDetails_NoReasoningContent", func(t *testing.T) {
 		assistantContent := "Simple response"
 
