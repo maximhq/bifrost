@@ -1093,10 +1093,9 @@ func (p *LoggerPlugin) GetAvailableCustomers(ctx context.Context, limit int, que
 	return keyPairResultsToKeyPairs(results)
 }
 
-// GetAvailableUsers returns all unique user IDs from logs.
-// Both ID and Name are set to user_id since users don't have a separate name column.
+// GetAvailableUsers returns all unique user ID-Name pairs from logs.
 func (p *LoggerPlugin) GetAvailableUsers(ctx context.Context, limit int, query string) []KeyPair {
-	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_id", limit, query)
+	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_name", limit, query)
 	if err != nil {
 		p.logger.Error("failed to get available users: %v", err)
 		return []KeyPair{}
