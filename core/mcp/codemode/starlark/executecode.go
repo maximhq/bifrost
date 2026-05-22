@@ -525,38 +525,35 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
 	defer cancel()
 
-	var toolResponse *mcp.CallToolResult
-	var callErr error
+	// Acquire a connection through the shared ClientManager abstraction:
+	// shared-mode clients return their persistent state.Conn (release is a
+	// no-op); per-user clients get a fresh ephemeral transport that the
+	// release function closes. Credential errors (e.g. MCPUserOAuthRequiredError)
+	// surface here.
+	conn, release, err := s.clientManager.AcquireClientConn(nestedCtx, client)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
-	if s.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
-		// Per-user auth types: ephemeral upstream connection per call carries
-		// the full credential set (static + extras + per-user auth).
-		connHeaders, err := s.credStore.ConnectionHeaders(nestedCtx, client.ExecutionConfig)
-		if err != nil {
-			return nil, err
-		}
-		toolResponse, callErr = codemcp.OpenConnectionAndExecuteTool(toolCtx, client.ExecutionConfig, toolNameToCall, args, connHeaders)
-		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
-			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
-		}
-	} else {
-		// Shared persistent connection — admin credentials are on the
-		// transport; the per-call request only carries filtered extras.
-		reqHeaders, err := s.credStore.RequestHeaders(nestedCtx, client.ExecutionConfig)
-		if err != nil {
-			return nil, err
-		}
-		callRequest := mcp.CallToolRequest{
-			Request: mcp.Request{
-				Method: string(mcp.MethodToolsCall),
-			},
-			Params: mcp.CallToolParams{
-				Name:      toolNameToCall,
-				Arguments: args,
-			},
-			Header: reqHeaders,
-		}
-		toolResponse, callErr = client.Conn.CallTool(toolCtx, callRequest)
+	reqHeaders, err := s.credStore.RequestHeaders(nestedCtx, client.ExecutionConfig)
+	if err != nil {
+		return nil, err
+	}
+	callRequest := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Params: mcp.CallToolParams{
+			Name:      toolNameToCall,
+			Arguments: args,
+		},
+		Header: reqHeaders,
+	}
+
+	toolResponse, callErr := conn.CallTool(toolCtx, callRequest)
+	if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
+		callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
 	}
 
 	latency := time.Since(startTime).Milliseconds()

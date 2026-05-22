@@ -872,17 +872,17 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 //
 // Parameters:
 //   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
-//   - client: The MCP client state containing the name mapping
+//   - toolNameMapping: Map of sanitized tool names to original MCP tool names
 //
 // Returns:
 //   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
-func getOriginalToolName(sanitizedToolName string, client *schemas.MCPClientState) string {
-	if client == nil || client.ToolNameMapping == nil {
+func getOriginalToolName(sanitizedToolName string, toolNameMapping map[string]string) string {
+	if toolNameMapping == nil {
 		return sanitizedToolName
 	}
 
 	// Look up the original MCP name in the mapping
-	if originalName, exists := client.ToolNameMapping[sanitizedToolName]; exists {
+	if originalName, exists := toolNameMapping[sanitizedToolName]; exists {
 		return originalName
 	}
 

@@ -14,10 +14,15 @@ import (
 // expiry, an OAuth flow is initiated and a *MCPUserOAuthRequiredError is
 // raised so the caller can complete authentication.
 //
+// ConnectionHeaders returns only the Authorization header — static config
+// headers are layered separately by AcquireClientConn / clientmanager via
+// utils.StaticConfigHeaders so the connect-plugin gate never observes the
+// bearer token.
+//
 // RequiresPerCallConnection is true: per-user OAuth clients never hold a
-// persistent upstream connection (clientmanager skips Connect for them); each
-// invocation builds an ephemeral HTTP transport with the resolved Bearer +
-// any static config + context-extras.
+// persistent upstream connection; AcquireClientConn opens a fresh ephemeral
+// HTTP transport per call using the resolved Bearer + plugin-mutated static
+// headers.
 type perUserOAuthResolver struct {
 	provider schemas.OAuth2Provider
 }
@@ -71,7 +76,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		}
 	}
 
-	headers := utils.GetHeadersForToolExecution(ctx, config)
+	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+accessToken)
 	return headers, nil
 }

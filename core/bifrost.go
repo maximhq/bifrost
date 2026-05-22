@@ -3701,7 +3701,7 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 }
 
 // SetMCPManager sets the MCP manager for this Bifrost instance.
-// This allows injecting a custom MCP manager implementation (e.g., for enterprise features).
+// This allows injecting a custom MCP manager implementation.
 // If the provided manager is a concrete *mcp.MCPManager, Bifrost's plugin pipeline is injected
 // into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
