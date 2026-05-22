@@ -3149,6 +3149,233 @@ func TestMergeFallbackParams_EmptyInputsReturnNil(t *testing.T) {
 	}
 }
 
+// TestMergeFallbackParams_DeleteMarkerSemantics verifies value-level delete
+// marker behaviour: exact "-" deletes a key; near-matches do not; null is
+// preserved; nested deletes work and do not mutate sibling keys; the base map
+// is never mutated.
+func TestMergeFallbackParams_DeleteMarkerSemantics(t *testing.T) {
+	// Top-level delete.
+	got := mergeFallbackParams(
+		map[string]interface{}{"keep": "v", "drop": true},
+		map[string]any{"drop": fallbackParamDeleteMarker},
+	)
+	if _, exists := got["drop"]; exists {
+		t.Errorf("delete marker should have removed 'drop', got %#v", got)
+	}
+	if got["keep"] != "v" {
+		t.Errorf("'keep' should be preserved, got %#v", got)
+	}
+
+	// Near-matches must not delete.
+	got2 := mergeFallbackParams(
+		map[string]interface{}{"logs": true},
+		map[string]any{"logs": " - "},
+	)
+	if got2["logs"] != " - " {
+		t.Errorf("' - ' should be a normal value, got %#v", got2)
+	}
+
+	// null is not delete.
+	got3 := mergeFallbackParams(
+		map[string]interface{}{"x": 1},
+		map[string]any{"x": nil},
+	)
+	if v, ok := got3["x"]; !ok || v != nil {
+		t.Errorf("null should set key to nil, not delete it; got %#v", got3)
+	}
+
+	// Nested delete preserves siblings and does not mutate the original base map.
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"areLogsAvailable": true},
+			"debug":   map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got4 := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"areLogsAvailable": fallbackParamDeleteMarker},
+		},
+	})
+	metaMerged, ok := got4["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map in result, got %#v", got4)
+	}
+	loggingMerged, ok := metaMerged["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected logging map in result, got %#v", metaMerged)
+	}
+	if _, exists := loggingMerged["areLogsAvailable"]; exists {
+		t.Errorf("nested delete should have removed 'areLogsAvailable', got %#v", loggingMerged)
+	}
+	debugMerged, ok := metaMerged["debug"].(map[string]interface{})
+	if !ok || debugMerged["trace_id"] != "abc" {
+		t.Errorf("sibling 'debug.trace_id' should be preserved, got %#v", metaMerged)
+	}
+	// Original base must be untouched.
+	origLogging := base["metadata"].(map[string]interface{})["logging"].(map[string]interface{})
+	if origLogging["areLogsAvailable"] != true {
+		t.Errorf("original base map was mutated; immutability broken")
+	}
+}
+
+// TestMergeFallbackParams_NestedAdd verifies that a fallback param map entry
+// for a nested key that does not exist in base is added while preserving all
+// sibling keys in the nested object (case 5).
+func TestMergeFallbackParams_NestedAdd(t *testing.T) {
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"debug": map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"level": "info"},
+		},
+	})
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level=info, got %#v", logging["level"])
+	}
+	debug, ok := meta["debug"].(map[string]interface{})
+	if !ok || debug["trace_id"] != "abc" {
+		t.Errorf("expected metadata.debug.trace_id=abc to be preserved, got %#v", meta)
+	}
+}
+
+// TestMergeFallbackParams_NestedOverride verifies that a fallback param value
+// overrides an existing nested key while leaving sibling keys untouched (case 6).
+func TestMergeFallbackParams_NestedOverride(t *testing.T) {
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"level": "debug", "enabled": true},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"level": "info"},
+		},
+	})
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level overridden to info, got %#v", logging["level"])
+	}
+	if logging["enabled"] != true {
+		t.Errorf("expected metadata.logging.enabled=true to be preserved, got %#v", logging["enabled"])
+	}
+}
+
+// TestMergeFallbackParams_Mixed exercises all three operations — add, override,
+// and delete — in a single call, including nested fields (case 7).
+func TestMergeFallbackParams_Mixed(t *testing.T) {
+	base := map[string]interface{}{
+		"temperature": 0.7,
+		"logs":        true,
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"areLogsAvailable": true, "level": "debug"},
+			"debug":   map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"temperature":      0.2,
+		"logs":             fallbackParamDeleteMarker,
+		"reasoning_effort": "high",
+		"metadata": map[string]any{
+			"logging": map[string]any{
+				"areLogsAvailable": fallbackParamDeleteMarker,
+				"level":            "info",
+			},
+		},
+	})
+
+	// override
+	if got["temperature"] != 0.2 {
+		t.Errorf("expected temperature=0.2, got %#v", got["temperature"])
+	}
+	// delete
+	if _, exists := got["logs"]; exists {
+		t.Errorf("expected logs to be deleted, got %#v", got)
+	}
+	// add
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("expected reasoning_effort=high, got %#v", got["reasoning_effort"])
+	}
+	// nested delete + nested override
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if _, exists := logging["areLogsAvailable"]; exists {
+		t.Errorf("expected metadata.logging.areLogsAvailable to be deleted, got %#v", logging)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level=info, got %#v", logging["level"])
+	}
+	debug, ok := meta["debug"].(map[string]interface{})
+	if !ok || debug["trace_id"] != "abc" {
+		t.Errorf("expected metadata.debug.trace_id=abc preserved, got %#v", meta)
+	}
+	// base must not be mutated
+	if base["temperature"] != 0.7 {
+		t.Errorf("base temperature was mutated")
+	}
+	if base["logs"] != true {
+		t.Errorf("base logs was mutated")
+	}
+}
+
+// TestMergeFallbackParams_ArrayReplace verifies that an array fallback value
+// replaces the base array entirely rather than merging element-by-element (case 10).
+func TestMergeFallbackParams_ArrayReplace(t *testing.T) {
+	base := map[string]interface{}{
+		"stop": []interface{}{"END"},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"stop": []interface{}{"STOP", "DONE"},
+	})
+	stop, ok := got["stop"].([]interface{})
+	if !ok || len(stop) != 2 || stop[0] != "STOP" || stop[1] != "DONE" {
+		t.Errorf("expected stop=[STOP DONE], got %#v", got["stop"])
+	}
+}
+
+// TestMergeFallbackParams_ExactMarkerOnly verifies that only the exact string
+// "-" is treated as a delete marker; adjacent variants like " - " and "--" are
+// stored as normal values (case 9 extended).
+func TestMergeFallbackParams_ExactMarkerOnly(t *testing.T) {
+	base := map[string]interface{}{
+		"logs":       true,
+		"other_logs": true,
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"logs":       " - ",
+		"other_logs": "--",
+	})
+	if got["logs"] != " - " {
+		t.Errorf("' - ' should be stored as a value, got %#v", got["logs"])
+	}
+	if got["other_logs"] != "--" {
+		t.Errorf("'--' should be stored as a value, got %#v", got["other_logs"])
+	}
+}
+
 // TestPrepareFallbackRequest_LogsOverrideAtDebug makes sure the override
 // detection helper does not panic when called with various param shapes. We
 // don't assert on the log output (the default logger doesn't expose a hook),

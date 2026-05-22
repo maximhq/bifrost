@@ -4462,6 +4462,28 @@ type fallbackParamsTypeConstraint interface {
 // values when keys overlap. The sorted key walks only make the merge procedure
 // stable for debugging; Go maps do not preserve insertion order, so callers must
 // not rely on this helper for deterministic JSON/map ordering.
+// fallbackParamDeleteMarker is the exact string value that signals "delete this
+// key" inside a fallback Params map. Using a constant lets callers avoid
+// hard-coding the literal and makes the marker easy to change if needed.
+const fallbackParamDeleteMarker = "-"
+
+// cloneFallbackParamValue returns a deep clone of a JSON-like param value.
+// map[string]interface{} values are recursively copied into fresh allocations
+// so that mergeFallbackParams can mutate the merged result without
+// touching the caller's original ExtraParams maps.
+// Scalars, slices, and all other types are returned as-is; they are either
+// immutable or not mutated by the fallback param helpers.
+func cloneFallbackParamValue(v any) any {
+	if m, ok := v.(map[string]interface{}); ok {
+		clone := make(map[string]interface{}, len(m))
+		for k, vv := range m {
+			clone[k] = cloneFallbackParamValue(vv)
+		}
+		return clone
+	}
+	return v
+}
+
 func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) map[string]interface{} {
 	if len(base) == 0 && len(fallback) == 0 {
 		return nil
@@ -4475,7 +4497,9 @@ func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) m
 	}
 	sort.Strings(baseKeys)
 	for _, k := range baseKeys {
-		merged[k] = base[k]
+		// Deep-clone so that delete-marker processing cannot mutate nested maps
+		// shared with the original request ExtraParams.
+		merged[k] = cloneFallbackParamValue(base[k])
 	}
 
 	fallbackKeys := make([]string, 0, len(fallback))
@@ -4484,7 +4508,27 @@ func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) m
 	}
 	sort.Strings(fallbackKeys)
 	for _, k := range fallbackKeys {
-		merged[k] = fallback[k]
+		sv := fallback[k]
+		// Exact string delete marker: remove this key from the merged result.
+		// Only the exact constant matches; " - ", "--", nil, false, 0 do not.
+		if s, ok := sv.(string); ok && s == fallbackParamDeleteMarker {
+			delete(merged, k)
+			continue
+		}
+		// When both sides carry a map at this key, recurse to preserve sibling
+		// keys in the nested object instead of wiping them with a shallow replace.
+		// The recursive call also applies delete-marker semantics at deeper levels.
+		// merged[k] is already a deep clone from the base-key walk above, so
+		// passing it into the recursive call is safe.
+		if dv, exists := merged[k]; exists {
+			if dMap, ok := dv.(map[string]interface{}); ok {
+				if sMap, ok := sv.(map[string]interface{}); ok {
+					merged[k] = mergeFallbackParams(dMap, sMap)
+					continue
+				}
+			}
+		}
+		merged[k] = cloneFallbackParamValue(sv)
 	}
 
 	return merged
@@ -4609,7 +4653,14 @@ func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} 
 // stays focused on cloning and the merge math stays in mergeFallbackParams.
 func (bifrost *Bifrost) logFallbackParamOverrides(req *schemas.BifrostRequest, fallback schemas.Fallback) {
 	base := extraParamsFromRequest(req)
-	for key := range fallback.Params {
+	for key, val := range fallback.Params {
+		if s, ok := val.(string); ok && s == fallbackParamDeleteMarker {
+			bifrost.logger.Debug(
+				"fallback param deleting extra_param: provider=%s model=%s key=%s",
+				fallback.Provider, fallback.Model, key,
+			)
+			continue
+		}
 		if base != nil {
 			if _, exists := base[key]; exists {
 				bifrost.logger.Debug(
@@ -4636,9 +4687,9 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		return nil
 	}
 
-	// Surface fallback param overrides at debug level. This makes silent
-	// shadowing of base ExtraParams visible in traces without polluting the
-	// happy-path log stream — see the precedence comment on mergeFallbackParams.
+	// Surface fallback param overrides/deletions at debug level. This makes silent
+	// shadowing or deletion of base ExtraParams visible in traces without polluting
+	// the happy-path log stream — see the precedence comment on mergeFallbackParams.
 	if len(fallback.Params) > 0 {
 		bifrost.logFallbackParamOverrides(req, fallback)
 	}
