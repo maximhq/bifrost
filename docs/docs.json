@@ -164,13 +164,23 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
-              "mcp/oauth",
-              "mcp/per-user-oauth",
+              {
+                "group": "Authentication",
+                "icon": "shield-check",
+                "pages": [
+                  "mcp/auth/overview",
+                  "mcp/auth/none",
+                  "mcp/auth/headers",
+                  "mcp/auth/per-user-headers",
+                  "mcp/auth/oauth",
+                  "mcp/auth/per-user-oauth"
+                ]
+              },
               "mcp/sessions",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway-url",
+              "mcp/gateway",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -833,7 +843,19 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway-url"
+      "destination": "/mcp/gateway"
+    },
+    {
+      "source": "/mcp/gateway-url",
+      "destination": "/mcp/gateway"
+    },
+    {
+      "source": "/mcp/oauth",
+      "destination": "/mcp/auth/oauth"
+    },
+    {
+      "source": "/mcp/per-user-oauth",
+      "destination": "/mcp/auth/per-user-oauth"
     },
     {
       "source": "/features/mcp/tool-hosting",
