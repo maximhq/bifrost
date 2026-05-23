@@ -742,7 +742,6 @@ export function LogDetailView({
     } catch {}
     return 0;
   })();
-
   return loading ? (
     <div className="flex h-full items-center justify-center">
       <Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
@@ -1204,13 +1203,24 @@ export function LogDetailView({
                   }
                 />
               )}
-              {log.selected_key && (
+              {log.selected_key ? (
                 <LogEntryDetailsView
                   className="w-full"
                   label="Selected Key"
                   value={log.selected_key.name}
                 />
-              )}
+              ) : log.status === "error" && log.attempt_trail && log.attempt_trail.length > 0 ? (
+                (() => {
+                  const lastAttempt = log.attempt_trail[log.attempt_trail.length - 1];
+                  return (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Last Attempted Key"
+                      value={lastAttempt.key_name || lastAttempt.key_id}
+                    />
+                  );
+                })()
+              ) : null}
               {(log.selected_prompt_id ||
                 log.selected_prompt_name ||
                 log.selected_prompt_version) && (
@@ -1361,7 +1371,6 @@ export function LogDetailView({
                   value={log.routing_rule.name}
                 />
               )}
-
               {(log.params as any)?.audio && (
                 <>
                   {(log.params as any).audio.format && (
