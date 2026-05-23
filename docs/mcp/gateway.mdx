@@ -1,6 +1,6 @@
 ---
-title: "MCP Gateway URL"
-sidebarTitle: "Gateway URL"
+title: "Bifrost as an MCP Gateway"
+sidebarTitle: "MCP Gateway"
 description: "Expose Bifrost as an MCP server for Claude Desktop and other MCP clients."
 icon: "server"
 ---
@@ -289,33 +289,96 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ---
 
-## Per-User OAuth for MCP Clients
+## Per-User Auth on the Gateway
 
-When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint serves per-user tokens lazily. Bifrost is **not** an OAuth Authorization Server — there is no `.well-known/oauth-protected-resource` discovery and no inbound consent screen. Inbound MCP clients identify themselves via headers:
+When at least one upstream MCP server is configured with `per_user_oauth` or `per_user_headers`, the `/mcp` endpoint serves per-user credentials lazily. Bifrost is **not** an OAuth Authorization Server — there is no `.well-known/oauth-protected-resource` discovery and no inbound consent screen. Inbound MCP clients identify themselves via headers:
 
 - `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>`) — VK-mode identity
 - `x-bf-mcp-session-id: <opaque-string>` — session-mode identity (client-asserted, must be re-sent on every call)
 - Enterprise SSO — user-mode identity, attached automatically by the auth middleware
 
-When a tool call hits an MCP server the caller has not authenticated against, Bifrost returns an `mcp_auth_required` tool result containing an inline `authorize_url`. The user opens it, completes the upstream OAuth flow, and the next tool call executes normally.
+When a tool call hits an MCP server the caller hasn't authenticated against, Bifrost returns an `mcp_auth_required` tool result with an inline URL the user must visit. The payload carries a `kind` discriminator:
+
+- `kind: "oauth"` → `authorize_url` points at the upstream provider's consent page (via a Bifrost intermediate)
+- `kind: "headers"` → `submit_url` points at a Bifrost form where the user enters their header values
+
+The natural-language message also embeds the URL so plain-text MCP clients (curl, basic SDK wrappers) see it without having to parse the structured payload. Once the user completes the URL action, Bifrost stores the credential against the caller's identity and the next tool call executes normally.
 
 <Note>
 Claude Code's MCP client may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
 </Note>
 
-See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options, and [MCP Sessions →](./sessions) for managing the resulting tokens.
+See [Per-User OAuth →](./auth/per-user-oauth) and [Per-User Headers →](./auth/per-user-headers) for the full flows and identity options, and [MCP Sessions →](./sessions) for managing the resulting credentials.
 
 ### Public URL configuration when behind a proxy
 
-The `redirect_uri` Bifrost hands to upstream OAuth providers (Notion, Jira, etc.) is built from the request's `Host` header by default. Behind a reverse proxy that is the proxy's internal address, not its public one. The `mcp_external_client_url` setting overrides it with the proxy's public URL:
+The URLs Bifrost surfaces (consent pages, header-submission pages, and the `redirect_uri` it registers with upstream OAuth providers) are derived from the request's `Host` header by default. Behind a reverse proxy, that's the proxy's internal address rather than its public one. Override with:
 
-- `mcp_external_client_url` - what Bifrost registers as the `redirect_uri` with upstream OAuth providers.
+- `mcp_external_server_url` — what Bifrost uses for the consent / submission URLs surfaced in `mcp_auth_required` payloads
+- `mcp_external_client_url` — what Bifrost registers as the `redirect_uri` with upstream OAuth providers
 
 See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
 
 <Warning>
-**Changing `mcp_external_client_url` breaks already-connected MCP clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, clear the stored OAuth client credentials for the affected MCP server and re-authorize so Bifrost re-registers with the new URL.
+**Changing `mcp_external_client_url` breaks already-connected per-user OAuth clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, clear the stored OAuth client credentials for the affected MCP server and re-authorize so Bifrost re-registers with the new URL.
 </Warning>
+
+---
+
+## Recommended: disable auto tool injection
+
+When Bifrost serves both inbound LLM requests **and** acts as an upstream MCP server (this page), the same tools can end up being injected twice — once because the LLM Gateway auto-includes every configured MCP tool on every inference request, and once because the inbound MCP client itself fetched the tool list from `/mcp`. The model sees the same tool name from two sources and may behave erratically (duplicate tool calls, refusal, or confused arguments).
+
+Turn **Disable Auto Tool Injection** on in your client config. MCP tools will then only be attached to inference requests when the caller explicitly opts in via the `x-bf-mcp-include-tools` request header (and the calling Virtual Key still has to allow them). Outbound MCP clients (Claude Desktop, Cursor, etc.) keep working because they discover tools through `/mcp` directly.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Settings → MCP** in the sidebar
+2. Toggle **Disable Auto Tool Injection** on
+3. Click **Save**
+
+<Frame>
+  <img src="/media/ui-config-mcp-disable-auto-tool-inject.png" alt="Settings → MCP panel with the Disable Auto Tool Injection toggle highlighted" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_config": {
+      "mcp_disable_auto_tool_inject": true
+    }
+  }'
+```
+
+`PUT /api/config` merges the supplied `client_config` into the existing one — other fields are unchanged.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "mcp_disable_auto_tool_inject": true
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+After flipping it on, callers that still want auto-injected tools on the inference path can opt in per-request:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-mcp-include-tools: filesystem-*,github-create_issue" \
+  -d '{ "model": "openai/gpt-4o", "messages": [...] }'
+```
 
 ---
 
