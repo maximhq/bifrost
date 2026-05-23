@@ -1147,6 +1147,28 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// 	return
 	// }
 
+	// Per-user credential reconciliation for changes that mutate who can
+	// access this MCP. Two trigger conditions:
+	//   1. vk_configs explicitly diffed (rows added/removed/updated).
+	//   2. AllowOnAllVirtualKeys flipped — the implicit fallback toggled,
+	//      every VK with a credential for this MCP needs re-evaluation.
+	//
+	// Reconcile is enterprise-only behavior (no-op in OSS). It orphans
+	// credentials whose MCP just lost the grant and reactivates orphaned
+	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
+	// are reconciled — they share the same VK→MCP allowlist model.
+	if h.store.ConfigStore != nil {
+		shouldReconcile := req.VKConfigs != nil || req.AllowOnAllVirtualKeys != existingConfig.AllowOnAllVirtualKeys
+		if shouldReconcile {
+			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
+				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
+			}
+			if err := h.store.ConfigStore.ReconcileMCPHeadersAfterMCPChange(ctx, id); err != nil {
+				logger.Error(fmt.Sprintf("reconcile per-user-headers credentials after MCP %s update failed: %v", id, err))
+			}
+		}
+	}
+
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client edited successfully",

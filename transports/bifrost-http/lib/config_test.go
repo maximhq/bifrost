@@ -1325,6 +1325,18 @@ func (m *MockConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Contex
 func (m *MockConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
 	return 0, nil
 }
+func (m *MockConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
+}
 
 // Routing rules
 func (m *MockConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
