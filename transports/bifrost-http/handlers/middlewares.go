@@ -700,11 +700,12 @@ type AuthMiddleware struct {
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
-// is optional — when nil, the temp-token fallback path is disabled and the
-// middleware behaves exactly as before.
+// is optional and still gated by client config — when nil or disabled, the
+// temp-token fallback path is skipped.
 func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
@@ -726,9 +727,11 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	clientConfig, err := store.GetClientConfig(context.Background())
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
+		am.tempTokensEnabled.Store(false)
 	}
 
 	return am, nil
@@ -741,6 +744,11 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
+func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
+	m.tempTokensEnabled.Store(enabled)
 }
 
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
@@ -756,7 +764,7 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 // their own success/failure semantics and silently rescuing a bad password
 // with a temp token would be surprising.
 func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
-	if m.tempTokensService != nil {
+	if m.tempTokensService != nil && m.tempTokensEnabled.Load() {
 		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
 		if token != "" {
 			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Path()))

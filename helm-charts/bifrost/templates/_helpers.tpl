@@ -307,6 +307,9 @@ false
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpEnableTempTokenAuth" }}
+{{- $_ := set $client "mcp_enable_temp_token_auth" .Values.bifrost.client.mcpEnableTempTokenAuth }}
+{{- end }}
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
 {{- end }}

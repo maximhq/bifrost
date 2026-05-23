@@ -636,6 +636,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPEnableTempTokenAuthColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
 		return err
 	}
@@ -1301,6 +1304,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
 					RequiredHeaders:                       cc.RequiredHeaders,
@@ -5335,6 +5339,35 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+// migrationAddMCPEnableTempTokenAuthColumn adds the mcp_enable_temp_token_auth column to the client config table.
+func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_enable_temp_token_auth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth") {
+				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp enable temp token auth migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPricingRefactorColumns adds all new pricing columns introduced in the pricing module refactor
 func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -6380,6 +6413,7 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						MCPCodeModeBindingLevel:         cc.MCPCodeModeBindingLevel,
 						MCPToolSyncInterval:             cc.MCPToolSyncInterval,
 						MCPDisableAutoToolInject:        cc.MCPDisableAutoToolInject,
+						MCPEnableTempTokenAuth:          cc.MCPEnableTempTokenAuth,
 						AsyncJobResultTTL:               cc.AsyncJobResultTTL,
 						LoggingHeaders:                  cc.LoggingHeaders,
 						RequiredHeaders:                 cc.RequiredHeaders,
@@ -8303,6 +8337,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					MCPExternalClientURL:                  schemas.NewEnvVar(cc.MCPExternalClientURL),
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,

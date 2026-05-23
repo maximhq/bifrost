@@ -495,6 +495,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -524,6 +525,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
 	mcp_disable_auto_tool_inject: false,
+	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
