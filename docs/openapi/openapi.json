@@ -36394,6 +36394,36 @@
                           "name",
                           "connection_type"
                         ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "per_user_headers"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "per_user_header_keys"
+                              ],
+                              "properties": {
+                                "per_user_header_keys": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
+                            }
+                          }
+                        ],
                         "properties": {
                           "client_id": {
                             "type": "string",
@@ -36427,7 +36457,8 @@
                               "none",
                               "headers",
                               "oauth",
-                              "per_user_oauth"
+                              "per_user_oauth",
+                              "per_user_headers"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -36464,6 +36495,20 @@
                             "type": "boolean",
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
+                          },
+                          "per_user_header_keys": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "user_headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
                           }
                         }
                       },
@@ -36495,6 +36540,36 @@
                           "name",
                           "connection_type"
                         ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "per_user_headers"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "per_user_header_keys"
+                              ],
+                              "properties": {
+                                "per_user_header_keys": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
+                            }
+                          }
+                        ],
                         "properties": {
                           "client_id": {
                             "type": "string",
@@ -36528,7 +36603,8 @@
                               "none",
                               "headers",
                               "oauth",
-                              "per_user_oauth"
+                              "per_user_oauth",
+                              "per_user_headers"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -36565,6 +36641,20 @@
                             "type": "boolean",
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
+                          },
+                          "per_user_header_keys": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "user_headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
                           }
                         }
                       },
@@ -36596,6 +36686,36 @@
                           "name",
                           "connection_type"
                         ],
+                        "allOf": [
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "per_user_headers"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "per_user_header_keys"
+                              ],
+                              "properties": {
+                                "per_user_header_keys": {
+                                  "type": "array",
+                                  "minItems": 1,
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              },
+                              "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
+                            }
+                          }
+                        ],
                         "properties": {
                           "client_id": {
                             "type": "string",
@@ -36629,7 +36749,8 @@
                               "none",
                               "headers",
                               "oauth",
-                              "per_user_oauth"
+                              "per_user_oauth",
+                              "per_user_headers"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -36666,6 +36787,20 @@
                             "type": "boolean",
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
+                          },
+                          "per_user_header_keys": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "user_headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
                           }
                         }
                       },
@@ -36783,6 +36918,35 @@
               "schema": {
                 "type": "object",
                 "description": "MCP client configuration for updating an existing client (includes tool_pricing)",
+                "allOf": [
+                  {
+                    "if": {
+                      "required": [
+                        "auth_type"
+                      ],
+                      "properties": {
+                        "auth_type": {
+                          "const": "per_user_headers"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "per_user_header_keys"
+                      ],
+                      "properties": {
+                        "per_user_header_keys": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
                 "properties": {
                   "client_id": {
                     "type": "string",
@@ -36840,7 +37004,8 @@
                       "none",
                       "headers",
                       "oauth",
-                      "per_user_oauth"
+                      "per_user_oauth",
+                      "per_user_headers"
                     ],
                     "description": "Authentication type for the MCP connection"
                   },
@@ -36881,6 +37046,13 @@
                     "type": "boolean",
                     "default": false,
                     "description": "When true, this MCP client's tools are accessible to all virtual keys without requiring\nexplicit per-key assignment. All tools are allowed by default. If a virtual key has an\nexplicit MCP config for this client, that config takes precedence and overrides this behaviour.\n"
+                  },
+                  "per_user_header_keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "For `per_user_headers` clients only. Updating this list flips every existing\nactive per-user credential row to `needs_update`; callers will be sent back to\nthe submission form on their next tool call to satisfy the new schema.\n"
                   },
                   "disabled": {
                     "type": "boolean",
@@ -37119,6 +37291,531 @@
         }
       }
     },
+    "/api/mcp/sessions": {
+      "get": {
+        "summary": "List MCP sessions",
+        "description": "Returns every per-user MCP authentication artifact visible to the caller —\nOAuth tokens, header credentials, and pending submission / consent flows.\n\nRow visibility is scoped to the caller's identity (Virtual Key, signed-in\nuser, or asserted session ID). Server-level `headers` / `oauth` clients\nare not surfaced here; their credentials live on the MCP client config.\n\nWhen both a credential and a pending flow exist for the same\n`(identity, mcp_client)` binding, the credential is returned and the\nflow is suppressed to avoid duplicate entries.\n",
+        "operationId": "listMcpSessions",
+        "tags": [
+          "MCP"
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions visible to the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPSessionsListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/sessions/{id}": {
+      "delete": {
+        "summary": "Revoke an MCP session",
+        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding (so an in-flight callback can't undo the revoke)\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n\nNote: pending per-user OAuth flow rows are **not** revocable by this\nendpoint — they expire naturally or are cleared when the bound token\nrow is revoked. To cancel a pending OAuth flow, revoke its parent token\n(if one exists) or wait for expiry.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
+        "operationId": "revokeMcpSession",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session / credential / flow row ID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/sessions/{id}/reauth": {
+      "post": {
+        "summary": "Re-authenticate or edit an MCP session",
+        "description": "Mints a fresh authentication flow against the same MCP client and identity\nas the existing row. Two branches based on row type:\n\n- **OAuth token** (any non-`orphaned` row, typically `needs_reauth` —\n  but `active` is also accepted) — opens a fresh upstream OAuth consent\n  flow. Caller is expected to follow `authorize_url` to the provider;\n  on callback the credential is replaced in place.\n- **Header credential** (`active` or `needs_update`) — opens a fresh\n  per-user-headers submission flow. Caller follows the same URL field\n  to the Bifrost submission form; on submit the credential is replaced\n  in place. `kind: \"headers\"` is set on the response.\n\nRefused with 403 if the row is `orphaned` — a fresh credential wouldn't\nhelp; the issue is the identity has lost access to the MCP, which the\nadmin must fix.\n",
+        "operationId": "reauthMcpSession",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session row ID (OAuth token or header credential)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh flow opened",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPSessionReauthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Row is orphaned — re-auth would not restore access"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/per-user-headers/flows/{id}": {
+      "get": {
+        "summary": "Get per-user-headers submission flow",
+        "description": "Returns the pending submission flow row plus the live MCP client's schema\n(required header names + optional admin header names). Used by the\n`/workspace/mcp-sessions/auth?flow=<id>&kind=headers` landing page to\nrender the values form.\n\nAuthorization accepts either a dashboard session OR a short-lived\n`mcp_headers_auth` temp token bound to the flow ID (carried in the URL\nfragment by the auth-landing page link).\n",
+        "operationId": "getPerUserHeadersFlow",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Flow row ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Flow detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPHeadersFlowDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Submit per-user-headers values",
+        "description": "Consumes a pending submission flow row: verifies the caller's values\nagainst the upstream MCP server, upserts the credential keyed by the flow\nrow's (mode, identity), then deletes the flow row and the bound temp\ntoken. Mirrors the OAuth callback's \"complete the flow\" semantics.\n\nValues for any key not in the live `per_user_header_keys` schema are\ndropped server-side so a stale UI can't persist deprecated keys.\n",
+        "operationId": "submitPerUserHeadersFlow",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Flow row ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPHeadersSubmitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Credential persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPHeadersSubmitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Flow expired"
+          },
+          "422": {
+            "description": "Upstream verification failed with the supplied values"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/per-user-headers/credential/{id}": {
+      "delete": {
+        "summary": "Revoke a per-user-headers credential",
+        "description": "Hard-deletes a per-user-headers credential row by primary key. Authorization\nscoping is enforced server-side — callers may only delete credentials\nvisible to their identity.\n\nThe unified DELETE /api/mcp/sessions/{id} is the more convenient entry\npoint; this typed endpoint exists for callers that already know they're\nacting on a header credential row.\n",
+        "operationId": "revokePerUserHeadersCredential",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Credential row primary key"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/flows/{id}": {
+      "get": {
+        "operationId": "getPerUserOauthFlow",
+        "summary": "Get per-user OAuth flow detail",
+        "description": "Returns the pending OAuth flow row metadata: which MCP client is being\nauthorized, which identity (user / VK / session) the resulting token\nwill be bound to, and whether an active token already exists for that\nbinding (`has_active_token`).\n\nAuthorization accepts either a dashboard session OR a short-lived\n`mcp_auth` temp token bound to the flow ID (carried in the URL fragment\nby the auth-landing page link).\n",
+        "tags": [
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Flow row ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Flow detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPOauthFlowDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/flows/{id}/start": {
+      "get": {
+        "operationId": "startPerUserOauthFlow",
+        "summary": "Start the upstream OAuth authorization for a pending flow",
+        "description": "Reconstructs the upstream provider's authorize URL for a pending OAuth\nflow. The auth-landing page redirects the browser to that URL; the user\ncompletes upstream auth; the upstream provider redirects back to\n`/api/oauth/callback`, which exchanges the code for tokens server-side\nand stores them against the flow's identity.\n\nReturns 410 if the flow is no longer pending (expired / completed /\nfailed). The caller should restart the original action to get a fresh\nflow.\n",
+        "tags": [
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Flow row ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorize URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "authorize_url"
+                  ],
+                  "properties": {
+                    "authorize_url": {
+                      "type": "string",
+                      "description": "Where to send the browser to complete upstream OAuth"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Flow is no longer pending; restart the original action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OAuth provider not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/oauth/callback": {
       "get": {
         "operationId": "handleOAuthCallback",
@@ -37140,8 +37837,8 @@
           {
             "name": "code",
             "in": "query",
-            "required": true,
-            "description": "Authorization code from the OAuth provider",
+            "required": false,
+            "description": "Authorization code from the OAuth provider. Present on success only;\n`code` and `error` are mutually exclusive — one of them is always set.\n",
             "schema": {
               "type": "string"
             }
@@ -37150,7 +37847,7 @@
             "name": "error",
             "in": "query",
             "required": false,
-            "description": "Error code if authorization failed",
+            "description": "Error code if authorization failed. Mutually exclusive with `code`.\n",
             "schema": {
               "type": "string"
             }
@@ -37240,11 +37937,13 @@
             }
           }
         }
-      },
+      }
+    },
+    "/api/oauth/config/{id}": {
       "delete": {
         "operationId": "revokeOAuthConfig",
         "summary": "Revoke OAuth config",
-        "description": "Revokes an OAuth configuration and its associated access token.\nAfter revocation, the MCP client will no longer be able to use this OAuth token.\n",
+        "description": "Revokes a server-level OAuth configuration and its associated access token.\nAfter revocation, the MCP client will no longer be able to use this OAuth token.\n",
         "tags": [
           "OAuth"
         ],
@@ -37270,892 +37969,12 @@
               }
             }
           },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/register": {
-      "post": {
-        "operationId": "registerPerUserOAuthClient",
-        "summary": "Register OAuth client (RFC 7591)",
-        "description": "Dynamic Client Registration per RFC 7591. MCP clients (Claude Code, Cursor, etc.)\ncall this endpoint to obtain a `client_id` before initiating the authorization flow.\n\nThis endpoint is only available when at least one MCP client is configured with\n`auth_type: per_user_oauth`. Returns `404` otherwise.\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Dynamic Client Registration request per RFC 7591.\nMCP clients (Claude Code, Cursor, etc.) call this to obtain a client_id\nbefore initiating the authorization flow.\n",
-                "required": [
-                  "redirect_uris"
-                ],
-                "properties": {
-                  "client_name": {
-                    "type": "string",
-                    "description": "Human-readable name of the client application",
-                    "example": "Claude Code"
-                  },
-                  "redirect_uris": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "List of allowed redirect URIs for this client",
-                    "example": [
-                      "http://localhost:54321/callback"
-                    ]
-                  },
-                  "grant_types": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Supported grant types. Defaults to [\"authorization_code\"]",
-                    "example": [
-                      "authorization_code"
-                    ]
-                  },
-                  "response_types": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Supported response types",
-                    "example": [
-                      "code"
-                    ]
-                  },
-                  "token_endpoint_auth_method": {
-                    "type": "string",
-                    "description": "Token endpoint authentication method. Always \"none\" (public client)",
-                    "example": "none"
-                  },
-                  "scope": {
-                    "type": "string",
-                    "description": "Space-separated list of requested scopes",
-                    "example": "mcp:read mcp:write"
-                  }
-                }
-              },
-              "example": {
-                "client_name": "Claude Code",
-                "redirect_uris": [
-                  "http://localhost:54321/callback"
-                ],
-                "grant_types": [
-                  "authorization_code"
-                ],
-                "response_types": [
-                  "code"
-                ],
-                "token_endpoint_auth_method": "none"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Client registered successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "Dynamic Client Registration response per RFC 7591",
-                  "properties": {
-                    "client_id": {
-                      "type": "string",
-                      "description": "Issued client identifier",
-                      "example": "550e8400-e29b-41d4-a716-446655440000"
-                    },
-                    "client_name": {
-                      "type": "string",
-                      "description": "Human-readable name of the client application"
-                    },
-                    "redirect_uris": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Registered redirect URIs"
-                    },
-                    "grant_types": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Registered grant types"
-                    },
-                    "response_types": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Registered response types"
-                    },
-                    "token_endpoint_auth_method": {
-                      "type": "string",
-                      "description": "Token endpoint authentication method (always \"none\")"
-                    }
-                  }
-                },
-                "example": {
-                  "client_id": "550e8400-e29b-41d4-a716-446655440000",
-                  "client_name": "Claude Code",
-                  "redirect_uris": [
-                    "http://localhost:54321/callback"
-                  ],
-                  "grant_types": [
-                    "authorization_code"
-                  ],
-                  "token_endpoint_auth_method": "none"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No per-user OAuth MCP clients configured",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Config store is disabled",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/authorize": {
-      "get": {
-        "operationId": "authorizePerUserOAuth",
-        "summary": "Authorization endpoint (OAuth 2.1)",
-        "description": "OAuth 2.1 authorization endpoint. Validates the request parameters, creates a\nbrowser-bound `PendingFlow` record (15-minute TTL), and redirects the user to\nthe Bifrost consent screen at `/oauth/consent?flow_id=xxx`.\n\n**PKCE is required** - `code_challenge` and `code_challenge_method=S256` must\nbe provided. Plain code challenges are not supported.\n\nA `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to\nbind the consent flow to the initiating browser session (CSRF protection).\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "parameters": [
-          {
-            "name": "response_type",
-            "in": "query",
-            "required": true,
-            "description": "Must be `code`",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "code"
-              ]
-            }
-          },
-          {
-            "name": "client_id",
-            "in": "query",
-            "required": true,
-            "description": "Client ID obtained from the registration endpoint",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "redirect_uri",
-            "in": "query",
-            "required": true,
-            "description": "Must match a URI registered for this client",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "code_challenge",
-            "in": "query",
-            "required": true,
-            "description": "PKCE code challenge (Base64URL-encoded SHA-256 of the code verifier)",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "code_challenge_method",
-            "in": "query",
-            "required": true,
-            "description": "Must be `S256`",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "S256"
-              ]
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": false,
-            "description": "Opaque value to maintain state between request and callback (CSRF protection)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "302": {
-            "description": "Redirect to consent screen at `/oauth/consent?flow_id=xxx`",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "URL of the consent screen"
-              },
-              "Set-Cookie": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "`__bifrost_flow_secret` HttpOnly SameSite=Lax cookie for browser binding"
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No per-user OAuth MCP clients configured, or unknown client_id",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Config store is disabled",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/token": {
-      "post": {
-        "operationId": "exchangePerUserOAuthToken",
-        "summary": "Token endpoint (OAuth 2.1)",
-        "description": "OAuth 2.1 token endpoint. Exchanges a single-use authorization code (5-minute TTL)\nfor a Bifrost-issued access token (24-hour TTL) using PKCE verification.\n\nThe request body must be `application/x-www-form-urlencoded`.\n\nThe returned `access_token` is the Bearer token to use on subsequent `/mcp` requests.\nIt carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their\nidentity (Virtual Key or User ID) from the consent flow.\n\nAuthentication is not required - this is part of the unauthenticated OAuth bootstrap flow.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/x-www-form-urlencoded": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "grant_type",
-                  "code",
-                  "code_verifier"
-                ],
-                "properties": {
-                  "grant_type": {
-                    "type": "string",
-                    "description": "Must be `authorization_code`",
-                    "enum": [
-                      "authorization_code"
-                    ]
-                  },
-                  "code": {
-                    "type": "string",
-                    "description": "Authorization code received in the redirect callback"
-                  },
-                  "redirect_uri": {
-                    "type": "string",
-                    "description": "Must match the redirect_uri used in the authorize request (if provided)"
-                  },
-                  "client_id": {
-                    "type": "string",
-                    "description": "Client ID (optional - code is already bound to the client)"
-                  },
-                  "code_verifier": {
-                    "type": "string",
-                    "description": "PKCE code verifier - the raw secret whose SHA-256 matches the code_challenge"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Token issued successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "OAuth 2.1 token response from the token endpoint",
-                  "properties": {
-                    "access_token": {
-                      "type": "string",
-                      "description": "Bifrost-issued access token (24h TTL). Use as Bearer token on /mcp requests."
-                    },
-                    "token_type": {
-                      "type": "string",
-                      "description": "Token type, always \"Bearer\"",
-                      "example": "Bearer"
-                    },
-                    "expires_in": {
-                      "type": "integer",
-                      "description": "Seconds until the access token expires (86400 for 24h)",
-                      "example": 86400
-                    },
-                    "scope": {
-                      "type": "string",
-                      "description": "Space-separated scopes granted"
-                    }
-                  }
-                },
-                "example": {
-                  "access_token": "abc123xyz...",
-                  "token_type": "Bearer",
-                  "expires_in": 86400,
-                  "scope": "mcp:read mcp:write"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid grant, expired code, PKCE failure, or unsupported grant type",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "enum": [
-                        "invalid_grant",
-                        "invalid_request",
-                        "unsupported_grant_type"
-                      ]
-                    },
-                    "error_description": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No per-user OAuth MCP clients configured",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Server error or session creation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string",
-                      "enum": [
-                        "server_error"
-                      ]
-                    },
-                    "error_description": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/upstream/authorize": {
-      "get": {
-        "operationId": "authorizeUpstreamPerUserOAuth",
-        "summary": "Upstream OAuth proxy - authorize with upstream service",
-        "description": "Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)\non behalf of the current user. Used during the consent flow (via \"Connect\" buttons\non the MCPs page) and at runtime when a tool call is made to an unauthenticated service.\n\n**Consent flow** - provide `flow_id` (from the pending consent flow). The browser-binding\ncookie (`__bifrost_flow_secret`) is validated.\n\n**Runtime flow** - provide `session` (the Bifrost session ID from the token endpoint).\nUsed when a service was skipped during consent and needs to be connected later.\n\nOn success, redirects the user to the upstream provider's authorize URL. After the user\ngrants access, the upstream callback lands at `/api/oauth/callback`, stores the upstream\ntoken against the user's identity, and redirects back to the consent screen (consent flow)\nor returns an authorization success page (runtime flow).\n\nAuthentication is not required - cookie/session validation is performed instead.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "parameters": [
-          {
-            "name": "mcp_client_id",
-            "in": "query",
-            "required": true,
-            "description": "ID of the per-user OAuth MCP client to authenticate with",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "flow_id",
-            "in": "query",
-            "required": false,
-            "description": "Pending consent flow ID. Required if `session` is not provided.\nThe `__bifrost_flow_secret` cookie must be present and match the flow.\n",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "required": false,
-            "description": "Bifrost session ID (from the token endpoint). Required if `flow_id` is not provided.\nUsed for runtime (post-consent) upstream authorization.\n",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "302": {
-            "description": "Redirect to upstream OAuth provider's authorize URL",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Upstream provider authorization URL with PKCE parameters"
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
           "401": {
-            "description": "Invalid or expired flow/session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Browser-binding cookie mismatch (CSRF protection)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "MCP client not found or not configured for per-user OAuth",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Config store is disabled",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/oauth/consent": {
-      "get": {
-        "operationId": "getConsentIdentityPage",
-        "summary": "Consent identity selection page",
-        "description": "Renders the identity selection screen where the user chooses how to identify\nthemselves for the session: Virtual Key, User ID, or Skip (session-only auth).\n\nThe `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`\nmust be present - it binds the consent flow to the initiating browser.\n\nThe Skip option is only shown when `enforce_auth_on_inference` is `false` in config.\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "parameters": [
-          {
-            "name": "flow_id",
-            "in": "query",
-            "required": true,
-            "description": "Pending flow ID from the authorize redirect",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "error",
-            "in": "query",
-            "required": false,
-            "description": "Error message to display (used on redirect-back from failed form submissions)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Identity selection HTML page",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing or expired flow_id",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Browser-binding cookie mismatch",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/oauth/consent/mcps": {
-      "get": {
-        "operationId": "getConsentMCPsPage",
-        "summary": "Consent MCP services page",
-        "description": "Renders the MCP services connection screen. Shows all per-user OAuth MCP servers\navailable on the user's Virtual Key (or all servers if no VK was selected).\nEach service shows a \"Connect\" link or a \"Connected ✓\" badge.\n\nRequires the `__bifrost_flow_secret` browser-binding cookie.\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "parameters": [
-          {
-            "name": "flow_id",
-            "in": "query",
-            "required": true,
-            "description": "Pending flow ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "MCP services connection HTML page",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing or expired flow_id",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Browser-binding cookie mismatch",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/consent/vk": {
-      "post": {
-        "operationId": "submitConsentVirtualKey",
-        "summary": "Submit Virtual Key identity",
-        "description": "Validates the submitted Virtual Key and links it to the pending flow as the user's\nidentity. On success, redirects to the MCPs page. On failure, redirects back to the\nidentity page with an error message.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/x-www-form-urlencoded": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "flow_id",
-                  "vk"
-                ],
-                "properties": {
-                  "flow_id": {
-                    "type": "string",
-                    "description": "Pending flow ID"
-                  },
-                  "vk": {
-                    "type": "string",
-                    "description": "Virtual Key value (validated against the database)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "302": {
-            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` on failure.\n",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/consent/user-id": {
-      "post": {
-        "operationId": "submitConsentUserID",
-        "summary": "Submit User ID identity",
-        "description": "Links a self-declared User ID to the pending flow as the user's identity.\nOn success, redirects to the MCPs page.\n\nThe User ID is self-declared with no server-side verification - it matches\nthe trust model of the `X-Bf-User-Id` header in the LLM Gateway path.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/x-www-form-urlencoded": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "flow_id",
-                  "user_id"
-                ],
-                "properties": {
-                  "flow_id": {
-                    "type": "string",
-                    "description": "Pending flow ID"
-                  },
-                  "user_id": {
-                    "type": "string",
-                    "description": "Self-declared user identifier (max 255 characters)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "302": {
-            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` on failure.\n",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/consent/skip": {
-      "post": {
-        "operationId": "skipConsentIdentity",
-        "summary": "Skip identity selection",
-        "description": "Skips identity selection and proceeds directly to the MCPs page. Upstream service\ntokens will be stored against the session token only (not a persistent identity),\nso they will not carry over to other sessions or the LLM Gateway.\n\nOnly available when `enforce_auth_on_inference` is `false` in config. Returns a\nredirect back to the identity page with an error if auth enforcement is enabled.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/x-www-form-urlencoded": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "flow_id"
-                ],
-                "properties": {
-                  "flow_id": {
-                    "type": "string",
-                    "description": "Pending flow ID"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "302": {
-            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` if identity enforcement is required.\n",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oauth/per-user/consent/submit": {
-      "post": {
-        "operationId": "submitConsent",
-        "summary": "Finalize consent flow",
-        "description": "Finalizes the consent flow atomically:\n1. Creates a `TablePerUserOAuthSession` (24h Bifrost session token)\n2. Transfers upstream tokens from the flow proxy to the session\n3. Issues a single-use `TablePerUserOAuthCode` (5-minute TTL, PKCE-bound)\n4. Deletes the `PendingFlow`\n5. Redirects to the MCP client's `redirect_uri` with `code` and `state`\n\nThe MCP client then exchanges the code at `/api/oauth/per-user/token`.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
-        "tags": [
-          "Per-User OAuth",
-          "Consent Flow"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/x-www-form-urlencoded": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "flow_id"
-                ],
-                "properties": {
-                  "flow_id": {
-                    "type": "string",
-                    "description": "Pending flow ID"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "302": {
-            "description": "Redirect to the MCP client's registered `redirect_uri` with\n`?code=xxx&state=yyy` query parameters.\n",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "MCP client callback URL with code and state"
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
+            "description": "Unauthorized — missing or invalid credentials",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Browser-binding cookie mismatch",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Consent flow already submitted (duplicate submission prevention)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Consent flow expired",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
                 }
               }
             }
@@ -38166,217 +37985,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/.well-known/oauth-protected-resource": {
-      "get": {
-        "operationId": "getOAuthProtectedResourceMetadata",
-        "summary": "Protected Resource Metadata (RFC 9728)",
-        "description": "Returns the OAuth 2.0 Protected Resource Metadata document per RFC 9728.\n\nMCP clients fetch this after receiving a `401` response from `/mcp` (with a\n`WWW-Authenticate: Bearer resource_metadata=\".../.well-known/oauth-protected-resource\"`\nheader). The response tells the client which authorization server(s) protect the\n`/mcp` resource so it can proceed with discovery.\n\nReturns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "responses": {
-          "200": {
-            "description": "Protected resource metadata",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "OAuth 2.0 Protected Resource Metadata per RFC 9728.\nReturned by /.well-known/oauth-protected-resource to tell MCP clients\nwhich authorization server(s) protect the /mcp endpoint.\n",
-                  "properties": {
-                    "resource": {
-                      "type": "string",
-                      "description": "URL of the protected resource (Bifrost's /mcp endpoint)",
-                      "example": "https://your-bifrost-domain.com/mcp"
-                    },
-                    "authorization_servers": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "List of authorization server issuer URLs",
-                      "example": [
-                        "https://your-bifrost-domain.com"
-                      ]
-                    },
-                    "scopes_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Scopes supported by this resource",
-                      "example": [
-                        "mcp:read",
-                        "mcp:write"
-                      ]
-                    },
-                    "bearer_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Supported methods for passing Bearer tokens",
-                      "example": [
-                        "header"
-                      ]
-                    }
-                  }
-                },
-                "example": {
-                  "resource": "https://your-bifrost-domain.com/mcp",
-                  "authorization_servers": [
-                    "https://your-bifrost-domain.com"
-                  ],
-                  "scopes_supported": [
-                    "mcp:read",
-                    "mcp:write"
-                  ],
-                  "bearer_methods_supported": [
-                    "header"
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No per-user OAuth MCP clients configured",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/.well-known/oauth-authorization-server": {
-      "get": {
-        "operationId": "getOAuthAuthorizationServerMetadata",
-        "summary": "Authorization Server Metadata (RFC 8414)",
-        "description": "Returns the OAuth 2.0 Authorization Server Metadata document per RFC 8414.\n\nAfter fetching the Protected Resource Metadata, MCP clients fetch this endpoint\nto discover Bifrost's OAuth endpoints (register, authorize, token) and capabilities\n(PKCE methods, grant types, etc.).\n\nReturns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.\n",
-        "tags": [
-          "OAuth",
-          "Per-User OAuth"
-        ],
-        "responses": {
-          "200": {
-            "description": "Authorization server metadata",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "OAuth 2.0 Authorization Server Metadata per RFC 8414.\nReturned by /.well-known/oauth-authorization-server to let MCP clients\ndiscover Bifrost's OAuth endpoints and capabilities.\n",
-                  "properties": {
-                    "issuer": {
-                      "type": "string",
-                      "description": "Authorization server issuer URL (Bifrost base URL)",
-                      "example": "https://your-bifrost-domain.com"
-                    },
-                    "authorization_endpoint": {
-                      "type": "string",
-                      "description": "Authorization endpoint URL",
-                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/authorize"
-                    },
-                    "token_endpoint": {
-                      "type": "string",
-                      "description": "Token endpoint URL",
-                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/token"
-                    },
-                    "registration_endpoint": {
-                      "type": "string",
-                      "description": "Dynamic client registration endpoint URL",
-                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/register"
-                    },
-                    "response_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "example": [
-                        "code"
-                      ]
-                    },
-                    "grant_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "example": [
-                        "authorization_code"
-                      ]
-                    },
-                    "code_challenge_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Supported PKCE methods (only S256)",
-                      "example": [
-                        "S256"
-                      ]
-                    },
-                    "token_endpoint_auth_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "Supported token endpoint auth methods (public clients only)",
-                      "example": [
-                        "none"
-                      ]
-                    },
-                    "scopes_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "example": [
-                        "mcp:read",
-                        "mcp:write"
-                      ]
-                    }
-                  }
-                },
-                "example": {
-                  "issuer": "https://your-bifrost-domain.com",
-                  "authorization_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/authorize",
-                  "token_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/token",
-                  "registration_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/register",
-                  "response_types_supported": [
-                    "code"
-                  ],
-                  "grant_types_supported": [
-                    "authorization_code"
-                  ],
-                  "code_challenge_methods_supported": [
-                    "S256"
-                  ],
-                  "token_endpoint_auth_methods_supported": [
-                    "none"
-                  ],
-                  "scopes_supported": [
-                    "mcp:read",
-                    "mcp:write"
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No per-user OAuth MCP clients configured",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
                 }
               }
             }
@@ -54273,6 +53881,16 @@
           }
         }
       },
+      "Unauthorized": {
+        "description": "Unauthorized — missing or invalid credentials",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
       "NotFound": {
         "description": "Resource not found",
         "content": {
@@ -66418,7 +66036,8 @@
               "none",
               "headers",
               "oauth",
-              "per_user_oauth"
+              "per_user_oauth",
+              "per_user_headers"
             ],
             "description": "Authentication type for the MCP connection"
           },
@@ -66459,6 +66078,13 @@
             "type": "boolean",
             "default": false,
             "description": "When true, this MCP client's tools are accessible to all virtual keys without requiring\nexplicit per-key assignment. All tools are allowed by default. If a virtual key has an\nexplicit MCP config for this client, that config takes precedence and overrides this behaviour.\n"
+          },
+          "per_user_header_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For `per_user_headers` clients only. The list of header names each end-user\nmust supply via the inline-401 flow. Header values themselves are stored\nper-user in a separate table (surfaced on `/api/mcp/sessions`).\n"
           },
           "disabled": {
             "type": "boolean",
@@ -66544,9 +66170,10 @@
           "none",
           "headers",
           "oauth",
-          "per_user_oauth"
+          "per_user_oauth",
+          "per_user_headers"
         ],
-        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Header-based authentication (API keys, custom headers, etc.)\n- oauth: OAuth 2.0 authentication (shared admin token)\n- per_user_oauth: Per-user OAuth 2.1 (each end-user authenticates individually)\n"
+        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n"
       },
       "OAuthConfigRequest": {
         "type": "object",
@@ -66694,6 +66321,386 @@
             "type": "string",
             "format": "date-time",
             "description": "When the token was last refreshed"
+          }
+        }
+      },
+      "MCPOauthFlowDetail": {
+        "type": "object",
+        "description": "Response for GET /api/oauth/per-user/flows/{id}. Mirrors the headers-side\n`MCPHeadersFlowDetail` — identity binding for display plus the bits the\nconsent UI needs to decide its copy.\n",
+        "required": [
+          "id",
+          "flow_mode",
+          "status",
+          "mcp_client",
+          "oauth_config_id",
+          "expires_at",
+          "created_at",
+          "has_active_token"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "flow_mode": {
+            "type": "string",
+            "enum": [
+              "user",
+              "vk",
+              "session"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "authorized",
+              "failed",
+              "expired"
+            ]
+          },
+          "mcp_client": {
+            "$ref": "#/components/schemas/MCPClientSummary"
+          },
+          "oauth_config_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/MCPUserSummary",
+            "nullable": true
+          },
+          "virtual_key": {
+            "$ref": "#/components/schemas/MCPVirtualKeySummary",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "has_active_token": {
+            "type": "boolean",
+            "description": "True when an active token already exists for the flow's binding. A\npending flow with this set means OAuth was re-initiated unnecessarily;\nthe consent page can render this as \"already authenticated\" instead\nof prompting again.\n"
+          }
+        }
+      },
+      "MCPClientSummary": {
+        "type": "object",
+        "description": "Minimal MCP client view embedded in session rows.",
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPVirtualKeySummary": {
+        "type": "object",
+        "description": "Minimal virtual-key view embedded in session rows.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPUserSummary": {
+        "type": "object",
+        "description": "Minimal user view embedded on user-keyed session rows.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPSessionRow": {
+        "type": "object",
+        "description": "One row on the MCP Sessions list. Covers OAuth tokens, header credentials,\nand pending flows (of either kind). Always-set fields are at the top;\nper-kind-only fields use omitempty.\n",
+        "required": [
+          "id",
+          "kind",
+          "auth_kind",
+          "auth_mode",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Row primary key — token UUID, header credential UUID, or flow UUID"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "token",
+              "header",
+              "flow"
+            ],
+            "description": "Row type:\n- token: completed per-user OAuth credential\n- header: completed per-user-headers credential\n- flow: pending submission / consent flow (use auth_kind to disambiguate OAuth vs Headers)\n"
+          },
+          "auth_kind": {
+            "type": "string",
+            "enum": [
+              "oauth",
+              "headers"
+            ],
+            "description": "Disambiguates flow rows by which auth surface they belong to. For\n`kind=token` this is always `oauth`; for `kind=header` always `headers`.\n"
+          },
+          "auth_mode": {
+            "type": "string",
+            "enum": [
+              "user",
+              "vk",
+              "session"
+            ],
+            "description": "Identity dimension this credential is keyed against"
+          },
+          "user_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Populated on user-keyed rows; refers to the SCIM user table"
+          },
+          "user": {
+            "$ref": "#/components/schemas/MCPUserSummary",
+            "nullable": true,
+            "description": "Preloaded user summary; nil when the user table is not available"
+          },
+          "virtual_key": {
+            "$ref": "#/components/schemas/MCPVirtualKeySummary",
+            "nullable": true
+          },
+          "mcp_client": {
+            "$ref": "#/components/schemas/MCPClientSummary",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Populated only on session-keyed rows"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "orphaned",
+              "pending",
+              "needs_reauth",
+              "needs_update"
+            ],
+            "description": "OAuth tokens use: active | orphaned | needs_reauth.\nHeader credentials use: active | orphaned | needs_update.\nFlow rows use: pending.\n"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the OAuth access token expires; nil for header rows"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_refreshed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "OAuth token rows only — last successful refresh"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Header credential rows only — last submission / edit"
+          },
+          "oauth_config_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "OAuth rows only"
+          }
+        }
+      },
+      "MCPSessionsListResponse": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MCPSessionRow"
+            }
+          }
+        }
+      },
+      "MCPSessionReauthResponse": {
+        "type": "object",
+        "description": "Response for POST /api/mcp/sessions/{id}/reauth. Returns the URL the caller\nmust visit to complete the fresh authentication / resubmission.\n",
+        "required": [
+          "authorize_url",
+          "session_id"
+        ],
+        "properties": {
+          "authorize_url": {
+            "type": "string",
+            "description": "Where the caller must go. For OAuth rows this is the upstream provider's\nauthorize page (via a Bifrost intermediate). For header credential rows\nit's the Bifrost submission form for the new flow.\n"
+          },
+          "submit_url": {
+            "type": "string",
+            "description": "Set only on header re-auth and identical to authorize_url. Kept for\ncallers that want to be explicit about the underlying surface.\n"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "ID of the freshly-minted flow row"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "oauth",
+              "headers"
+            ],
+            "description": "Set only on header re-auth"
+          }
+        }
+      },
+      "MCPHeadersFlowDetail": {
+        "type": "object",
+        "description": "Response for GET /api/mcp/per-user-headers/flows/{id}. Carries the schema\nthe end-user needs to fill in plus identity binding info for display.\n",
+        "required": [
+          "id",
+          "flow_mode",
+          "status",
+          "expires_at",
+          "created_at",
+          "required_header_keys",
+          "has_active_credential"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "flow_mode": {
+            "type": "string",
+            "enum": [
+              "user",
+              "vk",
+              "session"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "expired"
+            ]
+          },
+          "mcp_client": {
+            "$ref": "#/components/schemas/MCPClientSummary",
+            "nullable": true
+          },
+          "user_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/MCPUserSummary",
+            "nullable": true
+          },
+          "virtual_key": {
+            "$ref": "#/components/schemas/MCPVirtualKeySummary",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "required_header_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Header names the end-user must supply on this submission"
+          },
+          "admin_header_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names (not values) of static admin headers attached to every per-user\nrequest. Surfaced so the user understands what context will accompany\ntheir values.\n"
+          },
+          "submitted_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of header keys already on the caller's existing credential.\nPopulated whenever a credential exists for the binding (both `active`\nand `needs_update` states — `orphaned` credentials are filtered\nserver-side). Values are never returned. `has_active_credential` only\nflips to true when the credential is in `active` state.\n"
+          },
+          "has_active_credential": {
+            "type": "boolean",
+            "description": "True when a credential already exists for the flow's (mode, identity,\nmcp_client) triple. The submission UI uses this to render an \"edit\"\naffordance instead of a fresh form.\n"
+          }
+        }
+      },
+      "MCPHeadersSubmitRequest": {
+        "type": "object",
+        "description": "Request body for PUT /api/mcp/per-user-headers/flows/{id}. The flow row\nidentifies the (mode, identity, mcp_client) triple, so the caller carries\nonly the values. Extra keys not in the live `per_user_header_keys` schema\nare dropped server-side.\n",
+        "required": [
+          "headers"
+        ],
+        "properties": {
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "MCPHeadersSubmitResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "credential_id",
+          "updated_at"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "success"
+            ]
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
