@@ -10,7 +10,9 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -142,21 +144,7 @@ func (h *MCPPerUserHeadersHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 	// edit affordance instead of a fresh form. Identity is the flow row's own
 	// identity column — same convention as OAuth's flowDetail.
 	if h.store.MCPHeadersProvider != nil {
-		mode := schemas.MCPAuthMode(flow.FlowMode)
-		identity := ""
-		switch mode {
-		case schemas.MCPAuthModeUser:
-			if flow.UserID != nil {
-				identity = *flow.UserID
-			}
-		case schemas.MCPAuthModeVK:
-			if flow.VirtualKeyID != nil {
-				identity = *flow.VirtualKeyID
-			}
-		case schemas.MCPAuthModeSession:
-			identity = flow.SessionID
-		}
-		if identity != "" {
+		if mode, identity, ok := headersFlowIdentity(flow); ok {
 			// GetCredentialByMode returns 'active' and 'needs_update' rows
 			// (orphaned is filtered at the store). SubmittedKeys carries the
 			// previously-submitted key NAMES — useful regardless of status
@@ -220,16 +208,30 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, cfgErr.Error())
 		return
 	}
-	if missing := missingPerUserHeaderValues(config.PerUserHeaderKeys, req.Headers); len(missing) > 0 {
+	// Canonicalize incoming header keys (lowercase + trim) before comparing
+	// against the schema. The schema is already canon by the write-time
+	// invariant (see mcputils.CanonicalizeHeaderKey doc), so once we
+	// normalize the request side the exact map lookups below "just work"
+	// regardless of whether the client UI sent "Authorization" or
+	// "authorization". A pre-normalization mismatch would otherwise force
+	// users into unnecessary re-submission loops.
+	canonHeaders := mcputils.CanonicalizeHeaderMap(req.Headers)
+	mergedHeaders := canonHeaders
+	if mode, identity, ok := headersFlowIdentity(flow); ok {
+		mergedHeaders = mergeExistingPerUserHeaders(ctx, h.store.MCPHeadersProvider, mode, identity, flow.MCPClientID, canonHeaders)
+	}
+	if missing := missingPerUserHeaderValues(config.PerUserHeaderKeys, mergedHeaders); len(missing) > 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("missing values for required keys: %s", strings.Join(missing, ", ")))
 		return
 	}
 
 	// Filter to declared keys only — extras get dropped on purpose so a stale
-	// UI cannot persist values that would never be sent on the wire.
+	// UI cannot persist values that would never be sent on the wire. Both
+	// the schema and the lookup map are canon at this point, so exact-key
+	// lookup is correct.
 	filtered := make(map[string]string, len(config.PerUserHeaderKeys))
 	for _, key := range config.PerUserHeaderKeys {
-		if v, ok := req.Headers[key]; ok {
+		if v, ok := mergedHeaders[key]; ok {
 			filtered[key] = v
 		}
 	}
@@ -314,11 +316,84 @@ func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "credential not found")
 		return
 	}
+	// Drop pending submission flow rows for the same binding BEFORE the
+	// credential. A holder of the 15-min temp-token who has the auth-page
+	// URL open in another tab can still PUT /flows/{id}; if the submit
+	// lands after the credential is gone, the upsert would mint a fresh
+	// credential and silently undo the revoke. Mirrors mcp_sessions.go.
+	credMode := schemas.MCPAuthMode(cred.AuthMode)
+	credIdentity := ""
+	switch credMode {
+	case schemas.MCPAuthModeUser:
+		if cred.UserID != nil {
+			credIdentity = *cred.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if cred.VirtualKeyID != nil {
+			credIdentity = *cred.VirtualKeyID
+		}
+	case schemas.MCPAuthModeSession:
+		credIdentity = cred.SessionID
+	}
+	if credIdentity != "" {
+		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx, credMode, credIdentity, cred.MCPClientID); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to clear pending submission flows: %v", err))
+			return
+		}
+	}
 	if err := h.store.MCPHeadersProvider.DeleteCredential(ctx, cred.ID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke credential: %v", err))
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
+}
+
+func headersFlowIdentity(flow *configstoreTables.TableMCPPerUserHeaderFlow) (schemas.MCPAuthMode, string, bool) {
+	if flow == nil {
+		return "", "", false
+	}
+	mode := schemas.MCPAuthMode(flow.FlowMode)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		if flow.UserID != nil && *flow.UserID != "" {
+			return mode, *flow.UserID, true
+		}
+	case schemas.MCPAuthModeVK:
+		if flow.VirtualKeyID != nil && *flow.VirtualKeyID != "" {
+			return mode, *flow.VirtualKeyID, true
+		}
+	case schemas.MCPAuthModeSession:
+		if flow.SessionID != "" {
+			return mode, flow.SessionID, true
+		}
+	}
+	return mode, "", false
+}
+
+func mergeExistingPerUserHeaders(
+	ctx context.Context,
+	provider schemas.MCPHeadersProvider,
+	mode schemas.MCPAuthMode,
+	identity string,
+	mcpClientID string,
+	submitted map[string]string,
+) map[string]string {
+	merged := make(map[string]string, len(submitted))
+	if provider != nil && identity != "" {
+		if cred, err := provider.GetCredentialByMode(ctx, mode, identity, mcpClientID); err == nil && cred != nil {
+			for key, value := range cred.Headers {
+				if strings.TrimSpace(value) != "" {
+					merged[key] = value
+				}
+			}
+		}
+	}
+	for key, value := range submitted {
+		if strings.TrimSpace(value) != "" {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 // loadMCPClientConfig fetches the MCP client config and verifies it is a

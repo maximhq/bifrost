@@ -1864,6 +1864,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["stdio_config_json"] = stdioConfigJSON
 			updates["auth_type"] = clientConfigCopy.AuthType
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)
@@ -2762,11 +2763,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
 			return err
 		}
-		// Delete per-user MCP header flows tied to this VK — mirrors the
-		// OAuth session purge above. A pending flow's temp-token is valid
-		// for ~15 min; without this delete, a submission in flight could
-		// upsert a credential row pointing at the just-deleted VK and
-		// re-grant access after explicit revocation.
+		// Delete per-user MCP header submission flows tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
 			return err
 		}
@@ -5392,7 +5389,11 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id str
 	var flow tables.TableMCPPerUserHeaderFlow
 	if err := s.ScopedDB(ctx).
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB {
-			return db.Select("client_id, name, headers_json, allowed_extra_headers_json, per_user_header_keys_json")
+			// encryption_status is required for TableMCPClient.AfterFind to
+			// decrypt headers_json in encrypted deployments — omitting it
+			// makes the preload return ciphertext and breaks flowSubmit's
+			// VerifyHeadersConnection path which reads config.Headers.
+			return db.Select("client_id, name, headers_json, allowed_extra_headers_json, per_user_header_keys_json, encryption_status")
 		}).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
 		Where("id = ?", id).First(&flow).Error; err != nil {
@@ -5485,9 +5486,9 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(c
 }
 
 // ListAllPendingMCPPerUserHeaderFlows returns all pending header-submission
-// flow rows whose expiry is in the future. Mirrors
-// ListAllPendingOauthUserSessions. Visibility scoping is handled by the
-// enterprise configstore layer via DAC; OSS sees everything.
+// flow rows whose expiry is in the future. Uses ScopedDB so a query-scope
+// stashed on ctx (if any) narrows the result; otherwise returns every row.
+// Mirrors ListAllPendingOauthUserSessions.
 func (s *RDBConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
 	var flows []tables.TableMCPPerUserHeaderFlow
 	if err := s.ScopedDB(ctx).
@@ -5512,4 +5513,258 @@ func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context)
 		return 0, fmt.Errorf("failed to delete expired mcp per-user header flows: %w", result.Error)
 	}
 	return result.RowsAffected, nil
+}
+
+// ----- Per-user credential reconciliation -----
+//
+// The Reconcile* methods orphan/reactivate vk-keyed credentials whose MCP
+// grant changed (allowlist edit, AllowOnAllVirtualKeys toggle, VK delete).
+// Pending flow rows whose MCP lost the grant are hard-deleted — they're
+// transient in-flight attempts that can't complete without the grant.
+//
+// "Effective allowlist" for a VK = explicit rows in
+// governance_virtual_key_mcp_configs ∪ MCPs with
+// config_mcp_clients.allow_on_all_virtual_keys = true. Mirrors the runtime
+// check in plugins/governance/main.go isMCPToolAllowedByVKWith.
+//
+// Runtime lookups filter status='active', so orphaned rows are invisible
+// until reactivation. 'needs_reauth' (OAuth) and 'needs_update' (headers)
+// rows are left alone — their problem isn't grant state.
+//
+// Wrappers that maintain user-keyed credentials (rows keyed by user_id
+// rather than virtual_key_id) layer on top of these methods.
+
+// vkEffectiveMCPClientIDs returns the set of MCP client_ids the given VK
+// can access — union of explicit per-VK allowlist and MCPs marked
+// AllowOnAllVirtualKeys=true.
+func vkEffectiveMCPClientIDs(tx *gorm.DB, vkID string) ([]string, error) {
+	var explicit []string
+	if err := tx.Table("governance_virtual_key_mcp_configs vkmc").
+		Distinct("mcp.client_id").
+		Joins("JOIN config_mcp_clients mcp ON mcp.id = vkmc.mcp_client_id").
+		Where("vkmc.virtual_key_id = ?", vkID).
+		Pluck("mcp.client_id", &explicit).Error; err != nil {
+		return nil, fmt.Errorf("read VK %s explicit allowlist: %w", vkID, err)
+	}
+	var implicit []string
+	if err := tx.Table("config_mcp_clients").
+		Where("allow_on_all_virtual_keys = ?", true).
+		Pluck("client_id", &implicit).Error; err != nil {
+		return nil, fmt.Errorf("read AllowOnAllVirtualKeys MCPs: %w", err)
+	}
+	if len(implicit) == 0 {
+		return explicit, nil
+	}
+	seen := make(map[string]struct{}, len(explicit)+len(implicit))
+	out := make([]string, 0, len(explicit)+len(implicit))
+	for _, id := range explicit {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range implicit {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// reconcileVKDirectTokensDB orphans/reactivates vk-keyed OAuth token rows
+// against the VK's effective allowlist. Pure DB; runs inside the caller's
+// transaction.
+func reconcileVKDirectTokensDB(tx *gorm.DB, vkID string) error {
+	allowedClientIDs, err := vkEffectiveMCPClientIDs(tx, vkID)
+	if err != nil {
+		return err
+	}
+
+	// Defense-in-depth: every other query in this file that touches these
+	// tables filters on auth_mode/flow_mode (see GetByModeIdentity*,
+	// UpsertCredential, ListPending* etc). Reconciliation matched on
+	// virtual_key_id alone; align with the convention so a stray non-VK
+	// row with virtual_key_id set can never be touched here.
+	orphanQ := tx.Model(&tables.TableOauthUserToken{}).
+		Where("auth_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "active")
+	if len(allowedClientIDs) > 0 {
+		orphanQ = orphanQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := orphanQ.Update("status", "orphaned").Error; err != nil {
+		return fmt.Errorf("orphan vk-keyed tokens for vk %s: %w", vkID, err)
+	}
+
+	if len(allowedClientIDs) > 0 {
+		if err := tx.Model(&tables.TableOauthUserToken{}).
+			Where("auth_mode = ? AND virtual_key_id = ? AND status = ? AND mcp_client_id IN ?", string(schemas.MCPAuthModeVK), vkID, "orphaned", allowedClientIDs).
+			Update("status", "active").Error; err != nil {
+			return fmt.Errorf("reactivate vk-keyed tokens for vk %s: %w", vkID, err)
+		}
+	}
+
+	// Pending-only: an 'authorized' session means the upstream OAuth callback
+	// already arrived and the code-for-token exchange is mid-flight; deleting
+	// it would surface a confusing "session not found" error to the user.
+	// Leave non-pending statuses ('authorized', 'failed', 'expired') alone —
+	// the next sweep pass cleans up finished/expired rows, and any token the
+	// in-flight exchange produces becomes immediately-orphaned (tidier than
+	// a hard error).
+	flowsQ := tx.Where("flow_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "pending")
+	if len(allowedClientIDs) > 0 {
+		flowsQ = flowsQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := flowsQ.Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		return fmt.Errorf("delete vk-keyed flow rows for vk %s: %w", vkID, err)
+	}
+	return nil
+}
+
+// reconcileVKDirectHeaderRowsDB is the headers counterpart of
+// reconcileVKDirectTokensDB.
+func reconcileVKDirectHeaderRowsDB(tx *gorm.DB, vkID string) error {
+	allowedClientIDs, err := vkEffectiveMCPClientIDs(tx, vkID)
+	if err != nil {
+		return err
+	}
+
+	// Defense-in-depth: see reconcileVKDirectTokensDB above — filter on
+	// auth_mode/flow_mode so non-VK rows with virtual_key_id set can
+	// never be touched here.
+	orphanQ := tx.Model(&tables.TableMCPPerUserHeaderCredential{}).
+		Where("auth_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "active")
+	if len(allowedClientIDs) > 0 {
+		orphanQ = orphanQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := orphanQ.Update("status", "orphaned").Error; err != nil {
+		return fmt.Errorf("orphan vk-keyed header credentials for vk %s: %w", vkID, err)
+	}
+
+	if len(allowedClientIDs) > 0 {
+		if err := tx.Model(&tables.TableMCPPerUserHeaderCredential{}).
+			Where("auth_mode = ? AND virtual_key_id = ? AND status = ? AND mcp_client_id IN ?", string(schemas.MCPAuthModeVK), vkID, "orphaned", allowedClientIDs).
+			Update("status", "active").Error; err != nil {
+			return fmt.Errorf("reactivate vk-keyed header credentials for vk %s: %w", vkID, err)
+		}
+	}
+
+	// Pending-only — same rationale as the OAuth flow delete above. Headers
+	// flows complete by row-deletion, so 'completed' rows shouldn't normally
+	// exist, but expired rows do and shouldn't be touched here either.
+	flowsQ := tx.Where("flow_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "pending")
+	if len(allowedClientIDs) > 0 {
+		flowsQ = flowsQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := flowsQ.Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("delete vk-keyed header flow rows for vk %s: %w", vkID, err)
+	}
+	return nil
+}
+
+// readVKsHoldingOauthCredsForMCP returns the distinct virtual_key_ids
+// with an active or pending OAuth row (token or session) for the given
+// MCP client. Used by ReconcileOauthAfterMCPChange to know which VKs
+// need re-evaluation.
+func readVKsHoldingOauthCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
+	var vkIDs []string
+	if err := tx.Raw(`
+		SELECT DISTINCT virtual_key_id FROM oauth_user_tokens
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		UNION
+		SELECT DISTINCT virtual_key_id FROM oauth_user_sessions
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+	`, mcpClientID, mcpClientID).Scan(&vkIDs).Error; err != nil {
+		return nil, fmt.Errorf("read VK owners of OAuth creds for mcp %s: %w", mcpClientID, err)
+	}
+	return vkIDs, nil
+}
+
+// readVKsHoldingHeaderCredsForMCP is the headers counterpart of
+// readVKsHoldingOauthCredsForMCP.
+func readVKsHoldingHeaderCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
+	var vkIDs []string
+	if err := tx.Raw(`
+		SELECT DISTINCT virtual_key_id FROM mcp_per_user_header_credentials
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		UNION
+		SELECT DISTINCT virtual_key_id FROM mcp_per_user_header_flows
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+	`, mcpClientID, mcpClientID).Scan(&vkIDs).Error; err != nil {
+		return nil, fmt.Errorf("read VK owners of header creds for mcp %s: %w", mcpClientID, err)
+	}
+	return vkIDs, nil
+}
+
+// ReconcileOauthAfterVKChange orphans/reactivates vk-keyed OAuth rows
+// against the VK's current effective allowlist. Called whenever a VK's
+// MCP grants might have changed (AP propagation, direct dashboard edit,
+// SCIM auto-assign).
+func (s *RDBConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error {
+	if vkID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return reconcileVKDirectTokensDB(tx, vkID)
+	})
+}
+
+// ReconcileMCPHeadersAfterVKChange is the headers counterpart of
+// ReconcileOauthAfterVKChange.
+func (s *RDBConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error {
+	if vkID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return reconcileVKDirectHeaderRowsDB(tx, vkID)
+	})
+}
+
+// ReconcileOauthAfterMCPChange re-evaluates every VK that holds an OAuth
+// credential for the given MCP. Called when an MCP edit mutates who can
+// access it (vk_configs diff or AllowOnAllVirtualKeys toggle).
+func (s *RDBConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		vkIDs, err := readVKsHoldingOauthCredsForMCP(tx, mcpClientID)
+		if err != nil {
+			return err
+		}
+		// Sort so concurrent MCP edits lock the same VKs in the same order;
+		// the UNION returned by readVKsHoldingOauthCredsForMCP is unordered,
+		// which can deadlock two overlapping reconciliations otherwise.
+		sort.Strings(vkIDs)
+		for _, vkID := range vkIDs {
+			if err := reconcileVKDirectTokensDB(tx, vkID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ReconcileMCPHeadersAfterMCPChange is the headers counterpart of
+// ReconcileOauthAfterMCPChange.
+func (s *RDBConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		vkIDs, err := readVKsHoldingHeaderCredsForMCP(tx, mcpClientID)
+		if err != nil {
+			return err
+		}
+		// See ReconcileOauthAfterMCPChange — deterministic lock order
+		// across concurrent MCP edits.
+		sort.Strings(vkIDs)
+		for _, vkID := range vkIDs {
+			if err := reconcileVKDirectHeaderRowsDB(tx, vkID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
