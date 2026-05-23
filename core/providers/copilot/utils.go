@@ -40,6 +40,13 @@ func envOrDefault(key, fallback string) string {
 // tokenExpiryMargin is the number of seconds before expiry to trigger a refresh.
 const tokenExpiryMargin = 60
 
+// tokenExchangeMaxResponseBytes bounds the HTTP response size for the Copilot
+// token-exchange endpoint. The legitimate response is a small JSON document
+// (~1 KB); 64 KiB leaves generous slack while preventing a hostile or
+// misbehaving upstream from forcing arbitrary allocations at the transport
+// layer (fasthttp's default cap is 4 MiB).
+const tokenExchangeMaxResponseBytes = 64 * 1024
+
 // isValidCopilotAPIBase validates that a Copilot API base URL is safe to use.
 // It must use HTTPS and belong to a known GitHub Copilot domain to prevent SSRF.
 func isValidCopilotAPIBase(raw string) bool {

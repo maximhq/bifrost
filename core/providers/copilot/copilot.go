@@ -17,6 +17,7 @@ type CopilotProvider struct {
 	logger              schemas.Logger
 	client              *fasthttp.Client
 	streamingClient     *fasthttp.Client // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	tokenClient         *fasthttp.Client // Bounded client (MaxResponseBodySize) reserved for OAuth token exchange
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
@@ -37,12 +38,30 @@ func NewCopilotProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
+
+	// Dedicated client for the OAuth token-exchange call. We cannot share the
+	// main client because chat completions can legitimately return very large
+	// bodies, while the token endpoint must be bounded to prevent a hostile
+	// upstream from forcing arbitrary allocations.
+	tokenClient := &fasthttp.Client{
+		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		MaxConnsPerHost:     32,
+		MaxIdleConnDuration: 30 * time.Second,
+		MaxConnWaitTimeout:  10 * time.Second,
+		MaxResponseBodySize: tokenExchangeMaxResponseBytes,
+	}
+	tokenClient = providerUtils.ConfigureProxy(tokenClient, config.ProxyConfig, logger)
+	tokenClient = providerUtils.ConfigureDialer(tokenClient)
+	tokenClient = providerUtils.ConfigureTLS(tokenClient, config.NetworkConfig, logger)
 
 	return &CopilotProvider{
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
+		tokenClient:         tokenClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -74,7 +93,7 @@ func (provider *CopilotProvider) getOrCreateTokenManager(key schemas.Key) *copil
 			return entry.tm
 		}
 		// OAuth token has been rotated — atomically replace with a fresh manager.
-		tm := newCopilotTokenManager(currentToken, provider.client, provider.logger)
+		tm := newCopilotTokenManager(currentToken, provider.tokenClient, provider.logger)
 		newEntry := &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken}
 		if provider.tokenManagers.CompareAndSwap(key.ID, val, newEntry) {
 			return tm
@@ -84,7 +103,7 @@ func (provider *CopilotProvider) getOrCreateTokenManager(key schemas.Key) *copil
 		return winner.(*CopilotTokenManagerEntry).tm
 	}
 	// First request for this key — use LoadOrStore so concurrent callers share one manager.
-	tm := newCopilotTokenManager(currentToken, provider.client, provider.logger)
+	tm := newCopilotTokenManager(currentToken, provider.tokenClient, provider.logger)
 	entry := &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken}
 	actual, _ := provider.tokenManagers.LoadOrStore(key.ID, entry)
 	return actual.(*CopilotTokenManagerEntry).tm
@@ -228,10 +247,21 @@ func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		nil,
 		nil,
 		nil,
-		nil,
+		setChatChunkObject,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// setChatChunkObject ensures every streamed chat chunk carries the OpenAI-shape
+// "chat.completion.chunk" object marker. Copilot's upstream SSE chunks omit the
+// `object` field, so without this normalization downstream consumers (and the
+// llmtests suite) see an empty Object on every chunk.
+func setChatChunkObject(resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if resp != nil && resp.Object == "" {
+		resp.Object = "chat.completion.chunk"
+	}
+	return resp
 }
 
 // Responses performs a responses request to the Copilot API.

@@ -183,6 +183,10 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 	tm.mu.Lock()
 	tm.apiToken = tokenResp.Token
 	tm.expiresAt = time.Unix(tokenResp.ExpiresAt, 0)
+	// Reset apiBase on every successful refresh so a stale dynamic host from a
+	// previous exchange cannot leak through when the new response omits or
+	// returns an invalid Endpoints.API.
+	tm.apiBase = defaultAPIBaseURL
 	if tokenResp.Endpoints.API != "" {
 		if isValidCopilotAPIBase(tokenResp.Endpoints.API) {
 			tm.apiBase = tokenResp.Endpoints.API

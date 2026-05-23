@@ -48,7 +48,10 @@ func TestCopilot(t *testing.T) {
 	}
 
 	if err := validateCopilotToken(token); err != nil {
-		t.Skipf("Skipping Copilot tests: %v", err)
+		// Token is set but pre-flight failed: fail loudly instead of skipping so
+		// header drift or upstream auth changes cannot silently disable Copilot
+		// CI coverage.
+		t.Fatalf("GITHUB_COPILOT_TOKEN is set but pre-flight validation failed: %v", err)
 	}
 
 	client, ctx, cancel, err := llmtests.SetupTest()
@@ -58,50 +61,55 @@ func TestCopilot(t *testing.T) {
 	defer cancel()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:    schemas.Copilot,
-		ChatModel:   "gpt-4o",
-		VisionModel: "gpt-4o",
+		Provider:       schemas.Copilot,
+		ChatModel:      "gpt-4o",
+		VisionModel:    "gpt-4o",
+		ReasoningModel: "gpt-5-mini",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Copilot, Model: "gpt-4o-mini"},
 		},
 		Scenarios: llmtests.TestScenarios{
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // Copilot API does not support external image URLs
-			ImageBase64:           true,
-			MultipleImages:        false, // Copilot API does not support external image URLs
-			FileBase64:            false, // Copilot API does not support inline document inputs
-			FileURL:               false, // Copilot API does not support inline document inputs
-			CompleteEnd2End:       false, // CompleteEnd2End uses external image URLs
-			StructuredOutputs:     true,
-			Embedding:             false, // Not supported
-			TextCompletion:        false, // Not supported
-			SpeechSynthesis:       false, // Not supported
-			SpeechSynthesisStream: false, // Not supported
-			Transcription:         false, // Not supported
-			TranscriptionStream:   false, // Not supported
-			ImageGeneration:       false, // Not supported
-			ImageGenerationStream: false, // Not supported
-			ImageEdit:             false, // Not supported
-			ImageEditStream:       false, // Not supported
-			ImageVariation:        false, // Not supported
-			BatchCreate:           false, // Not supported
-			BatchList:             false, // Not supported
-			BatchRetrieve:         false, // Not supported
-			BatchCancel:           false, // Not supported
-			BatchResults:          false, // Not supported
-			FileUpload:            false, // Not supported
-			FileList:              false, // Not supported
-			FileRetrieve:          false, // Not supported
-			FileDelete:            false, // Not supported
-			FileContent:           false, // Not supported
-			ListModels:            true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // Copilot API does not support external image URLs
+			ImageBase64:                true,
+			MultipleImages:             false, // Copilot API does not support external image URLs
+			FileBase64:                 false, // Copilot API does not support inline document inputs
+			FileURL:                    false, // Copilot API does not support inline document inputs
+			CompleteEnd2End:            false, // CompleteEnd2End uses external image URLs
+			StructuredOutputs:          true,
+			Reasoning:                  true,  // gpt-5-mini reasoning model
+			PassthroughAPI:             true,  // raw HTTP passthrough to /chat/completions
+			PassThroughExtraParams:     true,  // verifies extra params survive translation
+			Embedding:                  false, // Not supported
+			TextCompletion:             false, // Not supported
+			SpeechSynthesis:            false, // Not supported
+			SpeechSynthesisStream:      false, // Not supported
+			Transcription:              false, // Not supported
+			TranscriptionStream:        false, // Not supported
+			ImageGeneration:            false, // Not supported
+			ImageGenerationStream:      false, // Not supported
+			ImageEdit:                  false, // Not supported
+			ImageEditStream:            false, // Not supported
+			ImageVariation:             false, // Not supported
+			BatchCreate:                false, // Not supported
+			BatchList:                  false, // Not supported
+			BatchRetrieve:              false, // Not supported
+			BatchCancel:                false, // Not supported
+			BatchResults:               false, // Not supported
+			FileUpload:                 false, // Not supported
+			FileList:                   false, // Not supported
+			FileRetrieve:               false, // Not supported
+			FileDelete:                 false, // Not supported
+			FileContent:                false, // Not supported
+			ListModels:                 true,
 		},
 	}
 

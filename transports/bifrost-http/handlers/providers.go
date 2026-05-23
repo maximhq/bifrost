@@ -917,6 +917,8 @@ func buildListedModels(
 		listedModels = append(listedModels, entry)
 	}
 	return listedModels
+}
+
 // refreshModels handles POST /api/models/refresh - Refresh the cached model list for a provider
 // Query parameters:
 //   - provider: The provider name to refresh models for (required)

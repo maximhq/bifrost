@@ -1,3 +1,5 @@
+- fix: handlers/providers - add missing closing brace in updateProvider that blocked the transports build
+- fix: ui - add missing Alert/Button imports in apiKeysFormFragment that blocked the UI build
 - fix: Copilot handler - clarify defaultGithubClientID as VS Code extension client ID
 - fix: invalidate provider caches on model refresh for updated UI status
 - feat: add Copilot OAuth device-code callback handler and register Copilot routes

@@ -1,3 +1,9 @@
+- fix: Copilot provider - isolate OAuth token exchange on a bounded fasthttp client (64 KiB cap) to prevent unbounded allocations
+- fix: Copilot provider - apply ConfigureTLS to both unary and streaming HTTP clients so NetworkConfig.RootCAs is honored end-to-end
+- fix: Copilot provider - reset apiBase to the default API URL on every successful token refresh so a stale dynamic host cannot leak through
+- fix: Copilot provider - normalize streamed chat chunks to set object="chat.completion.chunk" when upstream omits it
+- test: Copilot provider - fail fast with t.Fatalf when GITHUB_COPILOT_TOKEN is set but preflight fails (was silently skipped)
+- test: skip ChatCompletionStreamWithReasoningValidated for Copilot since gpt-5-mini emits only the reasoning_tokens usage counter and no reasoning_content deltas
 - fix: Copilot provider - fallback to cached token on malformed JSON in token exchange
 - fix: Copilot provider - set AllowFallbacks=false on ListModels no-keys error
 - test: Copilot provider - fix transport-error test to exercise refresh fallback path
