@@ -82,7 +82,7 @@ func TestCloudflareRequiresBaseURL(t *testing.T) {
 	// A real-looking URL succeeds; trailing slash is normalized away.
 	provider, err = cloudflare.NewCloudflareProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL: "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1/",
+			BaseURL: "https://api.cloudflare.com/client/v4/accounts/abc123/ai/",
 		},
 	}, nil)
 	if err != nil {

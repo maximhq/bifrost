@@ -38,7 +38,7 @@ Cloudflare Workers AI is an **OpenAI-compatible provider** that exposes a subset
 
 **HTTP Settings:**
 
-- **Base URL**: required, no default. Set it to `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1`. The account id is the same one shown on the Cloudflare dashboard.
+- **Base URL**: required, no default. Set it to `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai`. The account id is the same one shown on the Cloudflare dashboard. The provider appends `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` per request, matching the convention used by every other OpenAI-compat provider in this repo, so the trailing `/v1` is intentionally NOT part of the base URL.
 - **Max Connections**: 5000 per host (matches the rest of the OpenAI-compat providers)
 - **Idle Timeout**: 30 seconds for idle connections; streaming uses the per-stream idle timeout from `network_config.stream_idle_timeout_in_seconds`.
 
@@ -111,7 +111,7 @@ Lists the Workers AI models enabled on the account. The list is account-scoped â
 <Accordion title="Per-account base URL is required">
 **Severity**: Medium
 **Behavior**: `NewCloudflareProvider` returns an error when `network_config.base_url` is empty.
-**Impact**: The provider cannot construct a sensible default because Workers AI URLs embed the account id (`/accounts/<account_id>/ai/v1`). Provide it explicitly or via env (e.g. `https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/v1`).
+**Impact**: The provider cannot construct a sensible default because Workers AI URLs embed the account id (`/accounts/<account_id>/ai`). Provide it explicitly or via env (e.g. `https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai`).
 **Code**: `core/providers/cloudflare/cloudflare.go:NewCloudflareProvider`
 </Accordion>
 
