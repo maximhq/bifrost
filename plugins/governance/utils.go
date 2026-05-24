@@ -87,6 +87,31 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// isModelBlockedByList checks if a model is blocked by a blacklist that may store entries
+// with or without a provider prefix (e.g., "ollama/mistral:latest" or "mistral:latest").
+// Both the blacklist entry and the incoming model are normalized before comparison so that
+// bare and provider-prefixed forms are treated as equivalent.
+func isModelBlockedByList(blacklist schemas.BlackList, model string) bool {
+	if blacklist.IsBlockAll() {
+		return true
+	}
+
+	_, normalizedModel := schemas.ParseModelString(model, "")
+
+	for _, blocked := range blacklist {
+		if strings.EqualFold(blocked, model) {
+			return true
+		}
+
+		_, normalizedBlocked := schemas.ParseModelString(blocked, "")
+		if strings.EqualFold(normalizedBlocked, normalizedModel) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // filterModelsForVirtualKey filters models based on virtual key's provider configs
 // Returns only models that are allowed by the virtual key's ProviderConfigs
 func (p *GovernancePlugin) filterModelsForVirtualKey(
@@ -114,7 +139,7 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		// Pre-pass: if any matching config blacklists the model, block it entirely.
 		isBlocked := false
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
+			if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, modelName) {
 				isBlocked = true
 				break
 			}
