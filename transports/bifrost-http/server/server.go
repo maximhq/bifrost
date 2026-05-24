@@ -52,6 +52,7 @@ const (
 
 var enterprisePlugins = []string{
 	"datadog",
+	"kafka",
 }
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
