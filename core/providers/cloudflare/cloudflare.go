@@ -44,7 +44,10 @@ type CloudflareProvider struct {
 func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*CloudflareProvider, error) {
 	config.CheckAndSetDefaults()
 
-	if strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
+	// Normalise the user-supplied URL once so that surrounding whitespace
+	// can't sneak past the empty check and end up in request URLs.
+	baseURL := strings.TrimSpace(config.NetworkConfig.BaseURL)
+	if baseURL == "" {
 		return nil, fmt.Errorf("network_config.base_url is required for cloudflare; set it to https://api.cloudflare.com/client/v4/accounts/<account_id>/ai")
 	}
 
@@ -68,7 +71,7 @@ func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	config.NetworkConfig.BaseURL = strings.TrimRight(baseURL, "/")
 
 	return &CloudflareProvider{
 		logger:              logger,
