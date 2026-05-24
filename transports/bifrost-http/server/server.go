@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -755,6 +756,22 @@ func (s *BifrostHTTPServer) GetGovernanceData(ctx context.Context) *governance.G
 		return nil
 	}
 	return governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
+}
+
+// ReloadComplexityAnalyzerConfig reloads the complexity analyzer config into the governance plugin.
+func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return fmt.Errorf("governance plugin not found: %w", err)
+	}
+	reloader, ok := governancePlugin.(interface {
+		ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig)
+	})
+	if !ok {
+		return fmt.Errorf("governance plugin does not support complexity analyzer config reload")
+	}
+	reloader.ReloadComplexityAnalyzerConfig(config)
+	return nil
 }
 
 // ReloadRoutingRule reloads a routing rule from the database into the governance store

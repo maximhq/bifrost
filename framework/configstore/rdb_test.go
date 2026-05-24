@@ -29,6 +29,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableKey{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
+		&tables.TableModelConfig{},
+		&tables.TableRoutingRule{},
+		&tables.TableRoutingTarget{},
+		&tables.TablePricingOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -36,6 +40,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
+		&tables.TableGovernanceConfig{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableVirtualKeyMCPConfig{},
@@ -63,6 +68,121 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	}
 	s.refreshPoolFn = func(ctx context.Context) error { return nil }
 	return s
+}
+
+func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
+	return &ComplexityAnalyzerConfig{
+		TierBoundaries: ComplexityTierBoundaries{
+			SimpleMedium:     0.10,
+			MediumComplex:    0.30,
+			ComplexReasoning: 0.70,
+		},
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{" Function ", "api", "API"},
+			ReasoningKeywords: []string{"tradeoffs"},
+			TechnicalKeywords: []string{"latency"},
+			SimpleKeywords:    []string{"hello"},
+		},
+	}
+}
+
+func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, ComplexityTierBoundaries{
+		SimpleMedium:     0.10,
+		MediumComplex:    0.30,
+		ComplexReasoning: 0.70,
+	}, got.TierBoundaries)
+	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
+}
+
+func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, governanceConfig)
+	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
+	assert.Equal(t, 0.70, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+}
+
+func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name   string
+		mutate func(*ComplexityAnalyzerConfig)
+	}{
+		{
+			name: "simple medium below minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.SimpleMedium = -0.1
+			},
+		},
+		{
+			name: "medium complex at minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.MediumComplex = 0
+			},
+		},
+		{
+			name: "complex reasoning at maximum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.ComplexReasoning = 1.0
+			},
+		},
+		{
+			name: "boundaries out of order",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.ComplexReasoning = cfg.TierBoundaries.MediumComplex - 0.1
+			},
+		},
+		{
+			name: "empty code keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.CodeKeywords = nil
+			},
+		},
+		{
+			name: "empty reasoning keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.ReasoningKeywords = nil
+			},
+		},
+		{
+			name: "empty technical keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.TechnicalKeywords = nil
+			},
+		},
+		{
+			name: "empty simple keywords",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.Keywords.SimpleKeywords = nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalid := testComplexityAnalyzerConfig()
+			tt.mutate(invalid)
+
+			err := store.UpdateComplexityAnalyzerConfig(ctx, invalid)
+			require.Error(t, err)
+		})
+	}
 }
 
 // =============================================================================

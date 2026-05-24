@@ -746,6 +746,9 @@
         "auth_config": {
           "$ref": "#/$defs/auth_config"
         },
+        "complexity_analyzer_config": {
+          "$ref": "#/$defs/complexity_analyzer_config"
+        },
         "model_configs": {
           "type": "array",
           "description": "Per-model rate limit and budget configurations",
@@ -2254,6 +2257,86 @@
           }
         }
       },
+      "additionalProperties": false
+    },
+    "complexity_tier_boundaries": {
+      "type": "object",
+      "description": "Score thresholds used to classify complexity_tier values",
+      "properties": {
+        "simple_medium": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold are SIMPLE"
+        },
+        "medium_complex": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
+        },
+        "complex_reasoning": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+        }
+      },
+      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "additionalProperties": false
+    },
+    "complexity_analyzer_keywords": {
+      "type": "object",
+      "description": "User-editable keyword lists for complexity analysis",
+      "properties": {
+        "code_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reasoning_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "technical_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "simple_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+      "additionalProperties": false
+    },
+    "complexity_analyzer_config": {
+      "type": "object",
+      "description": "Runtime configuration for complexity_tier CEL routing",
+      "properties": {
+        "tier_boundaries": {
+          "$ref": "#/$defs/complexity_tier_boundaries"
+        },
+        "keywords": {
+          "$ref": "#/$defs/complexity_analyzer_keywords"
+        }
+      },
+      "required": ["tier_boundaries", "keywords"],
       "additionalProperties": false
     },
     "auth_config": {

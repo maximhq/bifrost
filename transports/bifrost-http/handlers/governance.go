@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -23,6 +25,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -54,6 +57,12 @@ type GovernanceManager interface {
 	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+}
+
+type complexityAnalyzerConfigReloader interface {
+	// HTTP server bridge signature: BifrostHTTPServer implements this and adapts
+	// to the governance plugin's in-memory ReloadComplexityAnalyzerConfig(config).
+	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -951,6 +960,10 @@ type UpdateProviderGovernanceRequest struct {
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
+	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
+	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
+
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
@@ -1006,6 +1019,88 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Self-service endpoint — no admin auth, VK in header is the credential.
 	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+}
+
+func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	cfg, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get complexity analyzer config: %v", err))
+		return
+	}
+	if cfg == nil {
+		defaults := complexity.DefaultAnalyzerConfig()
+		SendJSON(ctx, defaults)
+		return
+	}
+	SendJSON(ctx, cfg)
+}
+
+func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	var payload complexity.AnalyzerConfig
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
+		return
+	}
+
+	normalized, err := complexity.ValidateAndNormalize(&payload)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
+		return
+	}
+	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, normalized)
+}
+
+func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	defaults := complexity.DefaultAnalyzerConfig()
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
+		return
+	}
+	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, defaults)
+}
+
+func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	reloader, ok := h.governanceManager.(complexityAnalyzerConfigReloader)
+	if !ok {
+		return fmt.Errorf("governance manager does not support complexity analyzer config reload")
+	}
+	return reloader.ReloadComplexityAnalyzerConfig(ctx, config)
 }
 
 // Virtual Key CRUD Operations
