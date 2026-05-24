@@ -2,9 +2,13 @@
 //
 // Workers AI exposes an OpenAI-compatible surface for chat completions and
 // embeddings under the per-account path
-//   https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+//   https://api.cloudflare.com/client/v4/accounts/{account_id}/ai
 // so a caller MUST supply that fully-qualified URL via NetworkConfig.BaseURL —
-// there is no global default that omits the account id.
+// there is no global default that omits the account id. The provider appends
+// `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` per request,
+// matching the convention used by every other OpenAI-compat provider in this
+// repo (Cerebras, Groq, etc.), so the trailing `/v1` is intentionally NOT part
+// of the base URL.
 //
 // See: https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/
 package cloudflare
@@ -35,13 +39,13 @@ type CloudflareProvider struct {
 //
 // Workers AI's OpenAI-compatible base URL embeds the account id, so the caller
 // MUST provide the full URL (e.g.
-// "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1") via
+// "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai") via
 // NetworkConfig.BaseURL. Construction fails if it is empty.
 func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*CloudflareProvider, error) {
 	config.CheckAndSetDefaults()
 
 	if strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
-		return nil, fmt.Errorf("network_config.base_url is required for cloudflare; set it to https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1")
+		return nil, fmt.Errorf("network_config.base_url is required for cloudflare; set it to https://api.cloudflare.com/client/v4/accounts/<account_id>/ai")
 	}
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)

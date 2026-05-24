@@ -749,13 +749,16 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		}, nil
 	case schemas.Cloudflare:
 		// Workers AI's OpenAI-compat URL embeds the account id, so the test
-		// account composes BaseURL from CLOUDFLARE_ACCOUNT_ID. The cloudflare
-		// provider constructor refuses to start with an empty BaseURL — when
-		// the env var is unset, NewCloudflareProvider returns an error and the
-		// gated TestCloudflare in cloudflare_test.go skips before reaching here.
+		// account composes BaseURL from CLOUDFLARE_ACCOUNT_ID. The provider
+		// keeps the base URL at `/ai` and appends `/v1/...` per request, so
+		// the trailing `/v1` is intentionally NOT included here — adding it
+		// would produce `…/ai/v1/v1/chat/completions` and 404 every call.
+		// When the env var is unset, NewCloudflareProvider returns an error
+		// and the gated TestCloudflare in cloudflare_test.go skips before
+		// reaching here.
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/v1", os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
+				BaseURL:                        fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai", os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,

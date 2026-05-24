@@ -153,7 +153,7 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     },
     "cloudflare": {
       "keys": [{ "name": "Cloudflare API Key", "value": "env.CLOUDFLARE_API_KEY", "weight": 1 }],
-      "network_config": { "base_url": "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/v1", "default_request_timeout_in_seconds": 300 }
+      "network_config": { "base_url": "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai", "default_request_timeout_in_seconds": 300 }
     },
     "openrouter": {
       "keys": [{ "name": "OpenRouter API Key", "value": "env.OPENROUTER_API_KEY", "weight": 1 }],

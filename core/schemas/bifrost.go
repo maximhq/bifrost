@@ -65,6 +65,7 @@ const (
 var SupportedBaseProviders = []ModelProvider{
 	Anthropic,
 	Bedrock,
+	Cloudflare,
 	Cohere,
 	Gemini,
 	OpenAI,
