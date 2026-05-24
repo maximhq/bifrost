@@ -17,6 +17,38 @@ func TestAnalyze_Simple(t *testing.T) {
 	}
 }
 
+func TestAnalyze_CustomTierBoundaries(t *testing.T) {
+	defaultAnalyzer := NewComplexityAnalyzer()
+	cfg := DefaultAnalyzerConfig()
+	cfg.TierBoundaries = TierBoundaries{
+		SimpleMedium:     0.05,
+		MediumComplex:    0.10,
+		ComplexReasoning: 0.20,
+	}
+	customAnalyzer := NewComplexityAnalyzerWithConfig(&cfg)
+
+	if got := defaultAnalyzer.classifyTier(0.18); got != TierMedium {
+		t.Fatalf("default boundary classified 0.18 as %s, want %s", got, TierMedium)
+	}
+	if got := customAnalyzer.classifyTier(0.18); got != TierComplex {
+		t.Fatalf("custom boundary classified 0.18 as %s, want %s", got, TierComplex)
+	}
+}
+
+func TestAnalyze_CustomReasoningKeywordsAffectOverride(t *testing.T) {
+	cfg := DefaultAnalyzerConfig()
+	cfg.Keywords.ReasoningKeywords = []string{"deepmagic"}
+	a := NewComplexityAnalyzerWithConfig(&cfg)
+
+	result := a.Analyze(ComplexityInput{
+		LastUserText: "deepmagic api function",
+	})
+
+	if result.Tier != TierReasoning {
+		t.Fatalf("expected custom reasoning keyword to promote tier to %s, got %s (score=%.3f)", TierReasoning, result.Tier, result.Score)
+	}
+}
+
 func TestAnalyze_Hello(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
@@ -489,7 +521,7 @@ func TestIsReferentialFollowup_GuardBranches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matcher := newCompiledKeywordMatcher()
+			matcher := newCompiledKeywordMatcher(defaultFullKeywordConfig())
 			signals := matcher.analyzeText(tt.lastText, lastTextFullScanMask)
 			got := isReferentialFollowup(signals, tt.lastMsgScore, tt.convScore, tt.wordCount)
 			if got != tt.expected {
