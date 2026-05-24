@@ -192,6 +192,7 @@ export const baseApi = createApi({
     "MCPSessions",
     "MCPPerUserHeaderCredentials",
     "FeatureFlags",
+    "ComplexityAnalyzerConfig",
   ],
   endpoints: () => ({}),
 });
