@@ -12,6 +12,7 @@ import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
 import PrometheusView from "./plugins/prometheusView";
+import PubSubView from "./plugins/pubsubView";
 
 type SupportedPlatform = {
 	id: string;
@@ -62,6 +63,11 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "kafka",
 		name: "Kafka",
 		icon: <img alt="Kafka" src="/images/kafka-logo.svg" width={21} height={21} className="-ml-0.5" />,
+	},
+	{
+		id: "pubsub",
+		name: "Pub/Sub",
+		icon: <img alt="Pub/Sub" src="/images/pubsub-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "newrelic",
@@ -181,6 +187,7 @@ export default function ObservabilityView() {
 				{selectedPluginId === "kafka" && <KafkaView />}
 				{selectedPluginId === "datadog" && <DatadogView />}
 				{selectedPluginId === "bigquery" && <BigQueryView />}
+				{selectedPluginId === "pubsub" && <PubSubView />}
 				{selectedPluginId === "newrelic" && <NewrelicView />}
 			</div>
 		</div>

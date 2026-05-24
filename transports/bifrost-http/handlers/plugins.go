@@ -128,11 +128,12 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 	}
 	if !plugin.Enabled {
 		pluginStatus.Status = schemas.PluginStatusDisabled
-	}
-	for _, status := range pluginStatuses {
-		if plugin.Name == status.Name {
-			pluginStatus = status
-			break
+	} else {
+		for _, status := range pluginStatuses {
+			if plugin.Name == status.Name {
+				pluginStatus = status
+				break
+			}
 		}
 	}
 	config := plugin.Config
