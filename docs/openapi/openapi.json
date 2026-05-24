@@ -49027,6 +49027,445 @@
         }
       }
     },
+    "/api/governance/complexity-analyzer-config": {
+      "get": {
+        "operationId": "getComplexityAnalyzerConfig",
+        "summary": "Get complexity analyzer config",
+        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.",
+        "tags": [
+          "Governance"
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ConfigStoreUnavailable"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateComplexityAnalyzerConfig",
+        "summary": "Update complexity analyzer config",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+        "tags": [
+          "Governance"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Full runtime configuration for complexity routing analysis.",
+                "additionalProperties": false,
+                "required": [
+                  "tier_boundaries",
+                  "keywords"
+                ],
+                "properties": {
+                  "tier_boundaries": {
+                    "type": "object",
+                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "additionalProperties": false,
+                    "required": [
+                      "simple_medium",
+                      "medium_complex",
+                      "complex_reasoning"
+                    ],
+                    "properties": {
+                      "simple_medium": {
+                        "type": "number",
+                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "medium_complex": {
+                        "type": "number",
+                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "complex_reasoning": {
+                        "type": "number",
+                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      }
+                    }
+                  },
+                  "keywords": {
+                    "type": "object",
+                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "code_keywords",
+                      "reasoning_keywords",
+                      "technical_keywords",
+                      "simple_keywords"
+                    ],
+                    "properties": {
+                      "code_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "reasoning_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "technical_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "simple_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ConfigStoreUnavailable"
+          }
+        }
+      }
+    },
+    "/api/governance/complexity-analyzer-config/reset": {
+      "post": {
+        "operationId": "resetComplexityAnalyzerConfig",
+        "summary": "Reset complexity analyzer config",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the governance plugin.",
+        "tags": [
+          "Governance"
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/ConfigStoreUnavailable"
+          }
+        }
+      }
+    },
     "/api/logs": {
       "get": {
         "operationId": "getLogs",
@@ -57493,6 +57932,16 @@
       },
       "InternalError": {
         "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "ConfigStoreUnavailable": {
+        "description": "Config store not available",
         "content": {
           "application/json": {
             "schema": {
