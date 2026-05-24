@@ -94,4 +94,18 @@ func TestCloudflareRequiresBaseURL(t *testing.T) {
 	if provider.GetProviderKey() != schemas.Cloudflare {
 		t.Fatalf("expected provider key %q, got %q", schemas.Cloudflare, provider.GetProviderKey())
 	}
+
+	// Surrounding whitespace is also normalised — must not survive into the
+	// stored config (would otherwise produce malformed request URLs).
+	provider, err = cloudflare.NewCloudflareProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL: "  https://api.cloudflare.com/client/v4/accounts/abc123/ai/  ",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error with whitespace-padded base URL: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected non-nil provider for whitespace-padded base URL")
+	}
 }
