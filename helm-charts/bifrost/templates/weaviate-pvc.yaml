@@ -1,4 +1,4 @@
-{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.enabled (not .Values.vectorStore.weaviate.external.enabled) }}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.enabled (not .Values.vectorStore.weaviate.external.enabled) .Values.vectorStore.weaviate.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
