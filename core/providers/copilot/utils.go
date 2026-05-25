@@ -49,11 +49,15 @@ const tokenExchangeMaxResponseBytes = 64 * 1024
 
 // isValidCopilotAPIBase validates that a Copilot API base URL is safe to use.
 // It must use HTTPS and belong to a known GitHub Copilot domain to prevent SSRF.
+// Uses u.Hostname() (not u.Host) so URLs with an explicit port — e.g. enterprise
+// or proxied Copilot deployments returning "api.githubcopilot.com:443" — are not
+// silently rejected by the suffix check.
 func isValidCopilotAPIBase(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" {
 		return false
 	}
-	return strings.HasSuffix(u.Host, ".githubcopilot.com") ||
-		strings.HasSuffix(u.Host, ".github.com")
+	host := u.Hostname()
+	return strings.HasSuffix(host, ".githubcopilot.com") ||
+		strings.HasSuffix(host, ".github.com")
 }

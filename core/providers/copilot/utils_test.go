@@ -15,6 +15,11 @@ func TestIsValidCopilotAPIBase(t *testing.T) {
 		{"valid deep github.com subdomain", "https://copilot.api.github.com", true},
 		{"valid enterprise githubcopilot subdomain", "https://api.enterprise.githubcopilot.com", true},
 
+		// Valid — explicit port (enterprise / proxied deployments may include one).
+		// Verifies u.Hostname() strips the port before the suffix check.
+		{"valid githubcopilot with explicit https port", "https://api.individual.githubcopilot.com:443", true},
+		{"valid github.com with non-default port", "https://api.github.com:8443", true},
+
 		// Invalid — wrong scheme
 		{"http not https", "http://api.individual.githubcopilot.com", false},
 		{"ftp scheme", "ftp://api.individual.githubcopilot.com", false},

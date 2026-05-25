@@ -1,3 +1,4 @@
+- fix: Copilot provider - validate API base host via url.Hostname() so URLs with an explicit port (e.g. api.githubcopilot.com:443 in enterprise/proxied deployments) are not silently rejected by the SSRF allow-list
 - refactor: schemas/mux - drop duplicate Text.Format → ResponseFormat conversion block in ToChatRequest
 - fix: Copilot provider - isolate OAuth token exchange on a bounded fasthttp client (64 KiB cap) to prevent unbounded allocations
 - fix: Copilot provider - apply ConfigureTLS to both unary and streaming HTTP clients so NetworkConfig.RootCAs is honored end-to-end
