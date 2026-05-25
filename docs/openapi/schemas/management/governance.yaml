@@ -157,16 +157,29 @@ VirtualKeyProviderConfig:
       type: array
       items:
         type: string
-    budget_id:
-      type: string
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+    allow_all_keys:
+      type: boolean
     rate_limit_id:
       type: string
-    budget:
-      $ref: '#/Budget'
+      nullable: true
+    budgets:
+      type: array
+      description: Budget quotas assigned to this provider config
+      items:
+        $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
     keys:
       type: array
+      nullable: true
+      description: >
+        Associated API keys for this provider config. **Always null in the quota endpoint** —
+        keys are intentionally not loaded here to keep the response lean and avoid
+        exposing sensitive credentials. Use the admin virtual-key API to inspect actual key assignments.
       items:
         $ref: '#/TableKey'
 
@@ -343,11 +356,16 @@ VirtualKeyQuotaResponse:
       description: Whether the virtual key is active
     budgets:
       type: array
-      description: Budget quotas assigned to this virtual key
+      description: Overall budget quotas assigned to this virtual key
       items:
         $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
+    provider_configs:
+      type: array
+      description: Per-provider budget quotas and rate limits (provider-level splits and limits)
+      items:
+        $ref: '#/VirtualKeyProviderConfig'
 
 VirtualKeyResponse:
   type: object
