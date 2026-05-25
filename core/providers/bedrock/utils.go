@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -2116,6 +2117,45 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// bedrockToolResultEnvelopeKey marks a sentinel-wrapped JSON string that carries a full
+// BedrockToolResult.Content array through Bifrost's intermediate format. Used when the
+// content includes blocks (e.g. searchResult) that the intermediate cannot model natively,
+// so they round-trip losslessly on the Bedrock-native passthrough endpoint.
+const bedrockToolResultEnvelopeKey = "__bifrost_bedrock_tool_result_content__"
+
+// encodeBedrockToolResultEnvelope serializes a BedrockToolResult.Content array into a
+// sentinel-wrapped JSON object that decodeBedrockToolResultEnvelope can recover.
+func encodeBedrockToolResultEnvelope(content []BedrockContentBlock) (string, error) {
+	envelope := map[string]any{bedrockToolResultEnvelopeKey: content}
+	b, err := sonic.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// decodeBedrockToolResultEnvelope is the inverse of encodeBedrockToolResultEnvelope.
+// Returns (blocks, true) if s is a sentinel-wrapped tool-result envelope; (nil, false) otherwise.
+// Non-envelope strings are returned untouched so the caller can fall through to tryParseJSONIntoContentBlock.
+func decodeBedrockToolResultEnvelope(s string) ([]BedrockContentBlock, bool) {
+	if len(s) == 0 || s[0] != '{' || !strings.Contains(s, bedrockToolResultEnvelopeKey) {
+		return nil, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := sonic.UnmarshalString(s, &envelope); err != nil {
+		return nil, false
+	}
+	raw, ok := envelope[bedrockToolResultEnvelopeKey]
+	if !ok || len(envelope) != 1 {
+		return nil, false
+	}
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	return blocks, true
 }
 
 // tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper

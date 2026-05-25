@@ -3163,7 +3163,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Convert result content to Bedrock format
 				if msg.ResponsesToolMessage.Output != nil {
 					if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						resultContent = append(resultContent, tryParseJSONIntoContentBlock(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr))
+						outputStr := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+						if blocks, ok := decodeBedrockToolResultEnvelope(outputStr); ok {
+							resultContent = append(resultContent, blocks...)
+						} else {
+							resultContent = append(resultContent, tryParseJSONIntoContentBlock(outputStr))
+						}
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
@@ -3989,9 +3994,24 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
-			// Prefer JSON payloads without unmarshalling; fallback to text
+			// Prefer JSON payloads without unmarshalling; fallback to text.
+			// If the content contains a searchResult (or any other block Bifrost's intermediate
+			// can't model natively), serialize the full content array into a sentinel envelope
+			// so it round-trips losslessly via ToBedrockResponsesRequest.
 			var resultContent string
-			if len(block.ToolResult.Content) > 0 {
+			hasUnrepresentableBlock := false
+			for _, c := range block.ToolResult.Content {
+				if c.SearchResult != nil || c.Video != nil {
+					hasUnrepresentableBlock = true
+					break
+				}
+			}
+			if hasUnrepresentableBlock {
+				if envelope, err := encodeBedrockToolResultEnvelope(block.ToolResult.Content); err == nil {
+					resultContent = envelope
+				}
+			}
+			if resultContent == "" && len(block.ToolResult.Content) > 0 {
 				// JSON first (no unmarshal; just one marshal to string when present)
 				for _, c := range block.ToolResult.Content {
 					if c.JSON != nil {
