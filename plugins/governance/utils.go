@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -87,6 +88,36 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func blockedModelCandidates(model string) []string {
+	_, normalized := schemas.ParseModelString(model, "")
+
+	if strings.EqualFold(model, normalized) {
+		return []string{model}
+	}
+
+	return []string{model, normalized}
+}
+
+func isModelBlockedByList(blacklist schemas.BlackList, model string) bool {
+	if blacklist.IsBlockAll() {
+		return true
+	}
+
+	modelForms := blockedModelCandidates(model)
+	for _, blocked := range blacklist {
+		blockedForms := blockedModelCandidates(blocked)
+		for _, form := range modelForms {
+			if slices.ContainsFunc(blockedForms, func(blockedForm string) bool {
+				return strings.EqualFold(blockedForm, form)
+			}) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // filterModelsForVirtualKey filters models based on virtual key's provider configs
 // Returns only models that are allowed by the virtual key's ProviderConfigs
 func (p *GovernancePlugin) filterModelsForVirtualKey(
@@ -114,7 +145,7 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		// Pre-pass: if any matching config blacklists the model, block it entirely.
 		isBlocked := false
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
+			if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, modelName) {
 				isBlocked = true
 				break
 			}
