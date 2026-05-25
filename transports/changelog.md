@@ -1,3 +1,5 @@
+- fix: server/ReloadProvider - skip model discovery and clear cached models when provider has no keys [@mainaksarcar](https://github.com/mainaksarcar)
+- feat: ui/providers - Copilot auth-first key form with device-code auto-save [@mainaksarcar](https://github.com/mainaksarcar)
 - fix: config.schema.json - restore cloud field under provider schema dropped during rebase
 - fix: ui/providersApi - restore stream entry in DEFAULT_MODEL_PARAMETERS and re-align with main after rebase drift
 - fix: handlers/providers - add missing closing brace in updateProvider that blocked the transports build

@@ -596,6 +596,17 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
+	// When the provider has no keys (e.g. last key was just deleted), skip the
+	// remote ListModels round-trip and proactively clear both the filtered and
+	// unfiltered model caches. Otherwise stale models from a previously-configured
+	// key would keep surfacing in the UI's model picker even though the provider
+	// can no longer serve them.
+	if hasNoKeys {
+		s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
+		logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
+		return updatedProvider, nil
+	}
+
 	// Getting allowed models from all provider keys (needed before model listing)
 	providerKeys, err := s.Config.ConfigStore.GetKeysByProvider(ctx, string(provider))
 	if err != nil {
