@@ -69,6 +69,7 @@ import {
 import { cn } from "@/components/ui/utils";
 import { ModelPlaceholders } from "@/lib/constants/config";
 import {
+  PASSTHROUGH_ENABLED_PROVIDERS,
   resetDurationOptions,
   supportsCalendarAlignment,
 } from "@/lib/constants/governance";
@@ -121,6 +122,7 @@ const providerConfigSchema = z.object({
     .min(0, "Weight must be at least 0")
     .max(1, "Weight must be at most 1")
     .optional(),
+  allow_passthrough: z.boolean().optional(),
   allowed_models: z.array(z.string()).optional(),
   key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
   // Provider-level budget
@@ -286,6 +288,7 @@ export default function VirtualKeySheet({
           provider: config.provider,
           weight: config.weight ?? undefined,
           allowed_models: config.allowed_models,
+          allow_passthrough: config.allow_passthrough ?? false,
           key_ids: config.allow_all_keys
             ? ["*"]
             : config.keys?.map((key) => key.key_id) || [],
@@ -432,6 +435,7 @@ export default function VirtualKeySheet({
     const newConfig = {
       provider: provider,
       weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
+      allow_passthrough: false,
       allowed_models: ["*"],
       key_ids: ["*"],
     };
@@ -534,6 +538,7 @@ export default function VirtualKeySheet({
   ): any[] => {
     return configs.map((config) => ({
       ...config,
+      allow_passthrough: config.allow_passthrough ?? false,
       budgets: config.budgets?.filter(
         (b): b is { id?: string; max_limit: number; reset_duration: string } =>
           b.max_limit !== undefined,
@@ -1581,6 +1586,35 @@ export default function VirtualKeySheet({
                                     </div>
                                   );
                                 })()}
+
+                                {/* Passthrough API toggle — only for providers with passthrough endpoints */}
+                                {PASSTHROUGH_ENABLED_PROVIDERS.has(config.provider) && (
+                                  <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+                                    <div className="space-y-0.5">
+                                      <Label
+                                        htmlFor={`vk-allow-passthrough-${index}`}
+                                        className="text-sm font-normal"
+                                      >
+                                        Allow Passthrough API
+                                      </Label>
+                                      <p className="text-muted-foreground text-xs">
+                                        Allow requests to be forwarded directly to the provider without transformation.
+                                      </p>
+                                    </div>
+                                    <Switch
+                                      id={`vk-allow-passthrough-${index}`}
+                                      checked={config.allow_passthrough ?? false}
+                                      onCheckedChange={(checked) =>
+                                        handleUpdateProviderConfig(
+                                          index,
+                                          "allow_passthrough",
+                                          checked,
+                                        )
+                                      }
+                                      data-testid={`vk-allow-passthrough-${index}`}
+                                    />
+                                  </div>
+                                )}
 
                                 <DottedSeparator />
 

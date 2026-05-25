@@ -84,6 +84,7 @@ type CreateVirtualKeyRequest struct {
 		Weight            *float64                `json:"weight,omitempty"`
 		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		AllowPassthrough  bool                    `json:"allow_passthrough,omitempty"`  // Enables passthrough API for this provider (false by default)
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
 		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
@@ -110,6 +111,7 @@ type UpdateVirtualKeyRequest struct {
 		Weight            *float64                `json:"weight,omitempty"`
 		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		AllowPassthrough  *bool                   `json:"allow_passthrough,omitempty"`  // nil = unchanged; true/false explicitly sets passthrough access
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *UpdateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
 		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
@@ -698,6 +700,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					AllowedModels:     pc.AllowedModels,
 					BlacklistedModels: pc.BlacklistedModels,
 					AllowAllKeys:      allowAllKeys,
+					AllowPassthrough:  pc.AllowPassthrough,
 					Keys:              keys,
 				}
 
@@ -1105,6 +1108,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
 						}
 					}
+					allowPassthrough := pc.AllowPassthrough != nil && *pc.AllowPassthrough
 
 					// Create new provider config
 					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
@@ -1114,6 +1118,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						AllowedModels:     pc.AllowedModels,
 						BlacklistedModels: pc.BlacklistedModels,
 						AllowAllKeys:      allowAllKeys,
+						AllowPassthrough:  allowPassthrough,
 						Keys:              keys,
 					}
 					// Create rate limit for provider config if provided
@@ -1203,6 +1208,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						}
 					}
 					existing.AllowAllKeys = allowAllKeys
+					if pc.AllowPassthrough != nil {
+						existing.AllowPassthrough = *pc.AllowPassthrough
+					}
 					existing.Keys = keys
 
 					// Handle multi-budget updates for existing provider config

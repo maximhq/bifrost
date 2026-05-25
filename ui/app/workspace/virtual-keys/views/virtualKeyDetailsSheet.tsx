@@ -21,7 +21,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { supportsCalendarAlignment } from "@/lib/constants/governance";
+import { PASSTHROUGH_ENABLED_PROVIDERS, supportsCalendarAlignment } from "@/lib/constants/governance";
 import {
   calculateUsagePercentage,
   formatCurrency,
@@ -342,6 +342,23 @@ export default function VirtualKeyDetailSheet({
                             )}
                           </div>
                         </div>
+
+                        {/* Passthrough API status — only shown for providers with passthrough endpoints */}
+                        {PASSTHROUGH_ENABLED_PROVIDERS.has(config.provider) && (
+                          <div className="grid grid-cols-3 items-start gap-4">
+                            <span className="text-muted-foreground pt-0.5 text-sm font-medium">
+                              Passthrough API
+                            </span>
+                            <div className="col-span-2">
+                              <Badge
+                                variant={config.allow_passthrough ? "success" : "destructive"}
+                                className="text-xs"
+                              >
+                                {config.allow_passthrough ? "Enabled" : "Disabled"}
+                              </Badge>
+                            </div>
+                          </div>
+                        )}
 
                         {/* Provider Budgets */}
                         {config.budgets && config.budgets.length > 0 && (
