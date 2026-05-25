@@ -5233,3 +5233,288 @@ func TestBedrockToBifrostResponsesResponse_StructuredOutput_MixedWithRealTools(t
 	assert.Equal(t, "tool_calls", *result.StopReason,
 		"expected stop_reason=tool_calls when real tool calls are also present")
 }
+
+// TestBedrockSearchResultToolResultRoundTrip is the regression gate for
+// https://github.com/maximhq/bifrost/issues/3537 — a Bedrock-native passthrough
+// request containing toolResult.content[].searchResult must survive
+// ToBifrostResponsesRequest → ToBedrockResponsesRequest with all fields intact.
+// Pre-fix, the SearchResult field is dropped during JSON unmarshal and the
+// outbound request shows toolResult.content = [{"text": ""}].
+func TestBedrockSearchResultToolResultRoundTrip(t *testing.T) {
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("What is Apptio?")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_a4rBqeZNRTKj2lTskvaO4H",
+							Name:      "RAGRequest",
+							Input:     json.RawMessage(`{"query":"What is Apptio?"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_a4rBqeZNRTKj2lTskvaO4H",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{
+									SearchResult: &bedrock.BedrockSearchResultBlock{
+										Source: "Great Source of Information About Apptio",
+										Title:  "12adbd74-46bd-4a88-88b2-0048755f6eb5",
+										Content: []bedrock.BedrockSearchResultContent{
+											{Text: "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost"},
+										},
+										Citations: &bedrock.BedrockCitationsConfig{Enabled: true},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("Do not rely on your knowledge to answer. Use only the tool results.")},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// First leg: Bedrock → Bifrost intermediate.
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	// Second leg: Bifrost intermediate → Bedrock.
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	// Locate the rebuilt toolResult content block (its position may shift
+	// because the converter groups assistant tool calls and user tool results
+	// by state-machine emission, but a toolResult with our toolUseId must exist).
+	var got *bedrock.BedrockSearchResultBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil {
+				continue
+			}
+			if block.ToolResult.ToolUseID != "tooluse_a4rBqeZNRTKj2lTskvaO4H" {
+				continue
+			}
+			for _, c := range block.ToolResult.Content {
+				if c.SearchResult != nil {
+					got = c.SearchResult
+					break
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, got, "expected toolResult.content[].searchResult to round-trip; got nil (regression of #3537)")
+	assert.Equal(t, "Great Source of Information About Apptio", got.Source)
+	assert.Equal(t, "12adbd74-46bd-4a88-88b2-0048755f6eb5", got.Title)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost", got.Content[0].Text)
+	require.NotNil(t, got.Citations)
+	assert.True(t, got.Citations.Enabled)
+}
+
+// TestBedrockVideoToolResultRoundTrip verifies that a video block inside
+// toolResult.content survives ToBifrostResponsesRequest → ToBedrockResponsesRequest
+// via the same sentinel-envelope mechanism that preserves searchResult. Without
+// the schema fix + envelope trigger extension, Video is silently dropped at JSON
+// unmarshal and the outbound request carries an empty text block instead.
+func TestBedrockVideoToolResultRoundTrip(t *testing.T) {
+	// Smallest plausible base64 payload — content doesn't matter for the round-trip,
+	// only that the Video struct is preserved verbatim.
+	videoBytes := "AAAA"
+
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("Describe the attached clip.")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_video_xyz",
+							Name:      "FetchClip",
+							Input:     json.RawMessage(`{"id":"abc"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_video_xyz",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{
+									Video: &bedrock.BedrockVideoBlock{
+										Format: "mp4",
+										Source: bedrock.BedrockVideoSource{
+											Bytes: &videoBytes,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	var got *bedrock.BedrockVideoBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil || block.ToolResult.ToolUseID != "tooluse_video_xyz" {
+				continue
+			}
+			for _, c := range block.ToolResult.Content {
+				if c.Video != nil {
+					got = c.Video
+					break
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, got, "expected toolResult.content[].video to round-trip; got nil")
+	assert.Equal(t, "mp4", got.Format)
+	require.NotNil(t, got.Source.Bytes)
+	assert.Equal(t, videoBytes, *got.Source.Bytes)
+	assert.Nil(t, got.Source.S3Location, "expected union member s3Location to be nil when bytes is set")
+}
+
+// TestBedrockMixedBlockToolResultRoundTrip covers a toolResult.content array that
+// mixes a representable block (text) with an unrepresentable one (searchResult).
+// Because the envelope path triggers on *any* unrepresentable block and serializes
+// the entire content array, the whole array is bundled and must be decoded back
+// intact — both blocks, in order. This guards against the decode leg dropping the
+// representable block (or vice-versa) when the two are interleaved.
+func TestBedrockMixedBlockToolResultRoundTrip(t *testing.T) {
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("What is Apptio?")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_mixed_blocks",
+							Name:      "RAGRequest",
+							Input:     json.RawMessage(`{"query":"What is Apptio?"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_mixed_blocks",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{Text: schemas.Ptr("Summary: Apptio is a Bedrock passthrough customer.")},
+								{
+									SearchResult: &bedrock.BedrockSearchResultBlock{
+										Source: "Great Source of Information About Apptio",
+										Title:  "12adbd74-46bd-4a88-88b2-0048755f6eb5",
+										Content: []bedrock.BedrockSearchResultContent{
+											{Text: "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost"},
+										},
+										Citations: &bedrock.BedrockCitationsConfig{Enabled: true},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("Do not rely on your knowledge to answer. Use only the tool results.")},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	// Locate the rebuilt toolResult content array for our toolUseId.
+	var gotContent []bedrock.BedrockContentBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil || block.ToolResult.ToolUseID != "tooluse_mixed_blocks" {
+				continue
+			}
+			gotContent = block.ToolResult.Content
+		}
+	}
+
+	require.NotNil(t, gotContent, "expected toolResult with our toolUseId to round-trip; got nil")
+	require.Len(t, gotContent, 2, "expected both the text and searchResult blocks to survive the round-trip")
+
+	// Order is preserved: the envelope is a JSON array, so block[0] is the text
+	// block and block[1] is the searchResult block.
+	require.NotNil(t, gotContent[0].Text, "expected first block to remain a text block")
+	assert.Equal(t, "Summary: Apptio is a Bedrock passthrough customer.", *gotContent[0].Text)
+	assert.Nil(t, gotContent[0].SearchResult, "text block must not gain a searchResult")
+
+	got := gotContent[1].SearchResult
+	require.NotNil(t, got, "expected second block to remain a searchResult block")
+	assert.Nil(t, gotContent[1].Text, "searchResult block must not gain a text field")
+	assert.Equal(t, "Great Source of Information About Apptio", got.Source)
+	assert.Equal(t, "12adbd74-46bd-4a88-88b2-0048755f6eb5", got.Title)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost", got.Content[0].Text)
+	require.NotNil(t, got.Citations)
+	assert.True(t, got.Citations.Enabled)
+}
