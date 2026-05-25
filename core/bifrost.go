@@ -932,9 +932,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	hasExtraInputs := req.Params != nil && req.Params.ExtraParams != nil &&
-		(req.Params.ExtraParams["inputs"] != nil || req.Params.ExtraParams["images"] != nil)
-	if (req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil)) && !hasExtraInputs && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -948,6 +946,22 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
+	if len(req.Input) > 0 {
+		if err := schemas.ValidateEmbeddingInput(req.Input); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: err.Error(),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            schemas.EmbeddingRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
+				},
+			}
+		}
+	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.EmbeddingRequest
@@ -958,6 +972,59 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, err
 	}
 	// TODO: Release the response
+	return response.EmbeddingResponse, nil
+}
+
+// BatchEmbeddingRequest sends a batch embedding request with optional per-item parameter overrides.
+func (bifrost *Bifrost) BatchEmbeddingRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch embedding request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchEmbeddingRequest,
+			},
+		}
+	}
+	if len(req.Items) == 0 && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch embedding request has no items",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.BatchEmbeddingRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+	if err := req.Validate(); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.BatchEmbeddingRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchEmbeddingRequest
+	bifrostReq.BatchEmbeddingRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
 	return response.EmbeddingResponse, nil
 }
 
@@ -4462,6 +4529,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.EmbeddingRequest = &tmp
 	}
+	if req.BatchEmbeddingRequest != nil {
+		tmp := *req.BatchEmbeddingRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.BatchEmbeddingRequest = &tmp
+	}
 	if req.RerankRequest != nil {
 		tmp := *req.RerankRequest
 		tmp.Provider = fallback.Provider
@@ -5989,6 +6062,15 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		embeddingResponse.BackfillParams(req.BifrostRequest.EmbeddingRequest)
 		response.EmbeddingResponse = embeddingResponse
+	case schemas.BatchEmbeddingRequest:
+		embeddingResponse, bifrostError := provider.BatchEmbedding(req.Context, key, req.BifrostRequest.BatchEmbeddingRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		if strings.TrimSpace(embeddingResponse.Model) == "" {
+			embeddingResponse.Model = req.BifrostRequest.BatchEmbeddingRequest.Model
+		}
+		response.EmbeddingResponse = embeddingResponse
 	case schemas.RerankRequest:
 		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest)
 		if bifrostError != nil {
@@ -6971,6 +7053,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
+	req.BatchEmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.OCRRequest = nil
 	req.SpeechRequest = nil

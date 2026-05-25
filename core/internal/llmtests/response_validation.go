@@ -1363,12 +1363,8 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 	if expectations.ProviderSpecific != nil {
 		if raw, exists := expectations.ProviderSpecific["expected_embedding_count"]; exists {
 			if expectedCount, ok := intFromProviderSpecific(raw); ok {
-				actualCount := len(response.Data)
-				// Also check for 2D arrays (some providers return single embedding with 2D array)
-				if actualCount == 1 && response.Data[0].Embedding.Embedding2DArray != nil {
-					actualCount = len(response.Data[0].Embedding.Embedding2DArray)
-				}
-				if actualCount != expectedCount {
+			actualCount := len(response.Data)
+			if actualCount != expectedCount {
 					result.Passed = false
 					result.Errors = append(result.Errors,
 						fmt.Sprintf("Expected %d embeddings, got %d", expectedCount, actualCount))
@@ -1379,13 +1375,8 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 
 	// Validate each embedding has non-empty vector data
 	for i, embedding := range response.Data {
-		hasData := false
-		if embedding.Embedding.EmbeddingArray != nil && len(embedding.Embedding.EmbeddingArray) > 0 {
-			hasData = true
-		}
-		if embedding.Embedding.Embedding2DArray != nil && len(embedding.Embedding.Embedding2DArray) > 0 {
-			hasData = true
-		}
+		e := embedding.Embedding
+		hasData := len(e.Float) > 0 || e.Base64 != nil || len(e.Int8) > 0 || len(e.Uint8) > 0 || len(e.Binary) > 0 || len(e.Ubinary) > 0
 		if !hasData {
 			result.Passed = false
 			result.Errors = append(result.Errors, fmt.Sprintf("Embedding %d has no vector data", i))
@@ -1396,12 +1387,8 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 	if expectedDimensions, ok := expectations.ProviderSpecific["expected_dimensions"].(int); ok {
 		for i, embedding := range response.Data {
 			var actualDimensions int
-			if embedding.Embedding.EmbeddingArray != nil {
-				actualDimensions = len(embedding.Embedding.EmbeddingArray)
-			} else if embedding.Embedding.Embedding2DArray != nil {
-				if len(embedding.Embedding.Embedding2DArray) > 0 {
-					actualDimensions = len(embedding.Embedding.Embedding2DArray[0])
-				}
+			if vec, err := getEmbeddingVector(embedding); err == nil {
+				actualDimensions = len(vec)
 			}
 			if actualDimensions != expectedDimensions {
 				result.Passed = false
@@ -1566,10 +1553,8 @@ func collectEmbeddingResponseMetrics(response *schemas.BifrostEmbeddingResponse,
 	result.MetricsCollected["has_usage"] = response.Usage != nil
 	if len(response.Data) > 0 {
 		var dimensions int
-		if response.Data[0].Embedding.EmbeddingArray != nil {
-			dimensions = len(response.Data[0].Embedding.EmbeddingArray)
-		} else if len(response.Data[0].Embedding.Embedding2DArray) > 0 {
-			dimensions = len(response.Data[0].Embedding.Embedding2DArray[0])
+		if vec, err := getEmbeddingVector(response.Data[0]); err == nil {
+			dimensions = len(vec)
 		}
 		result.MetricsCollected["embedding_dimensions"] = dimensions
 	}

@@ -158,29 +158,29 @@ func TestSonic_OrderedMap_NestedPreservesOrder(t *testing.T) {
 	assert.Equal(t, input, string(output))
 }
 
-func TestSonic_EmbeddingStruct_PreservesFloat64Precision(t *testing.T) {
+func TestSonic_EmbeddingsByType_PreservesFloat64Precision(t *testing.T) {
 	const want = 0.12345678901234568
 
-	var embedding EmbeddingStruct
-	err := embedding.UnmarshalJSON([]byte(`[0.12345678901234568]`))
+	var embedding EmbeddingsByType
+	err := Unmarshal([]byte(`{"float":[0.12345678901234568]}`), &embedding)
 	require.NoError(t, err)
 
-	require.Len(t, embedding.EmbeddingArray, 1)
+	require.Len(t, embedding.Float, 1)
 
-	got := embedding.EmbeddingArray[0]
+	got := embedding.Float[0]
 	assert.Equal(t, want, got)
 
 	float32Rounded := float64(float32(want))
 	assert.NotEqual(t, float32Rounded, got)
 
-	marshaled, err := embedding.MarshalJSON()
+	marshaled, err := Marshal(embedding)
 	require.NoError(t, err)
 
-	var roundTrip []float64
+	var roundTrip EmbeddingsByType
 	err = Unmarshal(marshaled, &roundTrip)
 	require.NoError(t, err)
-	require.Len(t, roundTrip, 1)
-	assert.Equal(t, math.Float64bits(got), math.Float64bits(roundTrip[0]))
+	require.Len(t, roundTrip.Float, 1)
+	assert.Equal(t, math.Float64bits(got), math.Float64bits(roundTrip.Float[0]))
 }
 
 // --- ToolFunctionParameters through sonic ---

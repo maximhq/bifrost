@@ -458,7 +458,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return openai.ToOpenAIEmbeddingResponse(resp), nil
 		},
 		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.OpenAI {
@@ -860,7 +860,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return resp, nil
+				return openai.ToOpenAIEmbeddingResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err

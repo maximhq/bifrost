@@ -22,6 +22,8 @@ Tests all core scenarios using Google GenAI SDK directly:
 12. Error handling
 13. Streaming chat
 14. Single text embedding
+45. Multimodal embedding - text + image content (Gemini/Vertex gemini-embedding-2-preview)
+46. Multimodal embedding - batch contents (Gemini/Vertex gemini-embedding-2-preview)
 15. List models
 16. Audio transcription
 17. Audio transcription with parameters
@@ -54,6 +56,7 @@ Tests all core scenarios using Google GenAI SDK directly:
 44. Context caching (Gemini Caches API) - create, list, get, update, delete, generate with cache
 """
 
+import base64
 import io
 import json
 import os
@@ -71,6 +74,7 @@ from PIL import Image
 
 from .utils.common import (
     BASE64_IMAGE,
+    BASE64_IMAGE_LARGE,
     # Batch API utilities
     BATCH_INLINE_PROMPTS,
     CALCULATOR_TOOL,
@@ -3076,6 +3080,423 @@ Joe: Pretty good, thanks for asking."""
                 print(f"Found {len(supports)} grounding supports in streaming response")
         
         print("✓ Google Search grounding test (streaming) passed!")
+
+    # =========================================================================
+    # MULTIMODAL EMBEDDING TEST CASES (gemini-embedding-2-preview)
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_45_multimodal_embedding_text_and_image(self, test_config, provider, model):
+        """Test Case 45: Single multimodal content embedding - text + image (gemini-embedding-2-preview).
+
+        Sends one types.Content with a text part and an inline-base64 image part.
+        Expects a single embedding vector back with the requested dimensionality.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+
+        client = get_provider_google_client(provider)
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=types.Content(
+                parts=[
+                    types.Part(text="A colorful geometric pattern"),
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                ]
+            ),
+            config=types.EmbedContentConfig(output_dimensionality=512),
+        )
+
+        assert response is not None, "Multimodal embedding response should not be None"
+        assert hasattr(response, "embeddings"), "Response should have 'embeddings' attribute"
+        assert len(response.embeddings) == 1, (
+            f"Single content item should produce exactly one embedding, got {len(response.embeddings)}"
+        )
+        values = response.embeddings[0].values
+        assert isinstance(values, list), f"Embedding values should be a list, got {type(values)}"
+        assert len(values) == 512, f"Expected 512-dimensional embedding, got {len(values)}"
+        assert all(isinstance(v, float) for v in values), "All embedding values should be floats"
+
+        print(f"✓ Multimodal (text+image) embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_46_multimodal_embedding_batch(self, test_config, provider, model):
+        """Test Case 46: Batch multimodal embedding - multiple contents (gemini-embedding-2-preview).
+
+        Sends three separate contents: text-only, image-only, and text+image.
+        Maps to batchEmbedContents on the Gemini side.
+        Expects one embedding vector per content item.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex multimodalembedding@001 does not support batch (multiple contents) requests")
+
+        client = get_provider_google_client(provider)
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        dimensions = 512
+
+        contents = [
+            # Text-only content
+            types.Content(parts=[types.Part(text="Artificial intelligence research paper")]),
+            # Image-only content
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]),
+            # Mixed text + image content
+            types.Content(
+                parts=[
+                    types.Part(text="A geometric shape shown in the image"),
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                ]
+            ),
+        ]
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=contents,
+            config=types.EmbedContentConfig(output_dimensionality=dimensions),
+        )
+
+        assert response is not None, "Batch multimodal embedding response should not be None"
+        assert hasattr(response, "embeddings"), "Response should have 'embeddings' attribute"
+        assert len(response.embeddings) == 3, (
+            f"Expected 3 embeddings for 3 content items, got {len(response.embeddings)}"
+        )
+        for i, embedding in enumerate(response.embeddings):
+            values = embedding.values
+            assert isinstance(values, list), (
+                f"Content item {i}: embedding values should be a list, got {type(values)}"
+            )
+            assert len(values) == dimensions, (
+                f"Content item {i}: expected {dimensions}-dimensional embedding, got {len(values)}"
+            )
+            assert all(isinstance(v, float) for v in values), (
+                f"Content item {i}: all values should be floats"
+            )
+
+        print(
+            f"✓ Batch multimodal embedding: provider={provider} "
+            f"count={len(response.embeddings)} dims={len(response.embeddings[0].values)}"
+        )
+
+    # =========================================================================
+    # MULTIMODAL EMBEDDING — EXTENDED TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_47_image_only_embedding(self, test_config, provider, model):
+        """Test Case 47: Image-only content (no text) produces one embedding vector."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+
+        client = get_provider_google_client(provider)
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=types.Content(
+                parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]
+            ),
+            config=types.EmbedContentConfig(output_dimensionality=512),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings")
+        assert len(response.embeddings) == 1, (
+            f"Image-only content should produce exactly one embedding, got {len(response.embeddings)}"
+        )
+        values = response.embeddings[0].values
+        assert isinstance(values, list) and len(values) == 512
+        assert all(isinstance(v, float) for v in values)
+
+        print(f"✓ Image-only embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_48_multipart_text_embedding(self, test_config, provider, model):
+        """Test Case 48: Single content with multiple text parts produces one embedding.
+
+        Verifies that multi-part text content is correctly aggregated (concatenated)
+        into a single embedding rather than producing multiple vectors or dropping parts.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+
+        client = get_provider_google_client(provider)
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=types.Content(
+                parts=[
+                    types.Part(text="Artificial intelligence is transforming industries."),
+                    types.Part(text="Machine learning enables computers to learn from data."),
+                ]
+            ),
+            config=types.EmbedContentConfig(output_dimensionality=512),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings")
+        assert len(response.embeddings) == 1, (
+            f"Multi-part text content should aggregate into one embedding, got {len(response.embeddings)}"
+        )
+        values = response.embeddings[0].values
+        assert isinstance(values, list) and len(values) == 512
+        assert all(isinstance(v, float) for v in values)
+
+        print(f"✓ Multi-part text embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_49_batch_image_only_contents(self, test_config, provider, model):
+        """Test Case 49: Batch of image-only contents produces one embedding per image."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex Gemini embedding path does not support batch multimodal")
+
+        client = get_provider_google_client(provider)
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        image_bytes_large = base64.b64decode(BASE64_IMAGE_LARGE)
+        dimensions = 512
+
+        contents = [
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]),
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes_large, mime_type="image/png")]),
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]),
+        ]
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=contents,
+            config=types.EmbedContentConfig(output_dimensionality=dimensions),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings")
+        assert len(response.embeddings) == 3, (
+            f"Expected 3 embeddings for 3 image contents, got {len(response.embeddings)}"
+        )
+        for i, emb in enumerate(response.embeddings):
+            assert isinstance(emb.values, list) and len(emb.values) == dimensions, (
+                f"Image {i}: expected {dimensions}-dim vector, got {len(emb.values)}"
+            )
+
+        print(f"✓ Batch image-only embedding: provider={provider} count={len(response.embeddings)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings", exclude_providers=["cohere"]))
+    def test_50_audio_embedding(self, test_config, provider, model):
+        """Test Case 50: Single audio content produces one embedding vector.
+
+        Audio embedding is supported by Gemini multimodal embedding models.
+        Skipped for Vertex (multimodalembedding@001 does not support audio).
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex multimodalembedding@001 does not support audio embedding")
+
+        client = get_provider_google_client(provider)
+        audio_bytes = generate_test_audio()
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=types.Content(
+                parts=[types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")]
+            ),
+            config=types.EmbedContentConfig(output_dimensionality=512),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings")
+        assert len(response.embeddings) == 1, (
+            f"Audio content should produce exactly one embedding, got {len(response.embeddings)}"
+        )
+        values = response.embeddings[0].values
+        assert isinstance(values, list) and len(values) == 512
+        assert all(isinstance(v, float) for v in values)
+
+        print(f"✓ Audio embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_51_dimensionality_control(self, test_config, provider, model):
+        """Test Case 51: output_dimensionality is respected for multiple target sizes.
+
+        Embeds the same text at 256 and 1024 dimensions and verifies each response
+        has exactly the requested number of dimensions.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+
+        client = get_provider_google_client(provider)
+        content = types.Content(parts=[types.Part(text="Testing dimensionality control.")])
+
+        for dims in [256, 1024]:
+            response = client.models.embed_content(
+                model=format_provider_model(provider, model),
+                contents=content,
+                config=types.EmbedContentConfig(output_dimensionality=dims),
+            )
+
+            assert response is not None
+            assert hasattr(response, "embeddings") and len(response.embeddings) == 1
+            values = response.embeddings[0].values
+            assert len(values) == dims, (
+                f"Expected {dims}-dim embedding, got {len(values)}"
+            )
+            assert all(isinstance(v, float) for v in values)
+
+            print(f"✓ Dimensionality {dims}: provider={provider} verified")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_52_task_type_retrieval_query(self, test_config, provider, model):
+        """Test Case 52: RETRIEVAL_QUERY task type produces a valid embedding."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+
+        client = get_provider_google_client(provider)
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents="What are the best practices for machine learning?",
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_QUERY",
+                output_dimensionality=512,
+            ),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings") and len(response.embeddings) == 1
+        values = response.embeddings[0].values
+        assert isinstance(values, list) and len(values) == 512
+        assert all(isinstance(v, float) for v in values)
+
+        print(f"✓ RETRIEVAL_QUERY embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_53_task_type_retrieval_document(self, test_config, provider, model):
+        """Test Case 53: RETRIEVAL_DOCUMENT task type produces a valid embedding."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex multimodalembedding@001 does not support task_type")
+
+        client = get_provider_google_client(provider)
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents="Machine learning best practices include data preprocessing, "
+                     "feature engineering, cross-validation, and model evaluation.",
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=512,
+            ),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings") and len(response.embeddings) == 1
+        values = response.embeddings[0].values
+        assert isinstance(values, list) and len(values) == 512
+        assert all(isinstance(v, float) for v in values)
+
+        print(f"✓ RETRIEVAL_DOCUMENT embedding: provider={provider} dims={len(values)}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_54_semantic_similarity_sanity(self, test_config, provider, model):
+        """Test Case 54: Semantically similar texts have higher cosine similarity than dissimilar ones.
+
+        Embeds two paraphrases and one unrelated text, then asserts:
+            cosine_sim(similar_1, similar_2) > cosine_sim(similar_1, unrelated)
+        This verifies the embedding model captures meaning, not just token overlap.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex multimodalembedding@001 does not support batch for this path")
+
+        def cosine_sim(a: list, b: list) -> float:
+            dot = sum(x * y for x, y in zip(a, b, strict=True))
+            mag_a = sum(x * x for x in a) ** 0.5
+            mag_b = sum(x * x for x in b) ** 0.5
+            return dot / (mag_a * mag_b) if mag_a and mag_b else 0.0
+
+        client = get_provider_google_client(provider)
+        dims = 512
+
+        contents = [
+            types.Content(parts=[types.Part(text="The cat sat on the mat.")]),
+            types.Content(parts=[types.Part(text="A cat was resting on a rug.")]),
+            types.Content(parts=[types.Part(text="Neural networks are used in deep learning.")]),
+        ]
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=contents,
+            config=types.EmbedContentConfig(output_dimensionality=dims),
+        )
+
+        assert len(response.embeddings) == 3
+
+        sim_similar = cosine_sim(response.embeddings[0].values, response.embeddings[1].values)
+        sim_different = cosine_sim(response.embeddings[0].values, response.embeddings[2].values)
+
+        assert sim_similar > sim_different, (
+            f"Similar texts should be closer in embedding space: "
+            f"sim(similar)={sim_similar:.4f} sim(different)={sim_different:.4f}"
+        )
+
+        print(
+            f"✓ Semantic similarity: provider={provider} "
+            f"sim(similar)={sim_similar:.4f} sim(different)={sim_different:.4f}"
+        )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multimodal_embeddings"))
+    def test_55_large_batch_mixed_modalities(self, test_config, provider, model):
+        """Test Case 55: Large batch with 5 mixed-modality contents — one embedding per content."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for multimodal_embeddings scenario")
+        if provider == "vertex":
+            pytest.skip("Vertex Gemini embedding path does not support batch multimodal")
+
+        client = get_provider_google_client(provider)
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        dims = 256
+
+        contents = [
+            # 0: text-only
+            types.Content(parts=[types.Part(text="Renewable energy sources include solar and wind power.")]),
+            # 1: image-only
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]),
+            # 2: text + image
+            types.Content(parts=[
+                types.Part(text="A colorful geometric image."),
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            ]),
+            # 3: text-only (different topic)
+            types.Content(parts=[types.Part(text="The history of ancient Rome spans over a thousand years.")]),
+            # 4: image-only (second image)
+            types.Content(parts=[types.Part.from_bytes(data=image_bytes, mime_type="image/png")]),
+        ]
+
+        response = client.models.embed_content(
+            model=format_provider_model(provider, model),
+            contents=contents,
+            config=types.EmbedContentConfig(output_dimensionality=dims),
+        )
+
+        assert response is not None
+        assert hasattr(response, "embeddings")
+        assert len(response.embeddings) == 5, (
+            f"Expected 5 embeddings for 5 contents, got {len(response.embeddings)}"
+        )
+        for i, emb in enumerate(response.embeddings):
+            assert isinstance(emb.values, list) and len(emb.values) == dims, (
+                f"Content {i}: expected {dims}-dim vector, got {len(emb.values)}"
+            )
+            assert all(isinstance(v, float) for v in emb.values), (
+                f"Content {i}: all values should be float"
+            )
+
+        print(f"✓ Large batch mixed: provider={provider} count={len(response.embeddings)} dims={dims}")
 
     # =========================================================================
     # GEMINI VIDEO GENERATION TEST CASES

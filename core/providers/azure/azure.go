@@ -847,7 +847,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return openai.ToOpenAIEmbeddingRequest(request), nil
+			return openai.ToOpenAIEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -878,14 +878,16 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		}, nil
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	openaiResp := &openai.OpenAIEmbeddingResponse{}
 
-	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResp, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	response := openaiResp.ToBifrostEmbeddingResponse()
+
+	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -900,6 +902,10 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 	}
 
 	return response, nil
+}
+
+func (provider *AzureProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
 }
 
 // Speech is not supported by the Azure provider.

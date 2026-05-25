@@ -133,8 +133,8 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
 		Model:    plugin.config.EmbeddingModel,
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
+		Input: []schemas.EmbeddingContent{
+			{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
 		},
 	}
 
@@ -165,22 +165,22 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	}
 
 	switch {
-	case embedding.EmbeddingStr != nil:
-		var vals []float32
-		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse string embedding: %w", err)
+	case len(embedding.Float) > 0:
+		return float64ToFloat32Embedding(embedding.Float), inputTokens, nil
+	case embedding.Base64 != nil:
+		vals, err := decodeBase64Embedding(*embedding.Base64)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to decode base64 embedding: %w", err)
 		}
 		return vals, inputTokens, nil
-	case embedding.EmbeddingArray != nil:
-		return float64ToFloat32Embedding(embedding.EmbeddingArray), inputTokens, nil
-	case len(embedding.Embedding2DArray) > 0:
-		return flattenToFloat32Embedding(embedding.Embedding2DArray), inputTokens, nil
-	case embedding.EmbeddingInt8Array != nil:
-		// Quantized int8/binary embedding format. Promote to float32 so the
-		// cosine-similarity path treats it uniformly.
-		return int8ToFloat32Embedding(embedding.EmbeddingInt8Array), inputTokens, nil
-	case embedding.EmbeddingInt32Array != nil:
-		return int32ToFloat32Embedding(embedding.EmbeddingInt32Array), inputTokens, nil
+	case len(embedding.Int8) > 0:
+		return int8ToFloat32Embedding(embedding.Int8), inputTokens, nil
+	case len(embedding.Binary) > 0:
+		return int8ToFloat32Embedding(embedding.Binary), inputTokens, nil
+	case len(embedding.Uint8) > 0:
+		return uint8ToFloat32Embedding(embedding.Uint8), inputTokens, nil
+	case len(embedding.Ubinary) > 0:
+		return uint8ToFloat32Embedding(embedding.Ubinary), inputTokens, nil
 	}
 	return nil, 0, fmt.Errorf("embedding data is not in expected format")
 }

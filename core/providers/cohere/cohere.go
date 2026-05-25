@@ -886,7 +886,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereEmbeddingRequest(request), nil
+			return ToCohereEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -938,6 +938,10 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	return bifrostResponse, nil
+}
+
+func (provider *CohereProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
 }
 
 // Rerank performs a rerank request using the Cohere /v2/rerank API.
