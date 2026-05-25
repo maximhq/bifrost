@@ -893,6 +893,11 @@ postgresql:
         cpu: 250m
         memory: 256Mi
 
+    podSecurityContext:
+      fsGroup: 999
+
+    containerSecurityContext: {}
+
   metrics:
     enabled: false
 
