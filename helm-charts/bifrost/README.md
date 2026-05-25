@@ -453,12 +453,49 @@ postgresql:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `postgresql.enabled` | Deploy PostgreSQL | `false` |
+| `postgresql.enabled` | Deploy PostgreSQL as part of this chart | `false` |
 | `postgresql.auth.username` | Database username | `bifrost` |
-| `postgresql.auth.password` | Database password | `bifrost_password` |
+| `postgresql.auth.password` | Database password (ignored when `existingSecret` is set) | `bifrost_password` |
 | `postgresql.auth.database` | Database name | `bifrost` |
-| `postgresql.external.enabled` | Use external PostgreSQL | `false` |
+| `postgresql.auth.existingSecret` | Name of an existing Kubernetes secret containing the password. When set, the chart does not create its own secret — both the postgres pod and the bifrost pod read from this secret. Useful with secret managers such as Vault Secrets Operator. | `""` |
+| `postgresql.auth.passwordKey` | Key inside `existingSecret` that holds the password | `password` |
+| `postgresql.external.enabled` | Use external PostgreSQL (e.g. RDS) instead of deploying a pod | `false` |
 | `postgresql.external.host` | External PostgreSQL host | `""` |
+| `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance | `""` |
+| `postgresql.external.passwordKey` | Key inside the external `existingSecret` that holds the password | `password` |
+
+#### Using an Existing Secret for Hosted PostgreSQL
+
+If you manage secrets externally (e.g. with Vault Secrets Operator, External Secrets Operator, or Sealed Secrets), point `existingSecret` at the synced Kubernetes secret instead of providing a plaintext password:
+
+```yaml
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    database: bifrost
+    existingSecret: vault-postgres-secret   # VSO-synced secret name
+    passwordKey: password                   # key inside the secret
+```
+
+The chart will skip creating its own secret. Both the postgres pod (`POSTGRES_PASSWORD`) and the bifrost pod (`BIFROST_POSTGRES_PASSWORD`) will mount the password directly from your secret.
+
+For external PostgreSQL (e.g. RDS), use `postgresql.external.existingSecret` instead:
+
+```yaml
+postgresql:
+  external:
+    enabled: true
+    host: my-db.us-east-1.rds.amazonaws.com
+    user: bifrost
+    database: bifrost
+    existingSecret: vault-rds-secret
+    passwordKey: password
+    sslMode: require
+```
 
 ### Vector Store Configuration (Semantic Caching)
 

@@ -875,6 +875,10 @@ postgresql:
     username: bifrost
     password: bifrost_password
     database: bifrost
+    # Use existing Kubernetes secret for password (takes precedence over password field).
+    # The postgres pod and bifrost will both read from this secret.
+    existingSecret: ""
+    passwordKey: "password"
 
   primary:
     persistence:

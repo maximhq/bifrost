@@ -86,7 +86,11 @@ env.BIFROST_POSTGRES_PASSWORD
 {{- .Values.postgresql.external.password -}}
 {{- end -}}
 {{- else -}}
+{{- if .Values.postgresql.auth.existingSecret -}}
+env.BIFROST_POSTGRES_PASSWORD
+{{- else -}}
 {{- .Values.postgresql.auth.password -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
