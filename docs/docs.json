@@ -221,6 +221,7 @@
                 ]
               },
               "features/telemetry",
+              "features/otel",
               "features/semantic-caching",
               {
                 "group": "Prompt Repository",

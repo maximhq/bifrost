@@ -664,6 +664,12 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - Latency and timing (start/end timestamps)
 - Error details with status codes
 
+### Caller-Supplied Headers
+
+Headers Bifrost forwards to the upstream provider — both `x-bf-eh-*` prefixed headers and headers matched by the [direct allowlist](/deployment-guides/config-json/client#header-filtering) — are also surfaced on the `llm.call` span as `gen_ai.request.extra_header.<name>` attributes. This makes it easy to filter or correlate traces by caller context (session ID, tenant ID, correlation IDs) without standing up extra plumbing.
+
+For example, sending `x-bf-eh-session-id: sess-abc-123` produces the span attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"`. See [Extra Headers](/providers/request-options#extra-headers-x-bf-eh) for the full request format.
+
 ### Example Span
 
 ```json
