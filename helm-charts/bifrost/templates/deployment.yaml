@@ -230,7 +230,8 @@ spec:
                   key: {{ .Values.bifrost.authConfig.passwordKey | default "password" }}
             {{- end }}
             {{- /* Provider secrets */ -}}
-            {{- range $provider, $secret := .Values.bifrost.providerSecrets }}
+            {{- range $provider := (.Values.bifrost.providerSecrets | keys | sortAlpha) }}
+            {{- $secret := index $.Values.bifrost.providerSecrets $provider }}
             {{- if and $secret.existingSecret $secret.envVar }}
             - name: {{ $secret.envVar }}
               valueFrom:
