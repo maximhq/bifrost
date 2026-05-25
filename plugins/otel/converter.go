@@ -147,7 +147,10 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 		}
 		if span == trace.RootSpan {
 			if requestID := trace.GetRequestID(); requestID != "" {
-				otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrRequestID, requestID))
+				otelSpan.Attributes = append(otelSpan.Attributes,
+					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id
+					kvStr(schemas.AttrBifrostRequestID, requestID),
+				)
 			}
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
