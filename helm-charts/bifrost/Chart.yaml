@@ -3,7 +3,7 @@ name: bifrost
 description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
 type: application
 version: 2.1.18
-appVersion: "1.5.0"
+appVersion: "1.5.5"
 keywords:
   - ai
   - gateway
