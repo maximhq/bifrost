@@ -863,7 +863,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			url := string(ctx.Request.URI().RequestURI())
+			// Match the whitelist against the path only
+			url := string(ctx.Path())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				next(ctx)
