@@ -26,6 +26,7 @@ type testConfigStore struct {
 	mu           sync.Mutex
 	oauthConfigs map[string]*tables.TableOauthConfig
 	oauthTokens  map[string]*tables.TableOauthToken
+	clientConfig *configstore.ClientConfig
 }
 
 func newTestConfigStore() *testConfigStore {
@@ -78,6 +79,15 @@ func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.Tabl
 	defer s.mu.Unlock()
 	s.oauthTokens[token.ID] = bifrost.Ptr(*token)
 	return nil
+}
+
+func (s *testConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clientConfig == nil {
+		return nil, nil
+	}
+	return bifrost.Ptr(*s.clientConfig), nil
 }
 
 func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
@@ -157,6 +167,19 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 		require.Len(t, tokens, 1)
 		assert.Equal(t, "expiring", tokens[0].ID)
 	})
+}
+
+func TestMCPTempTokenAuthEnabled(t *testing.T) {
+	store := newTestConfigStore()
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
+
+	store.clientConfig = &configstore.ClientConfig{}
+	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
+
+	store.clientConfig.MCPEnableTempTokenAuth = true
+	assert.True(t, provider.mcpTempTokenAuthEnabled(context.Background()))
 }
 
 func TestTokenRefreshWorker_TransientError_DoesNotMarkExpired(t *testing.T) {
