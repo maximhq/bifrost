@@ -308,6 +308,9 @@
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
+        "cloudflare": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -1421,6 +1424,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "cloudflare",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -4341,6 +4345,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "cloudflare",
             "gemini",
             "openrouter",
             "elevenlabs",

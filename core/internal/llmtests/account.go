@@ -169,6 +169,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
+		schemas.Cloudflare,
 		schemas.Gemini,
 		schemas.OpenRouter,
 		schemas.HuggingFace,
@@ -426,6 +427,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.CEREBRAS_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Cloudflare:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.CLOUDFLARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -729,6 +739,28 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // Cerebras is reasonably stable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Cloudflare:
+		// Workers AI's OpenAI-compat URL embeds the account id, so the test
+		// account composes BaseURL from CLOUDFLARE_ACCOUNT_ID. The provider
+		// keeps the base URL at `/ai` and appends `/v1/...` per request, so
+		// the trailing `/v1` is intentionally NOT included here — adding it
+		// would produce `…/ai/v1/v1/chat/completions` and 404 every call.
+		// When the env var is unset, NewCloudflareProvider returns an error
+		// and the gated TestCloudflare in cloudflare_test.go skips before
+		// reaching here.
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai", os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                3 * time.Minute,
 			},

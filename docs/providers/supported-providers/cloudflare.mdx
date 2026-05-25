@@ -1,0 +1,122 @@
+---
+title: "Cloudflare Workers AI"
+description: "Cloudflare Workers AI conversion guide - OpenAI-compatible format, chat completions, embeddings, streaming, and per-account base URL"
+icon: "c"
+---
+
+## Overview
+
+Cloudflare Workers AI is an **OpenAI-compatible provider** that exposes a subset of the OpenAI surface (chat completions and embeddings) under a per-account base URL. Bifrost delegates all functionality to the shared OpenAI provider implementation. Key characteristics:
+
+- **OpenAI-compatible chat** - `/v1/chat/completions` accepts the standard OpenAI request shape and returns the standard response shape.
+- **Streaming support** - Server-Sent Events for chat completions, parsed by the shared OpenAI streaming handler.
+- **Embeddings** - `/v1/embeddings` is supported via the shared OpenAI embedding handler.
+- **Per-account base URL** - Workers AI's URL embeds the account id, so `network_config.base_url` is required at provider construction.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` (converted internally) |
+| Embeddings | ✅ | ❌ | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): legacy text completions, image generation, speech, transcriptions, files, and batch are not part of the Workers AI OpenAI-compat surface. These return `UnsupportedOperationError`.
+</Note>
+
+---
+
+## Configuration
+
+**HTTP Settings:**
+
+- **Base URL**: required, no default. Set it to `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai`. The account id is the same one shown on the Cloudflare dashboard. The provider appends `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` per request, matching the convention used by every other OpenAI-compat provider in this repo, so the trailing `/v1` is intentionally NOT part of the base URL.
+- **Max Connections**: 5000 per host (matches the rest of the OpenAI-compat providers)
+- **Idle Timeout**: 30 seconds for idle connections; streaming uses the per-stream idle timeout from `network_config.stream_idle_timeout_in_seconds`.
+
+`NewCloudflareProvider` returns an error if `network_config.base_url` is empty, since there is no global default that omits the account id.
+
+## Authentication
+
+Workers AI accepts a Cloudflare API token as a bearer credential:
+
+```
+Authorization: Bearer <api_token>
+```
+
+The token must have permission to call Workers AI on the target account. Issue tokens from **Cloudflare dashboard → My Profile → API Tokens** and scope them to `Account → Workers AI → Read`.
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Cloudflare delegates to the shared OpenAI handler, so all standard OpenAI chat completion parameters are forwarded as-is. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Cloudflare supports the standard OpenAI message types and streaming format. Tool calling is model-dependent — many Workers AI catalog entries advertise `function_calling: true` and many do not. Test the specific model you plan to route to before relying on tool calls.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions, with response shape differences (output items instead of message content).
+
+---
+
+# 3. Embeddings
+
+Cloudflare's `/v1/embeddings` accepts the standard OpenAI embedding request shape. Use any catalog model that advertises the `embedding` task, e.g. `@cf/baai/bge-large-en-v1.5`.
+
+---
+
+# 4. List Models
+
+Lists the Workers AI models enabled on the account. The list is account-scoped — different accounts can return different sets.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not part of the Workers AI OpenAI-compat surface (only `/v1/chat/completions` and `/v1/embeddings` are exposed). |
+| Image Generation | Workers AI exposes image models via `/ai/run`, not via the OpenAI-compat surface. |
+| Speech/TTS | Same as above. |
+| Transcription/STT | Same as above. |
+| Batch Operations | Not offered. |
+| File Management | Not offered. |
+
+---
+
+## Caveats
+
+<Accordion title="Per-account base URL is required">
+**Severity**: Medium
+**Behavior**: `NewCloudflareProvider` returns an error when `network_config.base_url` is empty.
+**Impact**: The provider cannot construct a sensible default because Workers AI URLs embed the account id (`/accounts/<account_id>/ai`). Provide it explicitly or via env (e.g. `https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai`).
+**Code**: `core/providers/cloudflare/cloudflare.go:NewCloudflareProvider`
+</Accordion>
+
+<Accordion title="Tool calling is model-dependent">
+**Severity**: Low
+**Behavior**: Tool calls are passed through to the upstream model. Some Workers AI catalog entries advertise `function_calling: true`, others do not.
+**Impact**: A model that does not advertise function-calling will either ignore the `tools` field or return a plain text reply. Verify the chosen model before relying on tool calls.
+</Accordion>

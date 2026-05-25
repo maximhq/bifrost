@@ -136,6 +136,31 @@ export const ProviderIcons = {
 		);
 	},
 
+	cloudflare: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Cloudflare</title>
+				{/* Simple cloud silhouette in Cloudflare's primary brand orange. */}
+				<path
+					d="M19.05 11.32a4.36 4.36 0 00-1.06-2.86 4.4 4.4 0 00-3.32-1.5 4.45 4.45 0 00-1.93.45 5.2 5.2 0 00-9.6 1.59 3.7 3.7 0 00-1.04 7.25c.21.04.42.06.64.06H18.4a3.55 3.55 0 003.55-3.55 3.55 3.55 0 00-2.9-3.49v.05z"
+					fill="#F38020"
+				/>
+				<path
+					d="M19.86 11.42c-.07 0-.14.01-.21.02l-.05.01a.13.13 0 00-.1.1l-.13.45c-.05.19-.03.37.06.5.08.13.22.21.4.22l.55.04c.05 0 .1.04.12.09.02.05.01.1-.02.14a.16.16 0 01-.11.06l-.57.04c-.31.02-.65.27-.77.57l-.04.14a.08.08 0 00.07.11h1.96c.07 0 .12-.04.14-.11a2.18 2.18 0 00-2.3-2.38z"
+					fill="#FAAE40"
+				/>
+			</svg>
+		);
+	},
+
 	cohere: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (

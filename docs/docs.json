@@ -133,6 +133,7 @@
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/elevenlabs",
