@@ -4415,6 +4415,268 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	return true
 }
 
+// fallbackParamsTypeConstraint enumerates all fallback-capable parameter
+// structs that expose ExtraParams.
+//
+// The generic constraint keeps call sites concise, while concrete field access
+// still happens through a type switch in applyFallbackParams because Go
+// generics cannot access struct fields on union constraints.
+type fallbackParamsTypeConstraint interface {
+	*schemas.TextCompletionParameters |
+		*schemas.ChatParameters |
+		*schemas.ResponsesParameters |
+		*schemas.EmbeddingParameters |
+		*schemas.RerankParameters |
+		*schemas.OCRParameters |
+		*schemas.SpeechParameters |
+		*schemas.TranscriptionParameters |
+		*schemas.ImageGenerationParameters |
+		*schemas.ImageVariationParameters |
+		*schemas.VideoGenerationParameters
+}
+
+// mergeFallbackParams merges fallback parameters with base parameters while
+// preserving immutability of the input maps.
+//
+// Precedence
+//
+//   - When a key exists in both maps, the value from `fallback` wins. This is
+//     intentional: the per-fallback `params` block is the explicit way for a
+//     caller to override request-level extras for that fallback (e.g. raise
+//     reasoning_effort only when falling over to a thinking model).
+//   - Neither input map is mutated; the result is a freshly allocated map.
+//
+// Caveats / future work
+//
+//   - WARNING: Fallback params share the same namespace as the request's
+//     ExtraParams. Any key present in both maps will be silently overridden
+//     by the fallback value. Callers who set `fallback.params` are explicitly
+//     opting into this behaviour, but the override is invisible at the JSON
+//     layer. To avoid surprises: (a) do not reuse ExtraParams keys across base
+//     and fallback params unless you intend an override; and (b) enable debug
+//     logging to see per-key collisions at runtime (see logFallbackParamOverrides).
+//     Future work could isolate fallback params into a separate namespace to
+//     eliminate this risk entirely.
+//
+// Base keys are copied first, then fallback keys are applied and override base
+// values when keys overlap. The sorted key walks only make the merge procedure
+// stable for debugging; Go maps do not preserve insertion order, so callers must
+// not rely on this helper for deterministic JSON/map ordering.
+// fallbackParamDeleteMarker is the exact string value that signals "delete this
+// key" inside a fallback Params map. Using a constant lets callers avoid
+// hard-coding the literal and makes the marker easy to change if needed.
+const fallbackParamDeleteMarker = "-"
+
+// cloneFallbackParamValue returns a deep clone of a JSON-like param value.
+// map[string]interface{} values are recursively copied into fresh allocations
+// so that mergeFallbackParams can mutate the merged result without
+// touching the caller's original ExtraParams maps.
+// Scalars, slices, and all other types are returned as-is; they are either
+// immutable or not mutated by the fallback param helpers.
+func cloneFallbackParamValue(v any) any {
+	if m, ok := v.(map[string]interface{}); ok {
+		clone := make(map[string]interface{}, len(m))
+		for k, vv := range m {
+			clone[k] = cloneFallbackParamValue(vv)
+		}
+		return clone
+	}
+	return v
+}
+
+func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) map[string]interface{} {
+	if len(base) == 0 && len(fallback) == 0 {
+		return nil
+	}
+
+	merged := make(map[string]interface{}, len(base)+len(fallback))
+
+	baseKeys := make([]string, 0, len(base))
+	for k := range base {
+		baseKeys = append(baseKeys, k)
+	}
+	sort.Strings(baseKeys)
+	for _, k := range baseKeys {
+		// Deep-clone so that delete-marker processing cannot mutate nested maps
+		// shared with the original request ExtraParams.
+		merged[k] = cloneFallbackParamValue(base[k])
+	}
+
+	fallbackKeys := make([]string, 0, len(fallback))
+	for k := range fallback {
+		fallbackKeys = append(fallbackKeys, k)
+	}
+	sort.Strings(fallbackKeys)
+	for _, k := range fallbackKeys {
+		sv := fallback[k]
+		// Exact string delete marker: remove this key from the merged result.
+		// Only the exact constant matches; " - ", "--", nil, false, 0 do not.
+		if s, ok := sv.(string); ok && s == fallbackParamDeleteMarker {
+			delete(merged, k)
+			continue
+		}
+		// When both sides carry a map at this key, recurse to preserve sibling
+		// keys in the nested object instead of wiping them with a shallow replace.
+		// The recursive call also applies delete-marker semantics at deeper levels.
+		// merged[k] is already a deep clone from the base-key walk above, so
+		// passing it into the recursive call is safe.
+		if dv, exists := merged[k]; exists {
+			if dMap, ok := dv.(map[string]interface{}); ok {
+				if sMap, ok := sv.(map[string]interface{}); ok {
+					merged[k] = mergeFallbackParams(dMap, sMap)
+					continue
+				}
+			}
+		}
+		merged[k] = cloneFallbackParamValue(sv)
+	}
+
+	return merged
+}
+
+// cloneOrZero returns a shallow clone of params when non-nil, otherwise it
+// returns a new zero-valued struct pointer.
+//
+// This helper preserves request immutability when fallback parameters are
+// applied to ExtraParams.
+func cloneOrZero[P any](params *P) *P {
+	if params == nil {
+		return new(P)
+	}
+	cp := *params
+	return &cp
+}
+
+// applyFallbackParams clones the parameter struct and merges fallback
+// parameters into ExtraParams.
+//
+// Go generics cannot access struct fields on union constraints, so a single
+// type switch is used to safely access ExtraParams while keeping call sites
+// minimal and type-safe.
+func applyFallbackParams[T fallbackParamsTypeConstraint](params T, fallbackParams map[string]any) T {
+	if len(fallbackParams) == 0 {
+		return params
+	}
+
+	// Each supported params struct carries ExtraParams, but Go generics cannot
+	// access struct fields on union constraints, so we use a single type switch.
+	switch p := any(params).(type) {
+	case *schemas.TextCompletionParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.ChatParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.ResponsesParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.EmbeddingParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.RerankParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.OCRParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.SpeechParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.TranscriptionParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.ImageGenerationParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.ImageVariationParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	case *schemas.VideoGenerationParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
+	default:
+		return params
+	}
+}
+
+// extraParamsFromRequest pulls the request-level ExtraParams map out of a
+// BifrostRequest, regardless of which typed payload is set. Returns nil when
+// the request has no recognised payload — callers must handle that.
+func extraParamsFromRequest(req *schemas.BifrostRequest) map[string]interface{} {
+	switch {
+	case req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil:
+		return req.TextCompletionRequest.Params.ExtraParams
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		return req.ChatRequest.Params.ExtraParams
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		return req.ResponsesRequest.Params.ExtraParams
+	case req.CountTokensRequest != nil && req.CountTokensRequest.Params != nil:
+		return req.CountTokensRequest.Params.ExtraParams
+	case req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil:
+		return req.EmbeddingRequest.Params.ExtraParams
+	case req.RerankRequest != nil && req.RerankRequest.Params != nil:
+		return req.RerankRequest.Params.ExtraParams
+	case req.OCRRequest != nil && req.OCRRequest.Params != nil:
+		return req.OCRRequest.Params.ExtraParams
+	case req.SpeechRequest != nil && req.SpeechRequest.Params != nil:
+		return req.SpeechRequest.Params.ExtraParams
+	case req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil:
+		return req.TranscriptionRequest.Params.ExtraParams
+	case req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil:
+		return req.ImageGenerationRequest.Params.ExtraParams
+	case req.ImageVariationRequest != nil && req.ImageVariationRequest.Params != nil:
+		return req.ImageVariationRequest.Params.ExtraParams
+	case req.VideoGenerationRequest != nil && req.VideoGenerationRequest.Params != nil:
+		return req.VideoGenerationRequest.Params.ExtraParams
+	}
+	return nil
+}
+
+// logFallbackParamOverrides emits debug log lines for every fallback param key
+// that either shadows a base request ExtraParams key (override) or introduces a
+// brand-new key that the base request didn't carry (addition). Both cases are
+// surfaced so operators can see the full set of mutations that occur when a
+// fallback fires, without needing to diff requests manually.
+//
+// Centralised here so the per-request-type type switch in prepareFallbackRequest
+// stays focused on cloning and the merge math stays in mergeFallbackParams.
+func (bifrost *Bifrost) logFallbackParamOverrides(req *schemas.BifrostRequest, fallback schemas.Fallback) {
+	base := extraParamsFromRequest(req)
+	for key, val := range fallback.Params {
+		if s, ok := val.(string); ok && s == fallbackParamDeleteMarker {
+			bifrost.logger.Debug(
+				"fallback param deleting extra_param: provider=%s model=%s key=%s",
+				fallback.Provider, fallback.Model, key,
+			)
+			continue
+		}
+		if base != nil {
+			if _, exists := base[key]; exists {
+				bifrost.logger.Debug(
+					"fallback param overriding base extra_param: provider=%s model=%s key=%s",
+					fallback.Provider, fallback.Model, key,
+				)
+				continue
+			}
+		}
+		bifrost.logger.Debug(
+			"fallback param adding new extra_param: provider=%s model=%s key=%s",
+			fallback.Provider, fallback.Model, key,
+		)
+	}
+}
+
 // prepareFallbackRequest creates a fallback request and validates the provider config
 // Returns the fallback request or nil if this fallback should be skipped
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
@@ -4425,6 +4687,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		return nil
 	}
 
+	// Surface fallback param overrides/deletions at debug level. This makes silent
+	// shadowing or deletion of base ExtraParams visible in traces without polluting
+	// the happy-path log stream — see the precedence comment on mergeFallbackParams.
+	if len(fallback.Params) > 0 {
+		bifrost.logFallbackParamOverrides(req, fallback)
+	}
+
 	// Create a new request with the fallback provider and model
 	fallbackReq := *req
 
@@ -4432,6 +4701,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.TextCompletionRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.TextCompletionRequest = &tmp
 	}
 
@@ -4439,6 +4709,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.ChatRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.ChatRequest = &tmp
 	}
 
@@ -4446,6 +4717,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.ResponsesRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.ResponsesRequest = &tmp
 	}
 
@@ -4453,6 +4725,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.CountTokensRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
@@ -4460,18 +4733,21 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.EmbeddingRequest = &tmp
 	}
 	if req.RerankRequest != nil {
 		tmp := *req.RerankRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.RerankRequest = &tmp
 	}
 	if req.OCRRequest != nil {
 		tmp := *req.OCRRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.OCRRequest = &tmp
 	}
 
@@ -4479,6 +4755,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.SpeechRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.SpeechRequest = &tmp
 	}
 
@@ -4486,18 +4763,28 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.TranscriptionRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.TranscriptionRequest = &tmp
 	}
 	if req.ImageGenerationRequest != nil {
 		tmp := *req.ImageGenerationRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.ImageGenerationRequest = &tmp
+	}
+	if req.ImageVariationRequest != nil {
+		tmp := *req.ImageVariationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
+		fallbackReq.ImageVariationRequest = &tmp
 	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.VideoGenerationRequest = &tmp
 	}
 	return &fallbackReq

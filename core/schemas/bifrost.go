@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -406,8 +407,154 @@ type LargePayloadMetadata struct {
 
 // Fallback represents a fallback model to be used if the primary model is not available.
 type Fallback struct {
-	Provider ModelProvider `json:"provider"`
-	Model    string        `json:"model"`
+	Provider ModelProvider  `json:"provider"`
+	Model    string         `json:"model"`
+	Params   map[string]any `json:"params,omitempty"`
+}
+
+// FallbackValidationMode controls how invalid fallback entries are handled
+// when normalising user-provided fallback configuration.
+//
+// Two modes are supported:
+//
+//   - FallbackValidationLenient (default): malformed entries are silently
+//     dropped from the resulting slice. This matches the behaviour Bifrost
+//     shipped with prior to per-fallback params support, where ParseModelString
+//     returning empty values quietly skipped the entry. Lenient mode is
+//     required to maintain backward compatibility for existing clients.
+//   - FallbackValidationStrict: malformed entries cause normalisation to
+//     return an error. Use this for places where the caller explicitly opts
+//     into stricter validation (e.g. config validation tooling, tests, or
+//     future validation surfaces gated by a flag).
+type FallbackValidationMode string
+
+const (
+	FallbackValidationLenient FallbackValidationMode = "lenient"
+	FallbackValidationStrict  FallbackValidationMode = "strict"
+)
+
+// InvalidFallbackEntryError is the canonical error string used when a
+// fallback entry is missing required fields or carries a malformed model
+// string. Callers may match on this prefix to detect validation failures.
+const InvalidFallbackEntryError = "invalid fallback entry: provider and model must be specified"
+
+// NormalizeAndValidateFallback canonicalises a single fallback entry and
+// reports whether it is valid. Both the provider and the model field are
+// trimmed, and "provider/model" style model strings are split into their
+// component parts so that downstream code can rely on the fields being
+// populated independently.
+//
+// The returned bool is true when the entry is well-formed. Invalid entries
+// also populate err with a descriptive message (suitable for strict mode);
+// lenient callers should ignore err and simply skip the entry.
+//
+// Centralising this logic avoids duplicating subtle parsing/validation rules
+// across the HTTP transport, the integration router, and any future entry
+// points (config validation, MCP layers, etc.).
+func NormalizeAndValidateFallback(fallback Fallback, index int) (Fallback, bool, error) {
+	provider := ModelProvider(strings.TrimSpace(string(fallback.Provider)))
+	model := strings.TrimSpace(fallback.Model)
+
+	if provider == "" || model == "" {
+		return Fallback{}, false, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, index)
+	}
+
+	// For object-form fallbacks the explicit provider field is authoritative.
+	// The model field may legitimately contain slashes (e.g. "openai/gpt-4o" as
+	// an OpenRouter model ID, or Bedrock ARN-style identifiers). We only strip a
+	// leading "<provider>/" prefix when it exactly matches the supplied provider —
+	// this handles the common copy-paste pattern where users write the full
+	// "provider/model" string in the model field even though provider is already
+	// set. Any other slash content is part of the model ID and must be preserved.
+	prefix := string(provider) + "/"
+	if strings.HasPrefix(model, prefix) {
+		model = strings.TrimPrefix(model, prefix)
+		if model == "" {
+			return Fallback{}, false, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, index)
+		}
+	}
+
+	fallback.Provider = provider
+	fallback.Model = model
+	return fallback, true, nil
+}
+
+// NormalizeFallbacks normalises a batch of fallback entries using the supplied
+// validation mode. In lenient mode, malformed entries are logged (when a logger
+// is provided) and dropped from the result, matching legacy behaviour. In strict
+// mode, the first malformed entry causes the whole batch to be rejected.
+//
+// An empty input slice is always a no-op and returns (nil, nil), regardless of
+// mode, so callers don't have to special-case empty fallbacks arrays.
+//
+// Duplicate entries are preserved as-is. Deduplication is the caller's
+// responsibility; keeping duplicates here avoids second-guessing intent
+// (e.g. a weighted-round-robin caller might legitimately repeat a provider).
+//
+// The optional logger is used to emit a Warn-level message for each dropped
+// entry in lenient mode, giving operators visibility into misconfigured
+// fallbacks without requiring strict mode. Pass nil (or omit) to suppress logs.
+func NormalizeFallbacks(input []Fallback, mode FallbackValidationMode, loggers ...Logger) ([]Fallback, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+
+	var l Logger
+	if len(loggers) > 0 {
+		l = loggers[0]
+	}
+
+	out := make([]Fallback, 0, len(input))
+	for i, entry := range input {
+		normalized, ok, err := NormalizeAndValidateFallback(entry, i)
+		if !ok {
+			if mode == FallbackValidationStrict {
+				return nil, err
+			}
+			// Lenient mode: log and skip the malformed entry.
+			if l != nil {
+				l.Warn("dropping invalid fallback entry: %v", err)
+			}
+			continue
+		}
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
+// FallbackStringsToFallbacks converts the legacy "provider/model" string form
+// into normalised Fallback entries using the supplied validation mode. The
+// rules mirror NormalizeFallbacks above: lenient mode logs (when a logger is
+// provided) and drops malformed strings; strict mode rejects the whole batch
+// on the first failure.
+//
+// The optional logger parameter follows the same semantics as NormalizeFallbacks.
+func FallbackStringsToFallbacks(input []string, mode FallbackValidationMode, loggers ...Logger) ([]Fallback, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+
+	var l Logger
+	if len(loggers) > 0 {
+		l = loggers[0]
+	}
+
+	out := make([]Fallback, 0, len(input))
+	for i, raw := range input {
+		provider, model := ParseModelString(strings.TrimSpace(raw), "")
+		if provider == "" || model == "" {
+			if mode == FallbackValidationStrict {
+				return nil, fmt.Errorf("%s (index %d)", InvalidFallbackEntryError, i)
+			}
+			// Lenient mode: log and skip the malformed entry.
+			if l != nil {
+				l.Warn("dropping invalid fallback string at index %d: %q", i, raw)
+			}
+			continue
+		}
+		out = append(out, Fallback{Provider: provider, Model: model})
+	}
+	return out, nil
 }
 
 // BifrostRequest is the request struct for all bifrost requests.

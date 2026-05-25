@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"context"
-
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,10 +92,7 @@ func prepareRequest[T baseRequest](ctx *fasthttp.RequestCtx, config *lib.Config,
 	if err != nil {
 		return nil, nil, err
 	}
-	fallbacks, err := parseFallbacks((*req).getFallbacks())
-	if err != nil {
-		return nil, nil, err
-	}
+	fallbacks := (*req).getFallbacks()
 	var extraParams map[string]any
 	if knownFields != nil {
 		ep, epErr := extractExtraParams(ctx.PostBody(), knownFields)
@@ -358,19 +354,53 @@ var containerCreateParamsKnownFields = map[string]bool{
 }
 
 type BifrostParams struct {
-	Model        string   `json:"model"`                   // Model to use in "provider/model" format
-	Fallbacks    []string `json:"fallbacks"`               // Fallback providers and models in "provider/model" format
-	Stream       *bool    `json:"stream"`                  // Whether to stream the response
-	StreamFormat *string  `json:"stream_format,omitempty"` // For speech
+	Model        string         `json:"model"`                   // Model to use in "provider/model" format
+	Fallbacks    FallbacksInput `json:"fallbacks"`               // Accepts either ["provider/model"] or [{"provider":"...","model":"...","params":{...}}]
+	Stream       *bool          `json:"stream"`                  // Whether to stream the response
+	StreamFormat *string        `json:"stream_format,omitempty"` // For speech
 }
 
-func (b BifrostParams) getModel() string       { return b.Model }
-func (b BifrostParams) getFallbacks() []string { return b.Fallbacks }
+type FallbacksInput []schemas.Fallback
+
+// fallbackValidationMode controls the validation policy applied to incoming
+// HTTP fallback payloads. Invalid fallback entries at the public HTTP boundary
+// are rejected so callers do not mistakenly believe a malformed fallback was
+// configured and used.
+const fallbackValidationMode = schemas.FallbackValidationStrict
+
+func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
+	// Try the legacy ["provider/model"] string form first.
+	var fallbackStrings []string
+	if err := sonic.Unmarshal(data, &fallbackStrings); err == nil {
+		parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode, logger)
+		if err != nil {
+			return err
+		}
+		*f = parsed
+		return nil
+	}
+
+	// Fall back to the typed object form, including optional per-entry params.
+	var fallbackObjects []schemas.Fallback
+	if err := sonic.Unmarshal(data, &fallbackObjects); err == nil {
+		parsed, err := schemas.NormalizeFallbacks(fallbackObjects, fallbackValidationMode, logger)
+		if err != nil {
+			return err
+		}
+		*f = parsed
+		return nil
+	}
+
+	return fmt.Errorf("invalid fallbacks format: expected array of strings or array of fallback objects")
+}
+
+func (b BifrostParams) getModel() string             { return b.Model }
+func (b BifrostParams) getFallbacks() FallbacksInput { return b.Fallbacks }
 
 // baseRequest is satisfied by any type that embeds BifrostParams.
 type baseRequest interface {
 	getModel() string
-	getFallbacks() []string
+	getFallbacks() FallbacksInput
 }
 
 // requestBase holds the fields common to every JSON-body prepare function
@@ -599,21 +629,6 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
-// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
-func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
-	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
-	for _, fallback := range fallbackStrings {
-		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModelName != "" {
-			fallbacks = append(fallbacks, schemas.Fallback{
-				Provider: fallbackProvider,
-				Model:    fallbackModelName,
-			})
-		}
-	}
-	return fallbacks, nil
-}
-
 func effectiveStream(bodyStream *bool) bool {
 	if bodyStream != nil {
 		return *bodyStream
@@ -621,9 +636,46 @@ func effectiveStream(bodyStream *bool) bool {
 	return false
 }
 
+func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
+	parsed, err := schemas.FallbackStringsToFallbacks(fallbackStrings, fallbackValidationMode, logger)
+	if err != nil {
+		return nil, err
+	}
+	return FallbacksInput(parsed), nil
+}
+
+func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
+	if len(values) == 1 {
+		trimmed := strings.TrimSpace(values[0])
+		if strings.HasPrefix(trimmed, "[") {
+			var parsed FallbacksInput
+			// Defer to FallbacksInput.UnmarshalJSON so JSON-encoded multipart
+			// fallbacks share the exact same lenient/strict semantics as the
+			// JSON request body path. Anything else would be a silent skew
+			// between routes.
+			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err != nil {
+				return nil, err
+			}
+			return parsed, nil
+		}
+		if strings.HasPrefix(trimmed, "{") {
+			var fallback schemas.Fallback
+			if err := sonic.Unmarshal([]byte(trimmed), &fallback); err != nil {
+				return nil, err
+			}
+			parsed, err := schemas.NormalizeFallbacks([]schemas.Fallback{fallback}, fallbackValidationMode, logger)
+			if err != nil {
+				return nil, err
+			}
+			return FallbacksInput(parsed), nil
+		}
+	}
+
+	return fallbackStringsToInput(values)
+}
+
 // extractExtraParams processes unknown fields from JSON data into ExtraParams
 func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]any, error) {
-	// Parse JSON to extract unknown fields
 	var rawData map[string]json.RawMessage
 	if err := sonic.Unmarshal(data, &rawData); err != nil {
 		return nil, err
@@ -1424,6 +1476,14 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 		Input:    transcriptionInput,
 		Params:   transcriptionParams,
 	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, false, parseErr
+		}
+
+		bifrostTranscriptionReq.Fallbacks = parsedFallbacks
+	}
 	return bifrostTranscriptionReq, stream, nil
 }
 
@@ -2062,22 +2122,22 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		req.Fallbacks = fallbackValues
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		req.Fallbacks = parsedFallbacks
 	}
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
 		stream := streamValues[0] == "true"
 		req.Stream = &stream
-	}
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		return nil, nil, err
 	}
 	bifrostReq := &schemas.BifrostImageEditRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
 		Input:     req.ImageEditInput,
 		Params:    req.ImageEditParameters,
-		Fallbacks: fallbacks,
+		Fallbacks: req.Fallbacks,
 	}
 	return &req, bifrostReq, nil
 }
@@ -2203,16 +2263,16 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		fallbacks, err := parseFallbacks(fallbackValues)
-		if err != nil {
-			return nil, err
+		rawFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, parseErr
 		}
 		return &schemas.BifrostImageVariationRequest{
 			Provider:       schemas.ModelProvider(provider),
 			Model:          modelName,
 			Input:          variationInput,
 			Params:         variationParams,
-			Fallbacks:      fallbacks,
+			Fallbacks:      rawFallbacks,
 			RawRequestBody: rawBody,
 		}, nil
 	}
@@ -2271,12 +2331,6 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
 	if req.VideoGenerationInput == nil || req.Prompt == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
 		return
@@ -2298,7 +2352,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		Model:     modelName,
 		Input:     req.VideoGenerationInput,
 		Params:    req.VideoGenerationParameters,
-		Fallbacks: fallbacks,
+		Fallbacks: req.Fallbacks,
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)

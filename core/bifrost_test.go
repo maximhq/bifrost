@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -876,7 +879,407 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModelWithPool with session stickiness
+func TestPrepareFallbackRequest_AppliesFallbackParamsToExtraParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{
+		account: account,
+		logger:  NewDefaultLogger(schemas.LogLevelError),
+	}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"reasoning_effort": "low",
+					"base_param":       "keep-me",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  2048,
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback chat request with params")
+	}
+
+	if fallbackReq.ChatRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.ChatRequest.Provider)
+	}
+	if fallbackReq.ChatRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.ChatRequest.Model)
+	}
+
+	extra := fallbackReq.ChatRequest.Params.ExtraParams
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort override to high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["thinking_budget"] != 2048 {
+		t.Fatalf("expected fallback thinking_budget=2048, got %#v", extra["thinking_budget"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.ChatRequest.Params.ExtraParams["reasoning_effort"] != "low" {
+		t.Fatalf("expected primary request params to remain unchanged, got %#v", primaryReq.ChatRequest.Params.ExtraParams["reasoning_effort"])
+	}
+	if _, exists := primaryReq.ChatRequest.Params.ExtraParams["thinking_budget"]; exists {
+		t.Fatal("expected primary request params to not receive fallback-only thinking_budget")
+	}
+}
+
+func TestPrepareFallbackRequest_WithoutFallbackParams_PreservesBaseParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"base_param": "keep-me"},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback request with chat params")
+	}
+	if fallbackReq.ChatRequest.Params.ExtraParams["base_param"] != "keep-me" {
+		t.Fatalf("expected base param to be preserved, got %#v", fallbackReq.ChatRequest.Params.ExtraParams["base_param"])
+	}
+}
+
+func TestPrepareFallbackRequest_WithBaseParamsNil_UsesFallbackParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   nil,
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback request with initialized params")
+	}
+	if fallbackReq.ChatRequest.Params.ExtraParams["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback-only param, got %#v", fallbackReq.ChatRequest.Params.ExtraParams["reasoning_effort"])
+	}
+}
+
+func TestPrepareFallbackRequest_FallbackParamsReachProviderPayloadGeneration(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: Ptr("hello"),
+				},
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"base_param": "keep-me"},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  2048,
+		},
+	})
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil {
+		t.Fatal("expected fallback chat request")
+	}
+
+	openAIReq := openai.ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fallbackReq.ChatRequest)
+	if openAIReq == nil {
+		t.Fatal("expected openai request conversion output")
+	}
+
+	jsonBody, err := sonic.MarshalIndent(openAIReq, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal openai request body: %v", err)
+	}
+
+	mergedBody, err := providerUtils.MergeExtraParamsIntoJSON(jsonBody, openAIReq.GetExtraParams())
+	if err != nil {
+		t.Fatalf("failed to merge extra params into request body: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(mergedBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal merged payload: %v", err)
+	}
+
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort in provider payload, got %#v", payload["reasoning_effort"])
+	}
+	if payload["thinking_budget"] != float64(2048) {
+		t.Fatalf("expected thinking_budget in provider payload, got %#v", payload["thinking_budget"])
+	}
+	if payload["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param in provider payload, got %#v", payload["base_param"])
+	}
+
+	t.Logf("fallback provider payload reasoning_effort=%v thinking_budget=%v base_param=%v", payload["reasoning_effort"], payload["thinking_budget"], payload["base_param"])
+}
+
+func TestPrepareFallbackRequest_ImageVariationParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ImageVariationRequest,
+		ImageVariationRequest: &schemas.BifrostImageVariationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1",
+			Input: &schemas.ImageVariationInput{
+				Image: schemas.ImageInput{Image: []byte{0x89, 0x50, 0x4E, 0x47}},
+			},
+			Params: &schemas.ImageVariationParameters{
+				ExtraParams: map[string]interface{}{
+					"variation_strength": 0.2,
+					"base_param":         "keep-me",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"variation_strength": 0.9,
+			"reasoning_effort":   "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ImageVariationRequest == nil || fallbackReq.ImageVariationRequest.Params == nil {
+		t.Fatal("expected fallback image variation request with params")
+	}
+
+	if fallbackReq.ImageVariationRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.ImageVariationRequest.Provider)
+	}
+	if fallbackReq.ImageVariationRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.ImageVariationRequest.Model)
+	}
+
+	extra := fallbackReq.ImageVariationRequest.Params.ExtraParams
+	if extra["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength override to 0.9, got %#v", extra["variation_strength"])
+	}
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"] != 0.2 {
+		t.Fatalf("expected primary request params to remain unchanged, got %#v", primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"])
+	}
+	if _, exists := primaryReq.ImageVariationRequest.Params.ExtraParams["reasoning_effort"]; exists {
+		t.Fatal("expected primary request params to not receive fallback-only reasoning_effort")
+	}
+
+	openAIReq := openai.ToOpenAIImageVariationRequest(fallbackReq.ImageVariationRequest)
+	if openAIReq == nil {
+		t.Fatal("expected openai image variation request conversion output")
+	}
+
+	jsonBody, err := sonic.MarshalIndent(openAIReq, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal openai image variation request body: %v", err)
+	}
+
+	mergedBody, err := providerUtils.MergeExtraParamsIntoJSON(jsonBody, openAIReq.GetExtraParams())
+	if err != nil {
+		t.Fatalf("failed to merge extra params into request body: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(mergedBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal merged payload: %v", err)
+	}
+
+	if payload["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength in provider payload, got %#v", payload["variation_strength"])
+	}
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort in provider payload, got %#v", payload["reasoning_effort"])
+	}
+	if payload["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param in provider payload, got %#v", payload["base_param"])
+	}
+}
+
+func TestPrepareFallbackRequest_OCRParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.Mistral, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	docURL := "https://example.com/doc.pdf"
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.OCRRequest,
+		OCRRequest: &schemas.BifrostOCRRequest{
+			Provider: schemas.Mistral,
+			Model:    "mistral-ocr-latest",
+			Document: schemas.OCRDocument{
+				Type:        schemas.OCRDocumentTypeDocumentURL,
+				DocumentURL: &docURL,
+			},
+			Params: &schemas.OCRParameters{
+				ExtraParams: map[string]interface{}{
+					"base_param":  "keep-me",
+					"image_limit": 1,
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"image_limit":      4,
+			"reasoning_effort": "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.OCRRequest == nil || fallbackReq.OCRRequest.Params == nil {
+		t.Fatal("expected fallback OCR request with params")
+	}
+	if fallbackReq.OCRRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.OCRRequest.Provider)
+	}
+	if fallbackReq.OCRRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.OCRRequest.Model)
+	}
+
+	extra := fallbackReq.OCRRequest.Params.ExtraParams
+	if extra["image_limit"] != 4 {
+		t.Fatalf("expected image_limit override to 4, got %#v", extra["image_limit"])
+	}
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.OCRRequest.Params.ExtraParams["image_limit"] != 1 {
+		t.Fatalf("expected primary OCR params to remain unchanged, got %#v", primaryReq.OCRRequest.Params.ExtraParams["image_limit"])
+	}
+	if _, exists := primaryReq.OCRRequest.Params.ExtraParams["reasoning_effort"]; exists {
+		t.Fatal("expected primary OCR params to not receive fallback-only reasoning_effort")
+	}
+}
+
+func TestPrepareFallbackRequest_CountTokensParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.CountTokensRequest,
+		CountTokensRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ResponsesParameters{
+				ExtraParams: map[string]interface{}{
+					"base_param":       "keep-me",
+					"reasoning_effort": "low",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  1024,
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.CountTokensRequest == nil || fallbackReq.CountTokensRequest.Params == nil {
+		t.Fatal("expected fallback count tokens request with params")
+	}
+	extra := fallbackReq.CountTokensRequest.Params.ExtraParams
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort override to high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["thinking_budget"] != 1024 {
+		t.Fatalf("expected thinking_budget=1024, got %#v", extra["thinking_budget"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+	if primaryReq.CountTokensRequest.Params.ExtraParams["reasoning_effort"] != "low" {
+		t.Fatalf("expected primary count tokens params to remain unchanged, got %#v", primaryReq.CountTokensRequest.Params.ExtraParams["reasoning_effort"])
+	}
+}
+
+// Test selectKeyFromProviderForModel with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -2696,4 +3099,338 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestMergeFallbackParams_OverridePrecedence locks in the precedence rule:
+// fallback params override base params on key collision. This guards the
+// contract documented on mergeFallbackParams — anyone changing it should make
+// the change explicit by updating this test.
+func TestMergeFallbackParams_OverridePrecedence(t *testing.T) {
+	base := map[string]interface{}{
+		"shared":    "from-base",
+		"only_base": 1,
+	}
+	fallback := map[string]any{
+		"shared":        "from-fallback",
+		"only_fallback": 2,
+	}
+
+	merged := mergeFallbackParams(base, fallback)
+
+	if merged["shared"] != "from-fallback" {
+		t.Fatalf("expected fallback to override base for 'shared', got %#v", merged["shared"])
+	}
+	if merged["only_base"] != 1 {
+		t.Fatalf("expected base-only key preserved, got %#v", merged["only_base"])
+	}
+	if merged["only_fallback"] != 2 {
+		t.Fatalf("expected fallback-only key included, got %#v", merged["only_fallback"])
+	}
+
+	// Inputs must remain untouched (immutability contract).
+	if base["shared"] != "from-base" {
+		t.Fatal("merge mutated base map")
+	}
+	if fallback["shared"] != "from-fallback" {
+		t.Fatal("merge mutated fallback map")
+	}
+}
+
+// TestMergeFallbackParams_EmptyInputsReturnNil verifies that an empty merge
+// produces nil rather than an allocated empty map. ExtraParams is consumed by
+// downstream code that distinguishes nil from non-nil maps for "no extras"
+// signalling — keep the nil contract stable.
+func TestMergeFallbackParams_EmptyInputsReturnNil(t *testing.T) {
+	if got := mergeFallbackParams(nil, nil); got != nil {
+		t.Fatalf("expected nil for empty inputs, got %#v", got)
+	}
+	if got := mergeFallbackParams(map[string]interface{}{}, map[string]any{}); got != nil {
+		t.Fatalf("expected nil for empty (non-nil) inputs, got %#v", got)
+	}
+}
+
+// TestMergeFallbackParams_DeleteMarkerSemantics verifies value-level delete
+// marker behaviour: exact "-" deletes a key; near-matches do not; null is
+// preserved; nested deletes work and do not mutate sibling keys; the base map
+// is never mutated.
+func TestMergeFallbackParams_DeleteMarkerSemantics(t *testing.T) {
+	// Top-level delete.
+	got := mergeFallbackParams(
+		map[string]interface{}{"keep": "v", "drop": true},
+		map[string]any{"drop": fallbackParamDeleteMarker},
+	)
+	if _, exists := got["drop"]; exists {
+		t.Errorf("delete marker should have removed 'drop', got %#v", got)
+	}
+	if got["keep"] != "v" {
+		t.Errorf("'keep' should be preserved, got %#v", got)
+	}
+
+	// Near-matches must not delete.
+	got2 := mergeFallbackParams(
+		map[string]interface{}{"logs": true},
+		map[string]any{"logs": " - "},
+	)
+	if got2["logs"] != " - " {
+		t.Errorf("' - ' should be a normal value, got %#v", got2)
+	}
+
+	// null is not delete.
+	got3 := mergeFallbackParams(
+		map[string]interface{}{"x": 1},
+		map[string]any{"x": nil},
+	)
+	if v, ok := got3["x"]; !ok || v != nil {
+		t.Errorf("null should set key to nil, not delete it; got %#v", got3)
+	}
+
+	// Nested delete preserves siblings and does not mutate the original base map.
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"areLogsAvailable": true},
+			"debug":   map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got4 := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"areLogsAvailable": fallbackParamDeleteMarker},
+		},
+	})
+	metaMerged, ok := got4["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map in result, got %#v", got4)
+	}
+	loggingMerged, ok := metaMerged["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected logging map in result, got %#v", metaMerged)
+	}
+	if _, exists := loggingMerged["areLogsAvailable"]; exists {
+		t.Errorf("nested delete should have removed 'areLogsAvailable', got %#v", loggingMerged)
+	}
+	debugMerged, ok := metaMerged["debug"].(map[string]interface{})
+	if !ok || debugMerged["trace_id"] != "abc" {
+		t.Errorf("sibling 'debug.trace_id' should be preserved, got %#v", metaMerged)
+	}
+	// Original base must be untouched.
+	origLogging := base["metadata"].(map[string]interface{})["logging"].(map[string]interface{})
+	if origLogging["areLogsAvailable"] != true {
+		t.Errorf("original base map was mutated; immutability broken")
+	}
+}
+
+// TestMergeFallbackParams_NestedAdd verifies that a fallback param map entry
+// for a nested key that does not exist in base is added while preserving all
+// sibling keys in the nested object (case 5).
+func TestMergeFallbackParams_NestedAdd(t *testing.T) {
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"debug": map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"level": "info"},
+		},
+	})
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level=info, got %#v", logging["level"])
+	}
+	debug, ok := meta["debug"].(map[string]interface{})
+	if !ok || debug["trace_id"] != "abc" {
+		t.Errorf("expected metadata.debug.trace_id=abc to be preserved, got %#v", meta)
+	}
+}
+
+// TestMergeFallbackParams_NestedOverride verifies that a fallback param value
+// overrides an existing nested key while leaving sibling keys untouched (case 6).
+func TestMergeFallbackParams_NestedOverride(t *testing.T) {
+	base := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"level": "debug", "enabled": true},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"metadata": map[string]any{
+			"logging": map[string]any{"level": "info"},
+		},
+	})
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level overridden to info, got %#v", logging["level"])
+	}
+	if logging["enabled"] != true {
+		t.Errorf("expected metadata.logging.enabled=true to be preserved, got %#v", logging["enabled"])
+	}
+}
+
+// TestMergeFallbackParams_Mixed exercises all three operations — add, override,
+// and delete — in a single call, including nested fields (case 7).
+func TestMergeFallbackParams_Mixed(t *testing.T) {
+	base := map[string]interface{}{
+		"temperature": 0.7,
+		"logs":        true,
+		"metadata": map[string]interface{}{
+			"logging": map[string]interface{}{"areLogsAvailable": true, "level": "debug"},
+			"debug":   map[string]interface{}{"trace_id": "abc"},
+		},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"temperature":      0.2,
+		"logs":             fallbackParamDeleteMarker,
+		"reasoning_effort": "high",
+		"metadata": map[string]any{
+			"logging": map[string]any{
+				"areLogsAvailable": fallbackParamDeleteMarker,
+				"level":            "info",
+			},
+		},
+	})
+
+	// override
+	if got["temperature"] != 0.2 {
+		t.Errorf("expected temperature=0.2, got %#v", got["temperature"])
+	}
+	// delete
+	if _, exists := got["logs"]; exists {
+		t.Errorf("expected logs to be deleted, got %#v", got)
+	}
+	// add
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("expected reasoning_effort=high, got %#v", got["reasoning_effort"])
+	}
+	// nested delete + nested override
+	meta, ok := got["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", got)
+	}
+	logging, ok := meta["logging"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata.logging map, got %#v", meta)
+	}
+	if _, exists := logging["areLogsAvailable"]; exists {
+		t.Errorf("expected metadata.logging.areLogsAvailable to be deleted, got %#v", logging)
+	}
+	if logging["level"] != "info" {
+		t.Errorf("expected metadata.logging.level=info, got %#v", logging["level"])
+	}
+	debug, ok := meta["debug"].(map[string]interface{})
+	if !ok || debug["trace_id"] != "abc" {
+		t.Errorf("expected metadata.debug.trace_id=abc preserved, got %#v", meta)
+	}
+	// base must not be mutated
+	if base["temperature"] != 0.7 {
+		t.Errorf("base temperature was mutated")
+	}
+	if base["logs"] != true {
+		t.Errorf("base logs was mutated")
+	}
+}
+
+// TestMergeFallbackParams_ArrayReplace verifies that an array fallback value
+// replaces the base array entirely rather than merging element-by-element (case 10).
+func TestMergeFallbackParams_ArrayReplace(t *testing.T) {
+	base := map[string]interface{}{
+		"stop": []interface{}{"END"},
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"stop": []interface{}{"STOP", "DONE"},
+	})
+	stop, ok := got["stop"].([]interface{})
+	if !ok || len(stop) != 2 || stop[0] != "STOP" || stop[1] != "DONE" {
+		t.Errorf("expected stop=[STOP DONE], got %#v", got["stop"])
+	}
+}
+
+// TestMergeFallbackParams_ExactMarkerOnly verifies that only the exact string
+// "-" is treated as a delete marker; adjacent variants like " - " and "--" are
+// stored as normal values (case 9 extended).
+func TestMergeFallbackParams_ExactMarkerOnly(t *testing.T) {
+	base := map[string]interface{}{
+		"logs":       true,
+		"other_logs": true,
+	}
+	got := mergeFallbackParams(base, map[string]any{
+		"logs":       " - ",
+		"other_logs": "--",
+	})
+	if got["logs"] != " - " {
+		t.Errorf("' - ' should be stored as a value, got %#v", got["logs"])
+	}
+	if got["other_logs"] != "--" {
+		t.Errorf("'--' should be stored as a value, got %#v", got["other_logs"])
+	}
+}
+
+// TestPrepareFallbackRequest_LogsOverrideAtDebug makes sure the override
+// detection helper does not panic when called with various param shapes. We
+// don't assert on the log output (the default logger doesn't expose a hook),
+// but exercising the path catches nil-deref regressions in
+// extraParamsFromRequest's switch and logFallbackParamOverrides.
+func TestPrepareFallbackRequest_LogsOverrideAtDebug(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelDebug)}
+
+	// Case 1: overlapping key triggers debug log path.
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"reasoning_effort": "low"}},
+		},
+	}
+	if got := b.prepareFallbackRequest(req, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params:   map[string]any{"reasoning_effort": "high"},
+	}); got == nil {
+		t.Fatal("expected fallback request, got nil")
+	}
+
+	// Case 2: nil base params must not panic.
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	}
+	if got := b.prepareFallbackRequest(req2, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params:   map[string]any{"x": 1},
+	}); got == nil {
+		t.Fatal("expected fallback request with nil base params, got nil")
+	}
+
+	// Case 3: a new key (no overlap with base) must also be logged — exercises
+	// the "adding new extra_param" branch in logFallbackParamOverrides.
+	req3 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"temperature": 0.7}},
+		},
+	}
+	if got := b.prepareFallbackRequest(req3, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params:   map[string]any{"brand_new_param": true},
+	}); got == nil {
+		t.Fatal("expected fallback request for new-key case, got nil")
+	}
 }

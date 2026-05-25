@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -386,7 +385,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				// would mean "no error, parsing done" but body wasn't parsed.
 				rawBody := ctx.Request.Body()
 				if len(rawBody) > 0 {
-					return sonic.Unmarshal(rawBody, req)
+					return parseDefaultJSONRequest(rawBody, req)
 				}
 				return nil
 			}
