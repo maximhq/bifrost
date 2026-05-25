@@ -354,7 +354,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		// and the langchain-aws ChatBedrockConverse implementation at
 		// https://github.com/langchain-ai/langchain-aws/blob/main/libs/aws/langchain_aws/chat_models/bedrock_converse.py
 		// (supports_tool_choice_values), which ships the same model-family gate.
-		if !schemas.IsLlamaModel(bifrostReq.Model) {
+		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,

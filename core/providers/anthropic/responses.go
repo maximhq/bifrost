@@ -54,6 +54,8 @@ type AnthropicResponsesStreamState struct {
 	HasEmittedMessageDelta    bool                              // Whether we've emitted message_delta (avoids duplicate from response.completed)
 	StructuredOutputToolName  string                            // Name of the structured output tool (if using tool-based SO for Vertex)
 	StructuredOutputIndex     *int                              // Output index of the structured output tool call
+	UsedStructuredOutputTool  bool                              // True when the SO tool block was actually consumed into text content
+	SeenRealToolCall          bool                              // True when any non-SO tool_use/server_tool_use/mcp_tool_use content block was started
 }
 
 // anthropicResponsesStreamStatePool provides a pool for Anthropic responses stream state objects.
@@ -174,6 +176,8 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
+	state.UsedStructuredOutputTool = false
+	state.SeenRealToolCall = false
 	return state
 }
 
@@ -215,6 +219,8 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
+	state.UsedStructuredOutputTool = false
+	state.SeenRealToolCall = false
 }
 
 // isCompactionItem checks if a ResponsesMessage represents a compaction item
@@ -333,6 +339,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				*chunk.ContentBlock.Name == string(AnthropicToolNameComputer) &&
 				chunk.ContentBlock.ID != nil {
 
+				state.SeenRealToolCall = true
 				// Start accumulating computer tool
 				state.ComputerToolID = chunk.ContentBlock.ID
 				state.ChunkIndex = chunk.Index
@@ -362,6 +369,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				*chunk.ContentBlock.Name == string(AnthropicToolNameWebSearch) &&
 				chunk.ContentBlock.ID != nil {
 
+				state.SeenRealToolCall = true
 				// Start accumulating web search query (reuse shared accumulation fields)
 				state.ChunkIndex = chunk.Index
 				state.AccumulatedJSON = ""
@@ -455,6 +463,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				*chunk.ContentBlock.Name == string(AnthropicToolNameWebFetch) &&
 				chunk.ContentBlock.ID != nil {
 
+				state.SeenRealToolCall = true
 				state.ChunkIndex = chunk.Index
 				state.AccumulatedJSON = ""
 				state.WebFetchToolID = chunk.ContentBlock.ID
@@ -620,6 +629,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					return nil, nil, false
 				}
 
+				state.SeenRealToolCall = true
 				// Function call starting - emit output_item.added with type "function_call" and status "in_progress"
 				statusInProgress := "in_progress"
 				itemID := ""
@@ -662,6 +672,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Item:           item,
 				}}, nil, false
 			case AnthropicContentBlockTypeMCPToolUse:
+				state.SeenRealToolCall = true
 				// MCP tool call starting - emit output_item.added
 				itemID := ""
 				if chunk.ContentBlock.ID != nil {
@@ -1230,6 +1241,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				// Clear the buffer and tracking
 				delete(state.ToolArgumentBuffers, outputIndex)
 				state.StructuredOutputIndex = nil
+				state.UsedStructuredOutputTool = true
 
 				return responses, nil, false
 			}
@@ -1305,18 +1317,22 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 	case AnthropicStreamEventTypeMessageDelta:
 		if chunk.Delta.StopReason != nil {
-			state.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason))
+			mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
+			if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
+				mapped == string(schemas.BifrostFinishReasonToolCalls) {
+				mapped = string(schemas.BifrostFinishReasonStop)
+			}
+			state.StopReason = &mapped
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
 			// Convert usage from Anthropic format to Bifrost
 			bifrostUsage := ConvertAnthropicUsageToBifrostUsage(chunk.Usage)
 
-			// Convert stop reason if present
+			// Use the already-remapped stop reason so SO overrides are preserved.
 			var stopReason *string
-			if chunk.Delta != nil && chunk.Delta.StopReason != nil {
-				converted := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
-				stopReason = &converted
+			if state.StopReason != nil {
+				stopReason = state.StopReason
 			}
 
 			// Create response object with usage and stop reason
@@ -2348,10 +2364,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							anthropicReq.Tools = []AnthropicTool{}
 						}
 						anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-						// Force the model to use this specific tool
-						anthropicReq.ToolChoice = &AnthropicToolChoice{
-							Type: "tool",
-							Name: responseFormatTool.Name,
+						thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+							(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+								(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+						if !thinkingEnabled {
+							anthropicReq.ToolChoice = &AnthropicToolChoice{
+								Type: "tool",
+								Name: responseFormatTool.Name,
+							}
 						}
 					}
 				}
@@ -2746,7 +2766,24 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	bifrostResp.Model = response.Model
 
 	if response.StopReason != "" {
-		bifrostResp.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(response.StopReason))
+		mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
+		if mapped == string(schemas.BifrostFinishReasonToolCalls) {
+			if soToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && soToolName != "" {
+				hasRealToolUse := false
+				for _, block := range response.Content {
+					if block.Type == AnthropicContentBlockTypeServerToolUse ||
+						block.Type == AnthropicContentBlockTypeMCPToolUse ||
+						(block.Type == AnthropicContentBlockTypeToolUse && block.Name != nil && *block.Name != soToolName) {
+						hasRealToolUse = true
+						break
+					}
+				}
+				if !hasRealToolUse {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+			}
+		}
+		bifrostResp.StopReason = &mapped
 	}
 
 	if response.Usage != nil && response.Usage.ServiceTier != nil {

@@ -726,6 +726,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string
 		var isAccumulatingStructuredOutput bool
+		var consumedStructuredOutput bool // true once the SO tool block has been fully streamed as content
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
@@ -825,9 +826,11 @@ func HandleAnthropicChatCompletionStreaming(
 				mappedReason := ConvertAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 
-				// Override finish reason for structured output
-				// When structured output is used, tool_use stop reason should appear as "stop" to the client
-				if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+				// Override finish reason for structured output only when the SO tool
+				// was consumed into content AND no real tool calls were also emitted.
+				// streamState.nextToolCallIndex > 0 means real tool_use blocks were seen.
+				if consumedStructuredOutput && streamState.nextToolCallIndex == 0 &&
+					*finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 					stopReason := string(schemas.BifrostFinishReasonStop)
 					finishReason = &stopReason
 				}
@@ -884,6 +887,7 @@ func HandleAnthropicChatCompletionStreaming(
 				// Check for content block stop
 				if event.Type == AnthropicStreamEventTypeContentBlockStop && isAccumulatingStructuredOutput {
 					isAccumulatingStructuredOutput = false
+					consumedStructuredOutput = true
 					continue
 				}
 			}
