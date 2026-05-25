@@ -44,6 +44,8 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
 		SendJSON(ctx, map[string]any{
 			"is_auth_enabled": false,
+			"has_valid_token": false,
+			"auth_type":       "none",
 		})
 		return
 	}
@@ -55,6 +57,8 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	if authConfig == nil {
 		SendJSON(ctx, map[string]any{
 			"is_auth_enabled": false,
+			"has_valid_token": false,
+			"auth_type":       "none",
 		})
 		return
 	}
@@ -76,7 +80,16 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"is_auth_enabled": authConfig.IsEnabled,
 		"has_valid_token": hasValidToken,
+		"auth_type":       dashboardAuthType(authConfig.IsEnabled),
 	})
+}
+
+// dashboardAuthType reports the dashboard session auth mode for frontend flows.
+func dashboardAuthType(isEnabled bool) string {
+	if isEnabled {
+		return "password"
+	}
+	return "none"
 }
 
 // login handles POST /api/session/login - Login a user
@@ -209,7 +222,7 @@ func (h *SessionHandler) issueWSTicket(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "WebSocket tickets are not available")
 		return
 	}
-	sessionToken,ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
+	sessionToken, ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
 	if !ok {
 		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 		return

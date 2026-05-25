@@ -9,9 +9,11 @@
 // /api/oauth/callback which completes the flow server-side.
 
 import FullPageLoader from "@/components/fullPageLoader";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import {
   getErrorMessage,
   useGetMCPFlowDetailQuery,
@@ -25,10 +27,13 @@ import {
   Fingerprint,
   KeyRound,
   Loader2,
+  LogIn,
   ShieldCheck,
+  TriangleAlert,
   UserRound,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
+import { useMemo, useState } from "react";
 
 export default function MCPSessionsAuthPage() {
   const { toast } = useToast();
@@ -41,6 +46,27 @@ export default function MCPSessionsAuthPage() {
     error,
   } = useGetMCPFlowDetailQuery(flowId ?? "", { skip });
   const [startFlow, { isLoading: starting }] = useStartMCPFlowMutation();
+  const { data: authState } = useIsAuthEnabledQuery();
+  const [usingTempToken] = useState(() => getActiveTempToken() !== null);
+  const loginGoto = useMemo(() => {
+    if (typeof window !== "undefined") {
+      return `${window.location.pathname}${window.location.search}`;
+    }
+    if (flowId) {
+      return `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}`;
+    }
+    return "/workspace/mcp-sessions/auth";
+  }, [flowId]);
+  const loginHref = useMemo(
+    () => `/login?goto=${encodeURIComponent(loginGoto)}`,
+    [loginGoto],
+  );
+  const showLoginOption =
+    usingTempToken &&
+    authState?.is_auth_enabled === true &&
+    authState.has_valid_token === false;
+  const showTempTokenSSOWarning =
+    showLoginOption && authState.auth_type === "sso";
 
   if (!flowId) {
     return (
@@ -164,6 +190,32 @@ export default function MCPSessionsAuthPage() {
         )}
       </p>
 
+      {showTempTokenSSOWarning ? (
+        <Alert variant="warning" className="mt-6">
+          <TriangleAlert />
+          <AlertTitle>Temporary token in use</AlertTitle>
+          <AlertDescription>
+            <p>
+              If you continue with the temporary link, activity from this
+              credential will be attributed to the bound key instead of your
+              user account.
+            </p>
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              data-testid="mcp-auth-login-instead-warning-button"
+            >
+              <a href={loginHref}>
+                <LogIn className="size-4" />
+                Log in instead
+              </a>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <dl className="bg-muted/40 mt-6 space-y-3 rounded-sm border p-4 text-sm">
         <DetailRow
           label="MCP client"
@@ -187,6 +239,18 @@ export default function MCPSessionsAuthPage() {
           )}
           <span>{isReauth ? "Re-authenticate" : "Authenticate"}</span>
         </Button>
+        {showLoginOption && !showTempTokenSSOWarning ? (
+          <Button
+            asChild
+            variant="outline"
+            data-testid="mcp-auth-login-instead-inline-button"
+          >
+            <a href={loginHref}>
+              <LogIn className="size-4" />
+              Log in instead
+            </a>
+          </Button>
+        ) : null}
         <SessionsTabLink variant="ghost" />
       </div>
     </CenteredCard>

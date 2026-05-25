@@ -218,6 +218,11 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_enable_temp_token_auth": {
+          "type": "boolean",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,

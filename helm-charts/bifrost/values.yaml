@@ -247,6 +247,7 @@ bifrost:
     # mcpCodeModeBindingLevel: "server"
     # mcpToolSyncInterval: 10
     # mcpDisableAutoToolInject: false
+    # mcpEnableTempTokenAuth: false
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
