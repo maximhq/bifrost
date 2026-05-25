@@ -76,6 +76,11 @@ spec:
             - name: gossip-udp
               containerPort: {{ .Values.bifrost.cluster.gossip.port }}
               protocol: UDP
+            {{- if .Values.bifrost.cluster.grpc }}
+            - name: grpc
+              containerPort: {{ .Values.bifrost.cluster.grpc.port }}
+              protocol: TCP
+            {{- end }}
             {{- end }}
           env:
             - name: APP_DIR
