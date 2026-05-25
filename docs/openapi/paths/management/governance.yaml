@@ -53,7 +53,8 @@ virtual-keys-quota:
     operationId: getVirtualKeyQuota
     summary: Get virtual key quota
     description: |
-      Returns the budget and rate limit quota for the authenticated virtual key.
+      Returns the overall budget and rate limit quota for the authenticated virtual key,
+      as well as per-provider budgets and rate limits.
       This is a self-service endpoint - no admin authentication required.
       The virtual key value itself (provided via header) is the credential.
     tags:
