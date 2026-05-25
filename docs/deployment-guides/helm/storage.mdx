@@ -97,18 +97,15 @@ The chart can deploy a PostgreSQL instance alongside Bifrost. Good for simple pr
 | `storage.mode` | Set to `postgres` | `sqlite` |
 | `postgresql.enabled` | Deploy PostgreSQL as a sub-deployment | `false` |
 | `postgresql.auth.username` | Database user | `bifrost` |
-| `postgresql.auth.password` | Database password | `bifrost_password` |
+| `postgresql.auth.password` | Database password (ignored when `existingSecret` is set) | `bifrost_password` |
 | `postgresql.auth.database` | Database name | `bifrost` |
+| `postgresql.auth.existingSecret` | Name of an existing Kubernetes secret containing the password. When set, the chart skips creating its own secret — both the postgres pod and the Bifrost pod read from this secret. | `""` |
+| `postgresql.auth.passwordKey` | Key inside `existingSecret` that holds the password | `"password"` |
 | `postgresql.primary.persistence.size` | PVC size for PostgreSQL data | `8Gi` |
 
 <Note>
 Ensure the database is created with **UTF8 encoding**. The embedded PostgreSQL deployment handles this automatically. See [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement) for manual setups.
 </Note>
-
-```bash
-kubectl create secret generic postgres-credentials \
-  --from-literal=password='your-secure-postgres-password'
-```
 
 ```yaml
 # embedded-postgres-values.yaml
@@ -122,7 +119,7 @@ postgresql:
   enabled: true
   auth:
     username: bifrost
-    password: "your-secure-postgres-password"   # use existingSecret in production
+    password: "your-secure-postgres-password"
     database: bifrost
   primary:
     persistence:
@@ -142,6 +139,26 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f embedded-postgres-values.yaml
+```
+
+**Using an existing secret (Vault, ESO, Sealed Secrets)**
+
+If you manage secrets externally, set `existingSecret` instead of providing a plaintext password. The chart will not create its own secret — both the postgres pod (`POSTGRES_PASSWORD`) and the Bifrost pod (`BIFROST_POSTGRES_PASSWORD`) mount the password directly from your secret.
+
+```bash
+# Example: create the secret manually (VSO / ESO would do this automatically)
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-secure-postgres-password'
+```
+
+```yaml
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    database: bifrost
+    existingSecret: "postgres-credentials"   # your secret name
+    passwordKey: "password"                  # key inside the secret
 ```
 
 **Verify the connection from Bifrost:**
