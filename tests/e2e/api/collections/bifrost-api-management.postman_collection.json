@@ -202,7 +202,7 @@
           "  'Get Plugin (After Create)': ['name', 'actualName', 'enabled', 'config', 'isCustom', 'path', 'status'],",
           "  'Update Plugin': ['plugin', 'message'],",
           "  'Delete Plugin': ['message'],",
-          "  'Check If Auth Enabled': ['is_auth_enabled'],",
+          "  'Check If Auth Enabled': ['is_auth_enabled', 'has_valid_token', 'auth_type'],",
           "  'Logout': ['message'],",
           "  'Get Proxy Config': ['enabled', 'type', 'url', 'timeout', 'enable_for_scim', 'enable_for_inference', 'enable_for_api'],",
           "  'Update Proxy Config': ['message', 'status'],",
@@ -434,6 +434,99 @@
                   "  framework_config: {}",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Config (Enable Temp Token Auth)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"drop_excess_requests\": false, \"enable_logging\": true, \"log_retention_days\": 365, \"mcp_agent_depth\": 1, \"mcp_tool_execution_timeout\": 1, \"mcp_enable_temp_token_auth\": true}, \"framework_config\": {}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Send full client_config plus the new flag so the round-trip exercises mcp_enable_temp_token_auth",
+                  "var body = {",
+                  "  client_config: {",
+                  "    drop_excess_requests: false,",
+                  "    enable_logging: true,",
+                  "    log_retention_days: 365,",
+                  "    mcp_agent_depth: 1,",
+                  "    mcp_tool_execution_timeout: 1,",
+                  "    mcp_enable_temp_token_auth: true",
+                  "  },",
+                  "  framework_config: {}",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Enable temp token auth update accepted', function () {",
+                  "  pm.expect(pm.response.code, 'status').to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Config (Verify Temp Token Auth)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('mcp_enable_temp_token_auth round-trips to true', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('client_config');",
+                  "  pm.expect(body.client_config).to.have.property('mcp_enable_temp_token_auth', true);",
+                  "});"
                 ],
                 "type": "text/javascript"
               }
@@ -2212,7 +2305,32 @@
                 "is-auth-enabled"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('is-auth-enabled exposes auth_type + has_valid_token contract', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('is_auth_enabled');",
+                  "  pm.expect(body).to.have.property('has_valid_token');",
+                  "  pm.expect(body).to.have.property('auth_type');",
+                  "  pm.expect(body.has_valid_token, 'has_valid_token is boolean').to.be.a('boolean');",
+                  "  pm.expect(body.auth_type, 'auth_type enum').to.be.oneOf(['none', 'password', 'sso']);",
+                  "  if (body.is_auth_enabled === false) {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth disabled').to.equal('none');",
+                  "    pm.expect(body.has_valid_token, 'has_valid_token when auth disabled').to.equal(false);",
+                  "  } else {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth enabled').to.not.equal('none');",
+                  "  }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Login",
