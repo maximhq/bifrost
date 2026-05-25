@@ -10,12 +10,14 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { isRedacted } from "@/lib/utils/validation";
-import { useRefreshModelsMutation } from "@/lib/store/apis/providersApi";
+import { useRefreshModelsMutation, useUpdateProviderKeyMutation, useCreateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
+import { toast } from "sonner";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
@@ -49,10 +51,22 @@ function normalizeAliasesValue(v: Record<string, string> | string | undefined | 
 // Providers that support live model refresh (dynamic model discovery)
 const MODEL_REFRESH_PROVIDERS = ["copilot"];
 
+/** True when the form's `key.value` carries either a literal token or an env-var reference. */
+function hasTokenValue(v: { value?: string; env_var?: string } | undefined | null): boolean {
+	return !!(v?.value || v?.env_var);
+}
+
 interface Props {
 	control: Control<any>;
 	providerName: string;
 	form: UseFormReturn<any>;
+	// When editing an existing key, the key's id is provided. null/undefined for new keys.
+	keyId?: string | null;
+	// Optional: enables the Copilot new-key flow to auto-create a key once device-auth
+	// completes, so the backend can populate the live model catalog before the user
+	// picks allowed models. Wired by the parent ProviderKeyForm.
+	createProviderKey?: ReturnType<typeof useCreateProviderKeyMutation>[0];
+	onAutoCreated?: (newKeyId: string) => void;
 }
 
 // Batch API form field for all providers
@@ -78,7 +92,7 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 	);
 }
 
-export function ApiKeyFormFragment({ control, providerName, form }: Props) {
+export function ApiKeyFormFragment({ control, providerName, form, keyId, createProviderKey, onAutoCreated }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
@@ -91,12 +105,13 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 	const supportsModelRefresh = MODEL_REFRESH_PROVIDERS.includes(providerName);
 	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshModelsMutation();
+	const [updateProviderKey] = useUpdateProviderKeyMutation();
 	// For providers that support model refresh, enable the button only when a token
 	// is available — either a freshly obtained local token (device-login / manual)
 	// or a saved/redacted one from the server.
 	const copilotKeyValue = supportsModelRefresh ? form.watch('key.value') : undefined;
 	// Enable refresh when there's a literal token value OR an env-var reference (e.g. env.GITHUB_COPILOT_TOKEN)
-	const hasToken = !!(copilotKeyValue?.value || copilotKeyValue?.env_var);
+	const hasToken = hasTokenValue(copilotKeyValue);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -180,6 +195,55 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 		}
 	}, [isCopilot, form])
 
+	// Copilot-only: controls the inline re-authenticate panel inside edit mode.
+	// Always false (and unused) for non-Copilot providers.
+	const [showReauth, setShowReauth] = useState(false);
+	const isEditing = keyId != null;
+	const copilotAuthBlock = isCopilot ? (
+		isEditing ? (
+			<div className="space-y-3">
+				<CopilotAuthStatusCard showReauth={showReauth} onToggleReauth={() => setShowReauth((s) => !s)} />
+				{showReauth && (
+					<>
+						<Alert>
+							<Info className="h-4 w-4" />
+							<AlertDescription>Your current token stays active until the new authentication completes successfully.</AlertDescription>
+						</Alert>
+						<CopilotDeviceLoginSection
+							control={control}
+							form={form}
+							copilotAuthType={copilotAuthType}
+							setCopilotAuthType={setCopilotAuthType}
+							providerName={providerName}
+							keyId={keyId ?? null}
+							updateProviderKey={updateProviderKey}
+							refreshModels={refreshModels}
+							createProviderKey={createProviderKey}
+							onAutoCreated={onAutoCreated}
+							onReauthComplete={() => setShowReauth(false)}
+						/>
+					</>
+				)}
+			</div>
+		) : (
+			<CopilotDeviceLoginSection
+				control={control}
+				form={form}
+				copilotAuthType={copilotAuthType}
+				setCopilotAuthType={setCopilotAuthType}
+				providerName={providerName}
+				keyId={keyId ?? null}
+				updateProviderKey={updateProviderKey}
+				refreshModels={refreshModels}
+				createProviderKey={createProviderKey}
+				onAutoCreated={(id) => {
+					setShowReauth(false);
+					onAutoCreated?.(id);
+				}}
+			/>
+		)
+	) : null;
+
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
 			<div className="flex items-start gap-4">
@@ -247,6 +311,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
+			{copilotAuthBlock}
 			{/* Hide API Key field for Azure when using Entra ID, for Bedrock when using IAM Role, for Vertex, and for Copilot when using Device Login */}
 			{!(isAzure && (azureAuthType === 'entra_id' || azureAuthType === 'default_credential')) && !(isBedrock && bedrockAuthType === 'iam_role') && !isVertex && !(isCopilot && copilotAuthType === 'device_login') && (
 				<FormField
@@ -264,7 +329,16 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			)}
 			{!isVLLM && (
-				<>
+				<div className={cn("space-y-4", isCopilot && !hasToken && "pointer-events-none opacity-50")} data-testid="model-access-block">
+					{isCopilot && !hasToken && (
+						<div
+							className="bg-muted/40 text-muted-foreground flex items-center gap-2 rounded-sm border border-dashed p-3 text-xs"
+							data-testid="copilot-model-access-hint"
+						>
+							<Info className="size-3.5 shrink-0" />
+							<span>Authenticate with GitHub above to configure model access for this key.</span>
+						</div>
+					)}
 					<FormField
 						control={control}
 						name={`key.models`}
@@ -416,7 +490,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-				</>
+				</div>
 			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
@@ -721,9 +795,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
-			{isCopilot && (
-				<CopilotDeviceLoginSection control={control} form={form} copilotAuthType={copilotAuthType} setCopilotAuthType={setCopilotAuthType} />
-			)}
 			{isVLLM && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -991,16 +1062,51 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 }
 
 // Copilot GitHub OAuth device code login section
+function CopilotAuthStatusCard({ showReauth, onToggleReauth }: { showReauth: boolean; onToggleReauth: () => void }) {
+	return (
+		<div className="bg-muted/40 rounded-sm border p-4" data-testid="copilot-auth-status-card">
+			<div className="flex items-start justify-between gap-4">
+				<div className="flex items-start gap-3">
+					<CheckCircle2 className="text-primary mt-0.5 size-5 shrink-0" />
+					<div>
+						<p className="text-sm font-medium">Authenticated with GitHub</p>
+						<p className="text-muted-foreground mt-0.5 text-xs">
+							Token saved. {showReauth ? "Complete the flow below to replace it." : "Re-authenticate to swap the token without downtime."}
+						</p>
+					</div>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={onToggleReauth} data-testid="copilot-reauth-toggle">
+					{showReauth ? "Cancel" : "Re-authenticate"}
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 function CopilotDeviceLoginSection({
 	control,
 	form,
 	copilotAuthType,
 	setCopilotAuthType,
+	providerName,
+	keyId,
+	updateProviderKey,
+	refreshModels,
+	createProviderKey,
+	onAutoCreated,
+	onReauthComplete,
 }: {
 	control: Control<any>;
 	form: UseFormReturn<any>;
 	copilotAuthType: 'device_login' | 'manual_token';
 	setCopilotAuthType: (v: 'device_login' | 'manual_token') => void;
+	providerName: string;
+	keyId: string | null;
+	updateProviderKey: ReturnType<typeof useUpdateProviderKeyMutation>[0];
+	refreshModels: ReturnType<typeof useRefreshModelsMutation>[0];
+	createProviderKey?: ReturnType<typeof useCreateProviderKeyMutation>[0];
+	onAutoCreated?: (newKeyId: string) => void;
+	onReauthComplete?: () => void;
 }) {
 	const [deviceState, setDeviceState] = useState<{
 		status: 'idle' | 'awaiting_auth' | 'complete' | 'error';
@@ -1111,6 +1217,89 @@ function CopilotDeviceLoginSection({
 			if (data.status === 'complete' && data.access_token) {
 				form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true, shouldValidate: true });
 				setDeviceState(prev => ({ ...prev, status: 'complete' }));
+
+				// Build the payload from current form values, stripping internal helpers.
+				const buildPayload = () => {
+					const keyValues: any = { ...form.getValues('key') };
+					if (keyValues.azure_key_config) {
+						const { _auth_type, ...rest } = keyValues.azure_key_config;
+						keyValues.azure_key_config = rest;
+					}
+					if (keyValues.vertex_key_config) {
+						const { _auth_type, ...rest } = keyValues.vertex_key_config;
+						keyValues.vertex_key_config = rest;
+					}
+					if (keyValues.bedrock_key_config) {
+						const { _auth_type, ...rest } = keyValues.bedrock_key_config;
+						keyValues.bedrock_key_config = rest;
+					}
+					return keyValues;
+				};
+
+				if (keyId) {
+					// Editing an existing key: persist the new token in place, then refresh
+					// so the dropdown reflects what Copilot serves for this account.
+					const valid = await form.trigger();
+					if (!valid) {
+						toast.info('Token obtained. Fix validation errors and click Save to refresh models.');
+						return;
+					}
+					const keyValues = buildPayload();
+					try {
+						await updateProviderKey({ provider: providerName, keyId, key: keyValues }).unwrap();
+						form.reset(form.getValues(), { keepValues: true });
+						try {
+							await refreshModels(providerName).unwrap();
+							toast.success('Token saved. Models refreshed.');
+						} catch {
+							toast.success('Token saved.', { description: 'Model refresh failed; try the refresh icon.' });
+						}
+						onReauthComplete?.();
+					} catch {
+						toast.error('Token obtained but failed to save.', {
+							description: 'Click Save to commit and refresh models.',
+						});
+					}
+					return;
+				}
+
+				// Brand-new key: the model picker shows nothing until the backend has
+				// discovered the catalog for this token, which only happens after the
+				// key is saved. Auto-create the key here so the user can pick allowed
+				// models within the same flow; the form transitions to 'edit' mode
+				// via onAutoCreated, and the eventual Save click becomes an update.
+				if (!createProviderKey) {
+					toast.success('Token obtained.', { description: 'Click Save to commit and refresh models.' });
+					return;
+				}
+				const keyValues = buildPayload();
+				if (!keyValues.name || !String(keyValues.name).trim()) {
+					keyValues.name = 'GitHub Copilot';
+					form.setValue('key.name', keyValues.name, { shouldDirty: true });
+				}
+				const valid = await form.trigger();
+				if (!valid) {
+					toast.info('Token obtained. Fix validation errors and click Save to refresh models.');
+					return;
+				}
+				try {
+					const newKey = await createProviderKey({ provider: providerName, key: keyValues }).unwrap();
+					onAutoCreated?.(newKey.id);
+					// Mark the form clean so the Save button only re-enables on actual edits.
+					form.reset(form.getValues(), { keepValues: true });
+					try {
+						await refreshModels(providerName).unwrap();
+						toast.success('Key saved. Models refreshed.', {
+							description: 'Pick allowed models or click Save to keep all.',
+						});
+					} catch {
+						toast.success('Key saved.', { description: 'Model refresh failed; try the refresh icon.' });
+					}
+				} catch {
+					toast.error('Token obtained but failed to save.', {
+						description: 'Click Save to commit and refresh models.',
+					});
+				}
 				return;
 			}
 
@@ -1136,7 +1325,20 @@ function CopilotDeviceLoginSection({
 				setIsChecking(false);
 			}
 		}
-	}, [deviceState.deviceCode, deviceState.interval, form, clearCountdown, startCountdown]);
+	}, [
+		deviceState.deviceCode,
+		deviceState.interval,
+		form,
+		clearCountdown,
+		startCountdown,
+		keyId,
+		providerName,
+		updateProviderKey,
+		refreshModels,
+		createProviderKey,
+		onAutoCreated,
+		onReauthComplete,
+	]);
 
 	// Trigger poll when countdown reaches 0 (only in device_login mode)
 	useEffect(() => {
