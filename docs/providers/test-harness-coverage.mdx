@@ -8,9 +8,9 @@ icon: "list-check"
 
 Bifrost ships a comprehensive end-to-end test harness (`tests/e2e/api/collections/provider-harness.json`) that exercises every provider's translation surface. This page documents which features are covered for each provider, sourced from each upstream's official docs and verified against what's in the harness collection today.
 
-**Total: 321 requests across 12 folders** covering native API, drop-in routes, cross-model routing, passthrough endpoints, feature variations, and explicit backlog coverage.
+**Total: 725 requests across 12 folders** covering native API, provider-native drop-in routes (`/openai`, `/anthropic`, `/bedrock`, `/genai`), umbrella SDK drop-in shapes (`/langchain`, `/litellm`, `/pydanticai`, `/cursor`, `/cohere`), cross-model routing, passthrough endpoints, an endpoint × provider × modality matrix (chat / embeddings / audio / images), feature variations, and explicit backlog coverage.
 
-**`[PREVIEW]` tag**: requests prefixed `[PREVIEW]` are gated behind `INCLUDE_PREVIEW=1` (default-skipped) because they target account/region-scoped resources — preview-model deployments, vector stores, cached content references, MCP servers — that the harness can't provision in arbitrary environments. Run `make run-provider-harness-test INCLUDE_PREVIEW=1` to include them.
+**`[PREVIEW]` tag**: 25 requests prefixed `[PREVIEW]` are gated behind `INCLUDE_PREVIEW=1` (default-skipped) because they target account/region-scoped resources (preview-model deployments, vector stores, cached content references, MCP servers, audio-capable deployments) that the harness can't provision in arbitrary environments. Run `make run-provider-harness-test INCLUDE_PREVIEW=1` to include them.
 
 Run it with:
 
@@ -153,6 +153,7 @@ Features a provider doesn't natively support are simply omitted from that provid
 | PDF input (URLs auto-fetched + inlined) | ✅ |
 | Citations on document blocks | ✅ |
 | Extended thinking (`thinking.budget_tokens`) | ✅ |
+| Adaptive thinking (Opus 4.7 via `/v1/chat`) | ✅ |
 | Interleaved thinking (beta) | ✅ |
 | Structured output (`json_schema` via tool-mode workaround) | ✅ |
 | Output config / effort | ✅ |
@@ -160,6 +161,9 @@ Features a provider doesn't natively support are simply omitted from that provid
 | Prompt caching (1-hour TTL) | ✅ |
 | `anthropic-beta` header passthrough | ✅ |
 | Context management / 1M context | ✅ |
+| Service tier (`auto`) | ✅ |
+| Performance config (`latency: optimized`) | ✅ |
+| Request metadata | ✅ |
 | Cross-region inference (`global.` prefix) | ✅ |
 | Cross-region inference (`us.` prefix) | ✅ |
 | Native Converse (`/bedrock/model/{m}/converse`) | ✅ |
@@ -177,6 +181,7 @@ Features a provider doesn't natively support are simply omitted from that provid
 | Streaming (SSE) | ✅ |
 | Stop sequences | ✅ |
 | Sampling params (temperature / top_p / top_k) | ✅ |
+| Presence + frequency penalty | ✅ |
 | Logprobs | ✅ |
 | Function calling | ✅ |
 | Tool choice forced (`any`) | ✅ |
@@ -211,8 +216,10 @@ Features a provider doesn't natively support are simply omitted from that provid
 | Multi-turn conversation | ✅ |
 | Streaming (SSE) | ✅ |
 | Sampling params (temperature / top_p) | ✅ |
+| Stop sequences | ✅ |
 | Function calling | ✅ |
 | Tool choice forced | ✅ |
+| Parallel function calls (Gemini) | ✅ |
 | Defer loading (Anthropic) | ✅ |
 | Allowed callers (Anthropic) | ✅ |
 | Tool search (Anthropic BM25) | ✅ |
@@ -280,23 +287,77 @@ Features a provider doesn't natively support are simply omitted from that provid
 - PDF URL documents on Vertex Claude — same (Vertex-Anthropic doesn't accept URL document sources)
 - Anthropic-style `{type:"document",source:{...}}` blocks on `/v1/chat/completions` — normalized to `{type:"file",file:{...}}` at JSON unmarshal so every provider's converter sees the same shape
 
+## Modalities (`8. Criss-Cross`)
+
+The harness exercises every non-chat modality across providers via both native `/v1/<modality>` routes and OpenAI / GenAI drop-in shapes. Cells marked `N/A` are not applicable (provider does not expose the modality through Bifrost, or the cell is the provider talking to itself through its own drop-in shape). Cells the harness deliberately skips at run time (encoded as `[SKIP]` in the collection) inherit `N/A` here.
+
+| Modality (route) | OpenAI | Anthropic | Bedrock | Gemini | Vertex | Azure |
+|---|---|---|---|---|---|---|
+| Embeddings, native (`/v1/embeddings`) | ✅ (`text-embedding-3-small`) | N/A | ✅ (`titan-embed-text-v2`) | ✅ (`gemini-embedding-001`) | ✅ (`text-embedding-005`) | ✅ |
+| Embeddings via OpenAI drop-in (`/openai/v1/embeddings`) | N/A | N/A | ✅ | ✅ | ✅ | ✅ |
+| Embeddings via GenAI drop-in (`/genai/v1beta/models/{m}:embedContent`) | ✅ | N/A | ✅ | N/A | ✅ | ✅ |
+| Audio transcription, native (`/v1/audio/transcriptions`) | ✅ (`whisper-1`) | N/A | N/A | ✅ (`gemini-2.5-flash`) | N/A | ✅ |
+| Audio transcription via OpenAI drop-in | N/A | N/A | N/A | ✅ | N/A | ✅ |
+| Text-to-speech, native (`/v1/audio/speech`) | ✅ (`tts-1`) | N/A | N/A | N/A | N/A | ✅ |
+| Text-to-speech via OpenAI drop-in | N/A | N/A | N/A | N/A | N/A | ✅ |
+| Image generation, native (`/v1/images/generations`) | ✅ (`gpt-image-1`) | N/A | ✅ (`titan-image-generator-v2`) | ✅ (`imagen-4.0`) | ✅ (`imagen-4.0`) | ✅ (`gpt-image-2`) |
+| Image generation via OpenAI drop-in | N/A | N/A | ✅ | ✅ | ✅ | ✅ |
+
+Folder 8 also contains a `8.6 Feature combinations` sub-folder (26 requests) that exercises tool-calling, vision, JSON/structured-output, and reasoning across the `/v1/chat/completions` × `/openai` × `/anthropic` × `/bedrock` × `/genai` shape grid - these are tabulated in the cross-cutting matrices below.
+
 ## Cross-cutting (Bifrost-specific)
 
 These exercise Bifrost's translation layer between provider shapes — every check uses the unified `POST /v1/chat/completions` endpoint with `provider/model` prefix routing.
 
-| Feature | Status |
+### Translation-layer matrices (`/v1/chat/completions` with `provider/model` prefix)
+
+Each row is a dedicated `Round N` sub-folder under `12. Backlog Coverage`. The number in parentheses is the count of (provider, model) cells exercised today.
+
+| Matrix | Status |
 |---|---|
 | Cross-model routing (50 models × 5 providers) | ✅ |
-| Cross-cut function calling (4 providers) | ✅ |
-| Cross-cut structured output | ✅ |
-| Cross-cut streaming | ✅ |
-| Cross-cut vision | ✅ |
-| Cross-cut web search | ✅ |
-| Cross-cut code execution | ✅ |
-| Cross-cut tool choice forced | ✅ |
-| Cross-cut extended thinking | ✅ |
-| Cross-cut prompt caching | ✅ |
-| Cross-cut stop sequences | ✅ |
+| Structured output / json_schema matrix (14) | ✅ |
+| Function calling matrix (19) | ✅ |
+| Streaming matrix (18) | ✅ |
+| Vision matrix (15) | ✅ |
+| Tool choice forced matrix (13) | ✅ |
+| Multi-turn matrix (11) | ✅ |
+| System message matrix (11) | ✅ |
+| Stop sequences matrix (11) | ✅ |
+| Extended / adaptive thinking matrix (6) | ✅ |
+| Prompt caching matrix (6) | ✅ |
+| Web search matrix (6) | ✅ |
+| PDF input matrix (4) | ✅ |
+| Code execution matrix (3) | ✅ |
+
+### Drop-in (native-shape) matrices
+
+These exercise the same features but against the *provider-native drop-in* routes (`/openai`, `/anthropic`, `/bedrock`, `/genai`) rather than `/v1/chat/completions`.
+
+| Matrix | Status |
+|---|---|
+| Drop-in structured output (8) | ✅ |
+| Drop-in function calling (9) | ✅ |
+| Drop-in vision (8) | ✅ |
+| Drop-in streaming (9) | ✅ |
+
+### Umbrella-SDK drop-in shapes
+
+Bifrost exposes umbrella SDK routes that accept the OpenAI / Anthropic / Gemini / Bedrock / Cohere request shape byte-for-byte and dispatch to the right typed provider underneath. Each umbrella has its own smoke folder plus a shared vision matrix.
+
+| Umbrella route | Coverage |
+|---|---|
+| `/cohere` | Basic chat, streaming, multi-turn, tools, list models (5) |
+| `/langchain` | OpenAI / Anthropic / Gemini / Bedrock / Cohere shape chat (5) |
+| `/litellm` | OpenAI / Anthropic / Gemini / Bedrock / Cohere shape chat (5) |
+| `/pydanticai` | OpenAI / Anthropic / Gemini / Bedrock / Cohere shape chat (5) |
+| `/cursor` | OpenAI / Anthropic / Gemini / Bedrock shape chat (4) |
+| Drop-in umbrella vision matrix (`/langchain`, `/litellm`, `/pydanticai`, `/cursor` × OpenAI/Anthropic/Gemini shapes) | ✅ (12) |
+
+### Bifrost-only behaviors
+
+| Feature | Status |
+|---|---|
 | Failover via `X-Bifrost-Fallback-Models` | ✅ |
 | Virtual key auth via `X-Bifrost-VK` | ✅ |
 | Sampling-params auto-strip for Opus 4.7+ | ✅ |
@@ -310,14 +371,18 @@ Catch-all forwarding routes that strip incoming auth headers and inject Bifrost'
 | Feature | OpenAI | Anthropic | Bedrock | Azure | Gemini |
 |---|---|---|---|---|---|
 | Basic chat | ✅ | ✅ | N/A | ✅ | ✅ |
-| Streaming | ✅ | N/A | N/A | N/A | N/A |
-| Vision | ✅ | N/A | N/A | N/A | N/A |
+| Streaming | ✅ | ✅ | N/A | ✅ | ✅ |
+| Multi-turn | N/A | ✅ | N/A | N/A | N/A |
+| Vision | ✅ | ✅ | N/A | ✅ | ✅ |
+| Function calling / tool use | N/A | ✅ | N/A | ✅ | ✅ |
+| Structured output (`json_schema`) | ✅ | N/A | N/A | ✅ | N/A |
 | Web search | ✅ | ✅ | N/A | N/A | ✅ |
 | Code execution / code interpreter | ✅ | N/A | N/A | N/A | ✅ |
-| Function calling / tool use | N/A | N/A | N/A | ✅ | N/A |
 | Computer use | N/A | ✅ | N/A | N/A | N/A |
 | Extended thinking | N/A | ✅ | N/A | N/A | N/A |
 | Prompt caching | N/A | ✅ | N/A | N/A | N/A |
+
+Covered across the `Passthrough Backlog` folder + `Cross-Cut Round 28: Passthrough Advanced Matrix` (24 requests total).
 
 **Bedrock**: passthrough is **not supported by design**. AWS SigV4 signing requires bifrost to sign the request with its own credentials, which fundamentally conflicts with byte-for-byte forwarding. Use the typed `/bedrock/model/{modelId}/converse`, `/converse-stream`, or `/invoke` routes instead — those go through bifrost's typed Bedrock provider with proper sigv4 handling.
 
@@ -327,8 +392,10 @@ Catch-all forwarding routes that strip incoming auth headers and inject Bifrost'
 
 | Route | What it tests |
 |---|---|
-| **drop-in** | Provider-native shape via `/openai`, `/anthropic`, `/bedrock`, `/genai`. Most thorough coverage. |
+| **drop-in (native)** | Provider-native shape via `/openai`, `/anthropic`, `/bedrock`, `/genai`. Most thorough coverage. |
+| **drop-in (umbrella)** | SDK-umbrella shapes via `/langchain`, `/litellm`, `/pydanticai`, `/cursor`, `/cohere`. Smoke + vision matrix. |
 | **cross-model** | Unified `/v1/chat/completions` with `provider/model` prefix. Tests Bifrost's translation layer. |
+| **modality** | `8.3` – `8.5` exercise `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/speech`, `/v1/images/generations` across providers + drop-ins. |
 | **passthrough** | `/*_passthrough/*` byte-for-byte forwarding with auth-header strip + Bifrost key injection. |
 
 ## Known gaps that need external setup
