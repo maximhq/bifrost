@@ -60,9 +60,7 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": [
-              "overview"
-            ]
+            "pages": ["overview"]
           },
           {
             "group": "Quick Start",
@@ -102,23 +100,17 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "release-cadence"
-            ]
+            "pages": ["release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v1.5.0"
-            ]
+            "pages": ["migration-guides/v1.5.0"]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration"
-            ]
+            "pages": ["integrations/what-is-an-integration"]
           },
           {
             "group": "Providers & Guides",
@@ -192,10 +184,7 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": [
-                  "plugins/writing-go-plugin",
-                  "plugins/writing-wasm-plugin"
-                ]
+                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
               },
               "plugins/migration-guide"
             ]
@@ -234,10 +223,7 @@
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": [
-                  "features/plugins/mocker",
-                  "features/plugins/jsonparser"
-                ]
+                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
               }
             ]
           }
@@ -248,30 +234,40 @@
         "icon": "building",
         "groups": [
           {
-            "group": "Overview",
-            "icon": "building",
+            "group": "Getting Started",
+            "icon": "rocket",
+            "pages": ["enterprise/overview"]
+          },
+          {
+            "group": "Moving from OSS",
+            "icon": "globe",
             "pages": [
-              "enterprise/overview"
+              "enterprise/moving-from-oss/overview",
+              "enterprise/moving-from-oss/sizing",
+              "enterprise/moving-from-oss/cross-region",
+              "enterprise/moving-from-oss/security-hardening",
+              "enterprise/moving-from-oss/versioning"
             ]
           },
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "enterprise/release-cadence"
-            ]
+            "pages": ["enterprise/release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "enterprise/migration-guides/v1.4.0"
-            ]
+            "pages": ["enterprise/migration-guides/v1.4.0"]
           },
           {
             "group": "Features",
             "icon": "bolt",
             "pages": [
+              "enterprise/user-provisioning",
+              "enterprise/access-profiles",
+              "enterprise/rbac",
+              "enterprise/data-access-control",
+              "enterprise/mcp-tool-groups",
               {
                 "group": "Guardrails",
                 "icon": "road-barrier",
@@ -281,31 +277,18 @@
                   "enterprise/guardrails/custom-regex"
                 ]
               },
-              "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
-              "enterprise/mcp-with-fa",
-              "enterprise/invpc-deployments",
-              "enterprise/custom-plugins",
               "enterprise/audit-logs",
               "enterprise/log-exports",
-              "enterprise/datadog-connector"
-            ]
-          },
-          {
-            "group": "Governance & Access Control",
-            "icon": "shield-check",
-            "pages": [
-              "enterprise/advanced-governance",
-              "enterprise/rbac",
-              "enterprise/user-provisioning"
+              "enterprise/datadog-connector",
+              "enterprise/clustering",
+              "enterprise/adaptive-load-balancing",
+              "enterprise/invpc-deployments"
             ]
           },
           {
             "group": "Security",
             "icon": "shield",
-            "pages": [
-              "security"
-            ]
+            "pages": ["security"]
           }
         ]
       },
@@ -362,9 +345,7 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
+                "pages": ["integrations/genai-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -424,11 +405,7 @@
           {
             "group": "Platform specific guides",
             "icon": "swatchbook",
-            "pages": [
-              "deployment-guides/k8s",
-              "deployment-guides/ecs",
-              "deployment-guides/fly"
-            ]
+            "pages": ["deployment-guides/k8s", "deployment-guides/ecs", "deployment-guides/fly"]
           },
           {
             "group": "Config as Code",
@@ -715,10 +692,7 @@
               },
               {
                 "group": "September 2025",
-                "pages": [
-                  "changelogs/v1.2.22",
-                  "changelogs/v1.2.21"
-                ]
+                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
               }
             ]
           },
@@ -829,6 +803,10 @@
       "destination": "/plugins/writing-go-plugin"
     },
     {
+      "source": "/enterprise/custom-plugins",
+      "destination": "/plugins/writing-go-plugin"
+    },
+    {
       "source": "/features/mcp/overview",
       "destination": "/mcp/overview"
     },
@@ -866,7 +844,11 @@
     },
     {
       "source": "/enterprise/governance",
-      "destination": "/enterprise/advanced-governance"
+      "destination": "/enterprise/user-provisioning"
+    },
+    {
+      "source": "/enterprise/advanced-governance",
+      "destination": "/enterprise/user-provisioning"
     },
     {
       "source": "/features/enterprise/scim",
@@ -883,6 +865,14 @@
     {
       "source": "/enterprise/data-connectors/datadog",
       "destination": "/enterprise/datadog-connector"
+    },
+    {
+      "source": "/enterprise/mcp-with-fa",
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/enterprise/getting-started",
+      "destination": "/enterprise/overview"
     }
   ],
   "footer": {
