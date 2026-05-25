@@ -725,13 +725,14 @@ bifrost:
       #   cel_expression: "!contains(request.body, 'SSN')"
       #   apply_to: "input"
       #   sampling_rate: 100
-      #   timeout: 1000
+      #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
       #   policy_name: "content-filter"
       #   enabled: true
+      #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
