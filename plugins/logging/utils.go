@@ -68,37 +68,37 @@ type LogManager interface {
 	GetDroppedRequests(ctx context.Context) int64
 
 	// GetAvailableModels returns all unique models from logs
-	GetAvailableModels(ctx context.Context, limit int, query string) []string
+	GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableAliases returns all unique alias values from logs
-	GetAvailableAliases(ctx context.Context, limit int, query string) []string
+	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableSelectedKeys returns all unique selected key ID-Name pairs from logs
-	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
-	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
-	GetAvailableRoutingRules(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
-	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) []string
+	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableStopReasons returns all unique stop reason values from logs
-	GetAvailableStopReasons(ctx context.Context, limit int, query string) []string
+	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
-	GetAvailableTeams(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableCustomers returns all unique customer ID-Name pairs from logs
-	GetAvailableCustomers(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableUsers returns all unique user IDs from logs
-	GetAvailableUsers(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableUsers(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
-	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
 	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
@@ -138,7 +138,7 @@ type LogManager interface {
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
-	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) []KeyPair
+	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
@@ -261,47 +261,47 @@ func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 }
 
 // GetAvailableModels returns all unique models from logs
-func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) []string {
+func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableModels(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableAliases(ctx context.Context, limit int, query string) []string {
+func (p *PluginLogManager) GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableAliases(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableSelectedKeys(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableVirtualKeys(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableRoutingRules(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) []string {
+func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableRoutingEngines(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) []string {
+func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableTeams(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableCustomers(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableCustomers(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableUsers(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableBusinessUnits(ctx, limit, query)
 }
 
@@ -401,9 +401,9 @@ func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context, limit i
 	return p.plugin.store.GetAvailableServerLabels(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	if p == nil || p.plugin == nil {
-		return []KeyPair{}
+		return []KeyPair{}, nil
 	}
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }

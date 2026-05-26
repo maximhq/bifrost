@@ -1130,7 +1130,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 
 	if _, ok := want[filterDimModels]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableModels(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableModels(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			models = result
 			mu.Unlock()
@@ -1139,7 +1142,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimAliases]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableAliases(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableAliases(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			aliases = result
 			mu.Unlock()
@@ -1148,7 +1154,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimSelectedKeys]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableSelectedKeys(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableSelectedKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			selectedKeys = result
 			mu.Unlock()
@@ -1157,7 +1166,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimVirtualKeys]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			virtualKeys = result
 			mu.Unlock()
@@ -1166,7 +1178,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimRoutingRules]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableRoutingRules(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableRoutingRules(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			routingRules = result
 			mu.Unlock()
@@ -1175,7 +1190,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimRoutingEngines]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableRoutingEngines(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableRoutingEngines(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			routingEngines = result
 			mu.Unlock()
@@ -1184,7 +1202,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableStopReasons(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableStopReasons(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			stopReasons = result
 			mu.Unlock()
@@ -1193,7 +1214,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimTeams]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableTeams(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableTeams(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			teams = result
 			mu.Unlock()
@@ -1202,7 +1226,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimCustomers]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableCustomers(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableCustomers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			customers = result
 			mu.Unlock()
@@ -1211,7 +1238,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimUsers]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableUsers(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableUsers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			users = result
 			mu.Unlock()
@@ -1220,7 +1250,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimBusinessUnits]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			businessUnits = result
 			mu.Unlock()
@@ -1907,7 +1940,12 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
-		virtualKeys := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
+		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP virtual keys: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP virtual keys: %v", err))
+			return
+		}
 
 		virtualKeyIDs := make([]string, len(virtualKeys))
 		for i, key := range virtualKeys {
