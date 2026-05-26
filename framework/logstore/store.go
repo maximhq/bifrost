@@ -44,6 +44,7 @@ type LogStore interface {
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
 	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.

@@ -1727,6 +1727,109 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	return &UserRankingResult{Rankings: rankings}, nil
 }
 
+// getDimensionRankingsFromMatView returns entities ranked by usage from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	type row struct {
+		ID         string  `gorm:"column:id"`
+		Total      int64   `gorm:"column:total"`
+		TotalTkns  int64   `gorm:"column:total_tkns"`
+		TotalCost  float64 `gorm:"column:total_cost"`
+	}
+
+	var results []row
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	q = q.Where(fmt.Sprintf("%s != ''", idCol))
+	if err := q.Select(fmt.Sprintf(`
+		%s AS id,
+		SUM(count) AS total,
+		SUM(total_tokens) AS total_tkns,
+		SUM(total_cost) AS total_cost
+	`, idCol)).Group(idCol).
+		Order("total DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	// Resolve names from the logs table
+	nameMap := make(map[string]string)
+	if nameCol != "" && len(results) > 0 {
+		ids := make([]string, len(results))
+		for i, r := range results {
+			ids[i] = r.ID
+		}
+		var nameRows []struct {
+			ID   string `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		if err := s.ScopedDB(ctx).Model(&Log{}).
+			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
+			Where(fmt.Sprintf("%s IN ?", idCol), ids).
+			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
+			Order(fmt.Sprintf("%s, timestamp DESC", idCol)).
+			Find(&nameRows).Error; err == nil {
+			for _, nr := range nameRows {
+				nameMap[nr.ID] = nr.Name
+			}
+		}
+	}
+
+	// Previous period
+	var prevResults []row
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
+		if err := pq.Select(fmt.Sprintf(`
+			%s AS id,
+			SUM(count) AS total,
+			SUM(total_tokens) AS total_tkns,
+			SUM(total_cost) AS total_cost
+		`, idCol)).Group(idCol).Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+	}
+
+	prevMap := make(map[string]int, len(prevResults))
+	for i, r := range prevResults {
+		prevMap[r.ID] = i
+	}
+
+	rankings := make([]DimensionRankingWithTrend, 0, len(results))
+	for _, r := range results {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          nameMap[r.ID],
+			TotalRequests: r.Total,
+			TotalTokens:   r.TotalTkns,
+			TotalCost:     r.TotalCost,
+		}
+		drt := DimensionRankingWithTrend{DimensionRankingEntry: entry}
+		if idx, exists := prevMap[r.ID]; exists {
+			prev := prevResults[idx]
+			drt.Trend = DimensionRankingTrend{
+				HasPreviousPeriod: true,
+				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
+				TokensTrend:       trendPct(float64(r.TotalTkns), float64(prev.TotalTkns)),
+				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+			}
+		}
+		rankings = append(rankings, drt)
+	}
+	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Filterdata from mat view
 // ---------------------------------------------------------------------------
