@@ -92,6 +92,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             _https._tcp.dl.google.com:443
             motd.ubuntu.com:443
+            dl.google.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             dl.google.com:443
@@ -163,6 +164,7 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
+            bifrost-gateway-resource.openai.azure.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
@@ -374,9 +376,11 @@ jobs:
             _grpc_config.localhost:443
             _http._tcp.azure.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
+            _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
             production.cloudfront.docker.com:443
+            dl.google.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -484,6 +488,7 @@ jobs:
             127.0.0.1:5432
             172.38.0.12:8080
             172.38.0.12:8301
+            iojs.org:443
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -562,6 +567,8 @@ jobs:
           # localhost).
           allowed-endpoints: >
             127.0.0.1:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -632,6 +639,7 @@ jobs:
           # defaults POSTGRES_HOST to localhost.
           allowed-endpoints: >
             127.0.0.1:5432
+            iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
