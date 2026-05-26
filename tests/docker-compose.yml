@@ -203,6 +203,10 @@ services:
             - "5432:5432"
         networks:
             bifrost_network:
+                # PINNED IP - keep in sync with harden-runner allowed-endpoints
+                # in .github/workflows/release-pipeline.yml (test-docker-image-amd64
+                # and test-docker-image-arm64 jobs). Changing this breaks egress
+                # for container-to-container Postgres traffic on CI runners.
                 ipv4_address: 172.28.0.16
 
 networks:
