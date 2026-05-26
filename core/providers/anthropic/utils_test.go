@@ -758,10 +758,9 @@ func TestValidateToolsForProvider(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "Bedrock rejects web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Bedrock,
-			expectErr: true,
+			name:     "Bedrock allows web_search (nova_grounding via Responses path)",
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider: schemas.Bedrock,
 		},
 		{
 			name:      "Bedrock rejects web_fetch",
@@ -2621,7 +2620,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with old-gen tools (no-op)",
+			name:  "sonnet-4-5 with old-gen tools upgrades text_editor to new-gen",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2630,7 +2629,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2649,7 +2648,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with new-gen tools auto-downgrades",
+			name:  "sonnet-4-5 with new-gen tools downgrades computer but keeps new-gen text_editor",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2658,7 +2657,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
