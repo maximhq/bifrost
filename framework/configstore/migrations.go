@@ -863,6 +863,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVirtualKeyExpiresAtColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
 		return err
 	}
@@ -9781,6 +9784,38 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyExpiresAtColumn adds the nullable expires_at column to governance_virtual_keys.
+// A NULL value means the key never expires. When set to a past timestamp the key is rejected at
+// request time without modifying the record. No index is added because queries never filter on
+// this column; enforcement is a single in-memory timestamp comparison.
+func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_virtual_key_expires_at_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN expires_at TIMESTAMP NULL").Error; err != nil {
+					return fmt.Errorf("failed to add expires_at column to governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN expires_at").Error; err != nil {
+					return fmt.Errorf("failed to drop expires_at column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_virtual_key_expires_at_column migration: %s", err.Error())
 	}
 	return nil
 }

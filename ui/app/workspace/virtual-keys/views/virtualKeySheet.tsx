@@ -162,6 +162,7 @@ const formSchema = z
     teamId: z.string().optional(),
     customerId: z.string().optional(),
     isActive: z.boolean(),
+    expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
     // Budget
     budgetCalendarAligned: z.boolean(),
     budgets: z
@@ -323,6 +324,14 @@ export default function VirtualKeySheet({
       teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
       customerId: virtualKey?.customer_id || "",
       isActive: virtualKey?.is_active ?? true,
+      expiresAt: virtualKey?.expires_at
+        ? (() => {
+            const d = new Date(virtualKey.expires_at);
+            return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+              .toISOString()
+              .slice(0, 16);
+          })()
+        : null,
       budgets:
         virtualKey?.budgets && virtualKey.budgets.length > 0
           ? virtualKey.budgets.map((b) => ({
@@ -874,6 +883,12 @@ export default function VirtualKeySheet({
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
+          // Send expires_at as UTC ISO string, or clear_expires_at only when removing an existing expiry
+          ...(data.expiresAt
+            ? { expires_at: new Date(data.expiresAt).toISOString() }
+            : virtualKey?.expires_at
+              ? { clear_expires_at: true }
+              : {}),
         };
 
         // Add budgets if enabled
@@ -937,6 +952,10 @@ export default function VirtualKeySheet({
           is_active: data.isActive,
           // VK-level setting that governs both budget and rate-limit calendar alignment.
           calendar_aligned: data.budgetCalendarAligned,
+          // Optional expiry: send as UTC ISO string, or omit for no expiry
+          ...(data.expiresAt
+            ? { expires_at: new Date(data.expiresAt).toISOString() }
+            : {}),
         };
 
         // Add budgets if enabled
@@ -1124,6 +1143,41 @@ export default function VirtualKeySheet({
                           setVal={field.onChange}
                           data-testid="vk-is-active-toggle"
                         />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="expiresAt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Expiry date (optional)</FormLabel>
+                        <FormControl>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="datetime-local"
+                              data-testid="vk-expires-at-input"
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(e.target.value || null)
+                              }
+                              className="w-auto"
+                            />
+                            {field.value && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => field.onChange(null)}
+                                data-testid="vk-expires-at-clear"
+                                aria-label="Clear expiry date"
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </FormControl>
+                        <FormMessage />
                       </FormItem>
                     )}
                   />

@@ -181,23 +181,40 @@ export default function VirtualKeyDetailSheet({
               <div className="grid grid-cols-3 items-center gap-4">
                 <span className="text-muted-foreground text-sm">Status</span>
                 <div className="col-span-2">
-                  <Badge
-                    variant={
-                      virtualKey.is_active
-                        ? isExhausted
-                          ? "destructive"
-                          : "default"
-                        : "secondary"
-                    }
-                  >
-                    {virtualKey.is_active
-                      ? isExhausted
-                        ? "Exhausted"
-                        : "Active"
-                      : "Inactive"}
-                  </Badge>
+                  {(() => {
+                    const isExpired =
+                      !!virtualKey.expires_at &&
+                      Date.now() >= new Date(virtualKey.expires_at).getTime();
+                    const variant = !virtualKey.is_active
+                      ? "secondary"
+                      : isExpired || isExhausted
+                        ? "destructive"
+                        : "default";
+                    const label = !virtualKey.is_active
+                      ? "Inactive"
+                      : isExpired
+                        ? "Expired"
+                        : isExhausted
+                          ? "Exhausted"
+                          : "Active";
+                    return <Badge variant={variant}>{label}</Badge>;
+                  })()}
                 </div>
               </div>
+
+              {virtualKey.expires_at && (
+                <div className="grid grid-cols-3 items-center gap-4">
+                  <span className="text-muted-foreground text-sm">Expires</span>
+                  <div className="col-span-2 text-sm">
+                    {formatDistanceToNow(new Date(virtualKey.expires_at), {
+                      addSuffix: true,
+                    })}
+                    <span className="text-muted-foreground ml-1 text-xs">
+                      ({new Date(virtualKey.expires_at).toLocaleString()})
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-3 items-center gap-4">
                 <span className="text-muted-foreground text-sm">Created</span>

@@ -548,3 +548,93 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 		})
 	}
 }
+
+// TestBudgetResolver_EvaluateVirtualKeyRequest_ActiveNoExpiry verifies that a VK
+// with no expiry is allowed.
+func TestBudgetResolver_EvaluateVirtualKeyRequest_ActiveNoExpiry(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestBudgetResolver_EvaluateVirtualKeyRequest_FutureExpiry verifies that a VK
+// with a future expiry is allowed.
+func TestBudgetResolver_EvaluateVirtualKeyRequest_FutureExpiry(t *testing.T) {
+	logger := NewMockLogger()
+	future := time.Now().UTC().Add(time.Hour)
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ExpiresAt = &future
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestBudgetResolver_EvaluateVirtualKeyRequest_ExpiredKey verifies that an
+// active VK with a past expiry is blocked with DecisionVirtualKeyBlocked.
+func TestBudgetResolver_EvaluateVirtualKeyRequest_ExpiredKey(t *testing.T) {
+	logger := NewMockLogger()
+	past := time.Now().UTC().Add(-time.Second)
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ExpiresAt = &past
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionVirtualKeyBlocked, result)
+	assert.Contains(t, result.Reason, "expired")
+}
+
+// TestBudgetResolver_EvaluateVirtualKeyRequest_InactiveWithFutureExpiry verifies
+// that an inactive VK is blocked as inactive, not expired, even when it has a
+// future expiry.
+func TestBudgetResolver_EvaluateVirtualKeyRequest_InactiveWithFutureExpiry(t *testing.T) {
+	logger := NewMockLogger()
+	future := time.Now().UTC().Add(time.Hour)
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", false)
+	vk.ExpiresAt = &future
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := &schemas.BifrostContext{}
+
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	assertDecision(t, DecisionVirtualKeyBlocked, result)
+	assert.Contains(t, result.Reason, "inactive")
+}
