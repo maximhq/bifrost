@@ -467,6 +467,13 @@ func TestJsonParserPluginResponsesStreamEndToEnd(t *testing.T) {
 				Content: &userContent,
 			},
 		},
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			},
+		},
 	}
 
 	responseChan, bifrostErr := client.ResponsesStreamRequest(ctx, request)

@@ -2592,19 +2592,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			message.Content = append(message.Content, bedrockMsg.Content...)
 		}
 
-		// Check for tool use in the content blocks. Server-managed tools
-		// (nova_grounding, nova_code_interpreter) return both toolUse and
-		// toolResult in the same message — their stop reason is "end_turn",
-		// not "tool_use". Only flag hasToolUse when there is an unmatched
-		// toolUse (i.e. the model is waiting for a client-side tool result).
-		resolvedToolUseIDs := make(map[string]bool)
-		for _, block := range message.Content {
-			if block.ToolResult != nil {
-				resolvedToolUseIDs[block.ToolResult.ToolUseID] = true
-			}
-		}
-		for _, block := range message.Content {
-			if block.ToolUse != nil && !resolvedToolUseIDs[block.ToolUse.ToolUseID] {
+		for _, msg := range bifrostResp.Output {
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
 				hasToolUse = true
 				break
 			}
