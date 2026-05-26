@@ -126,6 +126,11 @@
               "type": "boolean",
               "description": "Converts model parameter values that are not supported by the model.",
               "default": false
+            },
+            "count_tokens_fallback": {
+              "type": "boolean",
+              "description": "Estimate count_tokens responses when the selected provider returns unsupported_operation.",
+              "default": false
             }
           },
           "additionalProperties": false

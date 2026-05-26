@@ -46,6 +46,7 @@ type TableClientConfig struct {
 	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
 	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
 	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
+	CompatCountTokensFallback    bool `gorm:"column:compat_count_tokens_fallback;default:false" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
