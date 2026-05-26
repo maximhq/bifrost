@@ -1,1 +1,2 @@
+- feat: add `Tracer.SetTraceAttributes` and `Trace.MergeAttributes` so request-scoped dimensions can be attached at the trace level and propagated to every exported span (#3770)
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
