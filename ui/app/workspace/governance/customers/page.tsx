@@ -1,10 +1,11 @@
+import CustomersTable from "@/app/workspace/governance/views/customerTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useRef, useState } from "react";
+import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
-import CustomersTable from "@/app/workspace/governance/views/customerTable";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
@@ -15,13 +16,15 @@ export default function GovernanceCustomersPage() {
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 
-	const [search, setSearch] = useState("");
-	const [offset, setOffset] = useState(0);
-	const debouncedSearch = useDebouncedValue(search, 300);
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			search: parseAsString.withDefault(""),
+			offset: parseAsInteger.withDefault(0),
+		},
+		{ history: "push" },
+	);
 
-	useEffect(() => {
-		setOffset(0);
-	}, [debouncedSearch]);
+	const debouncedSearch = useDebouncedValue(urlState.search, 300);
 
 	const {
 		data: virtualKeysData,
@@ -40,10 +43,11 @@ export default function GovernanceCustomersPage() {
 		data: customersData,
 		error: customersError,
 		isLoading: customersLoading,
+		isFetching,
 	} = useGetCustomersQuery(
 		{
 			limit: PAGE_SIZE,
-			offset,
+			offset: urlState.offset,
 			search: debouncedSearch || undefined,
 		},
 		{
@@ -56,9 +60,9 @@ export default function GovernanceCustomersPage() {
 
 	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
 	useEffect(() => {
-		if (!customersData || offset < customersTotal) return;
-		setOffset(customersTotal === 0 ? 0 : Math.floor((customersTotal - 1) / PAGE_SIZE) * PAGE_SIZE);
-	}, [customersTotal, offset]);
+		if (!customersData || urlState.offset < customersTotal) return;
+		setUrlState({ offset: customersTotal === 0 ? 0 : Math.floor((customersTotal - 1) / PAGE_SIZE) * PAGE_SIZE });
+	}, [customersTotal, urlState.offset]);
 
 	const isLoading = vkLoading || teamsLoading || customersLoading;
 
@@ -84,18 +88,19 @@ export default function GovernanceCustomersPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col">
 			<CustomersTable
 				customers={customersData?.customers || []}
 				totalCount={customersData?.total_count || 0}
 				teams={teamsData?.teams || []}
 				virtualKeys={virtualKeysData?.virtual_keys || []}
-				search={search}
+				search={urlState.search}
 				debouncedSearch={debouncedSearch}
-				onSearchChange={setSearch}
-				offset={offset}
+				onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 })}
+				offset={urlState.offset}
 				limit={PAGE_SIZE}
-				onOffsetChange={setOffset}
+				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
+				isFetching={isFetching}
 			/>
 		</div>
 	);
