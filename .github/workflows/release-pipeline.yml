@@ -1769,6 +1769,7 @@ jobs:
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
@@ -1984,6 +1985,7 @@ jobs:
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
