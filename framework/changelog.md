@@ -1,1 +1,2 @@
+- feat: add `TraceStore.SetTraceAttributes` and `Tracer.SetTraceAttributes` passthroughs that merge attributes onto a trace for propagation to child spans (#3770)
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

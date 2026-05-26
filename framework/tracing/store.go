@@ -127,6 +127,22 @@ func (s *TraceStore) SetRequestID(traceID string, requestID string) {
 	trace.SetRequestID(requestID)
 }
 
+// SetTraceAttributes merges attributes onto the trace identified by traceID.
+// No-op if the trace does not exist or attrs is empty.
+//
+// Attributes set here are propagated to every exported span by observability
+// plugins; see schemas.Trace.MergeAttributes for the propagation contract.
+func (s *TraceStore) SetTraceAttributes(traceID string, attrs map[string]any) {
+	if len(attrs) == 0 {
+		return
+	}
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.MergeAttributes(attrs)
+}
+
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing
 func (s *TraceStore) CompleteTrace(traceID string) *schemas.Trace {
 	// Clear any deferred span for this trace

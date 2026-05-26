@@ -250,3 +250,85 @@ func TestGenerateSpanID_Format(t *testing.T) {
 		t.Errorf("generateSpanID() = %q, not valid hex", id)
 	}
 }
+
+// TestSetTraceAttributes_WritesToTrace verifies that SetTraceAttributes lands
+// the attributes on the underlying trace so observability plugins can read them.
+func TestSetTraceAttributes_WritesToTrace(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	traceID := store.CreateTrace("")
+	store.SetTraceAttributes(traceID, map[string]any{
+		"customer_id": "acme",
+		"environment": "prod",
+	})
+
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+	if got := trace.Attributes["customer_id"]; got != "acme" {
+		t.Errorf("Attributes[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := trace.Attributes["environment"]; got != "prod" {
+		t.Errorf("Attributes[environment] = %v, want %q", got, "prod")
+	}
+}
+
+// TestSetTraceAttributes_NoopWhenTraceMissing verifies that calling
+// SetTraceAttributes for a trace ID that was never created does not panic or
+// leave residue in the store.
+func TestSetTraceAttributes_NoopWhenTraceMissing(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	// Should not panic or create anything.
+	store.SetTraceAttributes("nonexistent-trace-id", map[string]any{"foo": "bar"})
+
+	if trace := store.GetTrace("nonexistent-trace-id"); trace != nil {
+		t.Errorf("GetTrace() returned non-nil for missing trace: %v", trace)
+	}
+}
+
+// TestSetTraceAttributes_NoopWhenEmpty verifies that an empty/nil attribute map
+// does not touch the trace's Attributes map (which CreateTrace pre-allocates).
+func TestSetTraceAttributes_NoopWhenEmpty(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	traceID := store.CreateTrace("")
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+
+	store.SetTraceAttributes(traceID, nil)
+	store.SetTraceAttributes(traceID, map[string]any{})
+
+	if len(trace.Attributes) != 0 {
+		t.Errorf("expected Attributes to remain empty, got %v", trace.Attributes)
+	}
+}
+
+// TestSetTraceAttributes_MergesAcrossCalls verifies that multiple calls
+// accumulate keys and that later writes override earlier values for the same key.
+func TestSetTraceAttributes_MergesAcrossCalls(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	traceID := store.CreateTrace("")
+	store.SetTraceAttributes(traceID, map[string]any{"customer_id": "acme"})
+	store.SetTraceAttributes(traceID, map[string]any{"environment": "staging"})
+	store.SetTraceAttributes(traceID, map[string]any{"environment": "prod"})
+
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+	if got := trace.Attributes["customer_id"]; got != "acme" {
+		t.Errorf("Attributes[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := trace.Attributes["environment"]; got != "prod" {
+		t.Errorf("Attributes[environment] = %v, want %q (later write should win)", got, "prod")
+	}
+}

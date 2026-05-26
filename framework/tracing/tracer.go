@@ -52,6 +52,13 @@ func (t *Tracer) CreateTrace(parentID string, requestID ...string) string {
 	return t.store.CreateTrace(parentID, requestID...)
 }
 
+// SetTraceAttributes merges attributes onto the trace identified by traceID.
+// Attributes set here are propagated to every exported span by observability plugins.
+// Thread-safe. Nil/empty maps are no-ops.
+func (t *Tracer) SetTraceAttributes(traceID string, attrs map[string]any) {
+	t.store.SetTraceAttributes(traceID, attrs)
+}
+
 // EndTrace completes a trace and returns the trace data for observation/export.
 // The returned trace should be released after use by calling ReleaseTrace.
 func (t *Tracer) EndTrace(traceID string) *schemas.Trace {
