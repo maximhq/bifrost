@@ -68,7 +68,6 @@ interface TeamBudgetRow {
   id: string;
   maxLimit: number | undefined;
   resetDuration: string;
-  calendarAligned: boolean;
 }
 
 interface TeamFormData {
@@ -81,6 +80,8 @@ interface TeamFormData {
   tokenResetDuration: string;
   requestMaxLimit: number | undefined;
   requestResetDuration: string;
+  // Team-wide: applies to all team budgets and the team rate limit
+  calendarAligned: boolean;
   isDirty: boolean;
 }
 
@@ -96,13 +97,13 @@ const createInitialState = (
         id: b.id,
         maxLimit: b.max_limit,
         resetDuration: b.reset_duration,
-        calendarAligned: b.calendar_aligned ?? false,
       })) ?? [],
     // Rate Limit
     tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
     tokenResetDuration: team?.rate_limit?.token_reset_duration || "1h",
     requestMaxLimit: team?.rate_limit?.request_max_limit ?? undefined,
     requestResetDuration: team?.rate_limit?.request_reset_duration || "1h",
+    calendarAligned: team?.calendar_aligned ?? false,
   };
 };
 
@@ -125,7 +126,7 @@ export default function TeamDialog({
     const nextInitial = createInitialState(team);
     setInitialState(nextInitial);
     setFormData({ ...nextInitial, isDirty: false });
-    setPendingCalendarAlignIdx(null);
+    setShowCalendarAlignWarning(false);
   }, [team]);
 
   const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create);
@@ -137,11 +138,10 @@ export default function TeamDialog({
   const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation();
   const loading = isCreating || isUpdating;
 
-  // Tracks which row (by index) is awaiting calendar-align confirmation.
-  const [pendingCalendarAlignIdx, setPendingCalendarAlignIdx] = useState<
-    number | null
-  >(null);
-  const showCalendarAlignWarning = pendingCalendarAlignIdx !== null;
+  // Team-wide calendar-align toggle: confirmation only fires on the off→on
+  // transition for an existing team (mirrors the VK sheet behavior).
+  const [showCalendarAlignWarning, setShowCalendarAlignWarning] =
+    useState(false);
 
   const updateBudgetRow = (idx: number, patch: Partial<TeamBudgetRow>) => {
     setFormData((prev) => {
@@ -161,7 +161,6 @@ export default function TeamDialog({
           id: uuid(),
           maxLimit: undefined,
           resetDuration: "1M",
-          calendarAligned: false,
         },
       ],
     }));
@@ -174,17 +173,14 @@ export default function TeamDialog({
     }));
   };
 
-  const handleCalendarAlignedChange = (idx: number, checked: boolean) => {
-    // Match the persisted budget by stable row id — for seeded rows this equals
-    // the server-side budget id; for newly-added rows it's a client-only UUID
-    // that won't match anything in team.budgets (correctly: no warning for new rows).
-    // Avoids the reset_duration-duplicate ambiguity before validation resolves.
-    const rowId = formData.budgets[idx]?.id;
-    const existingBudget = team?.budgets?.find((b) => b.id === rowId);
-    if (checked && isEditing && existingBudget && !existingBudget.calendar_aligned) {
-      setPendingCalendarAlignIdx(idx);
+  const handleCalendarAlignedChange = (checked: boolean) => {
+    // Warn only on the persisted false→true transition. Toggling off then
+    // back on within the same edit session doesn't reset on save (the backend
+    // snap also runs only on the persisted transition), so no warning needed.
+    if (checked && isEditing && !initialState.calendarAligned) {
+      setShowCalendarAlignWarning(true);
     } else {
-      updateBudgetRow(idx, { calendarAligned: checked });
+      updateField("calendarAligned", checked);
     }
   };
 
@@ -198,6 +194,7 @@ export default function TeamDialog({
       tokenResetDuration: formData.tokenResetDuration,
       requestMaxLimit: formData.requestMaxLimit,
       requestResetDuration: formData.requestResetDuration,
+      calendarAligned: formData.calendarAligned,
     };
     setFormData((prev) => ({
       ...prev,
@@ -211,6 +208,7 @@ export default function TeamDialog({
     formData.tokenResetDuration,
     formData.requestMaxLimit,
     formData.requestResetDuration,
+    formData.calendarAligned,
     initialState,
   ]);
 
@@ -250,34 +248,34 @@ export default function TeamDialog({
 
       // Rate limit validation - token limits
       ...(formData.tokenMaxLimit !== undefined &&
-        formData.tokenMaxLimit !== null
+      formData.tokenMaxLimit !== null
         ? [
-          Validator.minValue(
-            tokenMaxLimitNum || 0,
-            1,
-            "Token max limit must be at least 1",
-          ),
-          Validator.required(
-            formData.tokenResetDuration,
-            "Token reset duration is required",
-          ),
-        ]
+            Validator.minValue(
+              tokenMaxLimitNum || 0,
+              1,
+              "Token max limit must be at least 1",
+            ),
+            Validator.required(
+              formData.tokenResetDuration,
+              "Token reset duration is required",
+            ),
+          ]
         : []),
 
       // Rate limit validation - request limits
       ...(formData.requestMaxLimit !== undefined &&
-        formData.requestMaxLimit !== null
+      formData.requestMaxLimit !== null
         ? [
-          Validator.minValue(
-            requestMaxLimitNum || 0,
-            1,
-            "Request max limit must be at least 1",
-          ),
-          Validator.required(
-            formData.requestResetDuration,
-            "Request reset duration is required",
-          ),
-        ]
+            Validator.minValue(
+              requestMaxLimitNum || 0,
+              1,
+              "Request max limit must be at least 1",
+            ),
+            Validator.required(
+              formData.requestResetDuration,
+              "Request reset duration is required",
+            ),
+          ]
         : []),
     ]);
   }, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
@@ -304,7 +302,6 @@ export default function TeamDialog({
       .map((r) => ({
         max_limit: r.maxLimit as number,
         reset_duration: r.resetDuration,
-        calendar_aligned: r.calendarAligned,
       }));
 
     try {
@@ -315,6 +312,8 @@ export default function TeamDialog({
           customer_id: formData.customerId || undefined,
           // Always send: backend treats `budgets` as a full replacement.
           budgets: submittableBudgets,
+          // Team-wide setting that governs both team budgets and the team rate limit.
+          calendar_aligned: formData.calendarAligned,
         };
 
         // Detect rate limit changes using had/has pattern
@@ -348,6 +347,8 @@ export default function TeamDialog({
           customer_id: formData.customerId || undefined,
           budgets:
             submittableBudgets.length > 0 ? submittableBudgets : undefined,
+          // Team-wide setting that governs both team budgets and the team rate limit.
+          calendar_aligned: formData.calendarAligned,
         };
 
         // Add rate limit if enabled (token or request limits)
@@ -488,15 +489,9 @@ export default function TeamDialog({
                         onChangeNumber={(value) =>
                           updateBudgetRow(idx, { maxLimit: value })
                         }
-                        onChangeSelect={(value) => {
-                          const patch: Partial<TeamBudgetRow> = {
-                            resetDuration: value,
-                          };
-                          if (!supportsCalendarAlignment(value)) {
-                            patch.calendarAligned = false;
-                          }
-                          updateBudgetRow(idx, patch);
-                        }}
+                        onChangeSelect={(value) =>
+                          updateBudgetRow(idx, { resetDuration: value })
+                        }
                         options={resetDurationOptions}
                         dataTestId={`budget-max-limit-input-${idx}`}
                       />
@@ -510,96 +505,9 @@ export default function TeamDialog({
                       Remove
                     </button>
                   </div>
-
-                  {row.maxLimit !== undefined &&
-                    supportsCalendarAlignment(row.resetDuration) && (
-                      <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-                        <div className="space-y-0.5">
-                          <Label
-                            htmlFor={`team-budget-calendar-aligned-toggle-${idx}`}
-                            className="text-sm font-normal"
-                          >
-                            Align to calendar cycle
-                          </Label>
-                          <p className="text-muted-foreground text-xs">
-                            Reset at the start of each period (e.g. 1st of
-                            month) instead of rolling from creation date
-                          </p>
-                        </div>
-                        <Switch
-                          id={`team-budget-calendar-aligned-toggle-${idx}`}
-                          checked={row.calendarAligned}
-                          onCheckedChange={(checked) =>
-                            handleCalendarAlignedChange(idx, checked)
-                          }
-                          data-testid={`team-budget-calendar-aligned-toggle-${idx}`}
-                        />
-                      </div>
-                    )}
                 </div>
               ))}
             </div>
-
-            {/* Warning dialog shown when enabling calendar alignment on an existing budget */}
-            <AlertDialog
-              open={showCalendarAlignWarning}
-              onOpenChange={(open) => {
-                if (!open) setPendingCalendarAlignIdx(null);
-              }}
-            >
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Enabling calendar alignment will reset this budget&apos;s
-                    current usage to{" "}
-                    <span className="font-semibold">$0.00</span> and snap the
-                    reset date to the start of the current{" "}
-                    {pendingCalendarAlignIdx !== null &&
-                      formData.budgets[pendingCalendarAlignIdx]?.resetDuration ===
-                      "1d"
-                      ? "day"
-                      : pendingCalendarAlignIdx !== null &&
-                        formData.budgets[pendingCalendarAlignIdx]
-                          ?.resetDuration === "1w"
-                        ? "week"
-                        : pendingCalendarAlignIdx !== null &&
-                          formData.budgets[pendingCalendarAlignIdx]
-                            ?.resetDuration === "1M"
-                          ? "month"
-                          : pendingCalendarAlignIdx !== null &&
-                            formData.budgets[pendingCalendarAlignIdx]
-                              ?.resetDuration === "1Y"
-                            ? "year"
-                            : "period"}
-                    . The usage reset to $0.00 cannot be undone, but calendar
-                    alignment can be turned off later. This will take effect
-                    when you save.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel
-                    data-testid="team-calendar-align-cancel-btn"
-                    onClick={() => setPendingCalendarAlignIdx(null)}
-                  >
-                    Cancel
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    data-testid="team-calendar-align-enable-btn"
-                    onClick={() => {
-                      if (pendingCalendarAlignIdx !== null) {
-                        updateBudgetRow(pendingCalendarAlignIdx, {
-                          calendarAligned: true,
-                        });
-                      }
-                      setPendingCalendarAlignIdx(null);
-                    }}
-                  >
-                    Enable Calendar Alignment
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
 
             {/* Rate Limit Configuration - Token Limits */}
             <NumberAndSelect
@@ -627,6 +535,85 @@ export default function TeamDialog({
               options={resetDurationOptions}
             />
 
+            {/* Calendar alignment — team-wide setting that applies to all team budgets and the team rate limit */}
+            {(() => {
+              const hasAlignableBudget = formData.budgets.some(
+                (b) =>
+                  b.maxLimit !== undefined &&
+                  b.maxLimit !== null &&
+                  supportsCalendarAlignment(b.resetDuration),
+              );
+              const hasAlignableRateLimit =
+                (formData.tokenMaxLimit !== undefined &&
+                  formData.tokenMaxLimit !== null &&
+                  supportsCalendarAlignment(formData.tokenResetDuration)) ||
+                (formData.requestMaxLimit !== undefined &&
+                  formData.requestMaxLimit !== null &&
+                  supportsCalendarAlignment(formData.requestResetDuration));
+              if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
+              return (
+                <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+                  <div className="space-y-0.5">
+                    <Label
+                      htmlFor="team-calendar-aligned-toggle"
+                      className="text-sm font-normal"
+                    >
+                      Align to calendar cycle
+                    </Label>
+                    <p className="text-muted-foreground text-xs">
+                      Reset budgets and rate limits at the start of each period
+                      (e.g. 1st of month) instead of rolling from creation date.
+                      Applies to durations of a day or longer.
+                    </p>
+                  </div>
+                  <Switch
+                    id="team-calendar-aligned-toggle"
+                    checked={formData.calendarAligned}
+                    onCheckedChange={handleCalendarAlignedChange}
+                    data-testid="team-calendar-aligned-toggle"
+                  />
+                </div>
+              );
+            })()}
+
+            {/* Warning dialog shown when enabling calendar alignment on an existing team */}
+            <AlertDialog
+              open={showCalendarAlignWarning}
+              onOpenChange={setShowCalendarAlignWarning}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Reset budget and rate-limit usage?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Enabling calendar alignment will reset budget usage to{" "}
+                    <span className="font-semibold">$0.00</span> and
+                    token/request rate-limit counters to{" "}
+                    <span className="font-semibold">0</span> for this team, then
+                    snap each reset date to the start of its current period
+                    (e.g. start of day, week, month, or year). The usage reset
+                    cannot be undone, but calendar alignment can be turned off
+                    later. This will take effect when you save.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel data-testid="team-calendar-align-cancel-btn">
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    data-testid="team-calendar-align-enable-btn"
+                    onClick={() => {
+                      updateField("calendarAligned", true);
+                      setShowCalendarAlignWarning(false);
+                    }}
+                  >
+                    Enable Calendar Alignment
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+
             {/* Current Usage Section (only shown when editing with existing limits) */}
             {isEditing &&
               ((team?.budgets && team.budgets.length > 0) ||
@@ -653,7 +640,9 @@ export default function TeamDialog({
                             className="text-xs"
                           >
                             {b.max_limit > 0
-                              ? Math.round((b.current_usage / b.max_limit) * 100)
+                              ? Math.round(
+                                  (b.current_usage / b.max_limit) * 100,
+                                )
                               : 0}
                             %
                           </Badge>
@@ -677,7 +666,7 @@ export default function TeamDialog({
                           <Badge
                             variant={
                               team.rate_limit.token_max_limit > 0 &&
-                                team.rate_limit.token_current_usage >=
+                              team.rate_limit.token_current_usage >=
                                 team.rate_limit.token_max_limit
                                 ? "destructive"
                                 : "default"
@@ -686,10 +675,10 @@ export default function TeamDialog({
                           >
                             {team.rate_limit.token_max_limit > 0
                               ? Math.round(
-                                (team.rate_limit.token_current_usage /
-                                  team.rate_limit.token_max_limit) *
-                                100,
-                              )
+                                  (team.rate_limit.token_current_usage /
+                                    team.rate_limit.token_max_limit) *
+                                    100,
+                                )
                               : 0}
                             %
                           </Badge>
@@ -705,16 +694,19 @@ export default function TeamDialog({
                     )}
                     {team?.rate_limit?.request_max_limit && (
                       <div className="space-y-1">
-                        <p className="text-muted-foreground text-xs">Requests</p>
+                        <p className="text-muted-foreground text-xs">
+                          Requests
+                        </p>
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-sm">
                             {team.rate_limit.request_current_usage.toLocaleString()}{" "}
-                            / {team.rate_limit.request_max_limit.toLocaleString()}
+                            /{" "}
+                            {team.rate_limit.request_max_limit.toLocaleString()}
                           </span>
                           <Badge
                             variant={
                               team.rate_limit.request_max_limit > 0 &&
-                                team.rate_limit.request_current_usage >=
+                              team.rate_limit.request_current_usage >=
                                 team.rate_limit.request_max_limit
                                 ? "destructive"
                                 : "default"
@@ -723,10 +715,10 @@ export default function TeamDialog({
                           >
                             {team.rate_limit.request_max_limit > 0
                               ? Math.round(
-                                (team.rate_limit.request_current_usage /
-                                  team.rate_limit.request_max_limit) *
-                                100,
-                              )
+                                  (team.rate_limit.request_current_usage /
+                                    team.rate_limit.request_max_limit) *
+                                    100,
+                                )
                               : 0}
                             %
                           </Badge>

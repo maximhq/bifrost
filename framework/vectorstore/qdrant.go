@@ -8,14 +8,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/qdrant/go-client/qdrant"
+	"google.golang.org/grpc"
 )
+
+// qdrantMaxRecvMsgSize is the gRPC max receive message size for Qdrant.
+// The default 4 MB is too small for payloads that embed large responses
+// (e.g. base64-encoded images from image generation providers).
+const qdrantMaxRecvMsgSize = 64 * 1024 * 1024 // 64 MB
 
 // QdrantConfig represents the configuration for the Qdrant vector store.
 type QdrantConfig struct {
-	Host   schemas.EnvVar `json:"host"`              // Qdrant server host - REQUIRED
-	Port   schemas.EnvVar `json:"port"`              // Qdrant server port  (fallback to 6334 for gRPC)
-	APIKey schemas.EnvVar `json:"api_key,omitempty"` // API key for authentication - Optional
-	UseTLS schemas.EnvVar `json:"use_tls,omitempty"` // Use TLS for connection - Optional
+	Host             schemas.EnvVar `json:"host"`                        // Qdrant server host - REQUIRED
+	Port             schemas.EnvVar `json:"port"`                        // Qdrant server port  (fallback to 6334 for gRPC)
+	APIKey           schemas.EnvVar `json:"api_key,omitempty"`           // API key for authentication - Optional
+	UseTLS           schemas.EnvVar `json:"use_tls,omitempty"`           // Use TLS for connection - Optional
+	MaxRecvMsgSizeMB schemas.EnvVar `json:"max_recv_msg_size_mb,omitempty"` // gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as image generation responses.
 }
 
 // QdrantStore represents the Qdrant vector store.
@@ -35,6 +42,22 @@ func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dim
 	exists, err := s.client.CollectionExists(ctx, namespace)
 	if err != nil {
 		return fmt.Errorf("failed to check collection existence: %w", err)
+	}
+
+	if exists {
+		info, infoErr := s.client.GetCollectionInfo(ctx, namespace)
+		if infoErr != nil {
+			s.logger.Warn(fmt.Sprintf("could not inspect existing collection %q for dimension validation (check skipped): %v", namespace, infoErr))
+		} else if params := info.GetConfig().GetParams().GetVectorsConfig().GetParams(); params == nil {
+			// Named-vector collections use GetParamsMap(); Bifrost only creates unnamed vectors so
+			// this collection was not created by Bifrost. Dimension validation is skipped.
+			s.logger.Debug(fmt.Sprintf("collection %q uses named vectors — dimension check skipped (Bifrost always creates unnamed vectors)", namespace))
+		} else {
+			existingDim := int(params.GetSize())
+			if existingDim != dimension {
+				return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing collection manually", namespace, existingDim, dimension)
+			}
+		}
 	}
 
 	if !exists {
@@ -354,12 +377,20 @@ func newQdrantStore(ctx context.Context, config *QdrantConfig, logger schemas.Lo
 	if strings.TrimSpace(config.Host.GetValue()) == "" {
 		return nil, fmt.Errorf("qdrant host is required")
 	}
+	maxRecvMsgSize := qdrantMaxRecvMsgSize
+	if mb := config.MaxRecvMsgSizeMB.CoerceInt(0); mb > 0 {
+		maxRecvMsgSize = mb * 1024 * 1024
+	}
+
 	client, err := qdrant.NewClient(&qdrant.Config{
 		Host:                   config.Host.GetValue(),
 		Port:                   config.Port.CoerceInt(6334),
 		APIKey:                 config.APIKey.GetValue(),
 		UseTLS:                 config.UseTLS.CoerceBool(false),
 		SkipCompatibilityCheck: true,
+		GrpcOptions: []grpc.DialOption{
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxRecvMsgSize)),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create qdrant client: %w", err)

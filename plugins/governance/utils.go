@@ -111,7 +111,19 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 	for _, model := range models {
 		provider, modelName := schemas.ParseModelString(model.ID, "")
 
-		// Check if this provider/model combination is allowed
+		// Pre-pass: if any matching config blacklists the model, block it entirely.
+		isBlocked := false
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
+				isBlocked = true
+				break
+			}
+		}
+		if isBlocked {
+			continue
+		}
+
+		// Allowlist check — model is allowed if any matching config permits it.
 		isAllowed := false
 		for _, pc := range vk.ProviderConfigs {
 			if pc.Provider == string(provider) {

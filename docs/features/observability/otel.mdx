@@ -903,6 +903,49 @@ Sensitive credentials never appear in config files:
 
 The plugin reads `OTEL_API_KEY` from the environment at runtime.
 
+### Filtering Plugin Spans
+
+By default every plugin's pre- and post-hook execution generates a span, which can bloat traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the OTEL plugin config to control which plugin spans are exported.
+
+**Via config.json** (inside the OTEL plugin config):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "...",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "plugin_span_filter": {
+          "mode": "exclude",
+          "plugins": ["logging", "compat", "telemetry", "otel"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**Via the UI**: Open the Plugins page and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+
+**Filter modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `exclude` | Export spans for all plugins **except** those listed |
+| `include` | Export spans **only** for the listed plugins |
+
+**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+
+When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
+
+<Note>
+  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set a higher `version` on the OTEL plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+</Note>
+
 ---
 
 ## When to Use

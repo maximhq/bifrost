@@ -7,7 +7,6 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -77,6 +76,7 @@ export function MCPLogDetailSheet({
 	hasNext = false,
 }: MCPLogDetailSheetProps) {
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+	const [dropdownOpen, setDropdownOpen] = useState(false);
 	const {
 		data: fullLog,
 		isLoading,
@@ -144,7 +144,7 @@ export function MCPLogDetailSheet({
 						</Button>
 					</div>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-						<DropdownMenu>
+						<DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
 							<DropdownMenuTrigger asChild>
 								<Button variant="ghost" className="size-8" type="button">
 									<MoreVertical className="h-3 w-3" />
@@ -153,7 +153,11 @@ export function MCPLogDetailSheet({
 							<DropdownMenuContent align="end">
 								<DropdownMenuItem
 									data-testid="export-log-json"
-									onClick={() => downloadAsJson(displayLog, `mcp-log-${displayLog.id ?? "export"}.json`)}
+									onSelect={(e) => {
+										e.preventDefault();
+										downloadAsJson(displayLog, `mcp-log-${displayLog.id ?? "export"}.json`);
+										setDropdownOpen(false);
+									}}
 								>
 									<Download className="h-4 w-4" />
 									Export as JSON
@@ -161,12 +165,17 @@ export function MCPLogDetailSheet({
 								{handleDelete ? (
 									<>
 										<DropdownMenuSeparator />
-										<AlertDialogTrigger asChild>
-											<DropdownMenuItem variant="destructive">
-												<Trash2 className="h-4 w-4" />
-												Delete log
-											</DropdownMenuItem>
-										</AlertDialogTrigger>
+										<DropdownMenuItem
+											variant="destructive"
+											onSelect={(e) => {
+												e.preventDefault();
+												setDeleteDialogOpen(true);
+												setDropdownOpen(false);
+											}}
+										>
+											<Trash2 className="h-4 w-4" />
+											Delete log
+										</DropdownMenuItem>
 									</>
 								) : null}
 							</DropdownMenuContent>

@@ -565,7 +565,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		// Convert service tier
-		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+		if bifrostReq.Params.ServiceTier != nil {
+			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
+			anthropicReq.ServiceTier = &mapped
+		}
 	}
 
 	// Convert messages - group consecutive tool messages into single user messages
@@ -744,6 +747,20 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	anthropicReq.Messages = anthropicMessages
 	anthropicReq.System = systemContent
+
+	// Trim trailing whitespace from the last assistant message text blocks
+	// ContentStr is converted to a single text ContentBlock during message conversion
+	// so we trim the text of that block instead.
+	lastMsgIndex := len(anthropicReq.Messages) - 1
+	if lastMsgIndex >= 0 && anthropicReq.Messages[lastMsgIndex].Role == AnthropicMessageRoleAssistant {
+		blocks := anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Type == AnthropicContentBlockTypeText && blocks[j].Text != nil {
+				anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
 
 	// Strip request- and tool-level fields the target Anthropic-family
 	// provider does not support. Fail-closed tool validation stays in
@@ -925,7 +942,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {
-			bifrostResponse.ServiceTier = response.Usage.ServiceTier
+			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+			bifrostResponse.ServiceTier = &mapped
 		}
 	}
 
@@ -971,7 +989,8 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		}
 		// Forward service tier
 		if bifrostResp.ServiceTier != nil {
-			anthropicResp.Usage.ServiceTier = bifrostResp.ServiceTier
+			mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
+			anthropicResp.Usage.ServiceTier = &mapped
 		}
 	}
 
@@ -1076,6 +1095,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
+		if chunk.Message != nil && chunk.Message.Role != "" {
+			role := chunk.Message.Role
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Role: &role,
+							},
+						},
+					},
+				},
+			}
+			return streamResponse, nil, false
+		}
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:

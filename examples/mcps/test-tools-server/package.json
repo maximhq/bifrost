@@ -11,7 +11,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.0.4",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "3.24.1"
   },
   "devDependencies": {
@@ -19,6 +19,6 @@
     "typescript": "5.3.3"
   },
   "overrides": {
-    "hono": "4.12.14"
+    "hono": "4.12.18"
   }
 }

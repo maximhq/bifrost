@@ -21,8 +21,8 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
-	"github.com/maximhq/bifrost/core/schemas"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -1887,6 +1887,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {

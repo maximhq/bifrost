@@ -380,10 +380,11 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 }
 
 // ProcessStreamingChunk processes a streaming chunk and accumulates it.
-// Returns the accumulated result. IsFinal will be true when the stream is complete.
+// Returns the accumulated result when isFinalChunk is true and the stream is complete;
+// returns nil for non-final chunks.
 // This method is used by plugins to access accumulated streaming data.
-// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
+// Set isFinalChunk to indicate whether the current chunk is the last in the stream.
+func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
 	if traceID == "" || t.accumulator == nil {
 		return nil
 	}
@@ -392,6 +393,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	accumCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
+
+	// Forward relevant context values to the new context
+	if ctx != nil {
+		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
 	if processErr != nil || processedResp == nil {

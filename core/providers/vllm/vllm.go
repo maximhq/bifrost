@@ -158,6 +158,7 @@ func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -211,6 +212,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -484,10 +486,11 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		req.SetBody(body.Bytes())
 
+		startTime := time.Now()
 		// Make the request
 		err := provider.streamingClient.Do(req, resp)
 		if err != nil {
-			defer providerUtils.ReleaseStreamingResponse(resp)
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			if errors.Is(err, context.Canceled) {
 				return nil, &schemas.BifrostError{
 					IsBifrostError: false,
@@ -509,7 +512,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Check for HTTP errors
 		if resp.StatusCode() != fasthttp.StatusOK {
-			defer providerUtils.ReleaseStreamingResponse(resp)
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, openai.ParseOpenAIError(resp)
 		}
 
@@ -536,13 +539,13 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 				close(responseChan)
 			}()
-			defer providerUtils.ReleaseStreamingResponse(resp)
+			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 			reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 			defer releaseGzip()
 
 			// Wrap reader with idle timeout to detect stalled streams.
-			reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+			reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 			defer stopIdleTimeout()
 
 			// Setup cancellation handler to close the raw network stream on ctx cancellation,
@@ -553,7 +556,6 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 			chunkIndex := -1
 
-			startTime := time.Now()
 			lastChunkTime := startTime
 			var fullTranscriptionText strings.Builder
 
@@ -565,11 +567,11 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 				dataBytes, readErr := sseReader.ReadDataLine()
 				if readErr != nil {
+					// If context was cancelled/timed out, let defer handle it
+					if ctx.Err() != nil {
+						return
+					}
 					if readErr != io.EOF {
-						// If context was cancelled/timed out, let defer handle it
-						if ctx.Err() != nil {
-							return
-						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						logger.Warn("Error reading stream: %v", readErr)
 						providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)

@@ -132,6 +132,7 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
 | `config.headers` | No | - | Custom headers for the collector (supports `env.` prefix) |
 | `config.insecure` | No | `false` | Skip TLS verification |
 | `config.tls_ca_cert` | No | - | Path to TLS CA certificate |
+| `config.plugin_span_filter` | No | - | Filter which plugin hook spans are exported. See [Filtering Plugin Spans](/features/observability/otel#filtering-plugin-spans) |
 
 ```json
 {

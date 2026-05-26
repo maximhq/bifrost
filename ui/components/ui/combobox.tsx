@@ -319,7 +319,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		disableSearch = false,
 		className,
 		emptyMessage = "No results found.",
-		noPortal
+		noPortal,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -518,8 +518,7 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator
+	ComboboxSeparator,
 };
 
 export type { ComboboxSelectOption, ComboboxSelectProps };
-

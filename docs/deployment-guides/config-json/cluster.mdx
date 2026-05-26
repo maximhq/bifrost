@@ -9,15 +9,18 @@ icon: "circle-nodes"
 
 </Warning>
 
-`cluster_config` enables multi-node Bifrost enterprise clustering with gossip-based membership and optional automatic node discovery.
+`cluster_config` enables multi-node Bifrost enterprise clustering. The `type` field selects how nodes form a cluster:
 
-You can form a cluster in two ways:
+- **`mesh`** (default) - peer-to-peer membership over gossip, with optional automatic discovery. Requires nodes to reach each other directly.
+- **`broker`** - every node makes a single outbound connection to a central broker that relays messages between nodes. Use this on platforms without peer-to-peer connectivity (e.g. Google Cloud Run). See [Broker Mode](#broker-mode) below.
+
+In `mesh` mode you can form a cluster in two ways:
 
 - Define static `peers` (`host:port`)
 - Enable `discovery` with one of: `kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`
 
 <Tip>
-At least one of `peers` or `discovery.enabled: true` must be configured when `cluster_config.enabled` is true.
+In `mesh` mode, at least one of `peers` or `discovery.enabled: true` must be configured when `cluster_config.enabled` is true. In `broker` mode, `broker.address` is required and `peers`/`discovery`/`gossip` are ignored.
 </Tip>
 
 ---
@@ -102,6 +105,43 @@ For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port fo
 
 ---
 
+## Broker Mode
+
+In `broker` mode, nodes do not connect to each other. Each node opens a single
+outbound stream to a central broker process, which relays every message to all
+other connected nodes and pushes roster updates. Because nodes only need
+outbound connectivity, broker mode works on platforms where peer-to-peer
+networking is unavailable, such as Google Cloud Run.
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "type": "broker",
+    "region": "us-east-1",
+    "broker": {
+      "address": "broker.example.run.app:443",
+      "tls": true,
+      "auth_token": "your-shared-secret"
+    }
+  }
+}
+```
+
+The same Bifrost binary runs as the broker when started with `-mode=broker`
+(or `BIFROST_MODE=broker`). The broker process reads `cluster_config.broker`
+from the same `config.json` and serves on `broker.listen_port` (default
+`50051`); it runs no database, providers, or HTTP gateway.
+
+<Note>
+All nodes must connect to the **same** broker process. Run the broker as a
+single instance (for Cloud Run, a service pinned to one instance with HTTP/2
+enabled). See [Enterprise Clustering &rarr; Broker Mode](/enterprise/clustering#broker-mode)
+for the full deployment guide.
+</Note>
+
+---
+
 ## Field Reference
 
 ### `cluster_config`
@@ -109,10 +149,21 @@ For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port fo
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | boolean | Enables cluster mode |
+| `type` | string | `mesh` (default) or `broker` |
 | `region` | string | Region label for this node (defaults to `"unknown"` at runtime when omitted) |
-| `peers` | array of strings | Static peer addresses in `host:port` format |
-| `gossip` | object | Gossip/memberlist settings |
-| `discovery` | object | Automatic node discovery settings |
+| `peers` | array of strings | Static peer addresses in `host:port` format (`mesh` mode only) |
+| `gossip` | object | Gossip/memberlist settings (`mesh` mode only) |
+| `discovery` | object | Automatic node discovery settings (`mesh` mode only) |
+| `broker` | object | Broker settings, used when `type` is `broker` |
+
+### `cluster_config.broker`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | string | `host:port` of the broker that nodes dial (required in `broker` mode) |
+| `tls` | boolean | Dial the broker over TLS (set `true` for HTTPS endpoints like Cloud Run) |
+| `auth_token` | string | Optional shared secret sent on connect; the broker rejects nodes without it when set |
+| `listen_port` | integer | Port the broker process serves on, used only by `-mode=broker` (default `50051`) |
 
 ### `cluster_config.gossip`
 

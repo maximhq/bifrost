@@ -84,7 +84,7 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		p.ConcurrencyBufferJSON = string(data)
 	}
 	if p.ProxyConfig != nil {
-		data, err := json.Marshal(p.ProxyConfig)
+		data, err := p.ProxyConfig.MarshalForStorage()
 		if err != nil {
 			return err
 		}

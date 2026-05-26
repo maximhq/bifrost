@@ -1,6 +1,7 @@
 import type { MCPTopToolsResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 
@@ -54,7 +55,7 @@ function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 						tick={{ fontSize: 11, className: "fill-zinc-500" }}
 						tickLine={false}
 						axisLine={false}
-						tickFormatter={(v) => v.toLocaleString()}
+						tickFormatter={(v) => formatCompactNumber(v)}
 						domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 						allowDataOverflow={false}
 					/>

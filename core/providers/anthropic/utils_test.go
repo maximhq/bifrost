@@ -577,6 +577,143 @@ func TestConvertChatResponseFormatToAnthropicOutputFormat(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/$defs/Document",
+		},
+	}
+	defs := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+				"authors": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"$ref": "#/$defs/Person",
+					},
+				},
+			},
+			"required": []interface{}{"title", "authors"},
+		},
+		"Person": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":  map[string]interface{}{"type": "string"},
+				"email": map[string]interface{}{"type": []interface{}{"string", "null"}},
+			},
+			"required": []interface{}{"name", "email"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:       &schemaType,
+				Properties: &properties,
+				Required:   []string{"record"},
+				Defs:       &defs,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	if output["type"] != "json_schema" {
+		t.Fatalf("expected json_schema type, got %v", output["type"])
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("expected additionalProperties=false, got %v", schema["additionalProperties"])
+	}
+	if _, ok := schema["$defs"].(map[string]interface{}); !ok {
+		t.Fatalf("expected $defs to be preserved, got %v", schema["$defs"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/$defs/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
+func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinitions(t *testing.T) {
+	schemaType := "object"
+	properties := map[string]interface{}{
+		"record": map[string]interface{}{
+			"$ref": "#/definitions/Document",
+		},
+	}
+	definitions := map[string]interface{}{
+		"Document": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"title": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"title"},
+		},
+	}
+
+	result := convertResponsesTextConfigToAnthropicOutputFormat(&schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Type:        &schemaType,
+				Properties:  &properties,
+				Required:    []string{"record"},
+				Definitions: &definitions,
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected output format")
+	}
+
+	var output map[string]interface{}
+	if err := sonic.Unmarshal(result, &output); err != nil {
+		t.Fatalf("failed to unmarshal output format: %v", err)
+	}
+
+	schema, ok := output["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected schema map, got %T", output["schema"])
+	}
+	if _, ok := schema["definitions"].(map[string]interface{}); !ok {
+		t.Fatalf("expected definitions to be preserved, got %v", schema["definitions"])
+	}
+
+	outputProperties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	recordSchema, ok := outputProperties["record"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected record schema map, got %T", outputProperties["record"])
+	}
+	if recordSchema["$ref"] != "#/definitions/Document" {
+		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
+	}
+}
+
 func TestValidateToolsForProvider(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -2687,6 +2824,59 @@ func TestIsClaudeCodeRequest(t *testing.T) {
 			got := IsClaudeCodeRequest(ctx)
 			if got != tc.expected {
 				t.Errorf("IsClaudeCodeRequest() = %v, want %v (userAgent=%v)", got, tc.expected, tc.userAgent)
+			}
+		})
+	}
+}
+
+// TestBudgetTokensNeverExceedsMaxTokens verifies the strict budget_tokens < max_tokens
+// invariant required by both Anthropic and Bedrock for all effort levels.
+func TestBudgetTokensNeverExceedsMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens // 1024
+	maxTokensValues := []int{1025, 4096, 16000, 32000, 64000, 128000}
+	efforts := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+	for _, maxTok := range maxTokensValues {
+		for _, effort := range efforts {
+			t.Run(fmt.Sprintf("effort=%s/maxTokens=%d", effort, maxTok), func(t *testing.T) {
+				budget, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTok)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if budget >= maxTok {
+					t.Errorf("effort=%q maxTokens=%d: budget_tokens=%d violates strict budget_tokens < max_tokens",
+						effort, maxTok, budget)
+				}
+			})
+		}
+	}
+}
+
+// TestBudgetTokensMaxEffortCapsBelowMaxTokens specifically pins the "max" effort
+// behavior: ratio=1.0 would produce budget==maxTokens without the cap, which both
+// Anthropic and Bedrock reject ("max_tokens must be greater than thinking.budget_tokens").
+func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
+	const minBudget = MinimumReasoningMaxTokens
+
+	cases := []struct {
+		maxTokens    int
+		wantBudget   int
+	}{
+		{maxTokens: 16000, wantBudget: 15999},
+		{maxTokens: 32000, wantBudget: 31999},
+		{maxTokens: 64000, wantBudget: 63999},
+		{maxTokens: 128000, wantBudget: 127999},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("maxTokens=%d", tc.maxTokens), func(t *testing.T) {
+			budget, err := providerUtils.GetBudgetTokensFromReasoningEffort("max", minBudget, tc.maxTokens)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if budget != tc.wantBudget {
+				t.Errorf("max effort with maxTokens=%d: got budget=%d, want %d",
+					tc.maxTokens, budget, tc.wantBudget)
 			}
 		})
 	}

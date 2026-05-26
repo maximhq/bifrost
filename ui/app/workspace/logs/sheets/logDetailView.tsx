@@ -1,8 +1,8 @@
 import {
   formatCost,
   formatLatency,
-  formatTokens,
 } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,7 +43,7 @@ import {
   RequestTypeLabels,
   RoutingEngineUsedColors,
   RoutingEngineUsedLabels,
-  Status
+  Status,
 } from "@/lib/constants/logs";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
@@ -74,6 +74,41 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+
+const formatRealtimeTransport = (value: unknown): string => {
+  const transport = String(value ?? "").trim();
+  switch (transport.toLowerCase()) {
+    case "websocket":
+      return "WebSocket";
+    case "webrtc":
+      return "WebRTC";
+    default:
+      return transport || "Unknown";
+  }
+};
+
+const getRealtimeTransportBadgeClass = (value: unknown): string => {
+  switch (String(value ?? "").toLowerCase()) {
+    case "websocket":
+      return "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300";
+    case "webrtc":
+      return "border-purple-300 bg-purple-50 text-purple-700 dark:border-purple-600 dark:bg-purple-950 dark:text-purple-300";
+    default:
+      return "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-300";
+  }
+};
+
+const formatRealtimeSource = (value: unknown): string => {
+  const source = String(value ?? "").trim();
+  switch (source.toLowerCase()) {
+    case "ei":
+      return "Event Initiated";
+    case "lm":
+      return "Language Model";
+    default:
+      return source || "Unknown";
+  }
+};
 
 const extractResponsesText = (msg: ResponsesMessage): string => {
   if (msg.type === "reasoning") {
@@ -112,7 +147,9 @@ type ReasoningParts = {
   contentText?: string;
 };
 
-const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
+const collectReasoningFromBlocks = (
+  blocks: any[],
+): { text: string; signatures: string[] } => {
   const texts: string[] = [];
   const signatures: string[] = [];
   for (const b of blocks) {
@@ -182,7 +219,7 @@ const extractChatReasoning = (message: any): string => {
   }
   if (Array.isArray(message.reasoning_details)) {
     const parts = (message.reasoning_details as any[])
-      .map((d) => (typeof d?.text === "string" ? d.text : d?.summary ?? ""))
+      .map((d) => (typeof d?.text === "string" ? d.text : (d?.summary ?? "")))
       .map((t: string) => (typeof t === "string" ? t.trim() : ""))
       .filter(Boolean);
     if (parts.length > 0) return parts.join("\n");
@@ -398,7 +435,7 @@ function HeroStat({
   );
 }
 
-function CopyInlineButton({ text }: { text: string }) {
+function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
   const { copy } = useCopyToClipboard({ successMessage: "Copied" });
   return (
     <button
@@ -409,6 +446,7 @@ function CopyInlineButton({ text }: { text: string }) {
       }}
       className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-6 w-6 items-center justify-center rounded-sm transition"
       aria-label="Copy"
+      data-testid={testId}
     >
       <Clipboard className="h-3.5 w-3.5" />
     </button>
@@ -477,8 +515,9 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
                     className={cn(
                       "inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
                       RoutingEngineUsedColors[
-                      scope as keyof typeof RoutingEngineUsedColors
-                      ] ?? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+                        scope as keyof typeof RoutingEngineUsedColors
+                      ] ??
+                        "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
                     )}
                   >
                     {RoutingEngineUsedLabels[
@@ -486,7 +525,9 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
                     ] ?? scope}
                   </span>
                 ) : null}
-                <span className="break-words whitespace-pre-wrap">{message}</span>
+                <span className="break-words whitespace-pre-wrap">
+                  {message}
+                </span>
               </div>
             );
           })}
@@ -495,13 +536,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
   );
 }
 
-function EncryptedReveal({
-  text,
-  label,
-}: {
-  text: string;
-  label: string;
-}) {
+function EncryptedReveal({ text, label }: { text: string; label: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="space-y-1">
@@ -518,7 +553,7 @@ function EncryptedReveal({
         />
         {label}
         {!open ? (
-          <span className="text-muted-foreground/70 ml-1 font-mono text-[10px] normal-case tracking-normal">
+          <span className="text-muted-foreground/70 ml-1 font-mono text-[10px] tracking-normal normal-case">
             {text.length} chars
           </span>
         ) : null}
@@ -645,8 +680,16 @@ export function LogDetailView({
     successMessage: "Request body copied to clipboard",
     errorMessage: "Failed to copy request body",
   });
-  const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
-  const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+  const allRoles: MessageRole[] = [
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "reasoning",
+  ];
+  const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(
+    new Set(allRoles),
+  );
 
   if (!log) return null;
 
@@ -656,20 +699,21 @@ export function LogDetailView({
   const isContainer = isContainerOperation(log.object);
   const showTabs = !isContainer;
   const isPassthrough = isPassthroughOperation(log.object);
+  const isRealtimeTurn = log.object === "realtime.turn";
   const passthroughParams = isPassthrough
     ? (log.params as {
-      method?: string;
-      path?: string;
-      raw_query?: string;
-      status_code?: number;
-    })
+        method?: string;
+        path?: string;
+        raw_query?: string;
+        status_code?: number;
+      })
     : null;
 
   let toolsParameter = null;
   if (log.params?.tools) {
     try {
       toolsParameter = JSON.stringify(log.params.tools, null, 2);
-    } catch { }
+    } catch {}
   }
 
   const audioFormat =
@@ -690,9 +734,12 @@ export function LogDetailView({
     try {
       const parsed = JSON.parse(log.plugin_logs);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
+        return Object.values(parsed).reduce<number>(
+          (sum, v) => sum + (Array.isArray(v) ? v.length : 0),
+          0,
+        );
       }
-    } catch { }
+    } catch {}
     return 0;
   })();
 
@@ -732,23 +779,29 @@ export function LogDetailView({
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem
-                  onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
+                  onClick={() =>
+                    downloadAsJson(log, `log-${log.id ?? "export"}.json`)
+                  }
                   data-testid="logdetails-export-log-button"
                 >
                   <Download className="h-4 w-4" />
                   Export as JSON
                 </DropdownMenuItem>
 
-                {handleDelete ? <><DropdownMenuSeparator /><AlertDialogTrigger asChild>
-                  <DropdownMenuItem
-                    variant="destructive"
-                    data-testid="logdetails-delete-item"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete log
-                  </DropdownMenuItem>
-                </AlertDialogTrigger> </> : null
-                }
+                {handleDelete ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <AlertDialogTrigger asChild>
+                      <DropdownMenuItem
+                        variant="destructive"
+                        data-testid="logdetails-delete-item"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete log
+                      </DropdownMenuItem>
+                    </AlertDialogTrigger>{" "}
+                  </>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
             <AlertDialogContent>
@@ -779,7 +832,7 @@ export function LogDetailView({
           </AlertDialog>
         ) : null}
       </div>
-      <div className="border border-border rounded-sm">
+      <div className="border-border rounded-sm border">
         <div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -789,7 +842,7 @@ export function LogDetailView({
                 className={cn(
                   "rounded-sm px-2 py-0.5 font-medium",
                   RequestTypeColors[
-                  log.object as keyof typeof RequestTypeColors
+                    log.object as keyof typeof RequestTypeColors
                   ] ?? "bg-gray-100 text-gray-800",
                 )}
               >
@@ -813,44 +866,99 @@ export function LogDetailView({
                   Async
                 </Badge>
               ) : null}
+              {log.cache_debug?.hit_type === "direct" ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-sm bg-indigo-100 px-2 py-0.5 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+                >
+                  Direct Cache
+                </Badge>
+              ) : null}
+              {log.cache_debug?.hit_type === "semantic" ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-sm bg-rose-100 px-2 py-0.5 text-rose-800 dark:bg-rose-900 dark:text-rose-200"
+                >
+                  Semantic Cache
+                </Badge>
+              ) : null}
               {(log.is_large_payload_request ||
                 log.is_large_payload_response) && (
-                  <Badge
-                    variant="outline"
-                    className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
-                  >
-                    Large Payload
-                  </Badge>
-                )}
+                <Badge
+                  variant="outline"
+                  className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
+                >
+                  Large Payload
+                </Badge>
+              )}
+              {isRealtimeTurn && log.metadata?.realtime_transport && (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "rounded-sm px-2 py-0.5 font-medium",
+                    getRealtimeTransportBadgeClass(
+                      log.metadata.realtime_transport,
+                    ),
+                  )}
+                >
+                  {formatRealtimeTransport(log.metadata.realtime_transport)}
+                </Badge>
+              )}
+              {isRealtimeTurn && log.metadata?.realtime_voice && (
+                <Badge
+                  variant="outline"
+                  className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
+                >
+                  {log.metadata.realtime_voice}
+                </Badge>
+              )}
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
+              <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
                 Request
               </div>
               <code className="text-foreground truncate font-mono text-[13px]">
                 {log.id || "—"}
               </code>
-              {log.id ? <CopyInlineButton text={log.id} /> : null}
+              {log.id ? (
+                <CopyInlineButton
+                  text={log.id}
+                  testId="logdetails-copy-request-id-button"
+                />
+              ) : null}
             </div>
-            {(log.routing_rule || log.selected_key) && (
-              <div className="text-muted-foreground mt-1 text-[12px]">
-                {log.routing_rule ? (
-                  <>
-                    matched rule{" "}
-                    <span className="text-foreground font-medium">
-                      &ldquo;{log.routing_rule.name}&rdquo;
-                    </span>
-                  </>
-                ) : null}
-                {log.routing_rule && log.selected_key ? " · " : ""}
-                {log.selected_key ? (
-                  <>
-                    key{" "}
-                    <span className="text-foreground font-mono">
-                      {log.selected_key.name}
-                    </span>
-                  </>
-                ) : null}
+            {log.cache_debug?.cache_id && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Cache {log.cache_debug.cache_hit ? "(hit)" : "(miss)"}
+                </div>
+                <code className="text-foreground truncate font-mono text-[13px]">
+                  {log.cache_debug.cache_id}
+                </code>
+                <CopyInlineButton
+                  text={log.cache_debug.cache_id}
+                  testId="logdetails-copy-cache-id-button"
+                />
+              </div>
+            )}
+            {log.routing_rule && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Rule
+                </div>
+                <span className="text-foreground truncate text-[13px] font-medium">
+                  &ldquo;{log.routing_rule.name}&rdquo;
+                </span>
+              </div>
+            )}
+            {log.selected_key && (
+              <div className="mt-1 flex items-center gap-2">
+                <div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+                  Key
+                </div>
+                <code className="text-foreground truncate font-mono text-[13px]">
+                  {log.selected_key.name}
+                </code>
               </div>
             )}
           </div>
@@ -894,15 +1002,16 @@ export function LogDetailView({
             mono
             value={
               log.token_usage
-                ? `${formatTokens(log.token_usage.prompt_tokens ?? 0)} / ${formatTokens(log.token_usage.completion_tokens ?? 0)}`
+                ? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
                 : "—"
             }
             sub={
               log.token_usage
-                ? `total ${formatTokens(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-                  ? ` · reasoning ${formatTokens(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-                  : ""
-                }`
+                ? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+                    log.token_usage.completion_tokens_details?.reasoning_tokens
+                      ? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+                      : ""
+                  }`
                 : "—"
             }
             hasRightBorder
@@ -917,15 +1026,31 @@ export function LogDetailView({
             }
             hasRightBorder
           />
-          <HeroStat
-            label="Tools available"
-            value={(log.params?.tools?.length ?? 0).toString()}
-            sub={
-              (log.params as any)?.tool_choice != null
-                ? `choice: ${formatToolChoice((log.params as any).tool_choice)}`
-                : ""
-            }
-          />
+          {isRealtimeTurn ? (
+            <HeroStat
+              label="Voice"
+              value={
+                log.metadata?.realtime_voice
+                  ? String(log.metadata.realtime_voice)
+                  : "\u2014"
+              }
+              sub={
+                log.metadata?.realtime_transport
+                  ? formatRealtimeTransport(log.metadata.realtime_transport)
+                  : ""
+              }
+            />
+          ) : (
+            <HeroStat
+              label="Tools available"
+              value={(log.params?.tools?.length ?? 0).toString()}
+              sub={
+                (log.params as any)?.tool_choice != null
+                  ? `choice: ${formatToolChoice((log.params as any).tool_choice)}`
+                  : ""
+              }
+            />
+          )}
         </div>
       </div>
       <details className="group bg-card rounded-sm border" open={false}>
@@ -959,9 +1084,9 @@ export function LogDetailView({
                   const d = log.timestamp ? new Date(log.timestamp) : null;
                   return d && !isNaN(d.getTime())
                     ? format(
-                      addMilliseconds(d, log.latency || 0),
-                      "yyyy-MM-dd hh:mm:ss aa",
-                    )
+                        addMilliseconds(d, log.latency || 0),
+                        "yyyy-MM-dd hh:mm:ss aa",
+                      )
                     : "N/A";
                 })()}
               />
@@ -1038,7 +1163,7 @@ export function LogDetailView({
                           log.stop_reason === "refusal"
                           ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
                           : log.stop_reason === "length" ||
-                            log.stop_reason === "max_tokens"
+                              log.stop_reason === "max_tokens"
                             ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
                             : "",
                       )}
@@ -1089,22 +1214,22 @@ export function LogDetailView({
               {(log.selected_prompt_id ||
                 log.selected_prompt_name ||
                 log.selected_prompt_version) && (
-                  <LogEntryDetailsView
-                    className="w-full"
-                    label="Selected Prompt"
-                    value={
-                      <span className="break-words">
-                        {selectedPromptDisplayName}
-                        {selectedPromptDisplayName && log.selected_prompt_version
-                          ? " · "
-                          : ""}
-                        {log.selected_prompt_version ? (
-                          <>v{log.selected_prompt_version}</>
-                        ) : null}
-                      </span>
-                    }
-                  />
-                )}
+                <LogEntryDetailsView
+                  className="w-full"
+                  label="Selected Prompt"
+                  value={
+                    <span className="break-words">
+                      {selectedPromptDisplayName}
+                      {selectedPromptDisplayName && log.selected_prompt_version
+                        ? " · "
+                        : ""}
+                      {log.selected_prompt_version ? (
+                        <>v{log.selected_prompt_version}</>
+                      ) : null}
+                    </span>
+                  }
+                />
+              )}
               {log.number_of_retries > 0 && (
                 <LogEntryDetailsView
                   className="w-full"
@@ -1209,7 +1334,7 @@ export function LogDetailView({
                             key={engine}
                             className={
                               RoutingEngineUsedColors[
-                              engine as keyof typeof RoutingEngineUsedColors
+                                engine as keyof typeof RoutingEngineUsedColors
                               ] ?? "bg-gray-100 text-gray-800"
                             }
                           >
@@ -1251,6 +1376,79 @@ export function LogDetailView({
                       className="w-full"
                       label="Audio Voice"
                       value={(log.params as any).audio.voice}
+                    />
+                  )}
+                </>
+              )}
+
+              {isRealtimeTurn && (
+                <>
+                  {log.metadata?.realtime_session_id && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Realtime Session"
+                      value={
+                        <span className="flex items-center gap-1">
+                          <code className="font-mono text-xs">
+                            {log.metadata.realtime_session_id}
+                          </code>
+                          <CopyInlineButton
+                            text={String(log.metadata.realtime_session_id)}
+                            testId="logdetails-copy-realtime-session-id-button"
+                          />
+                        </span>
+                      }
+                    />
+                  )}
+                  {log.metadata?.provider_session_id && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Provider Session"
+                      value={
+                        <span className="flex items-center gap-1">
+                          <code className="font-mono text-xs">
+                            {log.metadata.provider_session_id}
+                          </code>
+                          <CopyInlineButton
+                            text={String(log.metadata.provider_session_id)}
+                            testId="logdetails-copy-provider-session-id-button"
+                          />
+                        </span>
+                      }
+                    />
+                  )}
+                  {log.metadata?.realtime_transport && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Transport"
+                      value={formatRealtimeTransport(
+                        log.metadata.realtime_transport,
+                      )}
+                    />
+                  )}
+                  {log.metadata?.realtime_voice && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Voice"
+                      value={String(log.metadata.realtime_voice)}
+                    />
+                  )}
+                  {log.metadata?.realtime_source && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Turn Source"
+                      value={formatRealtimeSource(log.metadata.realtime_source)}
+                    />
+                  )}
+                  {log.metadata?.realtime_event_type && (
+                    <LogEntryDetailsView
+                      className="w-full"
+                      label="Trigger Event"
+                      value={
+                        <code className="font-mono text-xs">
+                          {log.metadata.realtime_event_type}
+                        </code>
+                      }
                     />
                   )}
                 </>
@@ -1352,10 +1550,62 @@ export function LogDetailView({
                         : "-"
                     }
                   />
-                  {log.token_usage?.prompt_tokens_details && (
+                  {isRealtimeTurn && (
                     <>
-                      {log.token_usage.prompt_tokens_details
-                        .cached_read_tokens && (
+                      <LogEntryDetailsView
+                        className="w-full"
+                        label="Input Text Tokens"
+                        value={
+                          (log.token_usage?.prompt_tokens ?? 0) -
+                          (log.token_usage?.prompt_tokens_details
+                            ?.audio_tokens ?? 0)
+                        }
+                      />
+                      <LogEntryDetailsView
+                        className="w-full"
+                        label="Input Audio Tokens"
+                        value={
+                          log.token_usage?.prompt_tokens_details
+                            ?.audio_tokens ?? 0
+                        }
+                      />
+                      <LogEntryDetailsView
+                        className="w-full"
+                        label="Output Text Tokens"
+                        value={
+                          (log.token_usage?.completion_tokens ?? 0) -
+                          (log.token_usage?.completion_tokens_details
+                            ?.audio_tokens ?? 0) -
+                          (log.token_usage?.completion_tokens_details
+                            ?.reasoning_tokens ?? 0)
+                        }
+                      />
+                      <LogEntryDetailsView
+                        className="w-full"
+                        label="Output Audio Tokens"
+                        value={
+                          log.token_usage?.completion_tokens_details
+                            ?.audio_tokens ?? 0
+                        }
+                      />
+                      {(log.token_usage?.completion_tokens_details
+                        ?.reasoning_tokens ?? 0) > 0 && (
+                        <LogEntryDetailsView
+                          className="w-full"
+                          label="Reasoning Tokens"
+                          value={
+                            log.token_usage?.completion_tokens_details
+                              ?.reasoning_tokens ?? 0
+                          }
+                        />
+                      )}
+                    </>
+                  )}
+                  {!isRealtimeTurn &&
+                    log.token_usage?.prompt_tokens_details && (
+                      <>
+                        {log.token_usage.prompt_tokens_details
+                          .cached_read_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Cache Read Tokens"
@@ -1365,8 +1615,8 @@ export function LogDetailView({
                             }
                           />
                         )}
-                      {log.token_usage.prompt_tokens_details
-                        .cached_write_tokens && (
+                        {log.token_usage.prompt_tokens_details
+                          .cached_write_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Cache Write Tokens"
@@ -1376,22 +1626,23 @@ export function LogDetailView({
                             }
                           />
                         )}
-                      {log.token_usage.prompt_tokens_details.audio_tokens && (
-                        <LogEntryDetailsView
-                          className="w-full"
-                          label="Input Audio Tokens"
-                          value={
-                            log.token_usage.prompt_tokens_details
-                              .audio_tokens || "-"
-                          }
-                        />
-                      )}
-                    </>
-                  )}
-                  {log.token_usage?.completion_tokens_details && (
-                    <>
-                      {log.token_usage.completion_tokens_details
-                        .reasoning_tokens && (
+                        {log.token_usage.prompt_tokens_details.audio_tokens && (
+                          <LogEntryDetailsView
+                            className="w-full"
+                            label="Input Audio Tokens"
+                            value={
+                              log.token_usage.prompt_tokens_details
+                                .audio_tokens || "-"
+                            }
+                          />
+                        )}
+                      </>
+                    )}
+                  {!isRealtimeTurn &&
+                    log.token_usage?.completion_tokens_details && (
+                      <>
+                        {log.token_usage.completion_tokens_details
+                          .reasoning_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Reasoning Tokens"
@@ -1401,8 +1652,8 @@ export function LogDetailView({
                             }
                           />
                         )}
-                      {log.token_usage.completion_tokens_details
-                        .audio_tokens && (
+                        {log.token_usage.completion_tokens_details
+                          .audio_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Output Audio Tokens"
@@ -1412,8 +1663,8 @@ export function LogDetailView({
                             }
                           />
                         )}
-                      {log.token_usage.completion_tokens_details
-                        .accepted_prediction_tokens && (
+                        {log.token_usage.completion_tokens_details
+                          .accepted_prediction_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Accepted Prediction Tokens"
@@ -1423,8 +1674,8 @@ export function LogDetailView({
                             }
                           />
                         )}
-                      {log.token_usage.completion_tokens_details
-                        .rejected_prediction_tokens && (
+                        {log.token_usage.completion_tokens_details
+                          .rejected_prediction_tokens && (
                           <LogEntryDetailsView
                             className="w-full"
                             label="Rejected Prediction Tokens"
@@ -1434,8 +1685,8 @@ export function LogDetailView({
                             }
                           />
                         )}
-                    </>
-                  )}
+                      </>
+                    )}
                 </div>
               </div>
               {(() => {
@@ -1605,15 +1856,46 @@ export function LogDetailView({
                 </>
               )}
               {log.metadata &&
-                Object.keys(log.metadata).filter((k) => k !== "isAsyncRequest")
-                  .length > 0 && (
+                Object.keys(log.metadata).filter((k) => {
+                  if (k === "isAsyncRequest") return false;
+                  if (
+                    isRealtimeTurn &&
+                    [
+                      "realtime_session_id",
+                      "provider_session_id",
+                      "realtime_source",
+                      "realtime_event_type",
+                      "realtime_transport",
+                      "realtime_voice",
+                      "realtime",
+                    ].includes(k)
+                  )
+                    return false;
+                  return true;
+                }).length > 0 && (
                   <>
                     <DottedSeparator />
                     <div className="space-y-4">
                       <BlockHeader title="Metadata" />
                       <div className="grid w-full grid-cols-3 items-start justify-between gap-4">
                         {Object.entries(log.metadata)
-                          .filter(([key]) => key !== "isAsyncRequest")
+                          .filter(([key]) => {
+                            if (key === "isAsyncRequest") return false;
+                            if (
+                              isRealtimeTurn &&
+                              [
+                                "realtime_session_id",
+                                "provider_session_id",
+                                "realtime_source",
+                                "realtime_event_type",
+                                "realtime_transport",
+                                "realtime_voice",
+                                "realtime",
+                              ].includes(key)
+                            )
+                              return false;
+                            return true;
+                          })
                           .map(([key, value]) => (
                             <LogEntryDetailsView
                               key={key}
@@ -1630,7 +1912,11 @@ export function LogDetailView({
           )}
         </div>
       </details>
-      <Tabs key={log.id} defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
+      <Tabs
+        key={log.id}
+        defaultValue={showTabs ? "messages" : "plugins"}
+        className="gap-2"
+      >
         <TabsList className="bg-muted/60 h-10 w-fit">
           {showTabs && (
             <TabsTrigger value="messages" className="px-3">
@@ -1770,14 +2056,14 @@ export function LogDetailView({
             log.image_edit_input ||
             log.image_variation_input ||
             log.image_generation_output) && (
-              <ImageView
-                imageInput={log.image_generation_input}
-                imageEditInput={log.image_edit_input}
-                imageVariationInput={log.image_variation_input}
-                imageOutput={log.image_generation_output}
-                requestType={log.object}
-              />
-            )}
+            <ImageView
+              imageInput={log.image_generation_input}
+              imageEditInput={log.image_edit_input}
+              imageVariationInput={log.image_variation_input}
+              imageOutput={log.image_generation_output}
+              requestType={log.object}
+            />
+          )}
           {(log.video_generation_input || videoOutput || videoListOutput) && (
             <VideoView
               videoInput={log.video_generation_input}
@@ -1821,6 +2107,7 @@ export function LogDetailView({
                 lang="json"
                 readonly={true}
                 options={{
+                  showVerticalScrollbar: true,
                   scrollBeyondLastLine: false,
                   lineNumbers: "off",
                   alwaysConsumeMouseWheel: false,
@@ -1864,6 +2151,7 @@ export function LogDetailView({
                   lang="json"
                   readonly={true}
                   options={{
+                    showVerticalScrollbar: true,
                     scrollBeyondLastLine: false,
                     lineNumbers: "off",
                     alwaysConsumeMouseWheel: false,
@@ -1872,20 +2160,25 @@ export function LogDetailView({
               </CollapsibleBox>
             )}
 
-          {!isPassthrough && ((log.input_history && log.input_history.length > 0) ||
-            (log.output_message && !log.error_details?.error.message) ||
-            (log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety")) && (
+          {!isPassthrough &&
+            ((log.input_history && log.input_history.length > 0) ||
+              (log.output_message && !log.error_details?.error.message) ||
+              log.stop_reason === "refusal" ||
+              log.stop_reason === "content_filter" ||
+              log.stop_reason === "safety") && (
               <div className="bg-card rounded-sm border p-5">
                 {(visibleRoles.size < allRoles.length
                   ? log.input_history?.filter((m) => {
-                    const mainRole = ((m.role as string) || "user") as MessageRole;
-                    const hasReasoning = !!extractChatReasoning(m);
-                    return (
-                      visibleRoles.has(mainRole) ||
-                      (hasReasoning && visibleRoles.has("reasoning"))
-                    );
-                  })
-                  : log.input_history
+                      if (!m) return false;
+                      const mainRole = ((m.role as string) ||
+                        "user") as MessageRole;
+                      const hasReasoning = !!extractChatReasoning(m);
+                      return (
+                        visibleRoles.has(mainRole) ||
+                        (hasReasoning && visibleRoles.has("reasoning"))
+                      );
+                    })
+                  : log.input_history?.filter(Boolean)
                 )?.flatMap((message, index) => {
                   const role = ((message.role as string) ||
                     "user") as MessageRole;
@@ -1894,7 +2187,8 @@ export function LogDetailView({
                   const showAll = visibleRoles.size === allRoles.length;
                   const showMain = showAll || visibleRoles.has(role);
                   const showReasoning =
-                    !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+                    !!reasoningText &&
+                    (showAll || visibleRoles.has("reasoning"));
                   const hasToolCalls =
                     Array.isArray(message.tool_calls) &&
                     message.tool_calls.length > 0;
@@ -1931,7 +2225,7 @@ export function LogDetailView({
                           preview={3}
                           mono={false}
                         />
-                      </MessageRow>
+                      </MessageRow>,
                     );
                   }
                   if (showMain) {
@@ -1948,7 +2242,11 @@ export function LogDetailView({
                               wrap
                               code={(() => {
                                 try {
-                                  return JSON.stringify(JSON.parse(text), null, 2);
+                                  return JSON.stringify(
+                                    JSON.parse(text),
+                                    null,
+                                    2,
+                                  );
                                 } catch {
                                   return text;
                                 }
@@ -1962,7 +2260,11 @@ export function LogDetailView({
                               }}
                             />
                           ) : usePlainText ? (
-                            <CollapsibleCode text={text} preview={3} mono={false} />
+                            <CollapsibleCode
+                              text={text}
+                              preview={3}
+                              mono={false}
+                            />
                           ) : (
                             <CollapsibleCode
                               text={text}
@@ -1994,14 +2296,14 @@ export function LogDetailView({
                             })}
                         {hasToolCalls && text ? (
                           <div className="text-muted-foreground mt-2 text-[11px]">
-                            {message.tool_calls!
-                              .map((tc) => tc.function?.name)
+                            {message
+                              .tool_calls!.map((tc) => tc.function?.name)
                               .filter(Boolean)
                               .join(", ") ||
                               `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
                           </div>
                         ) : null}
-                      </MessageRow>
+                      </MessageRow>,
                     );
                   }
                   return rows;
@@ -2009,7 +2311,9 @@ export function LogDetailView({
                 {log.output_message &&
                   !log.error_details?.error.message &&
                   (() => {
-                    const reasoningText = extractChatReasoning(log.output_message);
+                    const reasoningText = extractChatReasoning(
+                      log.output_message,
+                    );
                     const showReasoning =
                       !!reasoningText &&
                       (visibleRoles.size === allRoles.length ||
@@ -2022,7 +2326,8 @@ export function LogDetailView({
                       log.stop_reason === "refusal" ||
                       log.stop_reason === "content_filter" ||
                       log.stop_reason === "safety";
-                    const showRefusal = refusalText || (!text && isStopReasonRefusal);
+                    const showRefusal =
+                      refusalText || (!text && isStopReasonRefusal);
                     const lineCount = text ? text.split("\n").length : 0;
                     const tokenMeta = log.token_usage?.completion_tokens
                       ? `${log.token_usage.completion_tokens} tokens`
@@ -2076,7 +2381,11 @@ export function LogDetailView({
                                   wrap
                                   code={(() => {
                                     try {
-                                      return JSON.stringify(JSON.parse(text), null, 2);
+                                      return JSON.stringify(
+                                        JSON.parse(text),
+                                        null,
+                                        2,
+                                      );
                                     } catch {
                                       return text;
                                     }
@@ -2090,7 +2399,11 @@ export function LogDetailView({
                                   }}
                                 />
                               ) : (
-                                <CollapsibleCode text={text} preview={3} mono={false} />
+                                <CollapsibleCode
+                                  text={text}
+                                  preview={3}
+                                  mono={false}
+                                />
                               )
                             ) : (
                               <LogChatMessageView
@@ -2124,16 +2437,18 @@ export function LogDetailView({
 
           {(() => {
             const rawInput = log.responses_input_history ?? [];
-            const inputMsgs = visibleRoles.size < allRoles.length
-              ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m)))
-              : rawInput;
+            const inputMsgs =
+              visibleRoles.size < allRoles.length
+                ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+                : rawInput;
             const rawOutput =
               log.status !== "processing" && !log.error_details?.error.message
                 ? (log.responses_output ?? [])
                 : [];
-            const outputMsgs = visibleRoles.size < allRoles.length
-              ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
-              : rawOutput;
+            const outputMsgs =
+              visibleRoles.size < allRoles.length
+                ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m)))
+                : rawOutput;
             const all: ResponsesMessage[] = coalesceResponsesMessages([
               ...inputMsgs,
               ...outputMsgs,
@@ -2268,7 +2583,11 @@ export function LogDetailView({
                         )
                       ) : msg.output !== undefined ? (
                         <CollapsibleCode
-                          text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
+                          text={
+                            typeof msg.output === "string"
+                              ? msg.output
+                              : JSON.stringify(msg.output, null, 2)
+                          }
                           preview={3}
                         />
                       ) : (
@@ -2278,9 +2597,16 @@ export function LogDetailView({
                       )}
                       {Array.isArray(msg.content) &&
                         msg.content
-                          .filter((b) => b?.type === "input_image" && b.image_url)
+                          .filter(
+                            (b) => b?.type === "input_image" && b.image_url,
+                          )
                           .map((b, i) => (
-                            <img key={`${i}-${b.image_url}`} src={b.image_url} alt="Attached image" className="mt-2 max-w-full rounded border" />
+                            <img
+                              key={`${i}-${b.image_url}`}
+                              src={b.image_url}
+                              alt="Attached image"
+                              className="mt-2 max-w-full rounded border"
+                            />
                           ))}
                     </MessageRow>
                   );
@@ -2347,6 +2673,7 @@ export function LogDetailView({
                   lang="json"
                   readonly={true}
                   options={{
+                    showVerticalScrollbar: true,
                     scrollBeyondLastLine: false,
                     lineNumbers: "off",
                     alwaysConsumeMouseWheel: false,
@@ -2369,6 +2696,7 @@ export function LogDetailView({
                 lang="json"
                 readonly={true}
                 options={{
+                  showVerticalScrollbar: true,
                   scrollBeyondLastLine: false,
                   lineNumbers: "off",
                   alwaysConsumeMouseWheel: false,
@@ -2379,34 +2707,34 @@ export function LogDetailView({
 
           {(log.error_details?.error.message ||
             log.error_details?.error.error != null) && (
-              <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-                <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span className="text-[12.5px] font-semibold">Error</span>
-                  {log.error_details?.error.message ? (
-                    <CopyInlineButton text={log.error_details.error.message} />
-                  ) : null}
-                </div>
+            <div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
+              <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span className="text-[12.5px] font-semibold">Error</span>
                 {log.error_details?.error.message ? (
-                  <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-                    {log.error_details.error.message}
-                  </div>
-                ) : null}
-                {log.error_details?.error.error != null ? (
-                  <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-                    <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-                      <span className="font-medium">Details</span>
-                      <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                    </summary>
-                    <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-                      {typeof log.error_details.error.error === "string"
-                        ? log.error_details.error.error
-                        : JSON.stringify(log.error_details.error.error, null, 2)}
-                    </div>
-                  </details>
+                  <CopyInlineButton text={log.error_details.error.message} />
                 ) : null}
               </div>
-            )}
+              {log.error_details?.error.message ? (
+                <div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+                  {log.error_details.error.message}
+                </div>
+              ) : null}
+              {log.error_details?.error.error != null ? (
+                <details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
+                  <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
+                    <span className="font-medium">Details</span>
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                  </summary>
+                  <div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
+                    {typeof log.error_details.error.error === "string"
+                      ? log.error_details.error.error
+                      : JSON.stringify(log.error_details.error.error, null, 2)}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="tools" className="space-y-3">
@@ -2466,7 +2794,7 @@ export function LogDetailView({
                       </summary>
                       {schemaJson ? (
                         <div className="border-t">
-                          <div className="text-muted-foreground flex items-center justify-between px-3 py-1.5 text-[10.5px] uppercase tracking-wider">
+                          <div className="text-muted-foreground flex items-center justify-between px-3 py-1.5 text-[10.5px] tracking-wider uppercase">
                             <span className="font-semibold">Parameters</span>
                             <CopyInlineButton text={schemaJson} />
                           </div>
@@ -2597,6 +2925,7 @@ export function LogDetailView({
                   lang="json"
                   readonly={true}
                   options={{
+                    showVerticalScrollbar: true,
                     scrollBeyondLastLine: false,
                     lineNumbers: "off",
                     alwaysConsumeMouseWheel: false,
@@ -2607,7 +2936,7 @@ export function LogDetailView({
           )}
           {rawResponse && log.status !== "processing" && (
             <>
-              <div className="text-muted-foreground text-[12px] pt-4">
+              <div className="text-muted-foreground pt-4 text-[12px]">
                 Raw Response from{" "}
                 <span className="text-foreground font-medium capitalize">
                   {log.provider}
@@ -2635,6 +2964,7 @@ export function LogDetailView({
                   lang="json"
                   readonly={true}
                   options={{
+                    showVerticalScrollbar: true,
                     scrollBeyondLastLine: false,
                     lineNumbers: "off",
                     alwaysConsumeMouseWheel: false,

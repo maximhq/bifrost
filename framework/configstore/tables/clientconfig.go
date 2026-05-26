@@ -15,6 +15,7 @@ type TableClientConfig struct {
 	AllowedOriginsJSON                    string `gorm:"type:text" json:"-"` // JSON serialized []string
 	AllowedHeadersJSON                    string `gorm:"type:text" json:"-"` // JSON serialized []string
 	HeaderFilterConfigJSON                string `gorm:"type:text" json:"-"` // JSON serialized GlobalHeaderFilterConfig
+	MetadataJSON                          string `gorm:"type:text" json:"-"` // JSON serialized map[string]any for UI/admin preferences (e.g. onboarding_dismissed). Bypasses config.json sync.
 	InitialPoolSize                       int    `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging                         *bool  `gorm:"default:true" json:"enable_logging"`
 	DisableContentLogging                 bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
@@ -34,7 +35,6 @@ type TableClientConfig struct {
 	LoggingHeadersJSON                    string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	HideDeletedVirtualKeysInFilters       bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`       // Hide deleted virtual keys in logs filter dropdowns
 	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalServerURL                  string `gorm:"type:varchar(512)" json:"mcp_external_server_url,omitempty"`      // Public base URL advertised in OAuth server metadata (.well-known, WWW-Authenticate)
 	MCPExternalClientURL                  string `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	WhitelistedRoutesJSON                 string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	AllowPerRequestContentStorageOverride bool   `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
@@ -61,6 +61,7 @@ type TableClientConfig struct {
 	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
 	WhitelistedRoutes  []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
 	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
+	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -137,6 +138,18 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.HeaderFilterConfigJSON = ""
 	}
 
+	// Metadata is preserved when nil — callers that DELETE+CREATE through
+	// UpdateClientConfig must carry MetadataJSON forward explicitly, since the
+	// API ClientConfig does not expose Metadata. A nil Metadata here means
+	// "leave whatever MetadataJSON the caller set untouched."
+	if cc.Metadata != nil {
+		data, err := json.Marshal(cc.Metadata)
+		if err != nil {
+			return err
+		}
+		cc.MetadataJSON = string(data)
+	}
+
 	return nil
 }
 
@@ -184,6 +197,16 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		cc.HeaderFilterConfig = &headerFilterConfig
+	}
+
+	if cc.MetadataJSON != "" {
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(cc.MetadataJSON), &metadata); err != nil {
+			return err
+		}
+		cc.Metadata = metadata
+	} else {
+		cc.Metadata = nil
 	}
 
 	return nil

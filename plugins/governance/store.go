@@ -179,6 +179,12 @@ type GovernanceStore interface {
 	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
 	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
 	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
+	// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that
+	// govern a request for the given virtual key, provider, and model. The
+	// returned IDs are attached to log entries so that ghost-node usage
+	// reconciliation can attribute cost and tokens to the correct governance
+	// entities.
+	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -1373,9 +1379,10 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 		if !ok || budget == nil {
 			return true
 		}
+		calendarAligned := budget.IsCalendarAligned
 		var shouldReset bool
 		var newLastReset time.Time
-		if budget.CalendarAligned {
+		if calendarAligned {
 			currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
 			if currentPeriodStart.After(budget.LastReset) {
 				shouldReset = true
@@ -1451,8 +1458,9 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 		if !ok || rateLimit == nil {
 			return true
 		}
-		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, rateLimit.CalendarAligned, rateLimit.TokenLastReset)
-		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, rateLimit.CalendarAligned, rateLimit.RequestLastReset)
+		calendarAligned := rateLimit.IsCalendarAligned
+		tokenNewLastReset := resolvePeriodStart(rateLimit.TokenResetDuration, calendarAligned, rateLimit.TokenLastReset)
+		requestNewLastReset := resolvePeriodStart(rateLimit.RequestResetDuration, calendarAligned, rateLimit.RequestLastReset)
 		if tokenNewLastReset == nil && requestNewLastReset == nil {
 			return true
 		}
@@ -2247,6 +2255,83 @@ func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Contex
 	return rateLimitIDs
 }
 
+// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that are
+// affected by a request with the given virtual key, provider, and model.
+// It combines provider-level, model-level, and VK-hierarchy (team/customer) IDs.
+// All lookups are fast in-memory sync.Map reads.
+func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+	seenBudgets := map[string]bool{}
+	seenRateLimits := map[string]bool{}
+
+	// --- Provider-level ---
+	if provider != "" {
+		providerKey := string(provider)
+		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
+			if pt, ok := value.(*configstoreTables.TableProvider); ok && pt != nil {
+				if pt.BudgetID != nil && !seenBudgets[*pt.BudgetID] {
+					budgetIDs = append(budgetIDs, *pt.BudgetID)
+					seenBudgets[*pt.BudgetID] = true
+				}
+				if pt.RateLimitID != nil && !seenRateLimits[*pt.RateLimitID] {
+					rateLimitIDs = append(rateLimitIDs, *pt.RateLimitID)
+					seenRateLimits[*pt.RateLimitID] = true
+				}
+			}
+		}
+	}
+
+	// --- Model-level ---
+	if model != "" {
+		// model+provider specific config
+		if provider != "" {
+			key := fmt.Sprintf("%s:%s", model, string(provider))
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
+					if mc.BudgetID != nil && !seenBudgets[*mc.BudgetID] {
+						budgetIDs = append(budgetIDs, *mc.BudgetID)
+						seenBudgets[*mc.BudgetID] = true
+					}
+					if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
+						rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+						seenRateLimits[*mc.RateLimitID] = true
+					}
+				}
+			}
+		}
+		// model-only config
+		if mc, _ := gs.findModelOnlyConfig(ctx, model); mc != nil {
+			if mc.BudgetID != nil && !seenBudgets[*mc.BudgetID] {
+				budgetIDs = append(budgetIDs, *mc.BudgetID)
+				seenBudgets[*mc.BudgetID] = true
+			}
+			if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
+				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+				seenRateLimits[*mc.RateLimitID] = true
+			}
+		}
+	}
+
+	// --- VK hierarchy (provider-config → VK → team → customer) ---
+	if virtualKey != "" {
+		if vk, exists := gs.GetVirtualKey(ctx, virtualKey); exists && vk != nil {
+			for _, id := range gs.collectBudgetIDsFromMemory(ctx, vk, provider) {
+				if !seenBudgets[id] {
+					budgetIDs = append(budgetIDs, id)
+					seenBudgets[id] = true
+				}
+			}
+			for _, id := range gs.collectRateLimitIDsFromMemory(ctx, vk, provider) {
+				if !seenRateLimits[id] {
+					rateLimitIDs = append(rateLimitIDs, id)
+					seenRateLimits[id] = true
+				}
+			}
+		}
+	}
+
+	return budgetIDs, rateLimitIDs
+}
+
 // PUBLIC API METHODS
 
 // CreateVirtualKeyInMemory adds a new virtual key to the in-memory store (lock-free)
@@ -2257,21 +2342,26 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Store budgets
 	for i := range vk.Budgets {
+		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
 		gs.budgets.Store(vk.Budgets[i].ID, &vk.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
 	if vk.RateLimit != nil {
+		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
 		gs.rateLimits.Store(vk.RateLimit.ID, vk.RateLimit)
 	}
 
 	// Create provider config budgets and rate limits if they exist
 	if vk.ProviderConfigs != nil {
-		for _, pc := range vk.ProviderConfigs {
-			for i := range pc.Budgets {
-				gs.budgets.Store(pc.Budgets[i].ID, &pc.Budgets[i])
+		for i := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[i]
+			for j := range pc.Budgets {
+				pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+				gs.budgets.Store(pc.Budgets[j].ID, &pc.Budgets[j])
 			}
 			if pc.RateLimit != nil {
+				pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
 			}
 		}
@@ -2288,7 +2378,27 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
-	if existingVKValue, exists := gs.virtualKeys.Load(vk.Value); exists && existingVKValue != nil {
+	existingVKKey := vk.Value
+	existingVKValue, exists := gs.virtualKeys.Load(vk.Value)
+	if exists && existingVKValue != nil {
+		if existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey); !ok || existingVK == nil || existingVK.ID != vk.ID {
+			exists = false
+			existingVKValue = nil
+		}
+	}
+	if !exists || existingVKValue == nil {
+		gs.virtualKeys.Range(func(key, value interface{}) bool {
+			existingVK, ok := value.(*configstoreTables.TableVirtualKey)
+			if !ok || existingVK == nil || existingVK.ID != vk.ID {
+				return true
+			}
+			existingVKKey, _ = key.(string)
+			existingVKValue = value
+			exists = true
+			return false
+		})
+	}
+	if exists && existingVKValue != nil {
 		existingVK, ok := existingVKValue.(*configstoreTables.TableVirtualKey)
 		if !ok || existingVK == nil {
 			return // Nothing to update
@@ -2318,6 +2428,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					clone.Budgets[i].LastReset = existingBudget.LastReset
 				}
 			}
+			clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
 			gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 		}
 		// Delete removed multi-budgets
@@ -2340,6 +2451,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
+			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 			// Update the rate limit in the main rateLimits sync.Map
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., after AP propagation
@@ -2385,6 +2497,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 							clone.ProviderConfigs[i].RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 						}
 					}
+					clone.ProviderConfigs[i].RateLimit.IsCalendarAligned = clone.CalendarAligned
 					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
@@ -2402,6 +2515,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 							b.LastReset = existingBudget.LastReset
 						}
 					}
+					b.IsCalendarAligned = clone.CalendarAligned
 					gs.budgets.Store(b.ID, b)
 				}
 				// Delete removed multi-budgets for this provider config
@@ -2427,6 +2541,9 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 					}
 				}
 			}
+		}
+		if existingVKKey != "" && existingVKKey != vk.Value {
+			gs.virtualKeys.Delete(existingVKKey)
 		}
 		gs.virtualKeys.Store(vk.Value, &clone)
 	} else {
@@ -2486,12 +2603,14 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 
 	// Create associated budgets if they exist
 	for i := range team.Budgets {
+		team.Budgets[i].IsCalendarAligned = team.CalendarAligned
 		b := team.Budgets[i]
 		gs.budgets.Store(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
 	if team.RateLimit != nil {
+		team.RateLimit.IsCalendarAligned = team.CalendarAligned
 		gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
 	}
 
@@ -2532,6 +2651,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 					b.LastReset = lb.LastReset
 				}
 			}
+			b.IsCalendarAligned = clone.CalendarAligned
 			gs.budgets.Store(b.ID, b)
 		}
 		for id := range existingBudgetIDs {
@@ -2552,6 +2672,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
+			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingTeam.RateLimit != nil && existingTeam.RateLimit.ID != clone.RateLimit.ID {

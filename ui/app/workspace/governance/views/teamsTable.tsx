@@ -7,10 +7,11 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,8 +22,8 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect } from "react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import TeamDialog from "./teamDialog";
 import { TeamsEmptyState } from "./teamsEmptyState";
@@ -31,6 +32,89 @@ import { TeamsEmptyState } from "./teamsEmptyState";
 const formatResetDuration = (duration: string) => {
 	return resetDurationLabels[duration] || duration;
 };
+
+function TeamActionsMenu({
+	team,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	isDeleting,
+	onEdit,
+	onDelete,
+}: {
+	team: Team;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	isDeleting: boolean;
+	onEdit: (team: Team) => void;
+	onDelete: (teamId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [deleteOpen, setDeleteOpen] = useState(false);
+
+	return (
+		<>
+			<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+				<DropdownMenuTrigger asChild>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-8 w-8"
+						aria-label={`Team actions for ${team.name}`}
+						data-testid={`team-actions-btn-${team.name}`}
+					>
+						<MoreHorizontal className="h-4 w-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end">
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={!hasUpdateAccess}
+						data-testid={`team-edit-btn-${team.name}`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onEdit(team);
+							setIsOpen(false);
+						}}
+					>
+						<Edit className="h-4 w-4" />
+						Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						disabled={!hasDeleteAccess}
+						data-testid={`team-delete-btn-${team.name}`}
+						onSelect={(e) => {
+							e.preventDefault();
+							setDeleteOpen(true);
+							setIsOpen(false);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete Team</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action
+							cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
+							{isDeleting ? "Deleting..." : "Delete"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
+	);
+}
 
 interface TeamsTableProps {
 	teams: Team[];
@@ -66,9 +150,7 @@ export default function TeamsTable({
 	onDialogClose,
 }: TeamsTableProps) {
 	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
-	const editingTeam = selectedTeamId && selectedTeamId !== "new"
-		? teams.find((t) => t.id === selectedTeamId) ?? null
-		: null;
+	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
 	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
 	// clear it so we don't silently open the dialog in "create" mode.
@@ -122,9 +204,7 @@ export default function TeamsTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamDialog && (
-						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-					)}
+					{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -134,9 +214,7 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamDialog && (
-					<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />
-				)}
+				{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
@@ -164,8 +242,8 @@ export default function TeamsTable({
 						</div>
 					</div>
 
-					<div className="overflow-hidden rounded-sm border" data-testid="teams-table">
-						<Table>
+					<div className="overflow-auto rounded-sm border" data-testid="teams-table">
+						<Table className="min-w-[1100px]">
 							<TableHeader>
 								<TableRow>
 									<TableHead>Name</TableHead>
@@ -173,7 +251,7 @@ export default function TeamsTable({
 									<TableHead>Budget</TableHead>
 									<TableHead>Rate Limit</TableHead>
 									<TableHead>Virtual Keys</TableHead>
-									<TableHead className="text-right"></TableHead>
+									<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
@@ -190,9 +268,7 @@ export default function TeamsTable({
 
 										// Budget calculations — any of the team's budgets exhausted
 										const teamBudgets = team.budgets ?? [];
-										const isBudgetExhausted = teamBudgets.some(
-											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
-										);
+										const isBudgetExhausted = teamBudgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -240,8 +316,7 @@ export default function TeamsTable({
 													{teamBudgets.length > 0 ? (
 														<div className="space-y-2.5">
 															{teamBudgets.map((b) => {
-																const budgetPercentage =
-																	b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
+																const budgetPercentage = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
 																const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
 																return (
 																	<Tooltip key={b.id}>
@@ -249,9 +324,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4">
 																					<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-																					<span className="text-muted-foreground text-xs">
-																						{formatResetDuration(b.reset_duration)}
-																					</span>
+																					<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																				</div>
 																				<Progress
 																					value={budgetPercentage}
@@ -270,9 +343,7 @@ export default function TeamsTable({
 																			<p className="font-medium">
 																				{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 																			</p>
-																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(b.reset_duration)}
-																			</p>
+																			<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration)}</p>
 																		</TooltipContent>
 																	</Tooltip>
 																);
@@ -374,53 +445,17 @@ export default function TeamsTable({
 														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
-												<TableCell className="text-right">
-													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-														<Button
-															variant="ghost"
-															size="icon"
-															className="h-8 w-8"
-															onClick={() => handleEditTeam(team)}
-															disabled={!hasUpdateAccess}
-															aria-label={`Edit team ${team.name}`}
-															data-testid={`team-edit-btn-${team.name}`}
-														>
-															<Edit className="h-4 w-4" />
-														</Button>
-														<AlertDialog>
-															<AlertDialogTrigger asChild>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																	disabled={!hasDeleteAccess}
-																	aria-label={`Delete team ${team.name}`}
-																	data-testid={`team-delete-btn-${team.name}`}
-																>
-																	<Trash2 className="h-4 w-4" />
-																</Button>
-															</AlertDialogTrigger>
-															<AlertDialogContent>
-																<AlertDialogHeader>
-																	<AlertDialogTitle>Delete Team</AlertDialogTitle>
-																	<AlertDialogDescription>
-																		Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from
-																		this team. This action cannot be undone.
-																	</AlertDialogDescription>
-																</AlertDialogHeader>
-																<AlertDialogFooter>
-																	<AlertDialogCancel>Cancel</AlertDialogCancel>
-																	<AlertDialogAction
-																		onClick={() => handleDelete(team.id)}
-																		disabled={isDeleting}
-																		className="bg-red-600 hover:bg-red-700"
-																	>
-																		{isDeleting ? "Deleting..." : "Delete"}
-																	</AlertDialogAction>
-																</AlertDialogFooter>
-															</AlertDialogContent>
-														</AlertDialog>
-													</div>
+												<TableCell
+													className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												>
+													<TeamActionsMenu
+														team={team}
+														hasUpdateAccess={hasUpdateAccess}
+														hasDeleteAccess={hasDeleteAccess}
+														isDeleting={isDeleting}
+														onEdit={handleEditTeam}
+														onDelete={handleDelete}
+													/>
 												</TableCell>
 											</TableRow>
 										);

@@ -1856,7 +1856,7 @@ func TestComputeTextCost_PriorityCacheReadRate(t *testing.T) {
 }
 
 func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
-	tierStr := "priority"
+	tier := schemas.BifrostServiceTierPriority
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                      "gpt-4o",
@@ -1871,7 +1871,7 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
-			ServiceTier: &tierStr,
+			ServiceTier: &tier,
 			Usage: &schemas.BifrostLLMUsage{
 				PromptTokens:     1000,
 				CompletionTokens: 500,
@@ -1892,7 +1892,7 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 }
 
 func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
-	tierStr := "auto"
+	tier := schemas.BifrostServiceTierAuto
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                      "gpt-4o",
@@ -1907,7 +1907,7 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
-			ServiceTier: &tierStr,
+			ServiceTier: &tier,
 			Usage: &schemas.BifrostLLMUsage{
 				PromptTokens:     1000,
 				CompletionTokens: 500,
@@ -2010,21 +2010,21 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 // =========================================================================
 
 func TestTierFromString_Priority(t *testing.T) {
-	s := "priority"
+	s := schemas.BifrostServiceTierPriority
 	tier := tierFromString(&s)
 	assert.True(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
 
 func TestTierFromString_Flex(t *testing.T) {
-	s := "flex"
+	s := schemas.BifrostServiceTierFlex
 	tier := tierFromString(&s)
 	assert.False(t, tier.isPriority)
 	assert.True(t, tier.isFlex)
 }
 
 func TestTierFromString_Default(t *testing.T) {
-	for _, s := range []string{"auto", "default", "", "unknown"} {
+	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
 		tier := tierFromString(&s)
 		assert.False(t, tier.isPriority, "expected no priority for %q", s)
 		assert.False(t, tier.isFlex, "expected no flex for %q", s)
@@ -2137,7 +2137,7 @@ func TestComputeTextCost_FlexFallsBackToBaseWhenNoFlexRate(t *testing.T) {
 }
 
 func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
-	tierStr := "flex"
+	tier := schemas.BifrostServiceTierFlex
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                  "gpt-4o",
@@ -2152,7 +2152,7 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
-			ServiceTier: &tierStr,
+			ServiceTier: &tier,
 			Usage: &schemas.BifrostLLMUsage{
 				PromptTokens:     1000,
 				CompletionTokens: 500,
@@ -2173,14 +2173,14 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 }
 
 func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
-	tierStr := "flex"
+	tier := schemas.BifrostServiceTierFlex
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
-			ServiceTier: &tierStr,
+			ServiceTier: &tier,
 			Usage: &schemas.BifrostLLMUsage{
 				PromptTokens:     1000,
 				CompletionTokens: 500,

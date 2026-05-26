@@ -12,11 +12,14 @@ import (
 
 // LargeResponseReader wraps an io.Reader and releases the fasthttp response on Close.
 // Used by providers to keep the response alive while the transport streams it to the client.
+// ctx is held to check BifrostContextKeyConnectionClosed in Close, so a mid-stream
+// cancellation that already tore down the underlying fasthttp conn does not double-release.
 type LargeResponseReader struct {
 	io.Reader
 	Resp     *fasthttp.Response
+	ctx      *schemas.BifrostContext
 	cleanup  func()
-	consumed bool // true after Read returns io.EOF — body fully consumed through Reader chain
+	consumed bool // true after Read returns io.EOF, body fully consumed through Reader chain
 }
 
 // Read delegates to the wrapped Reader and tracks EOF so Close() can skip
@@ -42,6 +45,20 @@ func (r *LargeResponseReader) Close() error {
 	if r == nil || r.Resp == nil {
 		return nil
 	}
+	// Run cleanup first so SetupStreamCancellation's goroutine settles (close(done); <-closed)
+	// before we read BifrostContextKeyConnectionClosed. The goroutine's done-branch can set the
+	// flag when ctx.Err() != nil, so checking it before cleanup would miss that interleaving and
+	// fall through to fasthttp.ReleaseResponse on an already-torn-down conn (nil-deref in connsCleaner).
+	if r.cleanup != nil {
+		r.cleanup()
+		r.cleanup = nil
+	}
+	if r.ctx != nil {
+		if closed, ok := r.ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+			r.Resp = nil
+			return nil
+		}
+	}
 	if !r.consumed {
 		if bodyStream := r.Resp.BodyStream(); bodyStream != nil {
 			_, _ = io.Copy(io.Discard, bodyStream)
@@ -49,10 +66,6 @@ func (r *LargeResponseReader) Close() error {
 				_ = closer.Close()
 			}
 		}
-	}
-	if r.cleanup != nil {
-		r.cleanup()
-		r.cleanup = nil
 	}
 	fasthttp.ReleaseResponse(r.Resp)
 	r.Resp = nil
@@ -186,6 +199,7 @@ func FinalizeResponseWithLargeDetection(
 			closableReader := &LargeResponseReader{
 				Reader:  combinedReader,
 				Resp:    resp,
+				ctx:     ctx,
 				cleanup: releaseGzip,
 			}
 			ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
@@ -246,6 +260,7 @@ func FinalizeResponseWithLargeDetection(
 	closableReader := &LargeResponseReader{
 		Reader: combinedReader,
 		Resp:   resp,
+		ctx:    ctx,
 		cleanup: func() {
 			if wasGzip {
 				ReleaseGzipReader(gz)
@@ -319,12 +334,20 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 	reader, releaseGzip := DecompressStreamBody(resp)
 
 	// Wrap reader with idle timeout to detect stalled streams.
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx))
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+
+	// Wire cancellation to the raw fasthttp body. On a mid-stream client disconnect this fires
+	// wce.CloseWithError(ctx.Err()) to unblock the transport's Read and sets
+	// BifrostContextKeyConnectionClosed so LargeResponseReader.Close skips the double release.
+	// logger arg is unused inside SetupStreamCancellation (uses package getLogger), nil is safe.
+	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
 
 	closableReader := &LargeResponseReader{
 		Reader: reader,
 		Resp:   resp,
+		ctx:    ctx,
 		cleanup: func() {
+			stopCancellation()
 			stopIdleTimeout()
 			releaseGzip()
 		},

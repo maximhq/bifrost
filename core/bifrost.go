@@ -4051,6 +4051,31 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
 }
 
+// ComputeRawStorageForProvider determines whether raw request/response payloads should be
+// captured and stored in log records for the given provider. This is the same computation
+// performed inside executeRequest (lines 5675-5713), exported for callers that bypass
+// the normal inference path (e.g. realtime WebSocket/WebRTC sessions).
+func (bifrost *Bifrost) ComputeRawStorageForProvider(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) bool {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if ctx == nil {
+		return false
+	}
+	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil || config == nil {
+		return false
+	}
+	effectiveStore := config.StoreRawRequestResponse
+	allowStorageOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool)
+	if allowStorageOverride {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+			effectiveStore = override
+		}
+	}
+	return effectiveStore
+}
+
 // WSStreamHooks holds the post-hook runner and cleanup function returned by RunStreamPreHooks.
 // Call PostHookRunner for each streaming chunk, setting StreamEndIndicator on the final chunk.
 // Call Cleanup when done to release the pipeline back to the pool.

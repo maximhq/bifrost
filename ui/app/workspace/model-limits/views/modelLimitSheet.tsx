@@ -386,9 +386,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										</FormItem>
 									)}
 								/>
-								{form.formState.errors.root && (
-									<p className="text-destructive text-sm">{form.formState.errors.root.message}</p>
-								)}
+								{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
 							</div>
 
 							{/* Current Usage Display (for editing) */}
@@ -437,11 +435,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								<Button type="button" variant="outline" onClick={handleClose}>
 									Cancel
 								</Button>
-								<Button
-									type="submit"
-									data-testid="model-limit-button-submit"
-									disabled={isLoading || !form.formState.isDirty || !canSubmit}
-								>
+								<Button type="submit" data-testid="model-limit-button-submit" disabled={isLoading || !form.formState.isDirty || !canSubmit}>
 									{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
 								</Button>
 							</div>

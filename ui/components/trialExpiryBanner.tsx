@@ -11,9 +11,7 @@ export default function TrialExpiryBanner() {
 	if (!expired && daysRemaining > 7) return null;
 	const critical = !expired && daysRemaining <= 3;
 
-	const subject = expired
-		? "I need help with my expired enterprise trial"
-		: "I need help extending my enterprise trial";
+	const subject = expired ? "I need help with my expired enterprise trial" : "I need help extending my enterprise trial";
 	const supportHref = `mailto:contact@getmaxim.ai?subject=${encodeURIComponent(subject)}`;
 
 	return (
@@ -21,9 +19,7 @@ export default function TrialExpiryBanner() {
 			id="trial-notification-banner"
 			className={cn(
 				"sticky top-0 z-10 flex w-full items-center justify-center gap-2 rounded-tl-md rounded-tr-md px-4 py-2 text-xs font-medium",
-				expired || critical
-					? "bg-red-500/10 text-red-700 dark:text-red-400"
-					: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+				expired || critical ? "bg-red-500/10 text-red-700 dark:text-red-400" : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
 			)}
 			role="status"
 		>

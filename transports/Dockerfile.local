@@ -65,7 +65,7 @@
   RUN test -f /app/main || (echo "Build failed" && exit 1)
 
   # --- Runtime Stage: Minimal runtime image ---
-  FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+  FROM alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
   WORKDIR /app
 
   # Install runtime dependencies for CGO-enabled binary

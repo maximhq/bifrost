@@ -1,14 +1,7 @@
 import type { ProviderLatencyHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import {
-	formatFullTimestamp,
-	formatLatency,
-	formatTimestamp,
-	getModelColor,
-	LATENCY_COLORS,
-	pickTopSeries,
-} from "../../utils/chartUtils";
+import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS, pickTopSeries } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -206,7 +199,10 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<AllProvidersTooltip displayProviders={displayProviders} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										key={provider}

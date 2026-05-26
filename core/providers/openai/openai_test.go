@@ -43,7 +43,7 @@ func TestOpenAI(t *testing.T) {
 		ImageEditModel:       "gpt-image-1",
 		ImageVariationModel:  "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
 		VideoGenerationModel: "sora-2",
-		ChatAudioModel:       "gpt-4o-mini-audio-preview",
+		ChatAudioModel:       "gpt-audio-mini",
 		PassthroughModel:     "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,

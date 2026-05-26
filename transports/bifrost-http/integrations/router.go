@@ -369,6 +369,16 @@ type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.Bifrost
 // If it returns an error, the request processing stops.
 type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
 
+func parseJSONRequestBody(rawBody []byte, req interface{}) error {
+	if len(rawBody) == 0 {
+		return nil
+	}
+	if err := sonic.Unmarshal(rawBody, req); err != nil {
+		return fmt.Errorf("invalid JSON request body (length %d): %w", len(rawBody), err)
+	}
+	return nil
+}
+
 // PreRequestCallback is called after parsing the request but before processing through Bifrost.
 // It can be used to modify the request object (e.g., extract model from URL parameters)
 // or perform validation. If it returns an error, the request processing stops.
@@ -667,13 +677,20 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Execute the request through Bifrost
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
+		// Centralized cleanup. The streaming branch below transfers ownership via
+		// streamingOwnsCancel because its producer goroutine outlives this lambda.
+		streamingOwnsCancel := false
+		defer func() {
+			if !streamingOwnsCancel {
+				cancel()
+			}
+		}()
 
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
 		// Async retrieve: check x-bf-async-id header early (before body parsing)
 		if asyncID := string(ctx.Request.Header.Peek(schemas.AsyncHeaderGetID)); asyncID != "" {
-			defer cancel()
 			g.handleAsyncRetrieve(ctx, config, bifrostCtx)
 			return
 		}
@@ -686,7 +703,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				var err error
 				isLargePayload, err = g.largePayloadHook(ctx, bifrostCtx, config.Type)
 				if err != nil {
-					cancel()
 					g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "large payload detection failed"))
 					return
 				}
@@ -699,17 +715,17 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			} else if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
-					cancel()
-					g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse request"))
+					ctx.SetConnectionClose()
+					g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "failed to parse request", fasthttp.StatusBadRequest))
 					return
 				}
 			} else {
 				// Use default JSON parsing
 				rawBody = ctx.Request.Body()
 				if len(rawBody) > 0 {
-					if err := sonic.Unmarshal(rawBody, req); err != nil {
-						cancel()
-						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
+					if err := parseJSONRequestBody(rawBody, req); err != nil {
+						ctx.SetConnectionClose()
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "Invalid JSON", fasthttp.StatusBadRequest))
 						return
 					}
 				}
@@ -753,12 +769,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if config.ShortCircuit != nil {
 			handled, err := config.ShortCircuit(ctx, bifrostCtx, req)
 			if err != nil {
-				defer cancel()
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "short-circuit handler error: "+err.Error()))
 				return
 			}
 			if handled {
-				defer cancel()
 				return
 			}
 		}
@@ -767,7 +781,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if config.GetRequestModel != nil {
 			model, err := config.GetRequestModel(ctx, req)
 			if err != nil {
-				cancel()
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to get model from context"))
 				return
 			}
@@ -812,7 +825,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		isGenAIBatchCreate := config.Type == RouteConfigTypeGenAI && bifrostCtx.Value(isGeminiBatchCreateRequestContextKey) != nil
 		useBatchPath := config.BatchRequestConverter != nil && (config.RequestConverter == nil || config.Type != RouteConfigTypeGenAI || isGenAIBatchCreate)
 		if useBatchPath {
-			defer cancel()
 			batchReq, err := config.BatchRequestConverter(bifrostCtx, req)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert batch request"))
@@ -827,7 +839,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 		// Handle file requests if FileRequestConverter is set
 		if config.FileRequestConverter != nil {
-			defer cancel()
 			fileReq, err := config.FileRequestConverter(bifrostCtx, req)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert file request"))
@@ -843,7 +854,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Handle container requests if ContainerRequestConverter is set
 		if config.ContainerRequestConverter != nil {
-			defer cancel()
 			containerReq, err := config.ContainerRequestConverter(bifrostCtx, req)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert container request"))
@@ -859,7 +869,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Handle container file requests if ContainerFileRequestConverter is set
 		if config.ContainerFileRequestConverter != nil {
-			defer cancel()
 			containerFileReq, err := config.ContainerFileRequestConverter(bifrostCtx, req)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert container file request"))
@@ -875,7 +884,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Handle cached content requests if CachedContentRequestConverter is set
 		if config.CachedContentRequestConverter != nil {
-			defer cancel()
 			cachedContentReq, err := config.CachedContentRequestConverter(bifrostCtx, req)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert cached content request"))
@@ -892,12 +900,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Convert the integration-specific request to Bifrost format (inference requests)
 		bifrostReq, err := config.RequestConverter(bifrostCtx, req)
 		if err != nil {
-			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format"))
 			return
 		}
 		if bifrostReq == nil {
-			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid request"))
 			return
 		}
@@ -907,14 +913,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Extract and parse fallbacks from the request if present
 		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
-			defer cancel()
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
 
 		// Async create: check x-bf-async header (needs parsed bifrostReq)
 		if string(ctx.Request.Header.Peek(schemas.AsyncHeaderCreate)) != "" {
-			defer cancel()
 			g.handleAsyncCreate(ctx, config, req, bifrostReq, bifrostCtx)
 			return
 		}
@@ -926,9 +930,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		if isStreaming {
+			// Hand cancel ownership to the streaming path; its producer goroutine
+			// fires cancel on client-disconnect (handleStreaming) and on pre-stream
+			// errors (handleStreamingRequest).
+			streamingOwnsCancel = true
 			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx, cancel)
 		} else {
-			defer cancel() // Ensure cleanup on function exit
 			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
 		}
 	}

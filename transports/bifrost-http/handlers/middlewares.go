@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -49,33 +50,33 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			startTime := time.Now()
+			// startTime := time.Now()
 			// skip logging if it's a /health check request
 			if slices.IndexFunc(loggingSkipPaths, func(path string) bool {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) != -1 {
 				goto corsFlow
 			}
-			defer func() {
-				statusCode := ctx.Response.Header.StatusCode()
-				level := schemas.LogLevelInfo
-				if statusCode >= 500 {
-					level = schemas.LogLevelError
-				} else if statusCode >= 400 {
-					level = schemas.LogLevelWarn
-				}
-				logBuilder := logger.LogHTTPRequest(level, "request completed").
-					Str("http.method", string(ctx.Method())).
-					Str("http.target", string(ctx.RequestURI())).
-					Int("http.status_code", statusCode).
-					Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
-					Str("http.remote_addr", ctx.RemoteAddr().String()).
-					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-					logBuilder = logBuilder.Str("trace_id", traceID)
-				}
-				logBuilder.Send()
-			}()
+			// defer func() {
+			// 	statusCode := ctx.Response.Header.StatusCode()
+			// 	level := schemas.LogLevelInfo
+			// 	if statusCode >= 500 {
+			// 		level = schemas.LogLevelError
+			// 	} else if statusCode >= 400 {
+			// 		level = schemas.LogLevelWarn
+			// 	}
+			// 	logBuilder := logger.LogHTTPRequest(level, "request completed").
+			// 		Str("http.method", string(ctx.Method())).
+			// 		Str("http.target", string(ctx.RequestURI())).
+			// 		Int("http.status_code", statusCode).
+			// 		Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
+			// 		Str("http.remote_addr", ctx.RemoteAddr().String()).
+			// 		Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
+			// 	if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			// 		logBuilder = logBuilder.Str("trace_id", traceID)
+			// 	}
+			// 	logBuilder.Send()
+			// }()
 		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
@@ -698,10 +699,13 @@ type AuthMiddleware struct {
 	whitelistedRoutes atomic.Pointer[[]string]
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
+	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
 }
 
-// InitAuthMiddleware initializes the auth middleware.
-func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore) (*AuthMiddleware, error) {
+// InitAuthMiddleware initializes the auth middleware. The tempTokens service
+// is optional — when nil, the temp-token fallback path is disabled and the
+// middleware behaves exactly as before.
+func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
 	}
@@ -710,9 +714,10 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 		return nil, fmt.Errorf("failed to get auth config from store: %v", err)
 	}
 	am := &AuthMiddleware{
-		store:         store,
-		authConfig:    atomic.Pointer[configstore.AuthConfig]{},
-		wsTicketStore: wsTicketStore,
+		store:             store,
+		authConfig:        atomic.Pointer[configstore.AuthConfig]{},
+		wsTicketStore:     wsTicketStore,
+		tempTokensService: tempTokensService,
 	}
 
 	am.authConfig.Store(authConfig)
@@ -736,6 +741,34 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// tryTempTokenOrUnauthorized is the last-resort auth path: a request that
+// failed every conventional credential check (no Authorization header, no
+// valid cookie) is given one more chance to present an X-Bifrost-Temp-Token
+// header that authorizes the specific (method, path) being requested. On
+// success the validated scope and resource_id are attached to ctx for
+// handler-side defense-in-depth checks, and the next handler runs. On
+// failure (no header, expired, route-mismatch, etc.) a 401 is written.
+//
+// Temp-token validation is intentionally *not* attempted when an
+// Authorization header or session cookie is present — those paths have
+// their own success/failure semantics and silently rescuing a bad password
+// with a temp token would be surprising.
+func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
+	if m.tempTokensService != nil {
+		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
+		if token != "" {
+			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Path()))
+			if err == nil && validated != nil {
+				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
+				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
+				next(ctx)
+				return
+			}
+		}
+	}
+	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 }
 
 // InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
@@ -770,8 +803,13 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/version",
 	}
 	whitelistedPrefixes := []string{
-		"/api/oauth/callback",
-		"/api/oauth",
+		// "/api/oauth/callback" is also in systemWhitelistedRoutes above as an
+		// exact match — that's the only OAuth route that must be public (it's
+		// hit by the browser after the upstream provider redirects back, with
+		// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
+		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
+		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
+		// in tryTempTokenOrUnauthorized.
 		"/api/dev",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
@@ -808,7 +846,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
-				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
@@ -882,7 +920,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					next(ctx)
 					return
 				}
-				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+				// Last-resort: a scoped temp token (e.g. for the MCP per-user
+				// OAuth auth page accessed by a non-admin browser) can rescue
+				// this request when it targets a route the token authorizes.
+				m.tryTempTokenOrUnauthorized(ctx, next)
 				return
 			}
 			// Split the authorization header into the scheme and the token

@@ -600,8 +600,6 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		return fmt.Errorf("auth_type cannot be updated for client %s", id)
 	}
 
-	oldName := client.ExecutionConfig.Name
-
 	oauthConfigID := client.ExecutionConfig.OauthConfigID
 	if updatedConfig.OauthConfigID != nil {
 		oauthConfigID = updatedConfig.OauthConfigID
@@ -638,38 +636,27 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	// Atomically replace the config pointer
 	client.ExecutionConfig = newConfig
 
-	// If the client name has changed, update all tool name prefixes in the ToolMap
-	if oldName != updatedConfig.Name {
-		oldPrefix := oldName + "-"
-		newPrefix := updatedConfig.Name + "-"
-
-		// Create a new ToolMap with updated tool names
-		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
-		for oldToolName, tool := range client.ToolMap {
-			var newToolName string
-			if strings.HasPrefix(oldToolName, oldPrefix) {
-				// Update the tool name by replacing the old prefix with the new prefix
-				newToolName = newPrefix + strings.TrimPrefix(oldToolName, oldPrefix)
-			} else {
-				newToolName = oldToolName
-			}
-
-			// Update the tool's function name if it's a function tool
-			if tool.Function != nil {
-				updatedTool := tool
-				updatedTool.Function.Name = newToolName
-				newToolMap[newToolName] = updatedTool
-			} else {
-				newToolMap[newToolName] = tool
-			}
+	// Rebind ToolMap keys (and inner Function.Name) to the current client name.
+	newPrefix := updatedConfig.Name + "-"
+	newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
+	for oldToolName, tool := range client.ToolMap {
+		newToolName := oldToolName
+		if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
+			newToolName = newPrefix + suffix
 		}
-
-		// Replace the old ToolMap with the new one
-		client.ToolMap = newToolMap
-
-		// Also update the client Name field
-		client.Name = updatedConfig.Name
+		if tool.Function != nil {
+			fn := *tool.Function
+			fn.Name = newToolName
+			tool.Function = &fn
+		}
+		newToolMap[newToolName] = tool
 	}
+
+	// Replace the old ToolMap with the new one
+	client.ToolMap = newToolMap
+
+	// Also update the client Name field
+	client.Name = updatedConfig.Name
 
 	return nil
 }

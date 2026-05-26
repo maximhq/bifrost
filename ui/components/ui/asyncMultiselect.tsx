@@ -593,7 +593,7 @@ function CustomDropdownIndicator<T>(
 	if (props.selectProps.hideDropdownIndicator) {
 		return null;
 	}
-	return <ChevronDown className="text-content-primary m-2 h-4 w-4 shrink-0 self-start opacity-50 mt-2.5" />;
+	return <ChevronDown className="text-content-primary m-2 mt-2.5 h-4 w-4 shrink-0 self-start opacity-50" />;
 }
 
 function CustomMultiValueRemove<T>(props: MultiValueRemoveProps<Option<T>> & { selectProps: CustomComponentsProps }) {
@@ -654,7 +654,7 @@ function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selec
 		<div
 			{...props.innerProps}
 			data-testid={parentTestId ? `${parentTestId}-clear-indicator-btn` : "multiselect-clear-indicator-btn"}
-			className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center px-1 transition-colors mt-1"
+			className="text-muted-foreground hover:text-foreground mt-1 flex cursor-pointer items-center px-1 transition-colors"
 		>
 			<XIcon className="h-3.5 w-3.5" />
 		</div>
