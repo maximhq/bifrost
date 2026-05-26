@@ -52,6 +52,8 @@ const (
 
 var enterprisePlugins = []string{
 	"datadog",
+	"bigquery",
+	"pubsub",
 	"kafka",
 }
 
