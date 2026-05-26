@@ -220,10 +220,8 @@ var filterMatViews = []filterMatViewDef{
 	},
 	{
 		name:       "mv_filter_users",
-		selectExpr: "user_id AS id, COALESCE(NULLIF(user_name, ''), user_id) AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
-		whereExpr:       "user_id IS NOT NULL AND user_id != ''",
+		selectExpr: "user_id AS id, user_name AS name, " + scopeProjection,
+		whereExpr:  "user_id IS NOT NULL AND user_id != '' AND user_name IS NOT NULL AND user_name != ''",
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
