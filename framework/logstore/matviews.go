@@ -1567,6 +1567,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	q = q.Where("model IS NOT NULL AND model != ''")
 	if err := q.Select(`
 		model, provider,
 		SUM(count) AS total,
@@ -1599,6 +1600,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters.EndTime = &prevEnd
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
 			model, provider,
 			SUM(count) AS total,
