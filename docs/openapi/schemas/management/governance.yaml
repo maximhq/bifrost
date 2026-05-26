@@ -599,9 +599,6 @@ TableKey:
     azure_endpoint:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       nullable: true
-    azure_api_version:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
     azure_client_id:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       nullable: true

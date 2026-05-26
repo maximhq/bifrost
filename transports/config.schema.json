@@ -2425,6 +2425,10 @@
                   "type": "array",
                   "items": { "type": "string" },
                   "description": "OAuth2 scopes for Entra authentication"
+                },
+                "api_version": {
+                  "type": "string",
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
                 }
               },
               "required": ["endpoint"],

@@ -79,7 +79,6 @@ export const azureKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
 		endpoint: envVarSchema.optional(),
-		api_version: envVarSchema.optional(),
 		client_id: envVarSchema.optional(),
 		client_secret: envVarSchema.optional(),
 		tenant_id: envVarSchema.optional(),
