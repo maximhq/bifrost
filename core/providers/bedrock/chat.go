@@ -64,6 +64,10 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
 
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
+
 	return bedrockReq, nil
 }
 
