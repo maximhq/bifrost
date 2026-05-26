@@ -37,6 +37,7 @@ type BedrockResponsesStreamState struct {
 	CreatedAt                 int                                                            // Timestamp for created_at consistency
 	HasEmittedCreated         bool                                                           // Whether we've emitted response.created
 	HasEmittedInProgress      bool                                                           // Whether we've emitted response.in_progress
+	UsedStructuredOutputTool  bool                                                           // True when the SO tool block was intercepted and converted to text content
 }
 
 // bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
@@ -130,6 +131,7 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.UsedStructuredOutputTool = false
 	return state
 }
 
@@ -205,6 +207,7 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.UsedStructuredOutputTool = false
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
@@ -1402,7 +1405,21 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		response.Model = *state.Model
 	}
 	if state.StopReason != nil {
-		response.StopReason = state.StopReason
+		stopReason := *state.StopReason
+		// If only the SO tool was consumed (no real tool calls in state), downgrade tool_calls → stop.
+		if stopReason == string(schemas.BifrostFinishReasonToolCalls) && state.UsedStructuredOutputTool {
+			hasRealToolCall := false
+			for _, toolCallID := range state.ToolCallIDs {
+				if toolCallID != "" {
+					hasRealToolCall = true
+					break
+				}
+			}
+			if !hasRealToolCall {
+				stopReason = string(schemas.BifrostFinishReasonStop)
+			}
+		}
+		response.StopReason = &stopReason
 	} else {
 		// Infer stop reason based on whether tool calls are present
 		hasToolCalls := false
@@ -2432,7 +2449,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// support matrix at
 		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
 		// (mirrors the gate applied in convertChatParameters).
-		if !schemas.IsLlamaModel(bifrostReq.Model) {
+		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responsesStructuredOutputTool.ToolSpec.Name,
@@ -2443,6 +2463,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(bifrostReq, bedrockReq)
+
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
 
 	return bedrockReq, nil
 }
@@ -2508,6 +2532,28 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 
 	if response.StopReason != "" {
 		stopReason := convertBedrockStopReason(response.StopReason)
+		if stopReason == string(schemas.BifrostFinishReasonToolCalls) {
+			if toolName, hasSO := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); hasSO && toolName != "" {
+				hasRealToolCall := false
+				for _, msg := range bifrostResp.Output {
+					if msg.Type == nil {
+						continue
+					}
+					switch *msg.Type {
+					case schemas.ResponsesMessageTypeFunctionCall,
+						schemas.ResponsesMessageTypeWebSearchCall,
+						schemas.ResponsesMessageTypeCodeInterpreterCall:
+						hasRealToolCall = true
+					}
+					if hasRealToolCall {
+						break
+					}
+				}
+				if !hasRealToolCall {
+					stopReason = string(schemas.BifrostFinishReasonStop)
+				}
+			}
+		}
 		bifrostResp.StopReason = &stopReason
 	}
 
@@ -2546,19 +2592,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			message.Content = append(message.Content, bedrockMsg.Content...)
 		}
 
-		// Check for tool use in the content blocks. Server-managed tools
-		// (nova_grounding, nova_code_interpreter) return both toolUse and
-		// toolResult in the same message — their stop reason is "end_turn",
-		// not "tool_use". Only flag hasToolUse when there is an unmatched
-		// toolUse (i.e. the model is waiting for a client-side tool result).
-		resolvedToolUseIDs := make(map[string]bool)
-		for _, block := range message.Content {
-			if block.ToolResult != nil {
-				resolvedToolUseIDs[block.ToolResult.ToolUseID] = true
-			}
-		}
-		for _, block := range message.Content {
-			if block.ToolUse != nil && !resolvedToolUseIDs[block.ToolUse.ToolUseID] {
+		for _, msg := range bifrostResp.Output {
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
 				hasToolUse = true
 				break
 			}
@@ -3121,7 +3156,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Convert result content to Bedrock format
 				if msg.ResponsesToolMessage.Output != nil {
 					if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						resultContent = append(resultContent, tryParseJSONIntoContentBlock(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr))
+						outputStr := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+						if blocks, ok := decodeBedrockToolResultEnvelope(outputStr); ok {
+							resultContent = append(resultContent, blocks...)
+						} else {
+							resultContent = append(resultContent, tryParseJSONIntoContentBlock(outputStr))
+						}
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
@@ -3947,9 +3987,24 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
-			// Prefer JSON payloads without unmarshalling; fallback to text
+			// Prefer JSON payloads without unmarshalling; fallback to text.
+			// If the content contains a searchResult (or any other block Bifrost's intermediate
+			// can't model natively), serialize the full content array into a sentinel envelope
+			// so it round-trips losslessly via ToBedrockResponsesRequest.
 			var resultContent string
-			if len(block.ToolResult.Content) > 0 {
+			hasUnrepresentableBlock := false
+			for _, c := range block.ToolResult.Content {
+				if c.SearchResult != nil || c.Video != nil {
+					hasUnrepresentableBlock = true
+					break
+				}
+			}
+			if hasUnrepresentableBlock {
+				if envelope, err := encodeBedrockToolResultEnvelope(block.ToolResult.Content); err == nil {
+					resultContent = envelope
+				}
+			}
+			if resultContent == "" && len(block.ToolResult.Content) > 0 {
 				// JSON first (no unmarshal; just one marshal to string when present)
 				for _, c := range block.ToolResult.Content {
 					if c.JSON != nil {
@@ -4095,6 +4150,9 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 			bedrockBlock := BedrockContentBlock{}
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
+				if block.Text == nil || *block.Text == "" {
+					continue
+				}
 				bedrockBlock.Text = block.Text
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {

@@ -1,0 +1,2 @@
+- feat: add `EnvVar` support for `CollectorURL`, `MetricsEndpoint`, and headers; implements `ConfigMarshallerPlugin` for storage/redaction round-trips (#3651)
+- refactor: align OTel attribute keys with the OpenTelemetry GenAI semantic conventions spec; legacy `gen_ai.*` emissions retained in parallel (#3732)

@@ -1,0 +1,1 @@
+- feat: add `EnvVar` support for `PushGatewayURL` and `BasicAuth` (username/password); implements `ConfigMarshallerPlugin` (#3651)

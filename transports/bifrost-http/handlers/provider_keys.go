@@ -326,13 +326,6 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 			updateKey.AzureKeyConfig.Endpoint.Equals(&oldRedactedKey.AzureKeyConfig.Endpoint) {
 			mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
 		}
-		if updateKey.AzureKeyConfig.APIVersion != nil &&
-			oldRedactedKey.AzureKeyConfig.APIVersion != nil &&
-			oldRawKey.AzureKeyConfig != nil &&
-			updateKey.AzureKeyConfig.APIVersion.IsRedacted() &&
-			updateKey.AzureKeyConfig.APIVersion.Equals(oldRedactedKey.AzureKeyConfig.APIVersion) {
-			mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
-		}
 		if updateKey.AzureKeyConfig.ClientID != nil &&
 			oldRedactedKey.AzureKeyConfig.ClientID != nil &&
 			oldRawKey.AzureKeyConfig != nil &&

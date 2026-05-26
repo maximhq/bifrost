@@ -87,6 +87,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool                             `json:"mcp_enable_temp_token_auth"`           // When true, scoped temp tokens can authorize MCP per-user OAuth pages
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
@@ -206,6 +207,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPEnableTempTokenAuth {
+		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
@@ -468,11 +474,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			if key.AzureKeyConfig.APIVersion != nil && key.AzureKeyConfig.APIVersion.IsFromEnv() {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
+			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
 			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()

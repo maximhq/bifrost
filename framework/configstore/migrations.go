@@ -636,6 +636,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPEnableTempTokenAuthColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
 		return err
 	}
@@ -799,6 +802,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropAzureAPIVersionColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -1301,6 +1307,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
 					RequiredHeaders:                       cc.RequiredHeaders,
@@ -5130,9 +5137,16 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 			if tx.Dialector.Name() != "postgres" {
 				return nil
 			}
+			// azure_api_version was removed in v1 API migration; only widen it if it
+			// still exists (existing DBs that haven't run the drop migration yet).
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT").Error; err != nil {
+					return fmt.Errorf("failed to widen column azure_api_version: %w", err)
+				}
+			}
+
 			stmts := []string{
 				// config_keys table - all encrypted EnvVar fields
-				"ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN azure_client_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN azure_tenant_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN vertex_project_id TYPE TEXT",
@@ -5331,6 +5345,35 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp disable auto tool inject migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPEnableTempTokenAuthColumn adds the mcp_enable_temp_token_auth column to the client config table.
+func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_enable_temp_token_auth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth") {
+				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp enable temp token auth migration: %s", err.Error())
 	}
 	return nil
 }
@@ -6380,6 +6423,7 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						MCPCodeModeBindingLevel:         cc.MCPCodeModeBindingLevel,
 						MCPToolSyncInterval:             cc.MCPToolSyncInterval,
 						MCPDisableAutoToolInject:        cc.MCPDisableAutoToolInject,
+						MCPEnableTempTokenAuth:          cc.MCPEnableTempTokenAuth,
 						AsyncJobResultTTL:               cc.AsyncJobResultTTL,
 						LoggingHeaders:                  cc.LoggingHeaders,
 						RequiredHeaders:                 cc.RequiredHeaders,
@@ -8303,6 +8347,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					MCPExternalClientURL:                  schemas.NewEnvVar(cc.MCPExternalClientURL),
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
@@ -8674,6 +8719,35 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_created_by_user_id_column_for_virtual_keys migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
+func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_azure_api_version_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN azure_api_version").Error; err != nil {
+					return fmt.Errorf("failed to drop azure_api_version column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT").Error; err != nil {
+					return fmt.Errorf("failed to re-add azure_api_version column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
 	}
 	return nil
 }

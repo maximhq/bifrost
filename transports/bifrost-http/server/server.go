@@ -52,6 +52,9 @@ const (
 
 var enterprisePlugins = []string{
 	"datadog",
+	"bigquery",
+	"pubsub",
+	"kafka",
 }
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
@@ -60,6 +63,8 @@ type ServerCallbacks interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
+	NormalizePluginConfig(name string, config map[string]any) (map[string]any, error)
+	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
@@ -135,8 +140,8 @@ type BifrostHTTPServer struct {
 	devPprofHandler    *handlers.DevPprofHandler
 	IntegrationHandler *handlers.IntegrationHandler
 
-	AuthMiddleware    *handlers.AuthMiddleware
-	TracingMiddleware *handlers.TracingMiddleware
+	AuthMiddleware       *handlers.AuthMiddleware
+	TracingMiddleware    *handlers.TracingMiddleware
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
@@ -747,6 +752,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
+		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
 	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
@@ -983,6 +989,30 @@ func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) map[string]sche
 	return s.Config.GetPluginStatus()
 }
 
+// NormalizePluginConfig implements handlers.PluginsLoader. It looks up the plugin
+// by name in the ConfigMarshallers cache and calls MarshalConfigForStorage if found.
+// Returns nil, nil when the plugin is not loaded or does not implement ConfigMarshallerPlugin.
+func (s *BifrostHTTPServer) NormalizePluginConfig(name string, config map[string]any) (map[string]any, error) {
+	if m := s.Config.ConfigMarshallers.Load(); m != nil {
+		if cm, ok := (*m)[name]; ok {
+			return cm.MarshalConfigForStorage(config)
+		}
+	}
+	return nil, nil
+}
+
+// ExpandPluginConfigForAPI implements handlers.PluginsLoader. It looks up the plugin
+// by name in the ConfigMarshallers cache and calls RedactConfig if found.
+// Returns nil, nil when the plugin is not loaded or does not implement ConfigMarshallerPlugin.
+func (s *BifrostHTTPServer) ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error) {
+	if m := s.Config.ConfigMarshallers.Load(); m != nil {
+		if cm, ok := (*m)[name]; ok {
+			return cm.RedactConfig(config)
+		}
+	}
+	return nil, nil
+}
+
 // Helper to update error status
 // Uses UpdatePluginOverallStatus to create the status entry if it doesn't exist,
 // ensuring plugins that were never loaded can still have their error status tracked.
@@ -1067,11 +1097,13 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 		s.reloadObservabilityPlugins()
 	}
 
-	// 4. Update status
+	// 4. Update status and marshaller
 	if isDisabled, _ := ctx.Value(handlers.PluginDisabledKey).(bool); isDisabled {
 		s.markPluginDisabled(name)
 	} else {
 		s.Config.DeletePluginOverallStatus(name)
+		// Plugin is being permanently deleted: remove its config marshaller too.
+		s.Config.RemoveConfigMarshaller(name)
 	}
 
 	return nil

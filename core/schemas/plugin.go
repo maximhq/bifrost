@@ -331,6 +331,24 @@ type PluginConfig struct {
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
 }
 
+// ConfigMarshallerPlugin is optionally implemented by plugins that need custom
+// config serialization. If a loaded plugin implements this interface, the server
+// calls MarshalConfigForStorage before writing config to the DB, and RedactConfig
+// when building API responses. Plugins that don't implement it are passed through
+// unchanged — no registration or factory required.
+type ConfigMarshallerPlugin interface {
+	BasePlugin
+
+	// MarshalConfigForStorage converts the raw config map (as received from the API)
+	// into the canonical DB-storage format (e.g. *EnvVar fields as plain strings).
+	MarshalConfigForStorage(config map[string]any) (map[string]any, error)
+	// RedactConfig converts a stored config map into the API-response format,
+	// masking sensitive literal values.
+	// Returns an error if the config cannot be safely redacted; callers must not
+	// return the raw map on error (fail-closed).
+	RedactConfig(config map[string]any) (map[string]any, error)
+}
+
 // ObservabilityPlugin is an interface for plugins that receive completed traces
 // for forwarding to observability backends (e.g., OTEL collectors, Datadog, etc.)
 //

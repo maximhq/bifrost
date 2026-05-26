@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,12 +36,17 @@ type OAuth2Provider struct {
 	mu             sync.RWMutex
 	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; doubles each attempt (1×, 2×, 4×)
 
-	// tempTokens, when non-nil, is used by InitiateUserOAuthFlow to mint a
-	// short-lived mcp_auth temp token and embed it in the returned auth-page
-	// URL as a fragment. Optional — when nil, the URL is returned without a
-	// fragment and the page works only for callers already authenticated to
-	// the dashboard.
-	tempTokens *temptoken.Service
+	// tempTokens, when non-nil and enabled in client config, is used by
+	// InitiateUserOAuthFlow to mint a short-lived mcp_auth temp token and
+	// embed it in the returned auth-page URL as a fragment. Optional — when
+	// nil or disabled, the URL is returned without a fragment and the page
+	// works only for callers already authenticated to the dashboard.
+	//
+	// Held as an atomic.Pointer rather than under p.mu: it is written once at
+	// startup and read on the request path, and p.mu is write-locked across
+	// token-refresh network I/O (RefreshAccessToken/RevokeToken). Sharing p.mu
+	// would stall flow init/cleanup reads behind unrelated refresh traffic.
+	tempTokens atomic.Pointer[temptoken.Service]
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -61,9 +67,27 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 // have been constructed (the provider is built first by lib/config.go,
 // the service later by the HTTP transport).
 func (p *OAuth2Provider) SetTempTokenService(svc *temptoken.Service) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.tempTokens = svc
+	p.tempTokens.Store(svc)
+}
+
+// tempTokenService returns the current temp-token service. Lock-free: the
+// pointer is read atomically so request-path callers never contend with the
+// p.mu write lock held across token-refresh network I/O.
+func (p *OAuth2Provider) tempTokenService() *temptoken.Service {
+	return p.tempTokens.Load()
+}
+
+// mcpTempTokenAuthEnabled reports whether MCP per-user OAuth links may include temp-token auth.
+func (p *OAuth2Provider) mcpTempTokenAuthEnabled(ctx context.Context) bool {
+	if p.configStore == nil {
+		return false
+	}
+	clientConfig, err := p.configStore.GetClientConfig(ctx)
+	if err != nil {
+		logger.Warn("Failed to read MCP temp-token auth setting: %v", err)
+		return false
+	}
+	return clientConfig != nil && clientConfig.MCPEnableTempTokenAuth
 }
 
 // cleanupFlow deletes the flow row and any temp tokens minted for it. Called
@@ -80,8 +104,8 @@ func (p *OAuth2Provider) cleanupFlow(ctx context.Context, sessionID string) {
 	if err := p.configStore.DeleteOauthUserSession(cleanupCtx, sessionID); err != nil {
 		logger.Warn("per-user OAuth flow row cleanup failed: session_id=%s err=%v", sessionID, err)
 	}
-	if p.tempTokens != nil {
-		if _, err := p.tempTokens.DeleteByResourceID(cleanupCtx, temptoken.MCPAuthScopeName, sessionID); err != nil {
+	if svc := p.tempTokenService(); svc != nil {
+		if _, err := svc.DeleteByResourceID(cleanupCtx, temptoken.MCPAuthScopeName, sessionID); err != nil {
 			logger.Warn("per-user OAuth temp-token cleanup failed: session_id=%s err=%v", sessionID, err)
 		}
 	}
@@ -1029,10 +1053,10 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// dashboard session can still call the per-user flow endpoints. The
 	// fragment never leaves the browser (not in server logs, not in the
 	// upstream-OAuth Referer), unlike a query param.
-	if p.tempTokens != nil {
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) {
 		ttl := time.Until(expiresAt)
 		if ttl > 0 {
-			plaintext, mintErr := p.tempTokens.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
+			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
 			if mintErr != nil {
 				logger.Warn("Failed to mint mcp_auth temp token for flow %s: %v (link still usable for dashboard-authenticated callers)", sessionID, mintErr)
 			} else {

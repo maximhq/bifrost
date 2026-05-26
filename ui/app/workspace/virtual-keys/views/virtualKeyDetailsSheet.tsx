@@ -22,7 +22,11 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { supportsCalendarAlignment } from "@/lib/constants/governance";
-import { calculateUsagePercentage, formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
+import {
+  calculateUsagePercentage,
+  formatCurrency,
+  parseResetPeriod,
+} from "@/lib/utils/governance";
 import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/managedVirtualKeyNotice";
 import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
@@ -49,12 +53,17 @@ function UsageLine({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <span className="font-mono text-sm">
-          {format(current)} <span className="text-muted-foreground">/</span> {format(max)}
+          {format(current)} <span className="text-muted-foreground">/</span>{" "}
+          {format(max)}
         </span>
         <span
           className={cn(
             "text-xs font-medium tabular-nums",
-            exhausted ? "text-red-500" : pct > 80 ? "text-amber-500" : "text-muted-foreground",
+            exhausted
+              ? "text-red-500"
+              : pct > 80
+                ? "text-amber-500"
+                : "text-muted-foreground",
           )}
         >
           {pct}%
@@ -62,7 +71,10 @@ function UsageLine({
       </div>
       <Progress
         value={Math.min(pct, 100)}
-        className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))}
+        className={cn(
+          "bg-muted/70 dark:bg-muted/30 h-1.5",
+          usageBarClass(pct, exhausted),
+        )}
       />
     </div>
   );
@@ -73,7 +85,10 @@ interface VirtualKeyDetailSheetProps {
   onClose: () => void;
 }
 
-export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKeyDetailSheetProps) {
+export default function VirtualKeyDetailSheet({
+  virtualKey,
+  onClose,
+}: VirtualKeyDetailSheetProps) {
   const {
     assignedUsers,
     isManagedByProfile,
@@ -101,10 +116,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
     // Rate limits exhausted
     (displayRateLimit?.token_current_usage &&
       displayRateLimit?.token_max_limit &&
-      displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
+      displayRateLimit.token_current_usage >=
+        displayRateLimit.token_max_limit) ||
     (displayRateLimit?.request_current_usage &&
       displayRateLimit?.request_max_limit &&
-      displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
+      displayRateLimit.request_current_usage >=
+        displayRateLimit.request_max_limit);
 
   return (
     <Sheet open onOpenChange={onClose}>
@@ -112,7 +129,8 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
         <SheetHeader className="flex flex-col items-start p-0">
           <SheetTitle>{virtualKey.name}</SheetTitle>
           <SheetDescription>
-            {virtualKey.description || "Virtual key details and usage information"}
+            {virtualKey.description ||
+              "Virtual key details and usage information"}
           </SheetDescription>
         </SheetHeader>
 
@@ -141,10 +159,18 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                 <div className="col-span-2">
                   <Badge
                     variant={
-                      virtualKey.is_active ? (isExhausted ? "destructive" : "default") : "secondary"
+                      virtualKey.is_active
+                        ? isExhausted
+                          ? "destructive"
+                          : "default"
+                        : "secondary"
                     }
                   >
-                    {virtualKey.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
+                    {virtualKey.is_active
+                      ? isExhausted
+                        ? "Exhausted"
+                        : "Active"
+                      : "Inactive"}
                   </Badge>
                 </div>
               </div>
@@ -159,7 +185,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
               </div>
 
               <div className="grid grid-cols-3 items-center gap-4">
-                <span className="text-muted-foreground text-sm">Last Updated</span>
+                <span className="text-muted-foreground text-sm">
+                  Last Updated
+                </span>
                 <div className="col-span-2 text-sm">
                   {formatDistanceToNow(new Date(virtualKey.updated_at), {
                     addSuffix: true,
@@ -169,9 +197,15 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
               {entityInfo.type !== "None" && (
                 <div className="grid grid-cols-3 items-center gap-4">
-                  <span className="text-muted-foreground text-sm">Assigned To</span>
+                  <span className="text-muted-foreground text-sm">
+                    Assigned To
+                  </span>
                   <div className="col-span-2 flex items-center gap-2">
-                    <Badge variant={entityInfo.type === "None" ? "outline" : "secondary"}>
+                    <Badge
+                      variant={
+                        entityInfo.type === "None" ? "outline" : "secondary"
+                      }
+                    >
                       {entityInfo.type}
                     </Badge>
                     <span className="text-sm">{entityInfo.name}</span>
@@ -188,14 +222,18 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
             <h3 className="font-semibold">Provider Configurations</h3>
 
             <div className="space-y-3">
-              {!virtualKey.provider_configs || virtualKey.provider_configs.length === 0 ? (
+              {!virtualKey.provider_configs ||
+              virtualKey.provider_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No providers configured (deny-by-default)
                 </span>
               ) : (
                 <div className="space-y-4">
                   {virtualKey.provider_configs.map((config, index) => (
-                    <div key={`${config.provider}-${index}`} className="rounded-lg border p-4">
+                    <div
+                      key={`${config.provider}-${index}`}
+                      className="rounded-lg border p-4"
+                    >
                       {/* Provider Header */}
                       <div className="mb-4 flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -205,7 +243,8 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                             className="h-5 w-5"
                           />
                           <span className="font-medium">
-                            {ProviderLabels[config.provider as ProviderName] || config.provider}
+                            {ProviderLabels[config.provider as ProviderName] ||
+                              config.provider}
                           </span>
                         </div>
                         <Badge variant="outline" className="font-mono text-xs">
@@ -224,10 +263,15 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                               <Badge variant="success" className="text-xs">
                                 All Models
                               </Badge>
-                            ) : config.allowed_models && config.allowed_models.length > 0 ? (
+                            ) : config.allowed_models &&
+                              config.allowed_models.length > 0 ? (
                               <div className="flex flex-wrap gap-1">
                                 {config.allowed_models.map((model) => (
-                                  <Badge key={model} variant="secondary" className="text-xs">
+                                  <Badge
+                                    key={model}
+                                    variant="secondary"
+                                    className="text-xs"
+                                  >
                                     {model}
                                   </Badge>
                                 ))}
@@ -253,7 +297,11 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                               config.blacklisted_models.length > 0 ? (
                               <div className="flex flex-wrap gap-1">
                                 {config.blacklisted_models.map((model) => (
-                                  <Badge key={model} variant="destructive" className="text-xs">
+                                  <Badge
+                                    key={model}
+                                    variant="destructive"
+                                    className="text-xs"
+                                  >
                                     {model}
                                   </Badge>
                                 ))}
@@ -278,7 +326,11 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                             ) : config.keys && config.keys.length > 0 ? (
                               <div className="flex flex-wrap gap-1">
                                 {config.keys.map((key) => (
-                                  <Badge key={key.key_id} variant="outline" className="text-xs">
+                                  <Badge
+                                    key={key.key_id}
+                                    variant="outline"
+                                    className="text-xs"
+                                  >
                                     {key.name}
                                   </Badge>
                                 ))}
@@ -296,7 +348,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                           <>
                             <DottedSeparator />
                             <div className="space-y-2">
-                              <h4 className="text-sm font-medium">Provider Budgets</h4>
+                              <h4 className="text-sm font-medium">
+                                Provider Budgets
+                              </h4>
                               {config.budgets.map((b, bIdx) => (
                                 <div key={bIdx} className="space-y-2">
                                   <UsageLine
@@ -306,17 +360,23 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                   />
                                   <div className="text-muted-foreground flex items-center justify-between text-xs">
                                     <span>
-                                      Resets {parseResetPeriod(b.reset_duration)}
+                                      Resets{" "}
+                                      {parseResetPeriod(b.reset_duration)}
                                       {virtualKey.calendar_aligned &&
-                                        supportsCalendarAlignment(b.reset_duration) &&
+                                        supportsCalendarAlignment(
+                                          b.reset_duration,
+                                        ) &&
                                         " (calendar)"}
                                     </span>
                                     {b.last_reset ? (
                                       <span>
                                         Last reset{" "}
-                                        {formatDistanceToNow(new Date(b.last_reset), {
-                                          addSuffix: true,
-                                        })}
+                                        {formatDistanceToNow(
+                                          new Date(b.last_reset),
+                                          {
+                                            addSuffix: true,
+                                          },
+                                        )}
                                       </span>
                                     ) : null}
                                   </div>
@@ -331,7 +391,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                           <>
                             <DottedSeparator />
                             <div className="space-y-3">
-                              <h4 className="text-sm font-medium">Provider Rate Limits</h4>
+                              <h4 className="text-sm font-medium">
+                                Provider Rate Limits
+                              </h4>
 
                               {/* Token Limits */}
                               {config.rate_limit.token_max_limit != null ? (
@@ -340,7 +402,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                     TOKEN LIMITS
                                   </span>
                                   <UsageLine
-                                    current={config.rate_limit.token_current_usage}
+                                    current={
+                                      config.rate_limit.token_current_usage
+                                    }
                                     max={config.rate_limit.token_max_limit}
                                     format={(n) => n.toLocaleString()}
                                   />
@@ -348,11 +412,13 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                     <span>
                                       Resets{" "}
                                       {parseResetPeriod(
-                                        config.rate_limit.token_reset_duration || "",
+                                        config.rate_limit
+                                          .token_reset_duration || "",
                                       )}
                                       {virtualKey.calendar_aligned &&
                                         supportsCalendarAlignment(
-                                          config.rate_limit.token_reset_duration || "",
+                                          config.rate_limit
+                                            .token_reset_duration || "",
                                         ) &&
                                         " (calendar)"}
                                     </span>
@@ -360,7 +426,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                       <span>
                                         Last reset{" "}
                                         {formatDistanceToNow(
-                                          new Date(config.rate_limit.token_last_reset),
+                                          new Date(
+                                            config.rate_limit.token_last_reset,
+                                          ),
                                           { addSuffix: true },
                                         )}
                                       </span>
@@ -376,7 +444,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                     REQUEST LIMITS
                                   </span>
                                   <UsageLine
-                                    current={config.rate_limit.request_current_usage}
+                                    current={
+                                      config.rate_limit.request_current_usage
+                                    }
                                     max={config.rate_limit.request_max_limit}
                                     format={(n) => n.toLocaleString()}
                                   />
@@ -384,11 +454,13 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                     <span>
                                       Resets{" "}
                                       {parseResetPeriod(
-                                        config.rate_limit.request_reset_duration || "",
+                                        config.rate_limit
+                                          .request_reset_duration || "",
                                       )}
                                       {virtualKey.calendar_aligned &&
                                         supportsCalendarAlignment(
-                                          config.rate_limit.request_reset_duration || "",
+                                          config.rate_limit
+                                            .request_reset_duration || "",
                                         ) &&
                                         " (calendar)"}
                                     </span>
@@ -396,7 +468,10 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                                       <span>
                                         Last reset{" "}
                                         {formatDistanceToNow(
-                                          new Date(config.rate_limit.request_last_reset),
+                                          new Date(
+                                            config.rate_limit
+                                              .request_last_reset,
+                                          ),
                                           { addSuffix: true },
                                         )}
                                       </span>
@@ -427,7 +502,8 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
             <h3 className="font-semibold">MCP Client Configurations</h3>
 
             <div className="space-y-3">
-              {!virtualKey.mcp_configs || virtualKey.mcp_configs.length === 0 ? (
+              {!virtualKey.mcp_configs ||
+              virtualKey.mcp_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No MCP clients configured (deny-by-default)
                 </span>
@@ -442,17 +518,26 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                     </TableHeader>
                     <TableBody>
                       {virtualKey.mcp_configs.map((config, index) => (
-                        <TableRow key={`${config.mcp_client?.name || config.id}-${index}`}>
-                          <TableCell>{config.mcp_client?.name || "Unknown Client"}</TableCell>
+                        <TableRow
+                          key={`${config.mcp_client?.name || config.id}-${index}`}
+                        >
+                          <TableCell>
+                            {config.mcp_client?.name || "Unknown Client"}
+                          </TableCell>
                           <TableCell>
                             {config.tools_to_execute?.includes("*") ? (
                               <Badge variant="success" className="text-xs">
                                 All Tools
                               </Badge>
-                            ) : config.tools_to_execute && config.tools_to_execute.length > 0 ? (
+                            ) : config.tools_to_execute &&
+                              config.tools_to_execute.length > 0 ? (
                               <div className="flex flex-wrap gap-1">
                                 {config.tools_to_execute.map((tool) => (
-                                  <Badge key={tool} variant="secondary" className="text-xs">
+                                  <Badge
+                                    key={tool}
+                                    variant="secondary"
+                                    className="text-xs"
+                                  >
                                     {tool}
                                   </Badge>
                                 ))}
@@ -514,7 +599,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                 ))}
               </div>
             ) : (
-              <p className="text-muted-foreground text-sm">No budget limits configured</p>
+              <p className="text-muted-foreground text-sm">
+                No budget limits configured
+              </p>
             )}
           </div>
 
@@ -542,17 +629,25 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                     />
                     <div className="text-muted-foreground flex items-center justify-between text-xs">
                       <span>
-                        Resets {parseResetPeriod(displayRateLimit.token_reset_duration || "")}
+                        Resets{" "}
+                        {parseResetPeriod(
+                          displayRateLimit.token_reset_duration || "",
+                        )}
                         {virtualKey.calendar_aligned &&
-                          supportsCalendarAlignment(displayRateLimit.token_reset_duration || "") &&
+                          supportsCalendarAlignment(
+                            displayRateLimit.token_reset_duration || "",
+                          ) &&
                           " (calendar)"}
                       </span>
                       {displayRateLimit.token_last_reset ? (
                         <span>
                           Last reset{" "}
-                          {formatDistanceToNow(new Date(displayRateLimit.token_last_reset), {
-                            addSuffix: true,
-                          })}
+                          {formatDistanceToNow(
+                            new Date(displayRateLimit.token_last_reset),
+                            {
+                              addSuffix: true,
+                            },
+                          )}
                         </span>
                       ) : null}
                     </div>
@@ -570,7 +665,10 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                     />
                     <div className="text-muted-foreground flex items-center justify-between text-xs">
                       <span>
-                        Resets {parseResetPeriod(displayRateLimit.request_reset_duration || "")}
+                        Resets{" "}
+                        {parseResetPeriod(
+                          displayRateLimit.request_reset_duration || "",
+                        )}
                         {virtualKey.calendar_aligned &&
                           supportsCalendarAlignment(
                             displayRateLimit.request_reset_duration || "",
@@ -580,9 +678,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
                       {displayRateLimit.request_last_reset ? (
                         <span>
                           Last reset{" "}
-                          {formatDistanceToNow(new Date(displayRateLimit.request_last_reset), {
-                            addSuffix: true,
-                          })}
+                          {formatDistanceToNow(
+                            new Date(displayRateLimit.request_last_reset),
+                            {
+                              addSuffix: true,
+                            },
+                          )}
                         </span>
                       ) : null}
                     </div>
@@ -591,11 +692,15 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
                 {displayRateLimit.token_max_limit == null &&
                   displayRateLimit.request_max_limit == null && (
-                    <p className="text-muted-foreground text-sm">No rate limits configured</p>
+                    <p className="text-muted-foreground text-sm">
+                      No rate limits configured
+                    </p>
                   )}
               </div>
             ) : (
-              <p className="text-muted-foreground text-sm">No rate limits configured</p>
+              <p className="text-muted-foreground text-sm">
+                No rate limits configured
+              </p>
             )}
           </div>
         </div>

@@ -175,7 +175,6 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 
 	if key.AzureKeyConfig != nil {
 		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-		dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 	}
 
 	if key.VertexKeyConfig != nil {
@@ -246,6 +245,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
 		RequiredHeaders:                       config.RequiredHeaders,
 		LoggingHeaders:                        config.LoggingHeaders,
@@ -508,6 +508,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              dbConfig.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     dbConfig.AsyncJobResultTTL,
 		RequiredHeaders:                       dbConfig.RequiredHeaders,
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
@@ -698,8 +699,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
-			}
+				}
 
 			// Handle Vertex config
 			if key.VertexKeyConfig != nil {
@@ -927,7 +927,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 
 		// Handle Vertex config
@@ -1066,7 +1065,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 		// Handle Vertex config
 		if key.VertexKeyConfig != nil {
@@ -2536,12 +2534,17 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	return &virtualKey, nil
 }
 
-// GetVirtualKeyQuotaByValue retrieves only the budget and rate limit data for a virtual key.
-// This is a lean query that avoids loading Team, Customer, ProviderConfigs, MCPConfigs, and Keys.
+// GetVirtualKeyQuotaByValue retrieves budget, rate limit, and provider-level limit data for a virtual key.
+// This is a lean query that avoids loading Team, Customer, MCPConfigs, and provider Keys.
 func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	baseQuery := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimit")
+	baseQuery := s.DB().WithContext(ctx).
+		Preload("Budgets").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("ProviderConfigs.Budgets").
+		Preload("ProviderConfigs.RateLimit")
 	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Fallback: try plaintext lookup for rows not yet migrated

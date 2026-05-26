@@ -700,11 +700,12 @@ type AuthMiddleware struct {
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
-// is optional — when nil, the temp-token fallback path is disabled and the
-// middleware behaves exactly as before.
+// is optional and still gated by client config — when nil or disabled, the
+// temp-token fallback path is skipped.
 func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
@@ -726,9 +727,11 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	clientConfig, err := store.GetClientConfig(context.Background())
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
+		am.tempTokensEnabled.Store(false)
 	}
 
 	return am, nil
@@ -741,6 +744,11 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
+func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
+	m.tempTokensEnabled.Store(enabled)
 }
 
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
@@ -756,7 +764,7 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 // their own success/failure semantics and silently rescuing a bad password
 // with a temp token would be surprising.
 func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
-	if m.tempTokensService != nil {
+	if m.tempTokensService != nil && m.tempTokensEnabled.Load() {
 		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
 		if token != "" {
 			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Path()))
@@ -855,7 +863,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			url := string(ctx.Request.URI().RequestURI())
+			// Match the whitelist against the path only
+			url := string(ctx.Path())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				next(ctx)
@@ -1111,6 +1120,17 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if len(transportLogs) > 0 {
 					tracer.AttachPluginLogs(traceID, transportLogs)
 				}
+				// End the root HTTP span now that the stream has fully drained, so its
+				// latency covers the entire streamed response. For deferred (streaming)
+				// requests the TracingMiddleware defer below intentionally leaves the root
+				// span open; ending it here keeps the parent from closing before its child
+				// llm.call span (which is ended by completeDeferredSpan on the final chunk).
+				// Status is always Ok: deferral is only set after the stream was set up with
+				// HTTP 200, and mid-stream failures surface as SSE error frames / on the
+				// llm.call span, not as an HTTP error on the root.
+				if rootHandle := tracer.GetSpanHandleByID(traceID, nil); rootHandle != nil {
+					tracer.EndSpan(rootHandle, schemas.SpanStatusOk, "")
+				}
 				tracer.CompleteAndFlushTrace(traceID)
 			})
 			// Create root span for the HTTP request
@@ -1128,18 +1148,27 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				}
 			}
 			defer func() {
+				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
-					if ctx.Response.StatusCode() >= 400 {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
-					} else {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+					// For deferred (streaming) requests, the trace completer ends the root
+					// span after the stream fully drains, so its latency reflects the whole
+					// streamed response. Ending it here (at handler return) would close the
+					// parent before the deferred llm.call span finishes, making the child
+					// span appear longer than its parent in trace viewers.
+					if !deferred {
+						if ctx.Response.StatusCode() >= 400 {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
+						} else {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+						}
 					}
 				}
 				// Check if trace completion is deferred (for streaming requests)
-				// If deferred, the streaming handler will complete the trace after stream ends
-				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+				// If deferred, the streaming handler will complete the trace (and end the
+				// root span via the trace completer) after the stream ends.
+				if deferred {
 					return
 				}
 				// Attach transport plugin logs to trace before completion

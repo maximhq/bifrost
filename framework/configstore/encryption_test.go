@@ -650,11 +650,11 @@ func TestEncryptPlaintextKeys_AzureFields_EncryptsAndDecryptsCorrectly(t *testin
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, azure_endpoint, azure_client_id, azure_client_secret, azure_tenant_id, azure_api_version, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, azure_endpoint, azure_client_id, azure_client_secret, azure_tenant_id, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
 		"azure-key", 1, "azure", "az-1", "sk-azure-key-value",
 		"https://myresource.openai.azure.com", "my-azure-client-id", "azure-super-secret-client",
-		"my-azure-tenant-id", "2024-10-21", now, now)
+		"my-azure-tenant-id", now, now)
 
 	count, err := store.encryptPlaintextKeys(ctx)
 	require.NoError(t, err)
@@ -669,7 +669,6 @@ func TestEncryptPlaintextKeys_AzureFields_EncryptsAndDecryptsCorrectly(t *testin
 	assert.NotEqual(t, "my-azure-client-id", raw["azure_client_id"])
 	assert.NotEqual(t, "azure-super-secret-client", raw["azure_client_secret"])
 	assert.NotEqual(t, "my-azure-tenant-id", raw["azure_tenant_id"])
-	assert.NotEqual(t, "2024-10-21", raw["azure_api_version"])
 
 	// GORM hooks should decrypt and reconstruct AzureKeyConfig
 	var found tables.TableKey
@@ -683,8 +682,6 @@ func TestEncryptPlaintextKeys_AzureFields_EncryptsAndDecryptsCorrectly(t *testin
 	assert.Equal(t, "azure-super-secret-client", found.AzureKeyConfig.ClientSecret.GetValue())
 	require.NotNil(t, found.AzureKeyConfig.TenantID)
 	assert.Equal(t, "my-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())
-	require.NotNil(t, found.AzureKeyConfig.APIVersion)
-	assert.Equal(t, "2024-10-21", found.AzureKeyConfig.APIVersion.GetValue())
 }
 
 func TestEncryptPlaintextKeys_VertexFields_EncryptsAndDecryptsCorrectly(t *testing.T) {
@@ -854,10 +851,9 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	// save it to DB, and verify the original config structs are not mutated by BeforeSave
 	// (encryption uses value-copies so shared pointers are never corrupted).
 	azureCfg := &schemas.AzureKeyConfig{
-		Endpoint:   *schemas.NewEnvVar("https://myresource.openai.azure.com"),
-		APIVersion: schemas.NewEnvVar("2024-10-21"),
-		ClientID:   schemas.NewEnvVar("my-azure-client-id"),
-		TenantID:   schemas.NewEnvVar("my-azure-tenant-id"),
+		Endpoint: *schemas.NewEnvVar("https://myresource.openai.azure.com"),
+		ClientID: schemas.NewEnvVar("my-azure-client-id"),
+		TenantID: schemas.NewEnvVar("my-azure-tenant-id"),
 	}
 	azureCfg.ClientSecret = schemas.NewEnvVar("azure-client-secret")
 
@@ -898,8 +894,6 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		"BeforeSave must not mutate shared AzureKeyConfig.Endpoint")
 	assert.Equal(t, "azure-client-secret", azureCfg.ClientSecret.GetValue(),
 		"BeforeSave must not mutate shared AzureKeyConfig.ClientSecret")
-	assert.Equal(t, "2024-10-21", azureCfg.APIVersion.GetValue(),
-		"BeforeSave must not mutate shared AzureKeyConfig.APIVersion")
 	assert.Equal(t, "my-azure-client-id", azureCfg.ClientID.GetValue(),
 		"BeforeSave must not mutate shared AzureKeyConfig.ClientID")
 	assert.Equal(t, "my-azure-tenant-id", azureCfg.TenantID.GetValue(),
@@ -934,7 +928,6 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	require.NotNil(t, found.AzureKeyConfig)
 	assert.Equal(t, "https://myresource.openai.azure.com", found.AzureKeyConfig.Endpoint.GetValue())
 	assert.Equal(t, "azure-client-secret", found.AzureKeyConfig.ClientSecret.GetValue())
-	assert.Equal(t, "2024-10-21", found.AzureKeyConfig.APIVersion.GetValue())
 	assert.Equal(t, "my-azure-client-id", found.AzureKeyConfig.ClientID.GetValue())
 	assert.Equal(t, "my-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())
 	require.NotNil(t, found.VertexKeyConfig)
@@ -961,7 +954,6 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	t.Setenv("TEST_AZURE_KEY", "sk-azure-from-env")
 	t.Setenv("TEST_AZURE_ENDPOINT", "https://env-resource.openai.azure.com")
 	t.Setenv("TEST_AZURE_SECRET", "env-azure-client-secret")
-	t.Setenv("TEST_AZURE_API_VER", "2024-10-21")
 	t.Setenv("TEST_AZURE_CLIENT_ID", "env-azure-client-id")
 	t.Setenv("TEST_AZURE_TENANT_ID", "env-azure-tenant-id")
 	t.Setenv("TEST_VERTEX_PROJECT", "env-vertex-project")
@@ -976,7 +968,6 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	// Create EnvVars backed by environment variables
 	azureCfg := &schemas.AzureKeyConfig{
 		Endpoint:     *schemas.NewEnvVar("env.TEST_AZURE_ENDPOINT"),
-		APIVersion:   schemas.NewEnvVar("env.TEST_AZURE_API_VER"),
 		ClientID:     schemas.NewEnvVar("env.TEST_AZURE_CLIENT_ID"),
 		ClientSecret: schemas.NewEnvVar("env.TEST_AZURE_SECRET"),
 		TenantID:     schemas.NewEnvVar("env.TEST_AZURE_TENANT_ID"),
@@ -1048,8 +1039,6 @@ func TestBeforeSave_EnvVarBackedFields_NotEncrypted(t *testing.T) {
 	assert.True(t, found.AzureKeyConfig.Endpoint.IsFromEnv())
 	assert.Equal(t, "env-azure-client-secret", found.AzureKeyConfig.ClientSecret.GetValue())
 	assert.True(t, found.AzureKeyConfig.ClientSecret.IsFromEnv())
-	assert.Equal(t, "2024-10-21", found.AzureKeyConfig.APIVersion.GetValue())
-	assert.True(t, found.AzureKeyConfig.APIVersion.IsFromEnv())
 	assert.Equal(t, "env-azure-client-id", found.AzureKeyConfig.ClientID.GetValue())
 	assert.True(t, found.AzureKeyConfig.ClientID.IsFromEnv())
 	assert.Equal(t, "env-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())

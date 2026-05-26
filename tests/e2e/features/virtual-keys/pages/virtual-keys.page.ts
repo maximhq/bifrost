@@ -213,6 +213,14 @@ export class VirtualKeysPage extends BasePage {
       .catch(() => {});
   }
 
+  private async preserveBudgetUsageIfPrompted(): Promise<void> {
+    const dialog = this.page.getByTestId("vk-budget-reset-dialog");
+    const isVisible = await dialog.waitFor({ state: 'visible', timeout: 1000 }).then(() => true).catch(() => false);
+    if (!isVisible) return;
+    await this.page.getByTestId("vk-budget-reset-preserve-btn").click();
+    await dialog.waitFor({ state: 'hidden', timeout: 3000 })
+  }
+
   /**
    * Check if a virtual key exists in the table
    */
@@ -471,6 +479,7 @@ export class VirtualKeysPage extends BasePage {
 
     // Save changes by clicking the save button
     await this.saveBtn.click();
+    await this.preserveBudgetUsageIfPrompted();
 
     await this.waitForSheetClosedAfterSave();
 
