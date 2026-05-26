@@ -68,7 +68,7 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `push_gateway_url` | `string` | ✅ Yes | - | Push Gateway URL (e.g., `http://pushgateway:9091`) |
+| `push_gateway_url` | `string \| EnvVar` | ✅ Yes | - | Push Gateway URL — supports `env.VAR_NAME` |
 | `job_name` | `string` | ❌ No | `bifrost` | Job label for pushed metrics |
 | `instance_id` | `string` | ❌ No | hostname | Instance identifier for metric grouping |
 | `push_interval` | `integer` | ❌ No | `15` | Push interval in seconds (1-300) |
@@ -78,8 +78,9 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `username` | `string` | ✅ Yes | Basic auth username |
-| `password` | `string` | ✅ Yes | Basic auth password |
+| `username` | `string \| EnvVar` | ✅ Yes | Basic auth username — supports `env.VAR_NAME` |
+| `password` | `string \| EnvVar` | ✅ Yes | Basic auth password — supports `env.VAR_NAME` |
+
 
 ---
 
@@ -138,6 +139,33 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
           "basic_auth": {
             "username": "admin",
             "password": "secret"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+### With Environment Variables
+
+Use `env.VAR_NAME` to reference environment variables for the Push Gateway URL and credentials:
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "env.PUSHGATEWAY_URL",
+          "job_name": "bifrost",
+          "push_interval": 15,
+          "basic_auth": {
+            "username": "env.PUSHGATEWAY_USER",
+            "password": "env.PUSHGATEWAY_PASS"
           }
         }
       }
