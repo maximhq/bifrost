@@ -311,7 +311,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:     *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion:   schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
 					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
 					TenantID:     schemas.NewEnvVar("env.AZURE_TENANT_ID"),
@@ -329,8 +328,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"gpt-4o-mini-audio-preview": "gpt-4o-mini-audio-preview",
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
+					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 				},
 			},
 		}, nil

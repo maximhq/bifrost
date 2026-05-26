@@ -47,9 +47,7 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 ### Azure Passthrough
 
 - Uses `azure` as the default provider.
-- Requires an Azure key with `endpoint` configured. `api-version` is injected automatically:
-  - **Key config `api_version`** takes priority (consistent with how auth is handled).
-  - Falls back to any `api-version` the client supplied in the query string.
+- Requires an Azure key with `endpoint` configured. Query parameters (including any `api-version`) are forwarded as-is from the caller — Bifrost does not inject any version.
 
 ### GenAI Passthrough
 
@@ -151,7 +149,7 @@ from openai import AzureOpenAI
 client = AzureOpenAI(
     azure_endpoint="http://localhost:8080/azure_passthrough",
     api_key="dummy-key",
-    api_version="2024-10-21",  # overridden by key config api_version if set
+    api_version="2024-10-21",  # passed through as-is in the query string
 )
 
 response = client.chat.completions.create(
