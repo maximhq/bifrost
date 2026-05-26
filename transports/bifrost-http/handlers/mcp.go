@@ -218,6 +218,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ConnectionType:        schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:      dbClient.ConnectionString,
 			StdioConfig:           dbClient.StdioConfig,
+			TLSConfig:             dbClient.TLSConfig,
 			AuthType:              schemas.MCPAuthType(dbClient.AuthType),
 			OauthConfigID:         dbClient.OauthConfigID,
 			ToolsToExecute:        dbClient.ToolsToExecute,
@@ -563,6 +564,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
+			TLSConfig:             req.TLSConfig,
 			AuthType:              schemas.MCPAuthTypePerUserOauth,
 			OauthConfigID:         &flowInitiation.OauthConfigID,
 			ToolsToExecute:        req.ToolsToExecute,
@@ -655,6 +657,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
+			TLSConfig:             req.TLSConfig,
 			AuthType:              schemas.MCPAuthType(req.AuthType),
 			OauthConfigID:         &flowInitiation.OauthConfigID,
 			ToolsToExecute:        req.ToolsToExecute,
@@ -716,6 +719,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:      req.ConnectionString,
 		StdioConfig:           req.StdioConfig,
+		TLSConfig:             req.TLSConfig,
 		ToolsToExecute:        req.ToolsToExecute,
 		ToolsToAutoExecute:    req.ToolsToAutoExecute,
 		Headers:               req.Headers,
@@ -1025,6 +1029,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ConnectionType:        existingConfig.ConnectionType,
 		ConnectionString:      existingConfig.ConnectionString,
 		StdioConfig:           existingConfig.StdioConfig,
+		TLSConfig:             req.TLSConfig,
 		ToolsToExecute:        resolvedToolsToExecute,
 		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
 		Headers:               req.Headers,
@@ -1399,6 +1404,22 @@ func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, 
 	// Preserve AllowedExtraHeaders if not explicitly set in incoming request
 	if incoming.AllowedExtraHeaders == nil {
 		merged.AllowedExtraHeaders = oldRaw.AllowedExtraHeaders
+	}
+
+	// Handle TLSConfig - preserve existing when not sent, restore raw CA cert when redacted
+	if incoming.TLSConfig == nil {
+		merged.TLSConfig = oldRaw.TLSConfig
+	} else {
+		tlsCopy := *incoming.TLSConfig
+		// If CACertPEM is a redacted placeholder that matches the old redacted value,
+		// restore the raw value to avoid writing ***** to the DB.
+		if tlsCopy.CACertPEM != nil &&
+			oldRaw.TLSConfig != nil && oldRaw.TLSConfig.CACertPEM != nil &&
+			oldRedacted.TLSConfig != nil && oldRedacted.TLSConfig.CACertPEM != nil &&
+			tlsCopy.CACertPEM.IsRedacted() && tlsCopy.CACertPEM.Equals(oldRedacted.TLSConfig.CACertPEM) {
+			tlsCopy.CACertPEM = oldRaw.TLSConfig.CACertPEM
+		}
+		merged.TLSConfig = &tlsCopy
 	}
 
 	return merged

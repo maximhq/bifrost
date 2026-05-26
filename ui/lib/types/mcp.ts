@@ -24,6 +24,11 @@ export interface MCPStdioConfig {
 	envs: string[];
 }
 
+export interface MCPTLSConfig {
+	insecure_skip_verify?: boolean;
+	ca_cert_pem?: EnvVar;
+}
+
 export interface OAuthConfig {
 	client_id: EnvVar;
 	client_secret?: EnvVar; // Optional for public clients using PKCE
@@ -47,6 +52,7 @@ export interface MCPClientConfig {
 	connection_type: MCPConnectionType;
 	connection_string?: EnvVar;
 	stdio_config?: MCPStdioConfig;
+	tls_config?: MCPTLSConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
 	oauth_client_id?: EnvVar; // Redacted existing client ID (populated on GET for oauth clients)
@@ -86,6 +92,7 @@ export interface CreateMCPClientRequest {
 	connection_type: MCPConnectionType;
 	connection_string?: EnvVar;
 	stdio_config?: MCPStdioConfig;
+	tls_config?: MCPTLSConfig;
 	auth_type?: MCPAuthType;
 	oauth_config?: OAuthConfig;
 	tools_to_execute?: string[];
@@ -143,6 +150,7 @@ export interface UpdateMCPClientRequest {
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
+	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }

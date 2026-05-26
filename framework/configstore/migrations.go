@@ -813,6 +813,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPClientTLSConfigColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8866,7 +8869,7 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 	return nil
 }
 
-// migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
+// migrationDropAzureAPIVersionColumn adds the created_by_user_id column to the governance_virtual_keys table
 func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "drop_azure_api_version_column",
@@ -8891,6 +8894,35 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientTLSConfigColumn adds the tls_config_json column to the config_mcp_clients table.
+func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_tls_config_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
+				if err := tx.Exec("ALTER TABLE config_mcp_clients ADD COLUMN tls_config_json TEXT").Error; err != nil {
+					return fmt.Errorf("failed to add tls_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
+				if err := tx.Exec("ALTER TABLE config_mcp_clients DROP COLUMN tls_config_json").Error; err != nil {
+					return fmt.Errorf("failed to drop tls_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_tls_config_json_column migration: %s", err.Error())
 	}
 	return nil
 }

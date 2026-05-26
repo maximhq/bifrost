@@ -187,6 +187,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
+			tls_config: mcpClient.config.tls_config
+				? {
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
+				: undefined,
 		},
 	});
 	const isDisabled = form.watch("disabled");
@@ -208,6 +214,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				: undefined,
+			tls_config: mcpClient.config.tls_config
+				? {
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -268,6 +280,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 							client_id: oauthClientID,
 							client_secret: oauthClientSecret,
 						}
+						: undefined,
+					tls_config: data.tls_config !== undefined
+						? {
+								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+								ca_cert_pem: data.tls_config.ca_cert_pem,
+							}
 						: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -614,6 +632,61 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 										</FormItem>
 									)}
 								/>
+								{(mcpClient.config.connection_type === "http" || mcpClient.config.connection_type === "sse") && (
+									<div className="space-y-4 rounded-lg border p-4">
+										<h4 className="text-sm font-medium">TLS / Certificate</h4>
+										<FormField
+											control={form.control}
+											name="tls_config.insecure_skip_verify"
+											render={({ field }) => (
+												<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+													<div className="space-y-0.5">
+														<FormLabel>Skip TLS verification</FormLabel>
+														<p className="text-muted-foreground text-sm">
+															Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA
+															certificate.
+														</p>
+													</div>
+													<FormControl>
+														<Switch
+															checked={field.value ?? false}
+															onCheckedChange={field.onChange}
+															disabled={!hasUpdateMCPClientAccess}
+															data-testid="mcp-tls-insecure-skip-verify"
+														/>
+													</FormControl>
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="tls_config.ca_cert_pem"
+											render={({ field }) => (
+												<FormItem>
+													<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+													<FormControl>
+														<EnvVarInput
+															variant="textarea"
+															placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
+															className="font-mono text-xs"
+															rows={6}
+															hideValueWhenEnv
+															redactNonEnvValue
+															{...field}
+															value={field.value}
+															disabled={!hasUpdateMCPClientAccess}
+															data-testid="mcp-tls-ca-cert-pem"
+														/>
+													</FormControl>
+													<p className="text-muted-foreground text-sm">
+														PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
+													</p>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</div>
+								)}
 								<FormField
 									control={form.control}
 									name="tool_sync_interval"
