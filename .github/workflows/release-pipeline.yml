@@ -471,10 +471,17 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # bifrost-http binary runs on the host and connects to Postgres via
+          # the published port mapping (5432:5432) at 127.0.0.1. The integration
+          # test configs in .github/workflows/configs/*/config.json use
+          # "host": "localhost". The 172.38.0.12 entries below are weaviate's
+          # pinned bridge IP from .github/workflows/configs/docker-compose.yml;
+          # they are kept for any container-to-container traffic but the binary
+          # itself reaches weaviate via 127.0.0.1:9000 (published port).
           allowed-endpoints: >
+            127.0.0.1:5432
             172.38.0.12:8080
             172.38.0.12:8301
-            172.38.0.2:5432
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -547,8 +554,12 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # Migration test binary runs on the host (not in a container) and
+          # connects to Postgres via the published port mapping (5432:5432) at
+          # 127.0.0.1. See run-migration-tests.sh:46 (POSTGRES_HOST defaults to
+          # localhost).
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -613,8 +624,12 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # API integrations test compiles bifrost-http and runs it on the host
+          # (not in a container), connecting to Postgres via the published port
+          # mapping (5432:5432) at 127.0.0.1. See test-api-integrations.sh which
+          # defaults POSTGRES_HOST to localhost.
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
