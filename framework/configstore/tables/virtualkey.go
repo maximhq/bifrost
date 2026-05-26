@@ -126,7 +126,6 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil
-			key.AzureAPIVersion = nil
 			key.AzureClientID = nil
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil

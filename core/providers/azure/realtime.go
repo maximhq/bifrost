@@ -34,10 +34,8 @@ func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model strin
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
 
-	apiVersion := azureRealtimeAPIVersion(key)
-
-	return fmt.Sprintf("%s/openai/v1/realtime?model=%s&api-version=%s",
-		endpoint, url.QueryEscape(model), url.QueryEscape(apiVersion))
+	return fmt.Sprintf("%s/openai/v1/realtime?model=%s",
+		endpoint, url.QueryEscape(model))
 }
 
 func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -76,10 +74,9 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	session json.RawMessage,
 ) (string, *schemas.BifrostError) {
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
-	apiVersion := azureRealtimeAPIVersion(key)
 
-	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime?model=%s&api-version=%s",
-		endpoint, url.QueryEscape(model), url.QueryEscape(apiVersion))
+	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime?model=%s",
+		endpoint, url.QueryEscape(model))
 
 	// Build multipart body: sdp + optional session
 	bodyBuf := &bytes.Buffer{}
@@ -222,9 +219,7 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	}
 
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
-	apiVersion := azureRealtimeAPIVersion(key)
-	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime/client_secrets?api-version=%s",
-		endpoint, url.QueryEscape(apiVersion))
+	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime/client_secrets", endpoint)
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -336,18 +331,6 @@ func newAzureRealtimeError(status int, errorType, message string, err error) *sc
 	return bifrostErr
 }
 
-// azureRealtimeAPIVersion returns the API version to use for realtime endpoints.
-// Realtime requires a preview API version. If the key has an explicit version
-// configured we honour it; otherwise we fall back to the preview version rather
-// than the stable default (which does not support realtime).
-func azureRealtimeAPIVersion(key schemas.Key) string {
-	if key.AzureKeyConfig != nil && key.AzureKeyConfig.APIVersion != nil {
-		if apiVersion := key.AzureKeyConfig.APIVersion.GetValue(); apiVersion != "" {
-			return apiVersion
-		}
-	}
-	return AzureAPIVersionPreview
-}
 
 func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
 	body, _ := providerUtils.CheckAndDecodeBody(resp)
