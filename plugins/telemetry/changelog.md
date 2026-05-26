@@ -1,1 +1,1 @@
-- chore: upgraded core to v1.5.12 and framework to v1.3.12
+- feat: add `EnvVar` support for `PushGatewayURL` and `BasicAuth` (username/password); implements `ConfigMarshallerPlugin` (#3651)
