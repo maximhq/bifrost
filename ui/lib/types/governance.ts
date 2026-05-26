@@ -347,6 +347,9 @@ export interface ModelConfig {
 	id: string;
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
+	scope?: string; // "global" (default) or "virtual_key"
+	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
+	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
 	budget_id?: string;
 	rate_limit_id?: string;
 	// Populated relationships
@@ -360,6 +363,8 @@ export interface ModelConfig {
 export interface CreateModelConfigRequest {
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
+	scope?: string; // Defaults to "global" if omitted
+	scope_id?: string; // Required for non-global scopes (e.g. the virtual key ID)
 	budget?: CreateBudgetRequest;
 	rate_limit?: CreateRateLimitRequest;
 }

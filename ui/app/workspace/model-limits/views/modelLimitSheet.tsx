@@ -6,13 +6,15 @@ import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { ComboboxSelect } from "@/components/ui/combobox";
+import { MODEL_LIMIT_SCOPES, resetDurationOptions } from "@/lib/constants/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	useCreateModelConfigMutation,
 	useGetProvidersQuery,
+	useGetVirtualKeysQuery,
 	useLazyGetModelsQuery,
 	useUpdateModelConfigMutation,
 } from "@/lib/store";
@@ -31,16 +33,23 @@ interface ModelLimitSheetProps {
 	onCancel: () => void;
 }
 
-const formSchema = z.object({
-	modelName: z.string().min(1, "Model name is required"),
-	provider: z.string().optional(),
-	budgetMaxLimit: z.number().nonnegative().optional(),
-	budgetResetDuration: z.string().optional(),
-	tokenMaxLimit: z.number().int().nonnegative().optional(),
-	tokenResetDuration: z.string().optional(),
-	requestMaxLimit: z.number().int().nonnegative().optional(),
-	requestResetDuration: z.string().optional(),
-});
+const formSchema = z
+	.object({
+		modelName: z.string().min(1, "Model name is required"),
+		provider: z.string().optional(),
+		scope: z.string().optional(),
+		scopeId: z.string().optional(),
+		budgetMaxLimit: z.number().nonnegative().optional(),
+		budgetResetDuration: z.string().optional(),
+		tokenMaxLimit: z.number().int().nonnegative().optional(),
+		tokenResetDuration: z.string().optional(),
+		requestMaxLimit: z.number().int().nonnegative().optional(),
+		requestResetDuration: z.string().optional(),
+	})
+	.refine((data) => data.scope !== "virtual_key" || !!data.scopeId, {
+		message: "Virtual key is required for the Virtual Key scope",
+		path: ["scopeId"],
+	});
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -60,6 +69,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const { data: providersData } = useGetProvidersQuery();
+	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
@@ -94,6 +104,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
 			provider: modelConfig?.provider || "",
+			scope: modelConfig?.scope || "global",
+			scopeId: modelConfig?.scope_id || "",
 			budgetMaxLimit: modelConfig?.budget?.max_limit ?? undefined,
 			budgetResetDuration: modelConfig?.budget?.reset_duration || "1M",
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
@@ -121,6 +133,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			form.reset({
 				modelName: modelConfig.model_name || "",
 				provider: modelConfig.provider || "",
+				scope: modelConfig.scope || "global",
+				scopeId: modelConfig.scope_id || "",
 				budgetMaxLimit: modelConfig.budget?.max_limit ?? undefined,
 				budgetResetDuration: modelConfig.budget?.reset_duration || "1M",
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
@@ -197,6 +211,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				await createModelConfig({
 					model_name: data.modelName,
 					provider,
+					scope: data.scope || "global",
+					scope_id: data.scope === "virtual_key" ? data.scopeId : undefined,
 					budget:
 						data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null
 							? {
@@ -314,6 +330,75 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									</FormItem>
 								)}
 							/>
+
+							{/* Scope */}
+							<FormField
+								control={form.control}
+								name="scope"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Scope</FormLabel>
+										<Select
+											value={field.value || "global"}
+											onValueChange={(value) => {
+												field.onChange(value);
+												// Reset the scope target when switching scopes
+												form.setValue("scopeId", "", { shouldDirty: true });
+											}}
+											disabled={isEditing}
+										>
+											<FormControl>
+												<SelectTrigger className="w-full" data-testid="model-limit-scope-select">
+													<SelectValue placeholder="Global" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{MODEL_LIMIT_SCOPES.map((option) => (
+													<SelectItem key={option.value} value={option.value}>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Virtual Key picker (only for the Virtual Key scope) */}
+							{form.watch("scope") === "virtual_key" && (
+								<FormField
+									control={form.control}
+									name="scopeId"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Virtual Key</FormLabel>
+											<FormControl>
+												<div data-testid="model-limit-scope-id-select">
+													<ComboboxSelect
+														options={[
+															// Guarantee the currently-selected VK is selectable even if it
+															// falls outside the first page of fetched virtual keys.
+															...(modelConfig?.scope_id && modelConfig?.scope_name
+																? [{ label: modelConfig.scope_name, value: modelConfig.scope_id }]
+																: []),
+															...vksData.virtual_keys
+																.filter((vk) => vk.id !== modelConfig?.scope_id)
+																.map((vk) => ({ label: vk.name, value: vk.id })),
+														]}
+														value={field.value || null}
+														onValueChange={(value) => field.onChange(value ?? "")}
+														placeholder="Select a virtual key..."
+														disabled={isEditing}
+														noPortal
+													/>
+												</div>
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							)}
 
 							<DottedSeparator />
 

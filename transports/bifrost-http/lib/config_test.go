@@ -1102,7 +1102,7 @@ func (m *MockConfigStore) GetModelConfigsPaginated(ctx context.Context, params c
 	return nil, 0, nil
 }
 
-func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	return nil, nil
 }
 

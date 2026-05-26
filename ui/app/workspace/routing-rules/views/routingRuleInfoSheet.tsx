@@ -4,14 +4,14 @@ import { Button } from "@/components/ui/button";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { baseRoutingFields } from "@/lib/config/celFieldsRouting";
 import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingRule } from "@/lib/types/routingRules";
-import { getScopeLabel } from "@/lib/utils/routingRules";
-import { useSheetNavigation } from "@/hooks/useSheetNavigation";
+import { getScopeLabel } from "@/lib/utils/labels";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -41,9 +41,15 @@ function formatRuleValue(value: any): string {
 }
 
 function useScopeName(scope: string, scopeId?: string): string | undefined {
-	const { data: teamsData } = useGetTeamsQuery(undefined, { skip: scope !== "team" || !scopeId });
-	const { data: customersData } = useGetCustomersQuery(undefined, { skip: scope !== "customer" || !scopeId });
-	const { data: vksData } = useGetVirtualKeysQuery(undefined, { skip: scope !== "virtual_key" || !scopeId });
+	const { data: teamsData } = useGetTeamsQuery(undefined, {
+		skip: scope !== "team" || !scopeId,
+	});
+	const { data: customersData } = useGetCustomersQuery(undefined, {
+		skip: scope !== "customer" || !scopeId,
+	});
+	const { data: vksData } = useGetVirtualKeysQuery(undefined, {
+		skip: scope !== "virtual_key" || !scopeId,
+	});
 
 	return useMemo(() => {
 		if (!scopeId) return undefined;
@@ -105,7 +111,10 @@ function ConditionRow({ rule }: { rule: RuleType }) {
 	const bareKeyValue =
 		!keyMatch && (isHeader || isParam) && value
 			? value.includes(":")
-				? { key: value.slice(0, value.indexOf(":")), val: value.slice(value.indexOf(":") + 1) }
+				? {
+						key: value.slice(0, value.indexOf(":")),
+						val: value.slice(value.indexOf(":") + 1),
+					}
 				: { key: value, val: "" }
 			: null;
 	const keyName = keyMatch?.[1] ?? bareKeyValue?.key;
@@ -364,11 +373,19 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							<div className="grid grid-cols-2 gap-4">
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
-									<span className="text-sm">{formatDistanceToNow(new Date(rule.created_at), { addSuffix: true })}</span>
+									<span className="text-sm">
+										{formatDistanceToNow(new Date(rule.created_at), {
+											addSuffix: true,
+										})}
+									</span>
 								</div>
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Last Updated</p>
-									<span className="text-sm">{formatDistanceToNow(new Date(rule.updated_at), { addSuffix: true })}</span>
+									<span className="text-sm">
+										{formatDistanceToNow(new Date(rule.updated_at), {
+											addSuffix: true,
+										})}
+									</span>
 								</div>
 							</div>
 						</div>
