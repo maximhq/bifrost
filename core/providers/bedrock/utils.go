@@ -2188,3 +2188,56 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	}
 }
+
+// stripCachePointsFromBedrockRequest removes all CachePoint blocks from a
+// BedrockConverseRequest. Called for models that don't support prompt caching
+// (e.g. GLM, Llama) so their requests don't get a 400 from the Converse API.
+func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
+	// Strip cache points from message content blocks (including nested tool results).
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil {
+				continue
+			}
+			if content[j].ToolResult != nil {
+				inner := content[j].ToolResult.Content
+				m := 0
+				for k := range inner {
+					if inner[k].CachePoint == nil {
+						inner[m] = inner[k]
+						m++
+					}
+				}
+				content[j].ToolResult.Content = inner[:m]
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+	// Strip cache points from system messages.
+	// Filter out entries that were cache-point-only (would become empty objects).
+	ns := 0
+	for i := range req.System {
+		req.System[i].CachePoint = nil
+		if req.System[i].Text != nil || req.System[i].GuardContent != nil {
+			req.System[ns] = req.System[i]
+			ns++
+		}
+	}
+	req.System = req.System[:ns]
+	// Strip cache points from tools.
+	if req.ToolConfig != nil {
+		nt := 0
+		for i := range req.ToolConfig.Tools {
+			req.ToolConfig.Tools[i].CachePoint = nil
+			if req.ToolConfig.Tools[i].ToolSpec != nil || req.ToolConfig.Tools[i].SystemTool != nil {
+				req.ToolConfig.Tools[nt] = req.ToolConfig.Tools[i]
+				nt++
+			}
+		}
+		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
+	}
+}
