@@ -432,7 +432,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -673,7 +673,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -832,7 +832,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1645,7 +1645,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			startTimeErr = nil
@@ -1767,7 +1767,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			timeParseErr = nil
