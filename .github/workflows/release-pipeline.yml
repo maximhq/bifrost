@@ -289,6 +289,7 @@ jobs:
             github.com:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
@@ -373,6 +374,7 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            production.cloudfront.docker.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -485,6 +487,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -555,6 +558,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -637,6 +641,7 @@ jobs:
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -730,7 +735,13 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # Keep both files in sync - drift here will block egress to Postgres
+          # during the docker image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -840,7 +851,13 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # Keep both files in sync - drift here will block egress to Postgres
+          # during the docker image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -1480,13 +1497,7 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs:
-      [
-        build-binaries-x86,
-        build-binaries-arm64,
-        detect-changes,
-        bifrost-http-prep,
-      ]
+    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ubuntu-latest
     permissions:
@@ -1924,13 +1935,7 @@ jobs:
 
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
-    needs:
-      [
-        check-skip,
-        detect-changes,
-        docker-build-ubi9-amd64,
-        docker-build-ubi9-arm64,
-      ]
+    needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
     env:

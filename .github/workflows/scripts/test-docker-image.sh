@@ -210,8 +210,7 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     "initial_pool_size": 300,
     "allowed_origins": ["http://localhost:3000", "https://localhost:3000"],
     "enable_logging": true,
-    "enforce_governance_header": false,
-    "allow_direct_keys": false,
+    "enforce_auth_on_inference": false,
     "max_request_body_size_mb": 100
   },
   "encryption_key": ""
