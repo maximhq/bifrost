@@ -20,8 +20,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Corrected guardrail `timeout` examples in `values.yaml`: provider default is `30s`, rule default is `60s`.
 
 ### 2.1.18
-- Added `bifrost.framework.pricing.modelParametersUrl` to `values.yaml`, `values.schema.json`, and `_helpers.tpl`, allowing operators to override the URL Bifrost uses to fetch model parameter definitions.
 
+- Added `bifrost.framework.pricing.modelParametersUrl` to `values.yaml`, `values.schema.json`, and `_helpers.tpl`, allowing operators to override the URL Bifrost uses to fetch model parameter definitions.
 
 ### 2.1.17
 
