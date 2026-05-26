@@ -333,12 +333,13 @@ type Config struct {
 	// All plugins are stored in BasePlugins. Interface-specific caches are
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
-	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
-	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
-	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
-	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
-	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
-	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin] // Derived cache (auto-rebuilt)
+	pluginsMu            sync.Mutex                                                // Protects structural changes to BasePlugins
+	pluginOrderMap       map[string]pluginOrderInfo                                // Plugin ordering metadata (protected by pluginsMu)
+	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]                      // Master list of all plugins
+	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]                       // Derived cache (auto-rebuilt)
+	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]                       // Derived cache (auto-rebuilt)
+	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin]             // Derived cache (auto-rebuilt)
+	ConfigMarshallers    atomic.Pointer[map[string]schemas.ConfigMarshallerPlugin] // Derived cache (auto-rebuilt)
 	PluginLoader         plugins.PluginLoader
 
 	// Plugin metadata from config file/database
@@ -3782,11 +3783,10 @@ func (c *Config) GetLoadedHTTPTransportPlugins() []schemas.HTTPTransportPlugin {
 func (c *Config) rebuildInterfaceCaches() {
 	basePlugins := c.BasePlugins.Load()
 	if basePlugins == nil {
-		// Clear all caches atomically
+		// Clear all caches atomically, except ConfigMarshallers which are preserved.
 		emptyLLM := []schemas.LLMPlugin{}
 		emptyMCP := []schemas.MCPPlugin{}
 		emptyHTTP := []schemas.HTTPTransportPlugin{}
-
 		c.LLMPlugins.Store(&emptyLLM)
 		c.MCPPlugins.Store(&emptyMCP)
 		c.HTTPTransportPlugins.Store(&emptyHTTP)
@@ -3808,12 +3808,49 @@ func (c *Config) rebuildInterfaceCaches() {
 		if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
 			httpTransport = append(httpTransport, httpPlugin)
 		}
+		if cm, ok := p.(schemas.ConfigMarshallerPlugin); ok {
+			// RegisterConfigMarshaller adds/updates atomically without clearing other entries
+			c.RegisterConfigMarshaller(p.GetName(), cm)
+		}
 	}
 
-	// Atomic stores of all caches
 	c.LLMPlugins.Store(&llm)
 	c.MCPPlugins.Store(&mcp)
 	c.HTTPTransportPlugins.Store(&httpTransport)
+}
+
+// RegisterConfigMarshaller registers a config marshaller for a plugin by name without
+// adding the plugin to BasePlugins. Use this to register marshallers for disabled plugins
+// at startup so their stored configs can still be redacted/expanded via the API.
+func (c *Config) RegisterConfigMarshaller(name string, cm schemas.ConfigMarshallerPlugin) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin)
+		if old != nil {
+			maps.Copy(newMap, *old)
+		}
+		newMap[name] = cm
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
+}
+
+// RemoveConfigMarshaller explicitly removes a plugin's config marshaller.
+// Call this only when a plugin is permanently deleted, not when it is disabled.
+func (c *Config) RemoveConfigMarshaller(name string) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		if old == nil {
+			return
+		}
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin, len(*old))
+		maps.Copy(newMap, *old)
+		delete(newMap, name)
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
 }
 
 // IsPluginLoaded checks if a plugin with the given name is currently loaded.
