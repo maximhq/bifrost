@@ -854,6 +854,60 @@ paths:
   /api/governance/pricing-overrides/{id}:
     $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
 
+  # RBAC (roles, permissions, resources, operations)
+  /api/roles:
+    $ref: './paths/management/rbac.yaml#/roles'
+  /api/roles/{id}:
+    $ref: './paths/management/rbac.yaml#/roles-by-id'
+  /api/roles/{id}/permissions:
+    $ref: './paths/management/rbac.yaml#/roles-permissions'
+  /api/resources:
+    $ref: './paths/management/rbac.yaml#/resources'
+  /api/operations:
+    $ref: './paths/management/rbac.yaml#/operations'
+  /api/permissions:
+    $ref: './paths/management/rbac.yaml#/permissions'
+
+  # Access Profiles
+  /api/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles'
+  /api/access-profiles/{id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-by-id'
+  /api/access-profiles/{id}/activate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-activate'
+  /api/access-profiles/{id}/deactivate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-deactivate'
+  /api/access-profiles/{id}/clone:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-clone'
+  /api/access-profiles/{id}/propagate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-propagate'
+  /api/access-profiles/{id}/roles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-roles'
+  /api/access-profiles/{id}/roles/{role_id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-role-by-id'
+  /api/access-profiles/{id}/versions:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-versions'
+  /api/access-profiles/{id}/versions/{version}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-version-by-number'
+  /api/access-profiles/{id}/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id'
+  /api/access-profiles/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all'
+  /api/users/{target_user_id}/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
+  /api/users/{target_user_id}/access-profiles/{profile_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
+  /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
+  /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
+
+  # MCP Tool Groups
+  /api/mcp/tool-groups:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
+  /api/mcp/tool-groups/{id}:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
+
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
