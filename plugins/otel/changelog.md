@@ -1,1 +1,2 @@
+- feat: merge `trace.Attributes` onto every exported span at OTLP conversion time so `x-bf-dim-*` dimensions propagate to LLM call, plugin, retry, fallback, and MCP tool spans; span-level attributes win on conflict, empty-string values are skipped to avoid nil `KeyValue` entries (#3770)
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
