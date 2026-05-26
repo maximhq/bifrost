@@ -1,4 +1,5 @@
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -12,7 +13,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
@@ -21,9 +21,9 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { MCPServersEmptyState } from "./mcpServersEmptyState";
+import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
+import { MCPServersEmptyState } from "./mcpServersEmptyState";
 
 function MCPClientActionsMenu({
 	client,
@@ -245,6 +245,34 @@ export default function MCPClientsTable({
 		setSelectedMCPClient(null);
 	};
 
+	const selectedMCPClientIndex = useMemo(
+		() => (selectedMCPClient ? mcpClients.findIndex((c) => c.config.client_id === selectedMCPClient.config.client_id) : -1),
+		[selectedMCPClient, mcpClients],
+	);
+
+	const [pendingEdgeNav, setPendingEdgeNav] = useState<"first" | "last" | null>(null);
+
+	useEffect(() => {
+		if (pendingEdgeNav && mcpClients.length > 0) {
+			const target = pendingEdgeNav === "first" ? mcpClients[0] : mcpClients[mcpClients.length - 1];
+			setSelectedMCPClient(target);
+			setPendingEdgeNav(null);
+		}
+	}, [pendingEdgeNav, mcpClients]);
+
+	const handleDetailNavigate = (direction: "prev" | "next") => {
+		const newIndex = direction === "prev" ? selectedMCPClientIndex - 1 : selectedMCPClientIndex + 1;
+		if (newIndex >= 0 && newIndex < mcpClients.length) {
+			setSelectedMCPClient(mcpClients[newIndex]);
+		} else if (direction === "next" && offset + limit < totalCount) {
+			onOffsetChange(offset + limit);
+			setPendingEdgeNav("first");
+		} else if (direction === "prev" && offset > 0) {
+			onOffsetChange(Math.max(0, offset - limit));
+			setPendingEdgeNav("last");
+		}
+	};
+
 	const handleEditTools = async () => {
 		setShowDetailSheet(false);
 		setSelectedMCPClient(null);
@@ -268,7 +296,14 @@ export default function MCPClientsTable({
 	return (
 		<div className="space-y-4">
 			{showDetailSheet && selectedMCPClient && (
-				<MCPClientSheet mcpClient={selectedMCPClient} onClose={handleDetailSheetClose} onSubmitSuccess={handleEditTools} />
+				<MCPClientSheet
+					mcpClient={selectedMCPClient}
+					onClose={handleDetailSheetClose}
+					onSubmitSuccess={handleEditTools}
+					onNavigate={handleDetailNavigate}
+					hasPrev={selectedMCPClientIndex > 0 || offset > 0}
+					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
+				/>
 			)}
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
 				<AlertDialogContent>
