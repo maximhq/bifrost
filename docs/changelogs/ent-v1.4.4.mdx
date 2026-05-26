@@ -6,7 +6,9 @@ description: "Enterprise v1.4.4 changelog - 2026-05-27"
 <Update label="Bifrost Enterprise" description="v1.4.4">
 
 <Warning>
-  **Breaking changes in v1.4.0.** See the [v1.4.0 Migration Guide](/enterprise/migration-guides/v1.4.0) for full before/after examples, automatic migration details, and a step-by-step checklist before upgrading.
+  **Breaking changes in v1.4.0.** See the [v1.4.0 Migration
+  Guide](/enterprise/migration-guides/v1.4.0) for full before/after examples, automatic migration
+  details, and a step-by-step checklist before upgrading.
 </Warning>
 
 ## Changelog
@@ -73,14 +75,6 @@ Bifrost Enterprise v1.4.4 is a maintenance release on a clean OSS base of `trans
 - **Logging plugin shutdown drain** : logging plugin `batchWriter` shutdown drain race fixed.
 - **Model rankings and user-filter matviews** : model rankings and user-filter matviews now exclude blank and duplicate entries.
 - **Large numeric IDs in URL search params** : large numeric IDs no longer lose precision in URL search params.
-
-## 🏗️ Infrastructure
-
-- **New customer hub environments** : Terraform environments provisioned for thoughtspot, justworks, fpt, verizon, raisin, caffeine, tinder, auckuniv, primetals, and einstein, all added to the shared VPC Service Controls perimeter.
-- **Trial expiry extensions** : trial expiry dates extended for bluestaq and deckers.
-- **`metsci` license window migration** : `metsci` Dockerfile migrated from `EXPIRY` / `ENTERPRISE_TRIAL_EXPIRY` to `LICENSE_EXPIRY` / `ENTERPRISE_LICENSE_EXPIRY` with a one-year license window.
-- **Clean tagged OSS module pins** : all OSS module pins promoted from pre-release pseudo-versions to clean tagged releases (`v1.5.13`, `v1.3.13`, etc.).
-- **New direct dependencies** : `github.com/segmentio/kafka-go v0.4.47` and `cloud.google.com/go/pubsub/v2 v2.4.0`.
 
 ## 📀 Base OSS version
 
