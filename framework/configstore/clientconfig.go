@@ -474,7 +474,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
+			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
+			} else {
+				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
+			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}

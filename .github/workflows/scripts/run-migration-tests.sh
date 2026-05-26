@@ -1750,6 +1750,29 @@ append_dynamic_columns_postgres() {
     echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
     echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.4 columns
+  # -------------------------------------------------------------------------
+
+  # governance_virtual_key_provider_configs.blacklisted_models (added in v1.5.4 via migrationAddVirtualKeyBlacklistedModelsColumn)
+  if column_exists_postgres "governance_virtual_key_provider_configs" "blacklisted_models"; then
+    echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_virtual_keys.created_by_user_id (added in v1.5.4 via migrationAddCreatedByUserIDColumnForVirtualKeys)
+  if column_exists_postgres "governance_virtual_keys" "created_by_user_id"; then
+    echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # logs.inc_number (added in v1.5.4 via migrationAddLogIncNumberColumn)
+  if column_exists_postgres "logs" "inc_number"; then
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2702,6 +2725,30 @@ append_dynamic_columns_sqlite() {
   # mcp_tool_logs.business_unit_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
   echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
   echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.5.4 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # governance_virtual_key_provider_configs.blacklisted_models (added in v1.5.4 via migrationAddVirtualKeyBlacklistedModelsColumn)
+    if column_exists_sqlite "$config_db" "governance_virtual_key_provider_configs" "blacklisted_models"; then
+      echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_virtual_keys.created_by_user_id (added in v1.5.4 via migrationAddCreatedByUserIDColumnForVirtualKeys)
+    if column_exists_sqlite "$config_db" "governance_virtual_keys" "created_by_user_id"; then
+      echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+    fi
+  fi
+
+  # logs.inc_number (added in v1.5.4 via migrationAddLogIncNumberColumn)
+  # Emitted unconditionally - logs table is in logs_db; fails silently on config_db
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
 }
 
 # ============================================================================
@@ -3838,8 +3885,9 @@ compare_postgres_snapshots() {
     fi
     # azure_deployments_json, vertex_deployments_json, bedrock_deployments_json, replicate_deployments_json
     # (dropped from config_keys - migrated to provider-level deployment config)
+    # azure_api_version (dropped from config_keys in v1.5.4 via migrationDropAzureAPIVersionColumn)
     if [ "$table" = "config_keys" ]; then
-      dropped_columns="$dropped_columns azure_deployments_json vertex_deployments_json bedrock_deployments_json replicate_deployments_json"
+      dropped_columns="$dropped_columns azure_deployments_json vertex_deployments_json bedrock_deployments_json replicate_deployments_json azure_api_version"
     fi
     # budget_id (dropped from governance_virtual_keys and governance_virtual_key_provider_configs
     # in add_multi_budget_tables - ownership moved to governance_budgets.virtual_key_id/provider_config_id)

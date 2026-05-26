@@ -100,7 +100,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 	for _, tool := range tools {
 		switch tool.Type {
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-			if !features.WebSearch {
+			if !features.WebSearch && !features.WebSearchNova {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeWebFetch:
@@ -108,7 +108,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeCodeInterpreter:
-			if !features.CodeExecution {
+			if !features.CodeExecution && !features.CodeExecNova {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeComputerUsePreview:
