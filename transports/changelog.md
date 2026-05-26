@@ -1,22 +1,42 @@
 ## ✨ Features
 
-- **Virtual Key Blocked Models** — Block specific models at the virtual key provider-config level; blocked models take priority over allowed models and are enforced by governance (#3653)
-- **Virtual Key Ownership** — Virtual keys now capture and display a `created_by` user attribution (#3672)
-- **MCP Log Attribution** — MCP tool logs are stamped with user, team, customer, and business unit IDs so MCP usage can be traced like LLM usage
-- **Team & Business Unit Filters** — Added team and business unit filters across the dashboard and logs views (#3650)
-- **Sticky Time Filters** — Time filter selections are preserved when navigating between sidebar items (#3647)
+- **Azure v1 API Migration** — Migrated Azure provider to the v1 API: removed the `api-version` query parameter and the `/openai/deployments/{model}/...` URL pattern in favor of `/openai/v1/{operation}`; the `api_version` field has been dropped from `AzureKeyConfig` (#3661, #3756)
+- **EnvVar Support for OTEL & Prometheus Configs** — `CollectorURL`, `MetricsEndpoint`, headers, push gateway URL, and basic auth credentials can now be sourced from environment variables (e.g., `env.OTEL_COLLECTOR_URL`); added a new `ConfigMarshallerPlugin` interface that lets plugins control storage/redaction round-trips (#3651)
+- **OTel Extra Header Forwarding** — `x-bf-eh-*` extra headers forwarded to upstream providers are now also emitted on the request span under `gen_ai.request.extra_header.*` for end-to-end tracing (#3730)
+- **OTel Semantic Conventions** — Aligned OTel attribute keys with the OpenTelemetry GenAI spec (canonical `gen_ai.*` and new `bifrost.*` attributes); legacy attributes are retained in parallel to avoid breaking existing dashboards (#3732)
+- **VK Quota with Provider Configs** — `GetVirtualKeyQuotaByValue` and the `getVirtualKeyQuota` HTTP response now include `provider_configs` with their budgets and rate limits (#3721)
+- **MCP Temp Token Non-Auth Toggle** — Added `mcp_enable_temp_token_auth` client config flag to gate short-lived MCP token minting for non-authenticated users (#3720)
+- **Responses Stream in JSON Parser** — `jsonparser` plugin now handles OpenAI Responses API streaming (`ResponsesStreamRequest`) in addition to chat completions (#3749)
+- **Session API Rework** — Logout now calls both the password-based session logout and OAuth logout endpoints and resets all RTK Query cache state (#3698)
 
 ## 🐞 Fixed
 
-- **Idle Timeout Panic** — Fixed a panic in the streaming idle-timeout reader and added a guard to skip reads once the connection is closed (#3672)
-- **Anthropic Streaming** — Preserve the tool-call stop reason in the Anthropic streaming fallback (#3640) (thanks [@dicnunz](https://github.com/dicnunz)!)
-- **TTFT Metric** — Fixed the request start-time setting so the time-to-first-token metric is accurate (#3668)
-- **Vertex Service Tier** — Map the Vertex traffic type to the correct Bifrost service tier (#3662)
-- **Keyless Providers** — Fixed `ListModels` for providers configured without an API key (#3655)
-- **Anthropic Tools** — Stopped forcing `type: custom` on Anthropic tool definitions (#3652)
-- **Node Usage Reconciliation** — Added a monotonic log cursor so reconciliation no longer skips late async log writes (#3664)
-- **Fallback Budget Tracking** — Clear the stale governance rejection flag on allow so successful fallback retries count toward budgets and rate limits (#3645)
-- **Virtual Keys Table** — Table now fills available height with a sticky header and scrollable body (#3676)
-- **Sheet Layout** — Removed save/cancel icons and fixed sheet layout growth in routing rule and virtual key sheets (#3675)
-- **Toast Click-Through** — Toasts remain clickable above modal overlays (#3674)
-- **Direct Access Control** — Reverted the virtual key `access_profile_id` direct access profile assignment shipped in v1.5.3; the `access_profile_id` column has been dropped (#3669, #3670)
+- **Streaming Latency for Observability** — Deferred root span termination to the trace completer callback for streaming requests so request latency is no longer inflated by header-flush time (#3762)
+- **Stream Cancellation Race** — Set `BifrostContextKeyConnectionClosed` before closing the stream and short-circuit `idleTimeoutReader.Read` when the connection is already closed to avoid panics and hangs on cancellation (#3733)
+- **Bedrock Cache Points** — Strip cache points from Bedrock requests for models that do not support prompt caching (e.g., GLM, Llama) to avoid Converse API errors (#3754)
+- **Bedrock Empty Text Blocks** — Skip empty/nil text blocks during Bedrock response conversion to avoid invalid messages (#3747)
+- **Bedrock Reasoning + Tools** — Preserve reasoning content blocks on assistant turns that also contain tool calls in the Bedrock chat converter (#3690)
+- **Bedrock Search Content & Video** — Restored search content and video parts that were being dropped from Bedrock-native passthrough requests (#3729)
+- **Structured Output Stop Reason** — Fixed an incorrect `tool_calls` finish reason when structured output is combined with extended-thinking tools (#3685)
+- **Gemini Tool Schema Passthrough** — Forward full tool parameter schemas via `parametersJsonSchema` instead of the lossy `parameters` form; corrected tool response role to `user`; resolved structured output + tools conflict (#3761)
+- **Anthropic Stop Reason & Tool Versions** — Normalized stop reason mapping (`end_turn` to `stop`, `tool_use` to `tool_calls`, `max_tokens` to `length`) and upgraded `text_editor_20250124`/`str_replace_editor` to `text_editor_20250728` for computer-use tools (#3761)
+- **Azure Endpoint Redaction** — Fixed a panic when `AzureKeyConfig.Endpoint` is a literal value rather than an env reference (#3761)
+- **Auth Middleware Path Match** — Match temp-token auth middleware whitelist against the request path only, not the full URI with query parameters (#3737)
+- **Governance Blocked Models UI** — Restored the missing Blocked Models create/edit UI in the VK provider config sheet (#3750)
+- **Logging Plugin Cleanup Drain** — Fixed a shutdown race where `batchWriter` could drop in-flight log entries; `Cleanup` now drains both the recovered batch and remaining queue within a 30-second budget (#3717)
+- **Model Rankings Empty Entries** — Excluded entries with empty `model` values from model rankings matview queries so blank rows no longer surface in the UI (#3758)
+- **User Filter Duplicates** — Recreated `mv_filter_users` matview to require non-empty `user_name`, eliminating duplicate filter dropdown entries (#3764)
+- **User Filter Display Name** — Use `user_name` instead of `user_id` as the display label for users in logging filters (#3691)
+- **Large Numeric ID Precision** — Preserve large numeric IDs in URL search params by skipping JSON parsing for plain strings (#3692)
+
+## 🔧 Refactors & Chores
+
+- **Error Propagation for GetAvailable\* APIs** — `GetAvailable*` methods on `LoggerPlugin`/`LogManager` now return wrapped errors instead of silently logging and returning empty slices (#3759)
+- **Governance Blocklist Matching** — Use `slices.Contains` for VK blocked-model matching for clearer code with identical semantics (#3727)
+- **Exported `ResolvePeriod`** — Renamed `resolvePeriod` to `ResolvePeriod` so external packages can reuse the period parsing (#3763)
+
+## 📚 Docs
+
+- **OTEL Env Var Documentation** — Documented `env.VAR_NAME` support for `collector_url`, `metrics_endpoint`, and headers in OTEL/Prometheus plugin docs
+- **OTEL OSS Features & Examples** — Added OTEL documentation to the OSS features list with usage examples (#3731)
+- **Anthropic Auth Recommendation** — Recommend `ANTHROPIC_AUTH_TOKEN` over `ANTHROPIC_CUSTOM_HEADERS` for Claude Code authentication (#3686)
