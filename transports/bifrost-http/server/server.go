@@ -215,7 +215,7 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 	if err != nil {
 		return err
 	}
-	if err := s.Client.AddMCPClient(clientConfig); err != nil {
+	if err := s.Client.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {

@@ -228,6 +228,10 @@ func PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPCo
 	if pluginConfig.EnableLogging {
 		fmt.Printf("[MCP-Only Plugin] PreMCPConnectionHook called: client=%s type=%s auth=%s\n",
 			req.ClientName, req.ConnectionType, req.AuthType)
+
+		allHeaders := ctx.Value(schemas.BifrostContextKeyRequestHeaders)
+		fmt.Printf("[MCP-Only Plugin] Request headers: %+v\n", allHeaders)
+
 	}
 
 	// Example: refuse connections to blocklisted clients.

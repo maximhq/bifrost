@@ -139,7 +139,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		for _, clientConfig := range config.ClientConfigs {
 			go func(clientConfig *schemas.MCPClientConfig) {
 				defer wg.Done()
-				if err := manager.AddClient(clientConfig); err != nil {
+				if err := manager.AddClient(manager.ctx, clientConfig); err != nil {
 					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
 					// Retain the entry in Disconnected state and start a health monitor to
 					// recover it automatically. On startup, a connection failure is likely
