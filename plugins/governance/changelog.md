@@ -1,2 +1,2 @@
-- feat: virtual key blocked-models enforcement — reject requests when the requested model is blocked at the VK provider-config level (#3653)
-- fix: clear stale `governanceRejectedContextKey` on an allow decision so successful fallback retries count toward budgets and rate limits (#3645)
+- fix: restore VK blocked models create/edit UI in the provider config sheet (#3750)
+- refactor: use `slices.Contains` for VK blocked-model matching (#3727)

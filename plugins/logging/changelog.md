@@ -1,1 +1,2 @@
-- feat: stamp MCP tool logs with governance ownership (user, team, customer, and business unit IDs) from the request context
+- fix: drain pending log entries on `Cleanup` to avoid dropping in-flight batches at shutdown; bounded 30s drain budget (#3717)
+- refactor: `GetAvailable*` methods now return wrapped errors instead of silently logging and returning empty slices (#3759)
