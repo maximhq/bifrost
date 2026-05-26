@@ -1,5 +1,0 @@
-- feat: include `ProviderConfigs` with budgets and rate limits in virtual key quota query and response (#3721)
-- feat: add `mcp_enable_temp_token_auth` client config flag to gate MCP temp token minting for non-auth users (#3720)
-- fix: recreate `mv_filter_users` matview to exclude rows with empty `user_name` (#3764)
-- fix: exclude empty model entries from model rankings matview queries (#3758)
-- chore: add migration test column blocks for new v1.5.4 governance/configstore columns (#3761)
