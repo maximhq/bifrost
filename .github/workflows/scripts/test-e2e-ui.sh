@@ -79,6 +79,24 @@ if [ "$SERVICES_READY" = false ]; then
   exit 1
 fi
 
+echo "⏳ Waiting for Weaviate readiness via host..."
+WEAVIATE_WAIT=60
+WEAVIATE_ELAPSED=0
+WEAVIATE_READY=false
+while [ $WEAVIATE_ELAPSED -lt $WEAVIATE_WAIT ]; do
+  if curl -fsS -o /dev/null "http://localhost:9000/v1/.well-known/ready"; then
+    WEAVIATE_READY=true
+    echo "✅ Weaviate ready (${WEAVIATE_ELAPSED}s)"
+    break
+  fi
+  sleep 2
+  WEAVIATE_ELAPSED=$((WEAVIATE_ELAPSED + 2))
+done
+if [ "$WEAVIATE_READY" = false ]; then
+  echo "❌ Weaviate failed readiness check within ${WEAVIATE_WAIT}s"
+  exit 1
+fi
+
 # Reset PostgreSQL database to clean state
 echo "🧹 Resetting PostgreSQL database..."
 docker exec -e PGPASSWORD=bifrost_password "$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps -q postgres)" \
