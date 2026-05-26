@@ -1120,6 +1120,17 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if len(transportLogs) > 0 {
 					tracer.AttachPluginLogs(traceID, transportLogs)
 				}
+				// End the root HTTP span now that the stream has fully drained, so its
+				// latency covers the entire streamed response. For deferred (streaming)
+				// requests the TracingMiddleware defer below intentionally leaves the root
+				// span open; ending it here keeps the parent from closing before its child
+				// llm.call span (which is ended by completeDeferredSpan on the final chunk).
+				// Status is always Ok: deferral is only set after the stream was set up with
+				// HTTP 200, and mid-stream failures surface as SSE error frames / on the
+				// llm.call span, not as an HTTP error on the root.
+				if rootHandle := tracer.GetSpanHandleByID(traceID, nil); rootHandle != nil {
+					tracer.EndSpan(rootHandle, schemas.SpanStatusOk, "")
+				}
 				tracer.CompleteAndFlushTrace(traceID)
 			})
 			// Create root span for the HTTP request
@@ -1137,18 +1148,27 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				}
 			}
 			defer func() {
+				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
-					if ctx.Response.StatusCode() >= 400 {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
-					} else {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+					// For deferred (streaming) requests, the trace completer ends the root
+					// span after the stream fully drains, so its latency reflects the whole
+					// streamed response. Ending it here (at handler return) would close the
+					// parent before the deferred llm.call span finishes, making the child
+					// span appear longer than its parent in trace viewers.
+					if !deferred {
+						if ctx.Response.StatusCode() >= 400 {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
+						} else {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+						}
 					}
 				}
 				// Check if trace completion is deferred (for streaming requests)
-				// If deferred, the streaming handler will complete the trace after stream ends
-				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+				// If deferred, the streaming handler will complete the trace (and end the
+				// root span via the trace completer) after the stream ends.
+				if deferred {
 					return
 				}
 				// Attach transport plugin logs to trace before completion
