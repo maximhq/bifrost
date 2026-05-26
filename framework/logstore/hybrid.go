@@ -185,6 +185,11 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), false, "", data, tags)
 }
 
+// enqueueRawUpload submits a pre-serialized payload to the upload queue.
+// Drops the upload (and increments droppedUploads) when the store is closed,
+// the data is empty, the in-flight byte budget would be exceeded, or the queue
+// is full. Used by both regular log uploads (via enqueueUpload) and MCP tool
+// log uploads, which already hold raw JSON bytes.
 func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, mcp bool, status string, data []byte, tags map[string]string) {
 	if h.closed.Load() || len(data) == 0 {
 		return
@@ -250,6 +255,11 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	}
 }
 
+// Create writes a lightweight DB row (with payload fields stripped per
+// excludedPayloadFields) and asynchronously offloads the full payload to
+// object storage. The caller's entry is preserved on DB failure by writing to
+// a shallow copy; on success, only ContentSummary is propagated back so the
+// caller can observe what was persisted.
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -267,6 +277,9 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	return nil
 }
 
+// CreateIfNotExists writes the lightweight DB row only when no row with the
+// same ID exists, then offloads the full payload to object storage on insert.
+// Same payload-stripping and shallow-copy semantics as Create.
 func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -284,6 +297,9 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	return nil
 }
 
+// BatchCreateIfNotExists inserts many lightweight DB rows in a single inner
+// call, then enqueues one object-storage upload per inserted entry. Nil
+// entries are skipped. On DB failure no uploads are enqueued.
 func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
 	if len(entries) == 0 {
 		return nil
@@ -337,6 +353,9 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	return nil
 }
 
+// FindByID loads a log row from the DB and hydrates its payload fields from
+// object storage when HasObject is true. Object-store fetch failures are
+// logged but not returned, so the caller still receives the DB row.
 func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	log, err := h.inner.FindByID(ctx, id)
 	if err != nil {
@@ -369,6 +388,10 @@ func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFiel
 	pruneUnrequestedPayloadFields(log, requestedFields)
 }
 
+// hydrateMCPToolLog fetches the offloaded payload from object storage and
+// merges it into the MCPToolLog. It is a no-op when log is nil or HasObject
+// is false. Errors from the underlying object-store fetch are returned to the
+// caller (unlike hydrateLog, MCP tool log payloads are not optional).
 func (h *HybridLogStore) hydrateMCPToolLog(ctx context.Context, log *MCPToolLog) error {
 	if log == nil || !log.HasObject {
 		return nil
@@ -376,6 +399,10 @@ func (h *HybridLogStore) hydrateMCPToolLog(ctx context.Context, log *MCPToolLog)
 	return h.hydrateMCPToolLogFromObject(ctx, log)
 }
 
+// hydrateMCPToolLogFromObject unconditionally fetches the payload from object
+// storage (skipping the HasObject check) and merges it into the log. Used on
+// the update path where the payload must be loaded even when has_object has
+// not yet been set on the DB row.
 func (h *HybridLogStore) hydrateMCPToolLogFromObject(ctx context.Context, log *MCPToolLog) error {
 	if log == nil {
 		return nil
@@ -391,12 +418,19 @@ func (h *HybridLogStore) hydrateMCPToolLogFromObject(ctx context.Context, log *M
 	return nil
 }
 
+// Update passes the update through to the inner store for index/scalar field
+// updates. Payload-field changes are not re-offloaded here; the logging
+// plugin owns that path and calls processUpload directly when it needs to.
 func (h *HybridLogStore) Update(ctx context.Context, id string, entry any) error {
 	// Pass through to inner store for index field updates.
 	// Payload fields in the update map are handled separately by the logging plugin.
 	return h.inner.Update(ctx, id, entry)
 }
 
+// DeleteLog removes a single log row from the DB and, when HasObject is true,
+// also deletes the corresponding payload from object storage. Object-store
+// delete failures are logged but do not fail the operation, since the DB row
+// (the source of truth for visibility) is already gone.
 func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 	log, findErr := h.inner.FindByID(ctx, id)
 	if findErr != nil && !errors.Is(findErr, ErrNotFound) {
@@ -414,6 +448,10 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteLogs removes many log rows from the DB and batches a single
+// DeleteBatch call against object storage for any rows that had HasObject
+// set. Keys are collected before the DB delete so we can still identify
+// object-store entries to clean up.
 func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	// Collect keys for S3 deletion before removing from DB.
 	var keys []string
@@ -437,11 +475,21 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// DeleteLogsBatch deletes old DB rows older than cutoff in batches of
+// batchSize. Object-store entries are intentionally NOT deleted here: the
+// expectation is that the bucket has a lifecycle policy configured to expire
+// objects on the same schedule, which is far cheaper than per-row DELETEs.
 func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	// Delegate to inner — S3 objects will be cleaned up by lifecycle policies.
 	return h.inner.DeleteLogsBatch(ctx, cutoff, batchSize)
 }
 
+// Close shuts the store down cleanly: marks the store closed (so further
+// enqueues are dropped), closes the upload queue, waits for workers to drain
+// any in-flight uploads, then closes the object store and the inner store.
+// If ctx is cancelled before workers drain, the cancellation is logged but
+// Close still waits for workers to exit to avoid closing dependencies
+// mid-flight.
 func (h *HybridLogStore) Close(ctx context.Context) error {
 	h.closed.Store(true)
 	close(h.uploadQueue)
@@ -470,10 +518,15 @@ func (h *HybridLogStore) DroppedUploads() int64 {
 
 // --- Delegated methods (pass through to inner store unchanged) ---
 
+// Ping delegates to the inner store's health check.
 func (h *HybridLogStore) Ping(ctx context.Context) error {
 	return h.inner.Ping(ctx)
 }
 
+// FindFirst returns the first log matching query. When the projection asks
+// for payload-bearing fields (or the projection is empty, implying full
+// hydration), the result is hydrated from object storage; otherwise the DB
+// row is returned as-is.
 func (h *HybridLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
 	if needsHydration && len(fields) > 0 {
@@ -489,6 +542,9 @@ func (h *HybridLogStore) FindFirst(ctx context.Context, query any, fields ...str
 	return log, nil
 }
 
+// FindAll returns all logs matching query. Each result is hydrated from
+// object storage when the projection requires payload fields. Per-row
+// hydration failures are logged inside hydrateLog and do not fail the call.
 func (h *HybridLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
 	if needsHydration && len(fields) > 0 {
@@ -506,118 +562,181 @@ func (h *HybridLogStore) FindAll(ctx context.Context, query any, fields ...strin
 	return logs, nil
 }
 
+// FindAllDistinct delegates to the inner store. No hydration is performed:
+// distinct queries operate purely on DB-resident columns and never need the
+// offloaded payload.
 func (h *HybridLogStore) FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	return h.inner.FindAllDistinct(ctx, query, fields...)
 }
 
+// HasLogs delegates to the inner store and reports whether any log rows
+// exist. The object store is not consulted.
 func (h *HybridLogStore) HasLogs(ctx context.Context) (bool, error) {
 	return h.inner.HasLogs(ctx)
 }
 
+// SearchLogs delegates to the inner store. Search operates on indexed DB
+// columns (including ContentSummary); payloads are not hydrated here.
 func (h *HybridLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
 	return h.inner.SearchLogs(ctx, filters, pagination)
 }
 
+// GetSessionLogs delegates to the inner store and returns the paginated logs
+// belonging to the given session.
 func (h *HybridLogStore) GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error) {
 	return h.inner.GetSessionLogs(ctx, sessionID, pagination)
 }
 
+// GetSessionSummary delegates to the inner store and returns an aggregated
+// summary for the given session.
 func (h *HybridLogStore) GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error) {
 	return h.inner.GetSessionSummary(ctx, sessionID)
 }
 
+// GetStats delegates to the inner store and returns aggregate statistics for
+// the matching log rows.
 func (h *HybridLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
 	return h.inner.GetStats(ctx, filters)
 }
 
+// GetHistogram delegates to the inner store and returns a request-count
+// histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
 	return h.inner.GetHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetTokenHistogram delegates to the inner store and returns a token-usage
+// histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error) {
 	return h.inner.GetTokenHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetCostHistogram delegates to the inner store and returns a cost histogram
+// bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error) {
 	return h.inner.GetCostHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetModelHistogram delegates to the inner store and returns a per-model
+// request histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetModelHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error) {
 	return h.inner.GetModelHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetLatencyHistogram delegates to the inner store and returns a latency
+// histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	return h.inner.GetLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetProviderCostHistogram delegates to the inner store and returns a
+// per-provider cost histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
 	return h.inner.GetProviderCostHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetProviderTokenHistogram delegates to the inner store and returns a
+// per-provider token histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error) {
 	return h.inner.GetProviderTokenHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetProviderLatencyHistogram delegates to the inner store and returns a
+// per-provider latency histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	return h.inner.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetModelRankings delegates to the inner store and returns ranked usage
+// aggregates per model for the matching log rows.
 func (h *HybridLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
 	return h.inner.GetModelRankings(ctx, filters)
 }
 
+// GetUserRankings delegates to the inner store and returns ranked usage
+// aggregates per user for the matching log rows.
 func (h *HybridLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
 	return h.inner.GetUserRankings(ctx, filters)
 }
 
+// GetDimensionCostHistogram delegates to the inner store and returns a cost
+// histogram bucketed by bucketSizeSeconds and grouped by the given dimension.
 func (h *HybridLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
 	return h.inner.GetDimensionCostHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
+// GetDimensionTokenHistogram delegates to the inner store and returns a token
+// histogram bucketed by bucketSizeSeconds and grouped by the given dimension.
 func (h *HybridLogStore) GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
 	return h.inner.GetDimensionTokenHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
+// GetDimensionLatencyHistogram delegates to the inner store and returns a
+// latency histogram bucketed by bucketSizeSeconds and grouped by the given
+// dimension.
 func (h *HybridLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
 	return h.inner.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
+// BulkUpdateCost delegates to the inner store and updates the cost column
+// for each (logID -> cost) pair in a single round trip.
 func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
 	return h.inner.BulkUpdateCost(ctx, updates)
 }
 
+// GetNodeUsageAfter delegates to the inner store and returns usage
+// aggregates for the given node since cursor, used by the cluster gossip
+// path to ship incremental usage to peers.
 func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
 	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor)
 }
 
+// Flush delegates to the inner store and forces any buffered DB writes since
+// the given timestamp to be persisted. Object-store uploads are independently
+// queued and not affected.
 func (h *HybridLogStore) Flush(ctx context.Context, since time.Time) error {
 	return h.inner.Flush(ctx, since)
 }
 
+// IsLogEntryPresent delegates to the inner store and reports whether a log
+// row with the given ID exists.
 func (h *HybridLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {
 	return h.inner.IsLogEntryPresent(ctx, id)
 }
 
+// GetDistinctAliases delegates to the inner store and returns distinct alias
+// values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetDistinctAliases(ctx, limit, query)
 }
 
+// GetDistinctModels delegates to the inner store and returns distinct model
+// values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetDistinctModels(ctx, limit, query)
 }
 
+// GetDistinctKeyPairs delegates to the inner store and returns distinct
+// (idCol, nameCol) pairs matching query, capped at limit. Used to populate
+// id/name filters in the UI for virtual keys, providers, etc.
 func (h *HybridLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
 	return h.inner.GetDistinctKeyPairs(ctx, idCol, nameCol, limit, query)
 }
 
+// GetDistinctRoutingEngines delegates to the inner store and returns
+// distinct routing-engine values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetDistinctRoutingEngines(ctx, limit, query)
 }
 
+// GetDistinctStopReasons delegates to the inner store and returns distinct
+// stop-reason values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetDistinctStopReasons(ctx, limit, query)
 }
 
+// GetDistinctMetadataKeys delegates to the inner store and returns distinct
+// metadata keys (and their distinct values) matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
 	return h.inner.GetDistinctMetadataKeys(ctx, limit, query)
 }
@@ -625,18 +744,23 @@ func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int,
 // MCP Tool Log analytics methods are delegated directly. Detail/write paths
 // below offload full MCP log objects while keeping DB rows lightweight.
 
+// GetMCPHistogram delegates to the inner store and returns an MCP tool-call
+// count histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetMCPCostHistogram returns the cost histogram for MCP tool logs.
 func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error) {
 	return h.inner.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetMCPTopTools returns the top tools used in MCP tool logs.
 func (h *HybridLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error) {
 	return h.inner.GetMCPTopTools(ctx, filters, limit)
 }
 
+// applyMCPToolLogUpdate applies the updates from an entry to the target MCPToolLog entry.
 func applyMCPToolLogUpdate(target *MCPToolLog, entry any) error {
 	switch v := entry.(type) {
 	case map[string]interface{}:
@@ -661,6 +785,7 @@ func applyMCPToolLogUpdate(target *MCPToolLog, entry any) error {
 	}
 }
 
+// applyMCPToolLogUpdateMap applies the updates from a map to the target MCPToolLog entry.
 func applyMCPToolLogUpdateMap(target *MCPToolLog, updates map[string]interface{}) error {
 	for key, value := range updates {
 		switch key {
@@ -725,6 +850,7 @@ func applyMCPToolLogUpdateMap(target *MCPToolLog, updates map[string]interface{}
 	return target.DeserializeFields()
 }
 
+// applyMCPToolLogUpdateStruct applies the updates from a MCPToolLog struct to the target MCPToolLog entry.
 func applyMCPToolLogUpdateStruct(target *MCPToolLog, update *MCPToolLog) error {
 	if update.RequestID != "" {
 		target.RequestID = update.RequestID
@@ -778,7 +904,8 @@ func applyMCPToolLogUpdateStruct(target *MCPToolLog, update *MCPToolLog) error {
 	return target.DeserializeFields()
 }
 
-func prepareMCPToolLogDBUpdates(entry any) (map[string]interface{}, error) {
+// prepareMCPToolLogDBUpdates prepares a map of DB updates from a MCPToolLog entry.
+func prepareMCPToolLogDBUpdates(entry any) (map[string]any, error) {
 	switch v := entry.(type) {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(v))
@@ -809,12 +936,13 @@ func prepareMCPToolLogDBUpdates(entry any) (map[string]interface{}, error) {
 	}
 }
 
-func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]interface{}, error) {
+// prepareMCPToolLogDBUpdatesFromStruct prepares a map of DB updates from a MCPToolLog struct.
+func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]any, error) {
 	if err := update.SerializeFields(); err != nil {
 		return nil, err
 	}
 	PrepareMCPToolDBEntry(&update)
-	out := make(map[string]interface{})
+	out := make(map[string]any)
 	if update.RequestID != "" {
 		out["request_id"] = update.RequestID
 	}
@@ -857,7 +985,8 @@ func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]interfa
 	return out, nil
 }
 
-func numericToFloat64(value interface{}) (float64, bool) {
+// numericToFloat64 converts a numeric value to a float64, returning the value and a success flag.
+func numericToFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
 	case float64:
 		return v, true
@@ -874,6 +1003,7 @@ func numericToFloat64(value interface{}) (float64, bool) {
 	}
 }
 
+// marshalMCPPreviewString marshals a string into a JSON string for use as an MCP preview field.
 func marshalMCPPreviewString(s string) string {
 	data, err := sonic.Marshal(s)
 	if err != nil {
@@ -882,6 +1012,7 @@ func marshalMCPPreviewString(s string) string {
 	return string(data)
 }
 
+// CreateMCPToolLog creates a new MCP tool log in the DB and enqueues it for offload to object storage.
 func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
 	payload, err := MarshalMCPToolLogPayload(entry)
 	if err != nil {
@@ -898,6 +1029,7 @@ func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog
 	return nil
 }
 
+// BatchCreateMCPToolLogsIfNotExists creates MCP tool logs in the DB and enqueues them for offload to object storage, if they do not already exist.
 func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
 	if len(entries) == 0 {
 		return nil
@@ -945,6 +1077,7 @@ func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, 
 	return nil
 }
 
+// FindMCPToolLog finds an MCP tool log by its ID and hydrates it with any associated object storage data.
 func (h *HybridLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error) {
 	log, err := h.inner.FindMCPToolLog(ctx, id)
 	if err != nil {
@@ -956,6 +1089,7 @@ func (h *HybridLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToo
 	return log, nil
 }
 
+// UpdateMCPToolLog updates an existing MCP tool log with the given ID using the provided entry data.
 func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
 	current, err := h.inner.FindMCPToolLog(ctx, id)
 	if err != nil {
@@ -986,18 +1120,22 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	return nil
 }
 
+// SearchMCPToolLogs searches for MCP tool logs that match the given filters and returns the results.
 func (h *HybridLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error) {
 	return h.inner.SearchMCPToolLogs(ctx, filters, pagination)
 }
 
+// GetMCPToolLogStats returns statistics about MCP tool logs that match the given filters.
 func (h *HybridLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error) {
 	return h.inner.GetMCPToolLogStats(ctx, filters)
 }
 
+// HasMCPToolLogs returns whether there are any MCP tool logs in the store.
 func (h *HybridLogStore) HasMCPToolLogs(ctx context.Context) (bool, error) {
 	return h.inner.HasMCPToolLogs(ctx)
 }
 
+// DeleteMCPToolLogs deletes MCP tool logs with the given IDs, including any associated object storage objects.
 func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
 	var keys []string
 	for _, id := range ids {
@@ -1020,40 +1158,49 @@ func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) er
 	return nil
 }
 
+// FlushMCPToolLogs flushes MCP tool logs that are older than the given time.
 func (h *HybridLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {
 	return h.inner.FlushMCPToolLogs(ctx, since)
 }
 
+// GetAvailableToolNames returns a list of tool names that match the given query.
 func (h *HybridLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetAvailableToolNames(ctx, limit, query)
 }
 
+// GetAvailableServerLabels returns a list of server labels that match the given query.
 func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetAvailableServerLabels(ctx, limit, query)
 }
 
+// GetAvailableMCPVirtualKeys returns a list of MCP tool log virtual keys that match the given query.
 func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
 // Async Job methods — delegated directly.
 
+// CreateAsyncJob creates a new async job.
 func (h *HybridLogStore) CreateAsyncJob(ctx context.Context, job *AsyncJob) error {
 	return h.inner.CreateAsyncJob(ctx, job)
 }
 
+// FindAsyncJobByID finds an async job by its ID.
 func (h *HybridLogStore) FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error) {
 	return h.inner.FindAsyncJobByID(ctx, id)
 }
 
+// UpdateAsyncJob updates an async job with the given ID using the provided updates.
 func (h *HybridLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error {
 	return h.inner.UpdateAsyncJob(ctx, id, updates)
 }
 
+// DeleteExpiredAsyncJobs deletes async jobs that have not been updated since the given time.
 func (h *HybridLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
 	return h.inner.DeleteExpiredAsyncJobs(ctx)
 }
 
+// DeleteStaleAsyncJobs deletes async jobs that have not been updated since the given time.
 func (h *HybridLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
 	return h.inner.DeleteStaleAsyncJobs(ctx, staleSince)
 }
