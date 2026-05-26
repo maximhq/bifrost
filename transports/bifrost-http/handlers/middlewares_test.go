@@ -2123,3 +2123,66 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
 	}
 }
+
+// TestTracingMiddleware_PropagatesDimAttributesToTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on trace.Attributes (in addition
+// to the root HTTP span), so that observability plugins propagate them onto
+// every exported child span.
+//
+// This is the only test that catches a regression where the middleware refactor
+// (extractDimensionAttributes) drops the SetTraceAttributes call.
+func TestTracingMiddleware_PropagatesDimAttributesToTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedAttributes map[string]any
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			// Snapshot the attributes map by copy so we can read it after the
+			// middleware defer runs (which doesn't modify Attributes today, but
+			// this isolates the assertion from any future cleanup).
+			capturedAttributes = make(map[string]any, len(trace.Attributes))
+			for k, v := range trace.Attributes {
+				capturedAttributes[k] = v
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	// Reserved suffixes must be skipped — they would otherwise stomp on
+	// http.method and http.url on the root span.
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedAttributes == nil {
+		t.Fatal("trace.Attributes was nil — SetTraceAttributes was never called")
+	}
+	if got := capturedAttributes["customer_id"]; got != "acme" {
+		t.Errorf("trace.Attributes[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedAttributes["environment"]; got != "prod" {
+		t.Errorf("trace.Attributes[environment] = %v, want %q", got, "prod")
+	}
+	if _, ok := capturedAttributes["method"]; ok {
+		t.Errorf("trace.Attributes contained reserved suffix 'method': %v", capturedAttributes["method"])
+	}
+	if _, ok := capturedAttributes["path"]; ok {
+		t.Errorf("trace.Attributes contained reserved suffix 'path': %v", capturedAttributes["path"])
+	}
+}

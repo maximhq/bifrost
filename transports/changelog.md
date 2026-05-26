@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Dimension Header Propagation to Child Spans** — `x-bf-dim-*` HTTP headers are now stored on the trace at ingress and merged onto every exported span (root, LLM call, plugin pre/posthook, retry, fallback, MCP tool) by observability plugins, instead of attaching only to the root HTTP span. Reserved suffixes `path` and `method` are still skipped, and span-level attributes win on conflict (#3770)
+
 ## 🔒 Security
 
 - **Go Dependency CVE Remediation** — Updated `golang.org/x` dependencies flagged by Docker Scout, clearing 20 advisories (severity up to 10.0): `crypto` v0.49.0 → v0.52.0, `net` v0.52.0 → v0.55.0, `sys` v0.42.0 → v0.45.0, `text` v0.35.0 → v0.37.0, `term` v0.41.0 → v0.43.0 (cli). Verified with `govulncheck` against the live Go vulnerability database: zero vulnerabilities remain in any module (#3900)
