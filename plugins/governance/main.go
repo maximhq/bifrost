@@ -1489,7 +1489,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 
 	// Extract request type, provider, and model
-	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
+	requestType, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(result, err)
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
@@ -1532,7 +1532,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		go func() {
 			defer p.wg.Done()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, resolvedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
 		}()
 	}
 
@@ -1738,6 +1738,7 @@ func (p *GovernancePlugin) postHookWorker(
 	err *schemas.BifrostError,
 	provider schemas.ModelProvider,
 	model string,
+	resolvedModel string,
 	requestType schemas.RequestType,
 	virtualkey string,
 	requestID string,
@@ -1758,10 +1759,11 @@ func (p *GovernancePlugin) postHookWorker(
 	}
 
 	var extractedUsage *schemas.BifrostLLMUsage
-	var resolvedModel string
+	if resolvedModel == "" {
+		resolvedModel = model
+	}
 
 	if result != nil {
-		resolvedModel = model
 		switch {
 		case result.TextCompletionResponse != nil:
 			extractedUsage = result.TextCompletionResponse.Usage
@@ -1815,12 +1817,20 @@ func (p *GovernancePlugin) postHookWorker(
 		}
 	}
 
-	if extractedUsage == nil {
+	if extractedUsage == nil && err != nil {
 		return
 	}
 
-	var cost float64
-	if p.modelCatalog != nil {
+	var (
+		cost       float64
+		tokensUsed int64
+		hasUsage   bool
+	)
+	if extractedUsage != nil {
+		tokensUsed = int64(extractedUsage.TotalTokens)
+		hasUsage = tokensUsed > 0
+	}
+	if extractedUsage != nil && p.modelCatalog != nil {
 		metadata := modelcatalog.PricingMetadata{
 			Provider:      provider,
 			OriginalModel: model,
@@ -1837,13 +1847,13 @@ func (p *GovernancePlugin) postHookWorker(
 		Provider:     provider,
 		Model:        model,
 		Success:      success,
-		TokensUsed:   int64(extractedUsage.TotalTokens),
+		TokensUsed:   tokensUsed,
 		Cost:         cost,
 		RequestID:    requestID,
 		UserID:       userID,
 		IsStreaming:  isStreaming,
 		IsFinalChunk: isFinalChunk,
-		HasUsageData: extractedUsage.TotalTokens > 0,
+		HasUsageData: hasUsage,
 	}
 	p.tracker.UpdateUsage(p.ctx, usageUpdate)
 }

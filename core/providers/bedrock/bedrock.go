@@ -1711,8 +1711,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					if streamEvent.Usage.OutputTokens > responseUsage.OutputTokens {
 						responseUsage.OutputTokens = streamEvent.Usage.OutputTokens
 					}
-					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = streamEvent.Usage.TotalTokens
+					if streamEvent.Usage.TotalTokens > responseUsage.TotalTokens {
+						responseUsage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
 					if streamEvent.Usage.CacheReadInputTokens > 0 {
@@ -1743,6 +1743,19 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 								}
 							}
 						}
+					}
+
+					// Sync usage fields (PromptTokens, CompletionTokens, TotalTokens)
+					usage.PromptTokens = responseUsage.InputTokens
+					usage.CompletionTokens = responseUsage.OutputTokens
+					usage.TotalTokens = responseUsage.TotalTokens
+					if responseUsage.InputTokensDetails != nil {
+						if usage.PromptTokensDetails == nil {
+							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+						}
+						usage.PromptTokensDetails.CachedReadTokens = responseUsage.InputTokensDetails.CachedReadTokens
+						usage.PromptTokensDetails.CachedWriteTokens = responseUsage.InputTokensDetails.CachedWriteTokens
+						usage.PromptTokensDetails.CachedWriteTokenDetails = responseUsage.InputTokensDetails.CachedWriteTokenDetails
 					}
 				}
 

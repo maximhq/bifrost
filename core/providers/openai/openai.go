@@ -1806,6 +1806,13 @@ func HandleOpenAIResponsesStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 
+				// Populate usage for cancellation/timeout accounting
+				if response.Response != nil && response.Response.Usage != nil {
+					usage.PromptTokens = response.Response.Usage.InputTokens
+					usage.CompletionTokens = response.Response.Usage.OutputTokens
+					usage.TotalTokens = response.Response.Usage.TotalTokens
+				}
+
 				if response.Type == schemas.ResponsesStreamResponseTypeError {
 					bifrostErr := &schemas.BifrostError{
 						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
@@ -2426,6 +2433,9 @@ func HandleOpenAISpeechStreamRequest(
 			}
 
 			if response.Usage != nil {
+				usage.PromptTokens = response.Usage.InputTokens
+				usage.CompletionTokens = response.Usage.OutputTokens
+				usage.TotalTokens = response.Usage.TotalTokens
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
@@ -2883,6 +2893,17 @@ func HandleOpenAITranscriptionStreamRequest(
 			}
 
 			if response.Usage != nil || response.Type == schemas.TranscriptionStreamResponseTypeDone {
+				if response.Usage != nil {
+					if response.Usage.InputTokens != nil {
+						usage.PromptTokens = *response.Usage.InputTokens
+					}
+					if response.Usage.OutputTokens != nil {
+						usage.CompletionTokens = *response.Usage.OutputTokens
+					}
+					if response.Usage.TotalTokens != nil {
+						usage.TotalTokens = *response.Usage.TotalTokens
+					}
+				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 
@@ -7081,15 +7102,16 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 	statusCode := resp.StatusCode()
 
+	cancellationBody := providerUtils.PassthroughJSONBody(fasthttpReq, req.Body)
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
 		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, cancellationBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, cancellationBody, usage)
 			}
 			close(ch)
 		}()

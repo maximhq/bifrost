@@ -80,11 +80,11 @@ func (mc *ModelCatalog) CalculateCostFromUsage(usage *schemas.BifrostLLMUsage, m
 		lookupResolved = metadata.ContainerIdentifier
 	}
 	// Resolve the pricing configuration
-	pricing := mc.resolvePricing(string(metadata.Provider), lookupModel, lookupResolved, requestType, s)
+	pricing := mc.resolvePricing(s.Provider, lookupModel, lookupResolved, requestType, s)
 	if pricing == nil {
 		return 0
 	}
-	tier := tierFromString(&metadata.Tier)
+	tier := tierFromString((*schemas.BifrostServiceTier)(&metadata.Tier))
 	// Route to the appropriate compute function using the decoupled input parameters
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:

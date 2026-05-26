@@ -2242,7 +2242,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 
 	// Checking if stream is already closed
 	if r.connectionClosed() {
-		return 0, nil
+		return 0, r.closedReadError()
 	}
 	n, err = r.reader.Read(p)
 	if n > 0 {

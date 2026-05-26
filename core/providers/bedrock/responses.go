@@ -1390,6 +1390,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 	if usage.InputTokensDetails != nil {
 		usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 	}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
 	// Emit response.completed
 	response := &schemas.BifrostResponsesResponse{

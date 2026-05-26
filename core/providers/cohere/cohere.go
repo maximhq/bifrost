@@ -573,6 +573,12 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				break
 			}
 			if response != nil {
+				if response.Usage != nil {
+					usage.PromptTokens = response.Usage.PromptTokens
+					usage.CompletionTokens = response.Usage.CompletionTokens
+					usage.TotalTokens = response.Usage.TotalTokens
+					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
+				}
 				response.ID = responseID
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
 					ChunkIndex: chunkIndex,
@@ -845,6 +851,16 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
+					if response.Response != nil && response.Response.Usage != nil {
+						usage.PromptTokens = response.Response.Usage.InputTokens
+						usage.CompletionTokens = response.Response.Usage.OutputTokens
+						usage.TotalTokens = response.Response.Usage.TotalTokens
+						if response.Response.Usage.InputTokensDetails != nil {
+							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+								CachedReadTokens: response.Response.Usage.InputTokensDetails.CachedReadTokens,
+							}
+						}
+					}
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
 						ChunkIndex: chunkIndex,
 						Latency:    time.Since(lastChunkTime).Milliseconds(),

@@ -484,6 +484,10 @@
                 "type": "string",
                 "description": "Associated customer ID"
               },
+              "source_id": {
+                "type": "string",
+                "description": "External source identifier for syncing with external systems"
+              },
               "budget_id": {
                 "type": "string",
                 "description": "Associated budget ID"
@@ -1899,6 +1903,13 @@
         "allowed_models": {
           "type": "array",
           "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Blacklisted models for this provider config. Use [\"*\"] to block all models; empty array blocks none.",
           "items": {
             "type": "string"
           }

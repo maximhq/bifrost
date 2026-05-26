@@ -15822,6 +15822,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
 	},
+	"governance.virtual_keys": {
+		"access_profile_id": true, // Enterprise feature; not in OSS TableVirtualKey
+	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately
 		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys

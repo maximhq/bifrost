@@ -1263,6 +1263,7 @@ func HandleAnthropicResponsesStream(
 				if calculatedTotal > usage.TotalTokens {
 					usage.TotalTokens = calculatedTotal
 				}
+				responseUsage.TotalTokens = calculatedTotal
 				// Handle cached tokens if present
 				if usageToProcess.CacheReadInputTokens > 0 {
 					if responseUsage.InputTokensDetails == nil {
@@ -1359,6 +1360,7 @@ func HandleAnthropicResponsesStream(
 							responseUsage.InputTokens = responseUsage.InputTokens + responseUsage.InputTokensDetails.CachedReadTokens + responseUsage.InputTokensDetails.CachedWriteTokens
 							usage.TotalTokens = usage.TotalTokens + responseUsage.InputTokensDetails.CachedReadTokens + responseUsage.InputTokensDetails.CachedWriteTokens
 						}
+						responseUsage.TotalTokens = responseUsage.InputTokens + responseUsage.OutputTokens
 						response.Response.Usage = responseUsage
 						// Set raw request if enabled
 						if sendBackRawRequest {

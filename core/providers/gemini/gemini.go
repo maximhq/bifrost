@@ -576,6 +576,13 @@ func HandleGeminiChatCompletionStream(
 				modelName = geminiResponse.ModelVersion
 			}
 
+			// Populate usage for cancellation/timeout accounting
+			if geminiResponse.UsageMetadata != nil {
+				usage.PromptTokens = int(geminiResponse.UsageMetadata.PromptTokenCount)
+				usage.CompletionTokens = int(geminiResponse.UsageMetadata.CandidatesTokenCount)
+				usage.TotalTokens = int(geminiResponse.UsageMetadata.TotalTokenCount)
+			}
+
 			// Convert to Bifrost stream response
 			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
 			if bifrostErr != nil {
@@ -1081,6 +1088,9 @@ func HandleGeminiResponsesStream(
 			// Track usage metadata from the latest chunk
 			if geminiResponse.UsageMetadata != nil {
 				lastUsageMetadata = geminiResponse.UsageMetadata
+				usage.PromptTokens = int(geminiResponse.UsageMetadata.PromptTokenCount)
+				usage.CompletionTokens = int(geminiResponse.UsageMetadata.CandidatesTokenCount)
+				usage.TotalTokens = int(geminiResponse.UsageMetadata.TotalTokenCount)
 			}
 
 			// Convert to Bifrost responses stream response
@@ -1416,7 +1426,6 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		req.SetBody(jsonBody)
 	}
 
-	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1567,6 +1576,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				speechUsage.InputTokens = inputTokens
 				speechUsage.OutputTokens = outputTokens
 				speechUsage.TotalTokens = totalTokens
+				usage.PromptTokens = inputTokens
+				usage.CompletionTokens = outputTokens
+				usage.TotalTokens = totalTokens
 			}
 
 			// Only send response if we have actual audio content
@@ -1709,7 +1721,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		req.SetBody(jsonBody)
 	}
 
-	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1853,6 +1864,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				transcriptionUsage.InputTokens = schemas.Ptr(inputTokens)
 				transcriptionUsage.OutputTokens = schemas.Ptr(outputTokens)
 				transcriptionUsage.TotalTokens = schemas.Ptr(totalTokens)
+				usage.PromptTokens = inputTokens
+				usage.CompletionTokens = outputTokens
+				usage.TotalTokens = totalTokens
 			}
 
 			// Only send response if we have actual text content
