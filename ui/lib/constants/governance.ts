@@ -35,3 +35,13 @@ export const resetDurationLabels: Record<string, string> = {
 	"1w": "Weekly",
 	"1M": "Monthly",
 };
+
+// Providers that expose a passthrough API endpoint in Bifrost.
+// Used to conditionally show the "Allow Passthrough API" toggle in the virtual key UI.
+export const PASSTHROUGH_ENABLED_PROVIDERS = new Set([
+	"openai",
+	"anthropic",
+	"gemini",
+	"vertex",
+	"azure",
+]);

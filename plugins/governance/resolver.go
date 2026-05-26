@@ -24,6 +24,7 @@ const (
 	DecisionModelBlocked       Decision = "model_blocked"
 	DecisionProviderBlocked    Decision = "provider_blocked"
 	DecisionMCPToolBlocked     Decision = "mcp_tool_blocked"
+	DecisionPassthroughBlocked Decision = "passthrough_not_allowed"
 )
 
 // EvaluationRequest contains the context for evaluating a request
@@ -457,6 +458,41 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 		return true
 	}
 	return false
+}
+
+// isPassthroughAllowedForVK returns true when the VK's provider config explicitly enables
+// passthrough for the given provider. Returns false when no config exists for that provider
+// or when AllowPassthrough is false (deny-by-default).
+func isPassthroughAllowedForVK(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) bool {
+	for _, pc := range vk.ProviderConfigs {
+		if schemas.ModelProvider(pc.Provider) == provider {
+			return pc.AllowPassthrough
+		}
+	}
+	return false
+}
+
+// checkPassthroughPermission verifies whether the VK permits passthrough for the given provider.
+func (p *GovernancePlugin) checkPassthroughPermission(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider) *schemas.BifrostError {
+	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || vk == nil {
+		// Missing/invalid VK — EvaluateGovernanceRequest will surface the right error.
+		return nil
+	}
+	if isPassthroughAllowedForVK(vk, provider) {
+		return nil
+	}
+	providerStr := string(provider)
+	if providerStr == "" {
+		providerStr = "unknown"
+	}
+	return &schemas.BifrostError{
+		Type:       new(string(DecisionPassthroughBlocked)),
+		StatusCode: new(403),
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("passthrough is not enabled for provider '%s' on virtual key '%s'", providerStr, vk.Name),
+		},
+	}
 }
 
 // isRateLimitViolation returns true if the decision indicates a rate limit violation

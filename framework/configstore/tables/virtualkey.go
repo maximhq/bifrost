@@ -31,6 +31,7 @@ type TableVirtualKeyProviderConfig struct {
 	AllowedModels     schemas.WhiteList   `gorm:"type:text;serializer:json" json:"allowed_models"`         // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels schemas.BlackList   `gorm:"type:text;serializer:json" json:"blacklisted_models"`     // ["*"] blocks all models; empty blocks none
 	AllowAllKeys      bool                `gorm:"default:false" json:"allow_all_keys"`                     // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	AllowPassthrough  bool                `gorm:"default:false" json:"allow_passthrough"`                  // Controls passthrough API access for this provider. False by default — must be explicitly enabled.
 	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships

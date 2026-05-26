@@ -804,6 +804,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowPassthroughToProviderConfig(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8709,6 +8712,39 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_created_by_user_id_column_for_virtual_keys migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowPassthroughToProviderConfig adds the allow_passthrough column to the
+// virtual key provider config table. The column defaults to false (deny-by-default):
+// existing provider configs that were using passthrough must be explicitly opted in.
+func migrationAddAllowPassthroughToProviderConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_passthrough_to_provider_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_passthrough") {
+				if err := migratorInstance.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_passthrough"); err != nil {
+					return fmt.Errorf("failed to add allow_passthrough column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_passthrough") {
+				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_passthrough"); err != nil {
+					return fmt.Errorf("failed to drop allow_passthrough column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_allow_passthrough_to_provider_config migration: %w", err)
 	}
 	return nil
 }

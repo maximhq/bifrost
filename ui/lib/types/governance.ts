@@ -92,6 +92,7 @@ export interface VirtualKeyProviderConfig {
 	allowed_models: string[];
 	blacklisted_models: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
+	allow_passthrough?: boolean; // Controls passthrough API access for this provider (false by default; omitted when false)
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
@@ -136,6 +137,7 @@ export interface VirtualKeyProviderConfigRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
+	allow_passthrough?: boolean;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
@@ -147,6 +149,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
+	allow_passthrough?: boolean;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config

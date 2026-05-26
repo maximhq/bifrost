@@ -347,6 +347,11 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
 	if strings.Contains(req.Path, "passthrough") {
+		if virtualKeyValue != nil {
+			if vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue); ok && vk != nil && vk.IsActiveValue() {
+				attachVKContext(ctx, vk)
+			}
+		}
 		return nil, nil
 	}
 
@@ -416,20 +421,7 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	}
 
 	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
+	attachVKContext(ctx, virtualKey)
 
 	//1. Apply routing rules only if we have rules or matched decision
 	var routingDecision *RoutingDecision
@@ -515,20 +507,7 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	}
 
 	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
+	attachVKContext(ctx, virtualKey)
 
 	// Apply routing rules (read-only: decisions still affect downstream evaluation)
 	if hasRoutingRules {
@@ -624,20 +603,7 @@ func (p *GovernancePlugin) governRealtimeQueryParam(ctx *schemas.BifrostContext,
 	}
 
 	// Attaching team and customer based on the virtual key
-	if virtualKey != nil {
-		if virtualKey.TeamID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
-		}
-		if virtualKey.Team != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
-		}
-		if virtualKey.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
-		}
-		if virtualKey.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
-		}
-	}
+	attachVKContext(ctx, virtualKey)
 
 	// Apply routing rules
 	if hasRoutingRules {
@@ -1454,6 +1420,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
+
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKeyValue,
@@ -1468,6 +1435,16 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.LLMPluginShortCircuit{
 			Error: bifrostError,
 		}, nil
+	}
+
+	// For passthrough requests, check whether the VK's provider config permits passthrough.
+	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
+		if virtualKeyValue != "" {
+			if bifrostErr := p.checkPassthroughPermission(ctx, virtualKeyValue, provider); bifrostErr != nil {
+				ctx.SetValue(governanceRejectedContextKey, true)
+				return req, &schemas.LLMPluginShortCircuit{Error: bifrostErr}, nil
+			}
+		}
 	}
 
 	return req, nil, nil
@@ -1796,4 +1773,24 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 // GenerateVirtualKey is a helper function
 func GenerateVirtualKey() string {
 	return VirtualKeyPrefix + uuid.NewString()
+}
+
+// attachVKContext sets team and customer governance context values from the virtual key,
+// enabling correct attribution in logs and cost tracking.
+func attachVKContext(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
+	if vk == nil {
+		return
+	}
+	if vk.TeamID != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
+	}
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+	}
+	if vk.CustomerID != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	}
 }
