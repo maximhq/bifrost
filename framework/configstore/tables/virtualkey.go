@@ -256,10 +256,7 @@ func (vk *TableVirtualKey) IsActiveValue() bool {
 }
 
 // IsExpiredAt reports whether the virtual key has passed its expiry.
-// Returns false when ExpiresAt is nil (never expires).
-// The boundary condition now == expires_at is treated as expired.
-// The caller must supply the current time (no raw time.Now() inside the helper)
-// so tests can use fixed timestamps.
+// now == expires_at is treated as expired; nil ExpiresAt means never expires.
 func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
 	if vk == nil || vk.ExpiresAt == nil {
 		return false

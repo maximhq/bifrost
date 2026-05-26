@@ -1274,9 +1274,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Validate expires_at: must be in the future if provided
-	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now().UTC()) {
-		SendError(ctx, 400, "expires_at must be a future timestamp")
-		return
+	if req.ExpiresAt != nil {
+		now := time.Now().UTC()
+		if !req.ExpiresAt.After(now) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
 	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
@@ -1505,9 +1508,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Validate expires_at: must be in the future if provided
-	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now().UTC()) {
-		SendError(ctx, 400, "expires_at must be a future timestamp")
-		return
+	if req.ExpiresAt != nil {
+		now := time.Now().UTC()
+		if !req.ExpiresAt.After(now) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
 	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {

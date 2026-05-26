@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import {
@@ -41,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DottedSeparator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -59,6 +61,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { TimePicker } from "@/components/ui/timePicker";
 import Toggle from "@/components/ui/toggle";
 import {
   Tooltip,
@@ -94,7 +97,8 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
-import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { CalendarIcon, Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -214,6 +218,141 @@ type VirtualKeyType = {
   description: string;
   provider: string;
 };
+
+const pad2 = (n: number) => n.toString().padStart(2, "0");
+
+const toDatetimeLocal = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+const presetFromNow = (offsetMs: number) => toDatetimeLocal(new Date(Date.now() + offsetMs));
+
+const EXPIRY_PRESETS = [
+  { label: "30 min", ms: 30 * 60_000 },
+  { label: "1 hour", ms: 60 * 60_000 },
+  { label: "24 hours", ms: 24 * 60 * 60_000 },
+  { label: "7 days", ms: 7 * 24 * 60 * 60_000 },
+] as const;
+
+interface ExpiryFieldProps {
+  value: string | null | undefined;
+  onChange: (v: string | null) => void;
+}
+
+function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
+  const [customOpen, setCustomOpen] = useState(false);
+  const [pickerDate, setPickerDate] = useState<Date | undefined>(undefined);
+  const [pickerTime, setPickerTime] = useState({ hour: 23, minute: 59 });
+
+  const handleCustomOpen = (open: boolean) => {
+    if (open) {
+      if (value) {
+        const d = new Date(value);
+        setPickerDate(d);
+        setPickerTime({ hour: d.getHours(), minute: d.getMinutes() });
+      } else {
+        setPickerDate(undefined);
+        setPickerTime({ hour: 23, minute: 59 });
+      }
+    }
+    setCustomOpen(open);
+  };
+
+  const customDateTime = pickerDate ? new Date(pickerDate) : null;
+  if (customDateTime) {
+    customDateTime.setHours(pickerTime.hour, pickerTime.minute, 0, 0);
+  }
+  const customIsInvalid = !customDateTime || customDateTime.getTime() <= Date.now();
+
+  const applyCustom = () => {
+    if (customIsInvalid || !customDateTime) return;
+    onChange(toDatetimeLocal(customDateTime));
+    setCustomOpen(false);
+  };
+
+  const summary = value
+    ? formatDistanceToNow(new Date(value), { addSuffix: true })
+    : null;
+
+  return (
+    <FormItem>
+      <div className="flex items-center justify-between">
+        <FormLabel>Expiry</FormLabel>
+        {value && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange(null)}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Leave empty for a key that never expires.
+      </p>
+      {summary && (
+        <p className="text-sm font-medium">{summary}</p>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          type="button"
+          variant={!value ? "secondary" : "outline"}
+          size="sm"
+          onClick={() => onChange(null)}
+        >
+          Never
+        </Button>
+        {EXPIRY_PRESETS.map(({ label, ms }) => (
+          <Button
+            key={label}
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onChange(presetFromNow(ms))}
+          >
+            {label}
+          </Button>
+        ))}
+        <Popover open={customOpen} onOpenChange={handleCustomOpen}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" size="sm">
+              <CalendarIcon className="mr-1.5 h-3.5 w-3.5" />
+              Custom
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-auto p-0" align="start">
+            <Calendar
+              mode="single"
+              selected={pickerDate}
+              onSelect={setPickerDate}
+              disabled={{ before: new Date() }}
+              initialFocus
+            />
+            <div className="border-t p-3 space-y-2">
+              <TimePicker value={pickerTime} onChange={setPickerTime} />
+              {customIsInvalid && pickerDate && (
+                <p className="text-muted-foreground text-xs">
+                  Choose a future date and time.
+                </p>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                className="w-full"
+                onClick={applyCustom}
+                disabled={customIsInvalid}
+              >
+                Apply
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+      <FormMessage />
+    </FormItem>
+  );
+}
 
 export default function VirtualKeySheet({
   virtualKey,
@@ -855,6 +994,18 @@ export default function VirtualKeySheet({
         : [];
       if (isEditing && virtualKey) {
         // Update existing virtual key
+        // Only include expiry fields when the user actually changed the expiry field.
+        // Pre-filled defaultValues are not dirty, so an unchanged expired key won't
+        // resend its old expired timestamp and cause the backend to reject the edit.
+        const expiryChanged = !!form.formState.dirtyFields.expiresAt;
+        const expiryPayload = expiryChanged
+          ? data.expiresAt
+            ? { expires_at: new Date(data.expiresAt).toISOString() }
+            : virtualKey?.expires_at
+              ? { clear_expires_at: true }
+              : {}
+          : {};
+
         const updateData: UpdateVirtualKeyRequest = {
           name: data.name,
           description: data.description,
@@ -883,12 +1034,7 @@ export default function VirtualKeySheet({
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
-          // Send expires_at as UTC ISO string, or clear_expires_at only when removing an existing expiry
-          ...(data.expiresAt
-            ? { expires_at: new Date(data.expiresAt).toISOString() }
-            : virtualKey?.expires_at
-              ? { clear_expires_at: true }
-              : {}),
+          ...expiryPayload,
         };
 
         // Add budgets if enabled
@@ -1150,35 +1296,10 @@ export default function VirtualKeySheet({
                     control={form.control}
                     name="expiresAt"
                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Expiry date (optional)</FormLabel>
-                        <FormControl>
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="datetime-local"
-                              data-testid="vk-expires-at-input"
-                              value={field.value ?? ""}
-                              onChange={(e) =>
-                                field.onChange(e.target.value || null)
-                              }
-                              className="w-auto"
-                            />
-                            {field.value && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => field.onChange(null)}
-                                data-testid="vk-expires-at-clear"
-                                aria-label="Clear expiry date"
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
+                      <ExpiryPickerField
+                        value={field.value}
+                        onChange={field.onChange}
+                      />
                     )}
                   />
                 </div>
