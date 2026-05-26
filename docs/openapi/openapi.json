@@ -62122,22 +62122,6 @@
             },
             "nullable": true
           },
-          "azure_api_version": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
-              },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
-              }
-            },
-            "nullable": true
-          },
           "azure_client_id": {
             "type": "object",
             "description": "Environment variable configuration",
