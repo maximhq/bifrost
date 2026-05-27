@@ -1,6 +1,7 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
@@ -14,6 +15,7 @@ import {
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
 	ProviderTokenHistogramResponse,
+	RankingDimension,
 	RecalculateCostResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
@@ -286,6 +288,20 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		getDimensionRankings: builder.query<
+			DimensionRankingsResponse,
+			{
+				filters: LogFilters;
+				dimension: RankingDimension;
+			}
+		>({
+			query: ({ filters, dimension }) => ({
+				url: "/logs/rankings/by-dimension",
+				params: { ...buildFilterParams(filters), dimension },
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -382,6 +398,7 @@ export const {
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
 	useLazyGetModelRankingsQuery,
+	useLazyGetDimensionRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
