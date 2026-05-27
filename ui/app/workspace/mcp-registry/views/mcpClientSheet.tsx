@@ -227,9 +227,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-								client_id: oauthClientID,
-								client_secret: oauthClientSecret,
-							}
+							client_id: oauthClientID,
+							client_secret: oauthClientSecret,
+						}
 						: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -419,7 +419,29 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									name="is_code_mode_client"
 									render={({ field }) => (
 										<FormItem className="flex items-center justify-between rounded-lg border p-4">
-											<FormLabel>Code Mode Client</FormLabel>
+											<div className="flex items-center gap-2">
+												<FormLabel>Code Mode Server</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<a
+																href="https://docs.getbifrost.ai/mcp/code-mode"
+																target="_blank"
+																rel="noopener noreferrer"
+																data-testid="code-mode-link-help"
+																className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
+																aria-label="Learn more about Code Mode"
+															>
+																<Info className="h-4 w-4 cursor-help" />
+															</a>
+														</TooltipTrigger>
+														<TooltipContent>
+															<p>Click to learn more about Code Mode</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+
 											<FormControl>
 												<Switch checked={field.value || false} onCheckedChange={field.onChange} />
 											</FormControl>
@@ -669,9 +691,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													onBlur={() => {
 														const parsed = allowedExtraHeadersRaw.trim()
 															? allowedExtraHeadersRaw
-																	.split(",")
-																	.map((h) => h.trim())
-																	.filter(Boolean)
+																.split(",")
+																.map((h) => h.trim())
+																.filter(Boolean)
 															: [];
 														field.onChange(parsed);
 														field.onBlur();
