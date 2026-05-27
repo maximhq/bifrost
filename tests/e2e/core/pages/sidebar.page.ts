@@ -12,6 +12,10 @@ export class SidebarPage extends BasePage {
   readonly mcpClientsLink: Locator
   readonly userGroupsLink: Locator
   readonly pluginsLink: Locator
+  readonly alertingButton: Locator
+  readonly alertingChannelsLink: Locator
+  readonly alertingRulesLink: Locator
+  readonly alertingHistoryLink: Locator
   readonly configLink: Locator
 
   constructor(page: Page) {
@@ -22,6 +26,10 @@ export class SidebarPage extends BasePage {
     this.mcpClientsLink = page.getByRole('link', { name: /mcp/i })
     this.userGroupsLink = page.getByRole('link', { name: /user groups/i })
     this.pluginsLink = page.getByRole('link', { name: /plugins/i })
+    this.alertingButton = page.getByRole('button', { name: /^alerting$/i })
+    this.alertingChannelsLink = page.getByRole('link', { name: /^channels$/i })
+    this.alertingRulesLink = page.getByRole('link', { name: /^rules$/i })
+    this.alertingHistoryLink = page.getByRole('link', { name: /^history$/i })
     this.configLink = page.getByRole('link', { name: /config/i })
   }
 
@@ -70,6 +78,33 @@ export class SidebarPage extends BasePage {
    */
   async goToPlugins(): Promise<void> {
     await this.pluginsLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Navigate to Alerting Channels page
+   */
+  async goToAlertingChannels(): Promise<void> {
+    await this.alertingButton.click()
+    await this.alertingChannelsLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Navigate to Alerting Rules page
+   */
+  async goToAlertingRules(): Promise<void> {
+    await this.alertingButton.click()
+    await this.alertingRulesLink.click()
+    await this.waitForPageLoad()
+  }
+
+  /**
+   * Navigate to Alerting History page
+   */
+  async goToAlertingHistory(): Promise<void> {
+    await this.alertingButton.click()
+    await this.alertingHistoryLink.click()
     await this.waitForPageLoad()
   }
 

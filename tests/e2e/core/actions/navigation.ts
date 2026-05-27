@@ -62,6 +62,30 @@ export async function goToPlugins(page: Page): Promise<void> {
 }
 
 /**
+ * Navigate to Alerting Channels page
+ */
+export async function goToAlertingChannels(page: Page): Promise<void> {
+  await page.goto('/workspace/alerting/channels')
+  await waitForNetworkIdle(page)
+}
+
+/**
+ * Navigate to Alerting Rules page
+ */
+export async function goToAlertingRules(page: Page): Promise<void> {
+  await page.goto('/workspace/alerting/rules')
+  await waitForNetworkIdle(page)
+}
+
+/**
+ * Navigate to Alerting History page
+ */
+export async function goToAlertingHistory(page: Page): Promise<void> {
+  await page.goto('/workspace/alerting/history')
+  await waitForNetworkIdle(page)
+}
+
+/**
  * Navigate to Config page
  */
 export async function goToConfig(page: Page): Promise<void> {

@@ -1,16 +1,22 @@
 import { Bell } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
-export default function AlertChannelsView() {
+type AlertingPlaceholderViewProps = {
+	title: string;
+	description: string;
+	testIdPrefix: string;
+};
+
+export default function AlertingPlaceholderView({ title, description, testIdPrefix }: AlertingPlaceholderViewProps) {
 	return (
 		<div className="h-full w-full">
 			<ContactUsView
 				className="mx-auto min-h-[80vh]"
 				icon={<Bell className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
-				title="Unlock alerting channels for proactive monitoring"
-				description="This feature is a part of the Bifrost enterprise license. Configure Slack, PagerDuty, OpsGenie, and webhook alerts to stay ahead of budget and performance issues."
+				title={title}
+				description={description}
 				readmeLink="https://docs.getbifrost.ai/enterprise/alerting"
-				testIdPrefix="alert-channels"
+				testIdPrefix={testIdPrefix}
 			/>
 		</div>
 	);
