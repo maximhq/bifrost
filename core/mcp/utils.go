@@ -636,6 +636,19 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
 	}
+	if config.AuthType == schemas.MCPAuthTypePerUserHeaders {
+		if len(config.PerUserHeaderKeys) == 0 {
+			return fmt.Errorf("per_user_header_keys is required (non-empty) for per_user_headers auth type in client '%s'", config.Name)
+		}
+		for i, key := range config.PerUserHeaderKeys {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("per_user_header_keys[%d] is empty in client '%s'", i, config.Name)
+			}
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for per_user_headers auth type in client '%s'", config.Name)
+		}
+	}
 	return nil
 }
 

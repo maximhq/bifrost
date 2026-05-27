@@ -76,6 +76,11 @@ type MCPManagerInterface interface {
 	// EnableClient reconnects a disabled client and restarts its workers
 	EnableClient(id string) error
 
+	// VerifyHeadersConnection creates a temporary MCP connection using a set of
+	// caller-supplied header values to verify connectivity and discover tools.
+	// The connection is closed after verification.
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
+
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.

@@ -528,7 +528,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// Acquire a connection through the shared ClientManager abstraction:
 	// shared-mode clients return their persistent state.Conn (release is a
 	// no-op); per-user clients get a fresh ephemeral transport that the
-	// release function closes. Credential errors (e.g. MCPUserOAuthRequiredError)
+	// release function closes. Credential errors (e.g. MCPAuthRequiredError)
 	// surface here.
 	conn, release, err := s.clientManager.AcquireClientConn(nestedCtx, client)
 	if err != nil {

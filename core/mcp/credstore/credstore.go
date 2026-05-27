@@ -31,14 +31,18 @@ type CredStore struct {
 
 // NewCredStore constructs the canonical MCPCredentialStore with one resolver
 // per known MCPAuthType. The oauth2Provider is injected into the OAuth-
-// flavored resolvers only; the None and StaticHeaders resolvers are stateless.
-func NewCredStore(oauth2Provider schemas.OAuth2Provider, logger schemas.Logger) *CredStore {
+// flavored resolvers only; the None and StaticHeaders resolvers are
+// stateless. The headersProvider is injected into the per-user-headers
+// resolver — pass nil if the configstore-backed provider isn't wired up
+// (the resolver returns a clear error rather than nil-pointering at use).
+func NewCredStore(oauth2Provider schemas.OAuth2Provider, headersProvider schemas.MCPHeadersProvider, logger schemas.Logger) *CredStore {
 	return &CredStore{
 		resolvers: map[schemas.MCPAuthType]resolver{
-			schemas.MCPAuthTypeNone:         &noneResolver{},
-			schemas.MCPAuthTypeHeaders:      &staticHeadersResolver{},
-			schemas.MCPAuthTypeOauth:        &serverOAuthResolver{provider: oauth2Provider},
-			schemas.MCPAuthTypePerUserOauth: &perUserOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeNone:           &noneResolver{},
+			schemas.MCPAuthTypeHeaders:        &staticHeadersResolver{},
+			schemas.MCPAuthTypeOauth:          &serverOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserOauth:   &perUserOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserHeaders: &perUserHeadersResolver{provider: headersProvider},
 		},
 		logger: logger,
 	}

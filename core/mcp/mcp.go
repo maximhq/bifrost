@@ -79,11 +79,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	if logger == nil {
 		logger = defaultLogger
 	}
-	// Default to an OAuth-less CredentialStore so tests (and callers that
-	// don't wire OAuth) get a working store: static/headers/none resolvers
-	// stay functional, OAuth-flavored resolvers cleanly error on use.
+	// Default to a provider-less CredentialStore so tests (and callers that
+	// don't wire OAuth / per-user-headers) get a working store: static /
+	// headers / none resolvers stay functional, per-user resolvers cleanly
+	// error on use.
 	if credStore == nil {
-		credStore = credstore.NewCredStore(nil, logger)
+		credStore = credstore.NewCredStore(nil, nil, logger)
 	}
 	// Set default values
 	if config.ToolManagerConfig == nil {

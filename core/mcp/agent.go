@@ -286,7 +286,7 @@ func (a *AgentModeExecutor) executeAgent(
 			wg := sync.WaitGroup{}
 			wg.Add(len(autoExecutableTools))
 			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
-			var authRequiredErr *schemas.MCPUserOAuthRequiredError
+			var authRequiredErr *schemas.MCPAuthRequiredError
 			var authRequiredOnce sync.Once
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
@@ -304,11 +304,11 @@ func (a *AgentModeExecutor) executeAgent(
 
 					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
 					if toolErr != nil {
-						// Check if this is a per-user OAuth auth-required error
-						var oauthErr *schemas.MCPUserOAuthRequiredError
-						if errors.As(toolErr, &oauthErr) {
+						// Check if this is a per-user auth-required error
+						var authErr *schemas.MCPAuthRequiredError
+						if errors.As(toolErr, &authErr) {
 							authRequiredOnce.Do(func() {
-								authRequiredErr = oauthErr
+								authRequiredErr = authErr
 							})
 							channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 							return

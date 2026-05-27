@@ -85,8 +85,9 @@ func (m *MCPManager) executeToolWithHooks(
 	// Resolve the upstream client and acquire its connection BEFORE the plugin
 	// gate runs. Connection lifecycle is the orchestrator's concern, not the
 	// plugin op's — the plugin pipeline only wraps the actual CallTool. When
-	// AcquireClientConn fails (e.g. *MCPUserOAuthRequiredError for per-user
-	// clients that need re-auth), the plugin gate is never invoked.
+	// AcquireClientConn fails (e.g. *MCPAuthRequiredError for per-user
+	// clients that need re-auth or headers submission), the plugin gate is
+	// never invoked.
 	state, conn, release, prepErr := m.prepareToolExecution(ctx, request)
 	if prepErr != nil {
 		bErr := &schemas.BifrostError{
@@ -94,9 +95,9 @@ func (m *MCPManager) executeToolWithHooks(
 			Error:          &schemas.ErrorField{Message: prepErr.Error()},
 			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: requestType, MCPRequestType: request.RequestType},
 		}
-		var oauthErr *schemas.MCPUserOAuthRequiredError
-		if errors.As(prepErr, &oauthErr) {
-			bErr.ExtraFields.MCPAuthRequired = oauthErr
+		var authRequiredErr *schemas.MCPAuthRequiredError
+		if errors.As(prepErr, &authRequiredErr) {
+			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
 		}
 		return nil, bErr
 	}

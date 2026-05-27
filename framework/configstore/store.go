@@ -386,6 +386,61 @@ type ConfigStore interface {
 	// and updated_at is older than olderThan. Returns the number of rows removed.
 	DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 
+	// Per-user MCP header credential CRUD. Storage analog of per-user OAuth
+	// tokens for MCPAuthTypePerUserHeaders clients. The row holds an encrypted
+	// JSON blob of header_name → value pairs keyed by (auth_mode, identity,
+	// mcp_client_id).
+	GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error)
+	GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error)
+	UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error
+	DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error
+	// ListAllMCPPerUserHeaderCredentials returns every row regardless of
+	// status. Mirrors ListAllOauthUserTokens — the sessions UI surfaces
+	// non-active states (needs_update / orphaned) with distinct affordances.
+	ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error)
+	// MarkMCPPerUserHeaderCredentialsNeedsUpdate flips status to 'needs_update'
+	// for every row tied to mcpClientID. Called when the admin changes
+	// PerUserHeaderKeys on the MCP client config: existing user submissions
+	// stay (so the UI can prefill known values) but are excluded from runtime
+	// lookups until the user re-submits.
+	MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error
+	// DeleteOrphanedMCPPerUserHeaderCredentials hard-deletes rows where
+	// status='orphaned' and updated_at is older than olderThan.
+	DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error)
+
+	// Per-user-headers submission flow CRUD. Mirrors the OAuth user-session
+	// surface — the resolver creates a pending flow row when the inline-401
+	// fires, the submit endpoint deletes the row on success, and the sweep
+	// worker reaps expired pending rows.
+	CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error
+	GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error)
+	// GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient returns the canonical
+	// pending flow row for the (mode, identity, mcp_client) triple, if any.
+	// Companion to GetOauthUserSessionByModeIdentityAndMCPClient — used by
+	// InitiateUserSubmissionFlow to keep at most one pending row per binding
+	// (mirrors OAuth's single-row-per-binding invariant).
+	GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error)
+	// UpdateMCPPerUserHeaderFlow updates a flow row in place. Used on the
+	// reauth/re-init path to rotate ExpiresAt without spawning a new row.
+	UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error
+	// DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient hard-deletes any
+	// pending flow rows for a binding. Called from revoke so a credential
+	// delete also clears any in-flight resubmission flow for the same
+	// (mode, identity, mcp_client). Mirrors
+	// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
+	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
+	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
+	// ListAllPendingMCPPerUserHeaderFlows returns every non-expired flow row
+	// with status='pending', regardless of caller identity. Visibility scoping
+	// happens at the enterprise configstore layer via DAC scope; OSS sees
+	// everything. Used by the sessions list endpoint to surface pending
+	// submission flows alongside completed credentials. Mirrors
+	// ListAllPendingOauthUserSessions on the OAuth side.
+	ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error)
+	// DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
+	// ExpiresAt has passed. Returns the number of rows removed.
+	DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error)
+
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 
