@@ -538,6 +538,7 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 	if !config.Enabled {
 		return nil, nil
 	}
+	logger.Info("connecting to %s database", config.Type)
 	switch config.Type {
 	case ConfigStoreTypeSQLite:
 		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
