@@ -218,6 +218,45 @@ func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 	}
 }
 
+// TestPreMCPHookSkipsPrefixedCodemodeTool verifies that PreMCP skips codemode
+// meta-tools invoked with a client prefix (e.g. "myclient-executeToolCode"),
+// not just bare names. Otherwise PostMCP — which sees the stripped bare name —
+// would silently skip and leave the pending row to expire as a fake TTL error.
+func TestPreMCPHookSkipsPrefixedCodemodeTool(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-prefixed-codemode")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-prefixed-codemode")
+
+	toolName := "myclient-executeToolCode"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+
+	if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-prefixed-codemode"); ok {
+		t.Fatal("expected PreMCPHook to skip prefixed codemode tool, but a pending row was created")
+	}
+}
+
 func assertMCPLogGovernanceFields(t *testing.T, logEntry *logstore.MCPToolLog, userID, teamID, customerID, businessUnitID string) {
 	t.Helper()
 	if logEntry.UserID == nil || *logEntry.UserID != userID {

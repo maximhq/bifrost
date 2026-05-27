@@ -31,6 +31,13 @@ type ClientManager interface {
 	// credentials) and closed on release. The credential-resolution error path
 	// (e.g. *MCPUserOAuthRequiredError) surfaces here.
 	AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error)
+	// RunWithPluginPipeline wraps an MCP wire operation in the canonical plugin
+	// gate (PreMCPHooks → op → PostMCPHooks). It owns the tracing span,
+	// MCPRequestType/ClientName/ToolName stamping, plugin log draining, and
+	// short-circuit semantics. Use this from any call site that needs to invoke
+	// an MCP tool/list/ping outside the gateway path — e.g. nested tool calls
+	// from the Starlark codemode sandbox — to stay in sync with the gateway.
+	RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
 }
 
 // MCPToolExecutor is the per-call executor signature used by the agent loop.
