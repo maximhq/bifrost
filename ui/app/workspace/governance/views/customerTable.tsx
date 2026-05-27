@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerDialog from "./customerDialog";
+import CustomerSheet from "./customerSheet";
 import { CustomersEmptyState } from "./customersEmptyState";
 
 // Helper to format reset duration for display
@@ -117,7 +117,7 @@ export default function CustomersTable({
 	limit,
 	onOffsetChange,
 }: CustomersTableProps) {
-	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
 
@@ -140,16 +140,16 @@ export default function CustomersTable({
 
 	const handleAddCustomer = () => {
 		setEditingCustomer(null);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleEditCustomer = (customer: Customer) => {
 		setEditingCustomer(customer);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleCustomerSaved = () => {
-		setShowCustomerDialog(false);
+		setShowCustomerSheet(false);
 		setEditingCustomer(null);
 	};
 
@@ -168,9 +168,15 @@ export default function CustomersTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showCustomerDialog && (
-						<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-					)}
+					<CustomerSheet
+						open={showCustomerSheet}
+						onOpenChange={(open) => {
+							setShowCustomerSheet(open);
+							if (!open) setEditingCustomer(null);
+						}}
+						customer={editingCustomer}
+						onSuccess={handleCustomerSaved}
+					/>
 					<CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -180,9 +186,15 @@ export default function CustomersTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showCustomerDialog && (
-					<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-				)}
+				<CustomerSheet
+					open={showCustomerSheet}
+					onOpenChange={(open) => {
+						setShowCustomerSheet(open);
+						if (!open) setEditingCustomer(null);
+					}}
+					customer={editingCustomer}
+					onSuccess={handleCustomerSaved}
+				/>
 
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
