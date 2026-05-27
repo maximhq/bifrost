@@ -414,6 +414,30 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										</FormItem>
 									)}
 								/>
+								{/* Read-only connection summary. Connection type and target
+								    can't be changed after create — surface them here for
+								    visibility without exposing edit controls. */}
+								<div className="flex flex-col gap-2">
+									<div className="text-sm font-medium">Connection</div>
+									<div className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm">
+										<span className="text-foreground font-mono text-xs uppercase">
+											{mcpClient.config.connection_type === "stdio"
+												? "STDIO"
+												: mcpClient.config.connection_type === "sse"
+													? "SSE"
+													: "HTTP"}
+										</span>
+										<span className="mx-2">·</span>
+										<span className="font-mono break-all">
+											{mcpClient.config.connection_type === "stdio"
+												? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
+													"-"
+												: mcpClient.config.connection_string?.from_env
+													? `env.${mcpClient.config.connection_string.env_var}`
+													: mcpClient.config.connection_string?.value || "-"}
+										</span>
+									</div>
+								</div>
 								<FormField
 									control={form.control}
 									name="is_code_mode_client"
@@ -877,7 +901,33 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													<TableHead className="w-10"></TableHead>
 													<TableHead className="max-w-[300px]">Tool Name</TableHead>
 													<TableHead className="w-24 text-center">Enabled</TableHead>
-													<TableHead className="w-28 text-center">Auto-execute</TableHead>
+													<TableHead className="w-28 text-center">
+														<div className="flex items-center justify-center gap-1.5">
+															<span>Auto-execute</span>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<a
+																			href="https://docs.getbifrost.ai/mcp/agent-mode"
+																			target="_blank"
+																			rel="noopener noreferrer"
+																			aria-label="Learn more about Auto-execute and Agent Mode"
+																			className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex rounded focus-visible:ring-2 focus-visible:outline-none"
+																		>
+																			<Info className="h-3.5 w-3.5 cursor-help" />
+																		</a>
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			Applies only when Bifrost runs the LLM loop in Agent Mode. In MCP Gateway mode, the connected
+																			client (Claude Desktop, Cursor, etc.) controls tool approval and this setting is ignored. Click
+																			to learn more.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+													</TableHead>
 													<TableHead className="w-32 text-center">Cost (USD)</TableHead>
 												</TableRow>
 											</TableHeader>
@@ -1019,7 +1069,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								)}
 
 								{mcpClient.tools && mcpClient.tools.length > 0 && (
-									<div className="mt-6 space-y-4 pb-10">
+									<div className="mt-6 space-y-4">
 										<div className="flex flex-col gap-2">
 											<div className="flex items-center justify-between">
 												<div className="flex items-center gap-2">
