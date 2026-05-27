@@ -561,6 +561,7 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 // The rateLimit carries only the limit/duration fields (no ID/usage).
 type vkModelConfigDesired struct {
 	provider          *string
+	providerConfigID  *uint
 	budgetsProvided   bool
 	budgets           []CreateBudgetRequest
 	rateLimitProvided bool
@@ -665,6 +666,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			if err := validateRateLimit(&rl); err != nil {
 				return err
 			}
+			h.stampVKModelConfigRateLimitOwner(&rl, vk.ID, d.providerConfigID)
 			if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
 				return err
 			}
@@ -679,6 +681,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 				TokenLastReset:       time.Now(),
 				RequestLastReset:     time.Now(),
 			}
+			h.stampVKModelConfigRateLimitOwner(&rl, vk.ID, d.providerConfigID)
 			if err := validateRateLimit(&rl); err != nil {
 				return err
 			}
@@ -741,6 +744,17 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 	return nil
+}
+
+func (h *GovernanceHandler) stampVKModelConfigRateLimitOwner(rl *configstoreTables.TableRateLimit, vkID string, providerConfigID *uint) {
+	if rl == nil || rl.VirtualKeyID != nil || rl.TeamID != nil || rl.CustomerID != nil || rl.ProviderConfigID != nil {
+		return
+	}
+	if providerConfigID != nil {
+		rl.ProviderConfigID = providerConfigID
+		return
+	}
+	rl.VirtualKeyID = &vkID
 }
 
 // deleteVKModelConfig removes a VK-scoped model config and its owned
@@ -1256,17 +1270,18 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 					return err
 				}
-				// Provider-config budgets/rate-limit are stored in the VK-scoped model config
-				// for this provider (written by syncVKGovernanceToModelConfigs).
-				providerNameStr := string(providerName)
-				var pcRateLimit *configstoreTables.TableRateLimit
-				if pc.RateLimit != nil {
-					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
-				}
-				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-					provider:          &providerNameStr,
-					budgetsProvided:   true,
-					budgets:           pc.Budgets,
+					// Provider-config budgets/rate-limit are stored in the VK-scoped model config
+					// for this provider (written by syncVKGovernanceToModelConfigs).
+					providerNameStr := string(providerName)
+					var pcRateLimit *configstoreTables.TableRateLimit
+					if pc.RateLimit != nil {
+						pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+					}
+					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+						provider:          &providerNameStr,
+						providerConfigID:  &providerConfig.ID,
+						budgetsProvided:   true,
+						budgets:           pc.Budgets,
 					rateLimitProvided: pc.RateLimit != nil,
 					rateLimit:         pcRateLimit,
 				})
@@ -1537,16 +1552,17 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 						return err
 					}
-					// Provider-config governance is stored in the VK-scoped model config for this provider.
-					pName := string(providerName)
-					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
-					}
-					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   true,
-						budgets:           pc.Budgets,
+						// Provider-config governance is stored in the VK-scoped model config for this provider.
+						pName := string(providerName)
+						var pcRL *configstoreTables.TableRateLimit
+						if pc.RateLimit != nil {
+							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+						}
+						vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+							provider:          &pName,
+							providerConfigID:  &providerConfig.ID,
+							budgetsProvided:   true,
+							budgets:           pc.Budgets,
 						rateLimitProvided: pc.RateLimit != nil,
 						rateLimit:         pcRL,
 					})
@@ -1601,11 +1617,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						} else {
 							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 						}
-					}
-					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   pc.Budgets != nil,
-						budgets:           pc.Budgets,
+						}
+						vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+							provider:          &pName,
+							providerConfigID:  &existing.ID,
+							budgetsProvided:   pc.Budgets != nil,
+							budgets:           pc.Budgets,
 						rateLimitProvided: pc.RateLimit != nil,
 						rateLimitRemove:   rlRemove,
 						rateLimit:         pcRL,

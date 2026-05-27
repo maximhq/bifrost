@@ -76,7 +76,7 @@ type GovernancePlugin struct {
 	logger       schemas.Logger
 
 	// Transport dependencies
-	inMemoryStore InMemoryStore
+	inMemoryStore  InMemoryStore
 
 	cfgMutex sync.RWMutex
 
@@ -1510,6 +1510,12 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 // GetGovernanceStore returns the governance store
 func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
+}
+
+// SetUsageObserver registers a usage observer on the usage tracker.
+// Called by the enterprise server after plugin initialization.
+func (p *GovernancePlugin) SetUsageObserver(o UsageObserver) {
+	p.tracker.SetUsageObserver(o)
 }
 
 // GenerateVirtualKey is a helper function
