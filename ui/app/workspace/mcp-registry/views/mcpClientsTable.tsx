@@ -14,10 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutation } from "@/lib/store";
+import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutation, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
@@ -81,38 +82,43 @@ function MCPClientActionsMenu({
 					>
 						<PencilIcon className="h-4 w-4" />
 						Edit
-					</DropdownMenuItem>
-				)}
-				{hasUpdateAccess && (
-					<DropdownMenuItem
-						className="cursor-pointer"
-						disabled={isPerUserAuth || client.config.disabled || isReconnecting}
-						onSelect={(e) => {
-							e.preventDefault();
-							onReconnect(client);
-							setIsOpen(false);
-						}}
-					>
-						<RefreshCcw className="h-4 w-4" />
-						Reconnect
-					</DropdownMenuItem>
-				)}
-				{hasDeleteAccess && (
-					<DropdownMenuItem
-						variant="destructive"
-						className="cursor-pointer"
-						onSelect={(e) => {
-							e.preventDefault();
-							onDelete(client);
-							setIsOpen(false);
-						}}
-					>
-						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
-				)}
-			</DropdownMenuContent>
-		</DropdownMenu>
+					</DropdownMenuItem >
+				)
+				}
+				{
+					hasUpdateAccess && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isPerUserAuth || client.config.disabled || isReconnecting}
+							onSelect={(e) => {
+								e.preventDefault();
+								onReconnect(client);
+								setIsOpen(false);
+							}}
+						>
+							<RefreshCcw className="h-4 w-4" />
+							Reconnect
+						</DropdownMenuItem>
+					)
+				}
+				{
+					hasDeleteAccess && (
+						<DropdownMenuItem
+							variant="destructive"
+							className="cursor-pointer"
+							onSelect={(e) => {
+								e.preventDefault();
+								onDelete(client);
+								setIsOpen(false);
+							}}
+						>
+							<Trash2 className="h-4 w-4" />
+							Delete
+						</DropdownMenuItem>
+					)
+				}
+			</DropdownMenuContent >
+		</DropdownMenu >
 	);
 }
 
@@ -149,10 +155,12 @@ export default function MCPClientsTable({
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
+	const [updateMCPClient] = useUpdateMCPClientMutation();
 
 	const handleCreate = () => {
 		setFormOpen(true);
@@ -373,7 +381,7 @@ export default function MCPClientsTable({
 							<TableHead className="font-semibold">Enabled Tools</TableHead>
 							<TableHead className="font-semibold">Auto-execute Tools</TableHead>
 							<TableHead className="font-semibold">State</TableHead>
-							<TableHead className="font-semibold">Enabled</TableHead>
+							<TableHead className="font-semibold">Status</TableHead>
 							<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 						</TableRow>
 					</TableHeader>
@@ -450,8 +458,47 @@ export default function MCPClientsTable({
 										<TableCell>
 											<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 										</TableCell>
-										<TableCell>
-											<Badge variant={c.config.disabled ? "secondary" : "default"}>{c.config.disabled ? "Disabled" : "Enabled"}</Badge>
+										<TableCell onClick={(e) => e.stopPropagation()}>
+											<Switch
+												data-testid={`mcp-client-enabled-switch-${c.config.client_id}`}
+												checked={!c.config.disabled}
+												size="md"
+												disabled={!hasUpdateMCPClientAccess || togglingClientIds.has(c.config.client_id)}
+												onAsyncCheckedChange={async (checked) => {
+													setTogglingClientIds((prev) => new Set(prev).add(c.config.client_id));
+													await updateMCPClient({
+														id: c.config.client_id,
+														data: {
+															name: c.config.name,
+															is_code_mode_client: c.config.is_code_mode_client,
+															is_ping_available: c.config.is_ping_available,
+															allow_on_all_virtual_keys: c.config.allow_on_all_virtual_keys,
+															disabled: !checked,
+															headers: c.config.headers ?? {},
+															tools_to_execute: c.config.tools_to_execute,
+															tools_to_auto_execute: c.config.tools_to_auto_execute,
+															tool_pricing: c.config.tool_pricing,
+															tool_sync_interval: c.config.tool_sync_interval ?? 0,
+															allowed_extra_headers: c.config.allowed_extra_headers,
+														},
+													})
+														.unwrap()
+														.then(() => {
+															toast({ title: `Server ${checked ? "enabled" : "disabled"} successfully` });
+															if (refetch) refetch();
+														})
+														.catch((err) => {
+															toast({ title: "Error", description: getErrorMessage(err), variant: "destructive" });
+														})
+														.finally(() => {
+															setTogglingClientIds((prev) => {
+																const next = new Set(prev);
+																next.delete(c.config.client_id);
+																return next;
+															});
+														});
+												}}
+											/>
 										</TableCell>
 										<TableCell
 											className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
