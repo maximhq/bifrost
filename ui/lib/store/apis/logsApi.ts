@@ -397,6 +397,8 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useGetModelRankingsQuery,
+	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,
 	useLazyGetDimensionRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
