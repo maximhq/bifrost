@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions } from "@/lib/constants/governance";
@@ -13,7 +13,6 @@ import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
-import { Save } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -107,21 +106,21 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				Validator.custom(formData.isDirty, "No changes to save"),
 				...(formData.budgetMaxLimit !== undefined && formData.budgetMaxLimit !== null
 					? [
-							Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
-							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
-						]
+						Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
+						Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
+					]
 					: []),
 				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
-							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
-							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
-						]
+						Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
+						Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+					]
 					: []),
 				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 					? [
-							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
-							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
-						]
+						Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
+						Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+					]
 					: []),
 			]),
 		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
@@ -361,7 +360,6 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								<TooltipTrigger asChild>
 									<span>
 										<Button type="submit" disabled={isSubmitDisabled}>
-											<Save className="h-4 w-4" />
 											{loading ? "Saving..." : isEditing ? "Update Customer" : "Create Customer"}
 										</Button>
 									</span>
