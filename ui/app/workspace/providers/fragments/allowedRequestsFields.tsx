@@ -71,6 +71,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "responses", label: "Responses" },
 	{ key: "responses_stream", label: "Responses Stream" },
 	{ key: "embedding", label: "Embedding" },
+	{ key: "rerank", label: "Rerank" },
 	{ key: "speech", label: "Speech" },
 	{ key: "speech_stream", label: "Speech Stream" },
 	{ key: "transcription", label: "Transcription" },

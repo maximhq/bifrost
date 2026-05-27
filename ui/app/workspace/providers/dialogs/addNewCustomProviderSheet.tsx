@@ -165,6 +165,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 													<SelectItem value="cohere">Cohere</SelectItem>
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
 													<SelectItem value="replicate">Replicate</SelectItem>
+													<SelectItem value="sgl">SGLang</SelectItem>
 												</SelectContent>
 											</Select>
 										</FormControl>

@@ -2070,8 +2070,6 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             _http._tcp.azure.archive.ubuntu.com:443
-            _https._tcp.dl.google.com:443
-            motd.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
