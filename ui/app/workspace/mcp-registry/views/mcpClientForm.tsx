@@ -5,13 +5,14 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
@@ -70,12 +71,48 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const [newHeaderKeyInput, setNewHeaderKeyInput] = useState("");
 	const [headersFlow, setHeadersFlow] = useState<{ payload: CreateMCPClientRequest } | null>(null);
 
+	// UI splits the canonical `auth_type` into two dropdowns:
+	//   - authKind: none | headers | oauth
+	//   - authScope: shared | per_user (hidden when authKind = none)
+	// They recombine into the wire `auth_type` ("oauth", "per_user_oauth",
+	// "headers", "per_user_headers", "none") so the backend contract is
+	// unchanged.
+	const [authScope, setAuthScope] = useState<"shared" | "per_user">("shared");
+
 	const methods = useForm<CreateMCPClientRequest>({ defaultValues: emptyForm });
 	const { control, handleSubmit, setValue, watch, reset, setError, clearErrors } = methods;
 
 	const connectionType = watch("connection_type");
 	const authType = watch("auth_type");
 	const headers = watch("headers");
+
+	const authKind: "none" | "headers" | "oauth" =
+		authType === "oauth" || authType === "per_user_oauth"
+			? "oauth"
+			: authType === "headers" || authType === "per_user_headers"
+				? "headers"
+				: "none";
+
+	const applyAuthKind = (kind: "none" | "headers" | "oauth") => {
+		if (kind === "none") {
+			setValue("auth_type", "none");
+			return;
+		}
+		if (kind === "oauth") {
+			setValue("auth_type", authScope === "per_user" ? "per_user_oauth" : "oauth");
+			return;
+		}
+		setValue("auth_type", authScope === "per_user" ? "per_user_headers" : "headers");
+	};
+
+	const applyAuthScope = (scope: "shared" | "per_user") => {
+		setAuthScope(scope);
+		if (authKind === "oauth") {
+			setValue("auth_type", scope === "per_user" ? "per_user_oauth" : "oauth");
+		} else if (authKind === "headers") {
+			setValue("auth_type", scope === "per_user" ? "per_user_headers" : "headers");
+		}
+	};
 
 	// Inline header validation (shown live as user edits headers).
 	// Both "headers" and "per_user_headers" auth types persist the static
@@ -109,6 +146,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setHeadersFlow(null);
 			setPerUserHeaderKeys([]);
 			setNewHeaderKeyInput("");
+			setAuthScope("shared");
 			setIsLoading(false);
 		}
 	}, [open, reset]);
@@ -311,6 +349,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												</SelectItem>
 											</SelectContent>
 										</Select>
+										<p className="text-muted-foreground text-xs">Connection type and authentication settings cannot be changed later.</p>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -389,24 +428,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										name="connection_string"
 										render={({ field }) => (
 											<FormItem>
-												<div className="flex w-fit items-center gap-1">
-													<FormLabel>Connection URL</FormLabel>
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<span>
-																	<Info className="text-muted-foreground ml-1 h-3 w-3" />
-																</span>
-															</TooltipTrigger>
-															<TooltipContent className="max-w-fit">
-																<p>
-																	Use <code className="rounded bg-neutral-100 px-1 py-0.5 text-neutral-800">env.&lt;VAR&gt;</code> to read
-																	the value from an environment variable.
-																</p>
-															</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
-												</div>
+												<FormLabel>Connection URL</FormLabel>
 												<EnvVarInput
 													value={field.value}
 													onChange={(value) => {
@@ -422,40 +444,49 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									/>
 
 									{/* Auth Type */}
-									<FormField
-										control={control}
-										name="auth_type"
-										render={({ field }) => (
-											<FormItem className="w-full">
-												<FormLabel>Authentication Type</FormLabel>
-												<Select value={field.value} onValueChange={(value: MCPAuthType) => field.onChange(value)}>
-													<FormControl>
-														<SelectTrigger className="w-full" data-testid="auth-type-select">
-															<SelectValue placeholder="Select authentication type" />
-														</SelectTrigger>
-													</FormControl>
-													<SelectContent>
-														<SelectItem value="none" data-testid="auth-type-none">
-															None
-														</SelectItem>
-														<SelectItem value="headers" data-testid="auth-type-headers">
-															Headers
-														</SelectItem>
-														<SelectItem value="per_user_headers" data-testid="auth-type-per-user-headers">
-															Per-User Headers
-														</SelectItem>
-														<SelectItem value="oauth" data-testid="auth-type-oauth">
-															OAuth 2.0
-														</SelectItem>
-														<SelectItem value="per_user_oauth" data-testid="auth-type-per-user-oauth">
-															Per-User OAuth 2.0
-														</SelectItem>
-													</SelectContent>
-												</Select>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
+									<FormItem className="w-full">
+										<FormLabel>Authentication Type</FormLabel>
+										<Select value={authKind} onValueChange={(value: "none" | "headers" | "oauth") => applyAuthKind(value)}>
+											<FormControl>
+												<SelectTrigger className="w-full" data-testid="auth-type-select">
+													<SelectValue placeholder="Select authentication type" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												<SelectItem value="none" data-testid="auth-type-none">
+													None
+												</SelectItem>
+												<SelectItem value="headers" data-testid="auth-type-headers">
+													Headers
+												</SelectItem>
+												<SelectItem value="oauth" data-testid="auth-type-oauth">
+													OAuth 2.0
+												</SelectItem>
+											</SelectContent>
+										</Select>
+									</FormItem>
+
+									{/* Auth Scope — only meaningful when there's an auth flow */}
+									{authKind !== "none" && (
+										<FormItem className="w-full">
+											<FormLabel>Auth Scope</FormLabel>
+											<Select value={authScope} onValueChange={(value: "shared" | "per_user") => applyAuthScope(value)}>
+												<FormControl>
+													<SelectTrigger className="w-full" data-testid="auth-scope-select">
+														<SelectValue placeholder="Select auth scope" />
+													</SelectTrigger>
+												</FormControl>
+												<SelectContent>
+													<SelectItem value="shared" data-testid="auth-scope-shared">
+														Shared
+													</SelectItem>
+													<SelectItem value="per_user" data-testid="auth-scope-per-user">
+														Per-User
+													</SelectItem>
+												</SelectContent>
+											</Select>
+										</FormItem>
+									)}
 
 									{authType === "headers" && (
 										<FormField
@@ -492,7 +523,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 													</div>
 													<p className="text-muted-foreground text-sm">
 														Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
-														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user — never stored on this server config.
+														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user - never stored on this server config.
 													</p>
 												</div>
 												<Textarea
@@ -536,150 +567,153 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									)}
 
 									{(authType === "oauth" || authType === "per_user_oauth") && (
-										<>
-											{/* OAuth Client ID */}
-											<FormField
-												control={control}
-												name="oauth_config.client_id"
-												render={({ field }) => (
-													<FormItem>
-														<div className="flex items-center gap-2">
-															<FormLabel>OAuth Client ID (optional)</FormLabel>
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																	</TooltipTrigger>
-																	<TooltipContent className="max-w-xs">
-																		<p>
-																			Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with
-																			the OAuth provider if supported.
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														</div>
-														<FormControl>
-															<EnvVarInput
-																value={field.value}
-																onChange={field.onChange}
-																placeholder="your-client-id (auto-generated if empty)"
-																data-testid="mcp-oauth-client-id"
-															/>
-														</FormControl>
-														<p className="text-muted-foreground text-xs">
-															Will be auto-generated via dynamic registration if left empty and provider supports it
-														</p>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
+										<Accordion type="single" collapsible className="w-full">
+											<AccordionItem value="oauth-advanced" className="border-b-0">
+												<AccordionTrigger className="py-0" data-testid="oauth-advanced-trigger">
+													<span className="text-sm font-medium">OAuth Client Advanced Settings</span>
+												</AccordionTrigger>
+												<AccordionContent className="space-y-4 pt-4 pb-0">
+													{/* OAuth Client ID */}
+													<FormField
+														control={control}
+														name="oauth_config.client_id"
+														render={({ field }) => (
+															<FormItem>
+																<div className="flex items-center gap-2">
+																	<FormLabel>OAuth Client ID (optional)</FormLabel>
+																	<TooltipProvider>
+																		<Tooltip>
+																			<TooltipTrigger asChild>
+																				<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																			</TooltipTrigger>
+																			<TooltipContent className="max-w-xs">
+																				<p>
+																					Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register
+																					with the OAuth provider if supported.
+																				</p>
+																			</TooltipContent>
+																		</Tooltip>
+																	</TooltipProvider>
+																</div>
+																<FormControl>
+																	<EnvVarInput
+																		value={field.value}
+																		onChange={field.onChange}
+																		placeholder="your-client-id (auto-generated if empty)"
+																		data-testid="mcp-oauth-client-id"
+																	/>
+																</FormControl>
+																<p className="text-muted-foreground text-xs">
+																	Will be auto-generated via dynamic registration if left empty and provider supports it
+																</p>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 
-											{/* OAuth Client Secret */}
-											<FormField
-												control={control}
-												name="oauth_config.client_secret"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
-														<FormControl>
-															<EnvVarInput
-																value={field.value}
-																onChange={field.onChange}
-																placeholder="your-client-secret"
-																hideValueWhenEnv
-																maskNonEnvValue
-																data-testid="mcp-oauth-client-secret"
-															/>
-														</FormControl>
-														<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
+													{/* OAuth Client Secret */}
+													<FormField
+														control={control}
+														name="oauth_config.client_secret"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
+																<FormControl>
+																	<EnvVarInput
+																		value={field.value}
+																		onChange={field.onChange}
+																		placeholder="your-client-secret"
+																		hideValueWhenEnv
+																		maskNonEnvValue
+																		data-testid="mcp-oauth-client-secret"
+																	/>
+																</FormControl>
+																<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 
-											{/* OAuth Authorize URL */}
-											<FormField
-												control={control}
-												name="oauth_config.authorize_url"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>Authorization URL (optional, auto-discovered)</FormLabel>
-														<FormControl>
-															<Input
-																{...field}
-																value={field.value ?? ""}
-																onChange={(e) => {
-																	field.onChange(e);
-																	clearErrors("oauth_config.authorize_url");
-																}}
-																placeholder="https://provider.com/oauth/authorize"
-																data-testid="mcp-oauth-authorize-url"
-															/>
-														</FormControl>
-														<FormMessage />
-														<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
-													</FormItem>
-												)}
-											/>
+													{/* OAuth Authorize URL */}
+													<FormField
+														control={control}
+														name="oauth_config.authorize_url"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>Authorization URL (optional, auto-discovered)</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		onChange={(e) => {
+																			field.onChange(e);
+																			clearErrors("oauth_config.authorize_url");
+																		}}
+																		placeholder="https://provider.com/oauth/authorize"
+																		data-testid="mcp-oauth-authorize-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 
-											{/* OAuth Token URL */}
-											<FormField
-												control={control}
-												name="oauth_config.token_url"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>Token URL (optional, auto-discovered)</FormLabel>
-														<FormControl>
-															<Input
-																{...field}
-																value={field.value ?? ""}
-																onChange={(e) => {
-																	field.onChange(e);
-																	clearErrors("oauth_config.token_url");
-																}}
-																placeholder="https://provider.com/oauth/token"
-															/>
-														</FormControl>
-														<FormMessage />
-														<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
-													</FormItem>
-												)}
-											/>
+													{/* OAuth Token URL */}
+													<FormField
+														control={control}
+														name="oauth_config.token_url"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>Token URL (optional, auto-discovered)</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		onChange={(e) => {
+																			field.onChange(e);
+																			clearErrors("oauth_config.token_url");
+																		}}
+																		placeholder="https://provider.com/oauth/token"
+																		data-testid="mcp-oauth-token-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 
-											{/* OAuth Registration URL */}
-											<FormField
-												control={control}
-												name="oauth_config.registration_url"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>Registration URL (optional, auto-discovered)</FormLabel>
-														<FormControl>
-															<Input
-																{...field}
-																value={field.value ?? ""}
-																onChange={(e) => {
-																	field.onChange(e);
-																	clearErrors("oauth_config.registration_url");
-																}}
-																placeholder="https://provider.com/oauth/register"
-															/>
-														</FormControl>
-														<FormMessage />
-														<p className="text-muted-foreground text-xs">
-															For dynamic client registration, will be discovered if not provided
-														</p>
-													</FormItem>
-												)}
-											/>
+													{/* OAuth Registration URL */}
+													<FormField
+														control={control}
+														name="oauth_config.registration_url"
+														render={({ field }) => (
+															<FormItem>
+																<FormLabel>Registration URL (optional, auto-discovered)</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		onChange={(e) => {
+																			field.onChange(e);
+																			clearErrors("oauth_config.registration_url");
+																		}}
+																		placeholder="https://provider.com/oauth/register"
+																		data-testid="mcp-oauth-registration-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 
-											{/* Scopes (local state, not RHF field) */}
-											<div className="space-y-2">
-												<Label>Scopes (optional, comma-separated)</Label>
-												<Input value={scopesText} onChange={(e) => setScopesText(e.target.value)} placeholder="read, write, admin" />
-												<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
-											</div>
-										</>
+													{/* Scopes (local state, not RHF field) */}
+													<div className="space-y-2">
+														<Label>Scopes (optional, comma-separated)</Label>
+														<Input value={scopesText} onChange={(e) => setScopesText(e.target.value)} placeholder="read, write, admin" data-testid="mcp-oauth-scopes-input" />
+													</div>
+												</AccordionContent>
+											</AccordionItem>
+										</Accordion>
 									)}
 								</>
 							)}
