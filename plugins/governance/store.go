@@ -21,6 +21,22 @@ import (
 type EntityWiseBudgets map[string][]*configstoreTables.TableBudget
 type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
 
+// OwnerScope identifies the entity that owns a budget or rate limit for
+// alert-evaluation purposes. Type is one of "virtual_key", "team", "customer",
+// "provider", or "global"; ID is the owning entity's identifier ("" for global).
+// It mirrors the owner-scope derivation used by EachBudget/EachRateLimit so the
+// alerting layer can evaluate only the scopes a request touched.
+type OwnerScope struct {
+	Type string
+	ID   string
+}
+
+// ownerScopeIndexTTL bounds how often the owner-scope reverse index is rebuilt.
+// Rebuilds are full scans of the hot budget/rate-limit maps, so throttling keeps
+// per-request cost at O(touched scopes) regardless of request rate while keeping
+// staleness for newly created entities below this bound.
+const ownerScopeIndexTTL = time.Second
+
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
@@ -50,6 +66,20 @@ type LocalGovernanceStore struct {
 
 	// Model catalog for cross-provider model matching (optional)
 	modelCatalog *modelcatalog.ModelCatalog
+
+	// ownerScopeIndex maps an OwnerScope to the budget / rate-limit IDs it owns.
+	// It lets the alerting layer evaluate only the scopes touched by a request
+	// instead of scanning every budget and rate limit on every usage update.
+	// The maps are rebuilt wholesale (never mutated in place) at most once per
+	// ownerScopeIndexTTL from the hot maps using the same owner derivation logic
+	// as the collectors, so the index tolerates config churn without per-mutation
+	// bookkeeping. ownerScopeIndexMu guards rebuilds and the pointer reads; the
+	// returned maps are safe to iterate without the lock.
+	ownerScopeIndexMu      sync.Mutex
+	ownerScopeBudgets      map[OwnerScope][]string
+	ownerScopeTokenLimits  map[OwnerScope][]string
+	ownerScopeReqLimits    map[OwnerScope][]string
+	ownerScopeIndexBuiltAt time.Time
 
 	// Logger
 	logger schemas.Logger
@@ -99,22 +129,15 @@ type BudgetAndRateLimitStatus struct {
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
-	// EachBudget calls fn for every budget loaded in memory. Used by the
-	// consumer to evaluate thresholds after usage updates.
-	// EachBudget calls fn for every budget loaded in memory, passing the
-	// owner scope type and ID derived from the budget's FK columns.
-	// ownerScopeType is one of "virtual_key", "team", "customer", "provider", or "global".
-	EachBudget(fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string))
-	// EachRateLimit calls fn for every rate limit loaded in memory, passing the
-	// owner scope type and ID derived from the rate limit's FK columns.
-	// ownerScopeType is one of "virtual_key", "team", "customer", or "global".
-	EachRateLimit(fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string))
-	// EachRequestLimit calls fn for every rate limit that has a request-limit configured,
-	// passing the owner scope type and ID derived from the rate limit's FK columns.
-	// This is separate from EachRateLimit because request limits and token limits are
-	// independent dimensions stored in the same row. A rate limit may have only request
-	// limits, only token limits, or both.
-	EachRequestLimit(fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string))
+	// EachBudgetForScopes is the scope-targeted analogue of EachBudget: it calls
+	// fn only for budgets owned by one of the given scopes, via the owner-scope
+	// reverse index, so the consumer can evaluate just the scopes a request
+	// touched instead of scanning every budget on every usage update.
+	EachBudgetForScopes(scopes []OwnerScope, fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string))
+	// EachRateLimitForScopes is the scope-targeted analogue of EachRateLimit.
+	EachRateLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string))
+	// EachRequestLimitForScopes is the scope-targeted analogue of EachRequestLimit.
+	EachRequestLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string))
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -2066,39 +2089,6 @@ func ownerScopeFromBudget(b *configstoreTables.TableBudget) (scopeType, scopeID 
 	}
 }
 
-// EachBudget calls fn for every budget loaded in memory, passing owner scope info.
-func (gs *LocalGovernanceStore) EachBudget(fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string)) {
-	gs.budgets.Range(func(key, value any) bool {
-		b, ok := value.(*configstoreTables.TableBudget)
-		if ok && b != nil {
-			scopeType, scopeID := ownerScopeFromBudget(b)
-			fn(key.(string), b.CurrentUsage, b.MaxLimit, scopeType, scopeID)
-		}
-		return true
-	})
-}
-
-// stampRateLimitOwner sets the owner-scope FK on a rate limit that has no owner
-// yet. Exactly one of vkID/teamID/customerID/providerConfigID should be non-nil.
-// Rate limits are linked from the owner side (owner.rate_limit_id), so their own
-// FK columns load as nil; ownerScopeFromRateLimit needs them populated or every
-// VK/team/customer/provider-scoped rate-limit alert is misattributed to global scope.
-func stampRateLimitOwner(rl *configstoreTables.TableRateLimit, vkID, teamID, customerID string, providerConfigID *uint) {
-	if rl == nil || rl.VirtualKeyID != nil || rl.TeamID != nil || rl.CustomerID != nil || rl.ProviderConfigID != nil {
-		return
-	}
-	switch {
-	case vkID != "":
-		rl.VirtualKeyID = &vkID
-	case teamID != "":
-		rl.TeamID = &teamID
-	case customerID != "":
-		rl.CustomerID = &customerID
-	case providerConfigID != nil:
-		rl.ProviderConfigID = providerConfigID
-	}
-}
-
 // stampBudgetCustomerOwner sets the customer owner FK on a budget that has no
 // owner yet. Customer budgets are linked via customer.budget_id, so the budget
 // row's own FK columns load as nil; ownerScopeFromBudget needs CustomerID set or
@@ -2110,45 +2100,180 @@ func stampBudgetCustomerOwner(b *configstoreTables.TableBudget, customerID strin
 	b.CustomerID = &customerID
 }
 
-// ownerScopeFromRateLimit derives the alert-rule scope type and ID from a rate limit's FK columns.
-func ownerScopeFromRateLimit(rl *configstoreTables.TableRateLimit) (scopeType, scopeID string) {
-	switch {
-	case rl.VirtualKeyID != nil:
-		return "virtual_key", *rl.VirtualKeyID
-	case rl.TeamID != nil:
-		return "team", *rl.TeamID
-	case rl.CustomerID != nil:
-		return "customer", *rl.CustomerID
-	case rl.ProviderConfigID != nil:
-		return "provider", fmt.Sprintf("%d", *rl.ProviderConfigID)
-	default:
-		return "global", ""
+// ensureOwnerScopeIndex returns the owner-scope reverse index, rebuilding it
+// from the hot maps if it is missing or older than ownerScopeIndexTTL. The
+// returned maps are immutable snapshots (replaced wholesale on rebuild) and are
+// safe to iterate after the lock is released. Buckets are keyed exactly as the
+// owner derivation used by the collectors, so a lookup for a scope yields the
+// same budgets/rate limits EachBudget/EachRateLimit would attribute to that
+// scope.
+func (gs *LocalGovernanceStore) ensureOwnerScopeIndex() (budgets, tokenLimits, reqLimits map[OwnerScope][]string) {
+	gs.ownerScopeIndexMu.Lock()
+	defer gs.ownerScopeIndexMu.Unlock()
+	if gs.ownerScopeBudgets == nil || time.Since(gs.ownerScopeIndexBuiltAt) > ownerScopeIndexTTL {
+		gs.rebuildOwnerScopeIndexLocked()
+	}
+	return gs.ownerScopeBudgets, gs.ownerScopeTokenLimits, gs.ownerScopeReqLimits
+}
+
+// rebuildOwnerScopeIndexLocked rebuilds the owner-scope reverse index from the
+// hot budget and owner maps. Callers must hold ownerScopeIndexMu.
+func (gs *LocalGovernanceStore) rebuildOwnerScopeIndexLocked() {
+	budgets := make(map[OwnerScope][]string)
+	tokenLimits := make(map[OwnerScope][]string)
+	reqLimits := make(map[OwnerScope][]string)
+	gs.budgets.Range(func(key, value any) bool {
+		if b, ok := value.(*configstoreTables.TableBudget); ok && b != nil {
+			scopeType, scopeID := ownerScopeFromBudget(b)
+			s := OwnerScope{Type: scopeType, ID: scopeID}
+			budgets[s] = append(budgets[s], key.(string))
+		}
+		return true
+	})
+	indexRateLimit := func(scopeType string, scopeID string, rateLimitID string, rateLimit *configstoreTables.TableRateLimit) {
+		if rateLimit == nil {
+			return
+		}
+		s := OwnerScope{Type: string(scopeType), ID: scopeID}
+		if rateLimit.TokenMaxLimit != nil {
+			tokenLimits[s] = append(tokenLimits[s], rateLimitID)
+		}
+		if rateLimit.RequestMaxLimit != nil {
+			reqLimits[s] = append(reqLimits[s], rateLimitID)
+		}
+	}
+	gs.virtualKeys.Range(func(_, value any) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || vk == nil {
+			return true
+		}
+		if vk.RateLimitID != nil {
+			if rateLimitValue, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && rateLimitValue != nil {
+				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+					indexRateLimit("virtual_key", vk.ID, *vk.RateLimitID, rateLimit)
+				}
+			}
+		}
+		for i := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[i]
+			if pc.RateLimitID == nil || pc.Provider == "" {
+				continue
+			}
+			if rateLimitValue, exists := gs.rateLimits.Load(*pc.RateLimitID); exists && rateLimitValue != nil {
+				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+					indexRateLimit("provider", pc.Provider, *pc.RateLimitID, rateLimit)
+				}
+			}
+		}
+		return true
+	})
+	gs.teams.Range(func(_, value any) bool {
+		team, ok := value.(*configstoreTables.TableTeam)
+		if !ok || team == nil || team.RateLimitID == nil {
+			return true
+		}
+		if rateLimitValue, exists := gs.rateLimits.Load(*team.RateLimitID); exists && rateLimitValue != nil {
+			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+				indexRateLimit("team", team.ID, *team.RateLimitID, rateLimit)
+			}
+		}
+		return true
+	})
+	gs.customers.Range(func(_, value any) bool {
+		customer, ok := value.(*configstoreTables.TableCustomer)
+		if !ok || customer == nil || customer.RateLimitID == nil {
+			return true
+		}
+		if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
+			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+				indexRateLimit("customer", customer.ID, *customer.RateLimitID, rateLimit)
+			}
+		}
+		return true
+	})
+	gs.ownerScopeBudgets = budgets
+	gs.ownerScopeTokenLimits = tokenLimits
+	gs.ownerScopeReqLimits = reqLimits
+	gs.ownerScopeIndexBuiltAt = time.Now()
+}
+
+// dedupeScopes returns scopes with duplicates removed, preserving order. Keeps
+// the per-request scope set small so the For-scopes iterators never revisit the
+// same bucket twice.
+func dedupeScopes(scopes []OwnerScope) []OwnerScope {
+	if len(scopes) <= 1 {
+		return scopes
+	}
+	seen := make(map[OwnerScope]struct{}, len(scopes))
+	out := scopes[:0:0]
+	for _, s := range scopes {
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// EachBudgetForScopes calls fn for every budget owned by one of the given
+// scopes, reading live usage from the hot map. Unlike EachBudget it does not
+// scan every budget: it consults the owner-scope reverse index, so cost is
+// O(budgets owned by the touched scopes) rather than O(all budgets). The owner
+// scope passed to fn is the bucket's scope, identical to what EachBudget would
+// report for the same budget.
+func (gs *LocalGovernanceStore) EachBudgetForScopes(scopes []OwnerScope, fn func(budgetID string, currentUsage, maxLimit float64, ownerScopeType, ownerScopeID string)) {
+	if fn == nil || len(scopes) == 0 {
+		return
+	}
+	budgetsIdx, _, _ := gs.ensureOwnerScopeIndex()
+	for _, s := range dedupeScopes(scopes) {
+		for _, id := range budgetsIdx[s] {
+			if value, ok := gs.budgets.Load(id); ok {
+				if b, ok := value.(*configstoreTables.TableBudget); ok && b != nil {
+					fn(id, b.CurrentUsage, b.MaxLimit, s.Type, s.ID)
+				}
+			}
+		}
 	}
 }
 
-// EachRateLimit calls fn for every rate limit loaded in memory, passing owner scope info.
-func (gs *LocalGovernanceStore) EachRateLimit(fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string)) {
-	gs.rateLimits.Range(func(key, value any) bool {
-		rl, ok := value.(*configstoreTables.TableRateLimit)
-		if ok && rl != nil && rl.TokenMaxLimit != nil {
-			scopeType, scopeID := ownerScopeFromRateLimit(rl)
-			fn(key.(string), rl.TokenCurrentUsage, *rl.TokenMaxLimit, scopeType, scopeID)
+// EachRateLimitForScopes calls fn for every token-limited rate limit owned by
+// one of the given scopes, reading live usage from the hot map. It is the
+// scope-targeted analogue of EachRateLimit.
+func (gs *LocalGovernanceStore) EachRateLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, tokenCurrentUsage, tokenMaxLimit int64, ownerScopeType, ownerScopeID string)) {
+	if fn == nil || len(scopes) == 0 {
+		return
+	}
+	_, tokenIdx, _ := gs.ensureOwnerScopeIndex()
+	for _, s := range dedupeScopes(scopes) {
+		for _, id := range tokenIdx[s] {
+			if value, ok := gs.rateLimits.Load(id); ok {
+				if rl, ok := value.(*configstoreTables.TableRateLimit); ok && rl != nil && rl.TokenMaxLimit != nil {
+					fn(id, rl.TokenCurrentUsage, *rl.TokenMaxLimit, s.Type, s.ID)
+				}
+			}
 		}
-		return true
-	})
+	}
 }
 
-// EachRequestLimit calls fn for every rate limit that has a request-limit configured,
-// passing owner scope info.
-func (gs *LocalGovernanceStore) EachRequestLimit(fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string)) {
-	gs.rateLimits.Range(func(key, value any) bool {
-		rl, ok := value.(*configstoreTables.TableRateLimit)
-		if ok && rl != nil && rl.RequestMaxLimit != nil {
-			scopeType, scopeID := ownerScopeFromRateLimit(rl)
-			fn(key.(string), rl.RequestCurrentUsage, *rl.RequestMaxLimit, scopeType, scopeID)
+// EachRequestLimitForScopes calls fn for every request-limited rate limit owned
+// by one of the given scopes, reading live usage from the hot map. It is the
+// scope-targeted analogue of EachRequestLimit.
+func (gs *LocalGovernanceStore) EachRequestLimitForScopes(scopes []OwnerScope, fn func(rateLimitID string, requestCurrentUsage, requestMaxLimit int64, ownerScopeType, ownerScopeID string)) {
+	if fn == nil || len(scopes) == 0 {
+		return
+	}
+	_, _, reqIdx := gs.ensureOwnerScopeIndex()
+	for _, s := range dedupeScopes(scopes) {
+		for _, id := range reqIdx[s] {
+			if value, ok := gs.rateLimits.Load(id); ok {
+				if rl, ok := value.(*configstoreTables.TableRateLimit); ok && rl != nil && rl.RequestMaxLimit != nil {
+					fn(id, rl.RequestCurrentUsage, *rl.RequestMaxLimit, s.Type, s.ID)
+				}
+			}
 		}
-		return true
-	})
+	}
 }
 
 // DATABASE METHODS
@@ -2529,16 +2654,10 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
-// backfillOwnerScopes sets the owner-scope foreign keys on the in-memory
-// rate-limit and budget instances that EachRateLimit/EachBudget iterate.
-// Rate limits (for VK/team/customer/provider-config) and customer budgets are
-// linked from the owner side — the owner row holds rate_limit_id / budget_id
-// — so the standalone rows load with NULL owner FKs as loaded from the DB. The
-// alert evaluator derives a rule's scope via ownerScopeFromRateLimit /
-// ownerScopeFromBudget, which read those FKs; leaving them NULL would
-// misattribute scoped alerts to global scope and never match their rules. This
-// walks the owner slices and stamps the scope onto the standalone instances
-// before they are published into the sync.Map fields.
+// backfillOwnerScopes stamps customer-owned budgets onto the in-memory budget
+// instances that EachBudget iterates. Rate limits are now indexed directly from
+// their owner rows, so they no longer need synthetic owner FKs on the rate-limit
+// instance itself.
 func (gs *LocalGovernanceStore) backfillOwnerScopes(
 	virtualKeys []configstoreTables.TableVirtualKey,
 	teams []configstoreTables.TableTeam,
@@ -2546,62 +2665,13 @@ func (gs *LocalGovernanceStore) backfillOwnerScopes(
 	budgets []configstoreTables.TableBudget,
 	rateLimits []configstoreTables.TableRateLimit,
 ) {
-	rateLimitByID := make(map[string]*configstoreTables.TableRateLimit, len(rateLimits))
-	for i := range rateLimits {
-		rateLimit := &rateLimits[i]
-		rateLimitByID[rateLimit.ID] = rateLimit
-	}
 	budgetByID := make(map[string]*configstoreTables.TableBudget, len(budgets))
 	for i := range budgets {
 		budget := &budgets[i]
 		budgetByID[budget.ID] = budget
 	}
-	// rateLimitUnowned reports whether a rate limit has no owner FK set yet.
-	rateLimitUnowned := func(rl *configstoreTables.TableRateLimit) bool {
-		return rl != nil && rl.VirtualKeyID == nil && rl.TeamID == nil && rl.CustomerID == nil && rl.ProviderConfigID == nil
-	}
-
-	for i := range virtualKeys {
-		vk := &virtualKeys[i]
-		if vk.RateLimitID == nil {
-			continue
-		}
-		if rl := rateLimitByID[*vk.RateLimitID]; rateLimitUnowned(rl) {
-			id := vk.ID
-			rl.VirtualKeyID = &id
-		}
-	}
-	for i := range virtualKeys {
-		vk := &virtualKeys[i]
-		for j := range vk.ProviderConfigs {
-			pc := &vk.ProviderConfigs[j]
-			if pc.RateLimitID == nil {
-				continue
-			}
-			if rl := rateLimitByID[*pc.RateLimitID]; rateLimitUnowned(rl) {
-				id := pc.ID
-				rl.ProviderConfigID = &id
-			}
-		}
-	}
-	for i := range teams {
-		team := &teams[i]
-		if team.RateLimitID == nil {
-			continue
-		}
-		if rl := rateLimitByID[*team.RateLimitID]; rateLimitUnowned(rl) {
-			id := team.ID
-			rl.TeamID = &id
-		}
-	}
 	for i := range customers {
 		customer := &customers[i]
-		if customer.RateLimitID != nil {
-			if rl := rateLimitByID[*customer.RateLimitID]; rateLimitUnowned(rl) {
-				id := customer.ID
-				rl.CustomerID = &id
-			}
-		}
 		if customer.BudgetID != nil {
 			if b := budgetByID[*customer.BudgetID]; b != nil &&
 				b.VirtualKeyID == nil && b.TeamID == nil && b.CustomerID == nil && b.ProviderConfigID == nil && b.ModelConfigID == nil {
@@ -2950,7 +3020,6 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 	// Create associated rate limit if exists
 	if clone.RateLimit != nil {
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		stampRateLimitOwner(clone.RateLimit, clone.ID, "", "", nil)
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
@@ -2964,7 +3033,6 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 			}
 			if pc.RateLimit != nil {
 				pc.RateLimit.IsCalendarAligned = clone.CalendarAligned
-				stampRateLimitOwner(pc.RateLimit, "", "", "", &pc.ID)
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
 			}
 		}
@@ -3055,7 +3123,6 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-			stampRateLimitOwner(clone.RateLimit, clone.ID, "", "", nil)
 			// Update the rate limit in the main rateLimits sync.Map
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., after AP propagation
@@ -3102,7 +3169,6 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 						}
 					}
 					clone.ProviderConfigs[i].RateLimit.IsCalendarAligned = clone.CalendarAligned
-					stampRateLimitOwner(clone.ProviderConfigs[i].RateLimit, "", "", "", &clone.ProviderConfigs[i].ID)
 					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
@@ -3252,7 +3318,6 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 	// Create associated rate limit if exists
 	if clone.RateLimit != nil {
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		stampRateLimitOwner(clone.RateLimit, "", clone.ID, "", nil)
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
@@ -3315,7 +3380,6 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 				}
 			}
 			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-			stampRateLimitOwner(clone.RateLimit, "", clone.ID, "", nil)
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingTeam.RateLimit != nil && existingTeam.RateLimit.ID != clone.RateLimit.ID {
@@ -3384,7 +3448,6 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	}
 	if clone.RateLimit != nil {
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		stampRateLimitOwner(clone.RateLimit, "", "", clone.ID, nil)
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 	gs.customers.Store(clone.ID, &clone)
@@ -3438,7 +3501,6 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
-			stampRateLimitOwner(clone.RateLimit, "", "", clone.ID, nil)
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingCustomer.RateLimit != nil && existingCustomer.RateLimit.ID != clone.RateLimit.ID {

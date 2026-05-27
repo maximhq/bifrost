@@ -76,7 +76,7 @@ type GovernancePlugin struct {
 	logger       schemas.Logger
 
 	// Transport dependencies
-	inMemoryStore  InMemoryStore
+	inMemoryStore InMemoryStore
 
 	cfgMutex sync.RWMutex
 

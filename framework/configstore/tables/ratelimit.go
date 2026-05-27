@@ -33,14 +33,6 @@ type TableRateLimit struct {
 	// Derived from the owning entity. See TableBudget.IsCalendarAligned.
 	IsCalendarAligned bool `gorm:"-" json:"-"`
 
-	// Owner FKs: a rate limit belongs to at most one VirtualKey, Team, Customer, or ProviderConfig.
-	// Mirrors the TableBudget owner pattern — derive scope type from whichever
-	// FK is non-nil when evaluating scoped alert rules.
-	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
-	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID       *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
-
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -54,24 +46,6 @@ func (TableRateLimit) TableName() string { return "governance_rate_limits" }
 
 // BeforeSave hook for RateLimit to validate reset duration formats
 func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
-	// A rate limit belongs to at most one owner type
-	owners := 0
-	if rl.VirtualKeyID != nil {
-		owners++
-	}
-	if rl.TeamID != nil {
-		owners++
-	}
-	if rl.CustomerID != nil {
-		owners++
-	}
-	if rl.ProviderConfigID != nil {
-		owners++
-	}
-	if owners > 1 {
-		return fmt.Errorf("rate limit cannot have more than one owner (virtual_key/team/customer/provider config)")
-	}
-
 	// Validate token reset duration if provided
 	if rl.TokenResetDuration != nil {
 		if d, err := ParseDuration(*rl.TokenResetDuration); err != nil {
