@@ -4,6 +4,7 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	useGetMCPAvailableFilterDataQuery,
+	useLazyGetDimensionRankingsQuery,
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsLatencyHistogramQuery,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/store";
 import type {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogFilters,
 	LogStats,
@@ -33,16 +35,17 @@ import type {
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
 	ProviderTokenHistogramResponse,
+	RankingDimension,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTab";
 import { useLocation } from "@tanstack/react-router";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
+import { DimensionRankingsTab } from "./components/dimensionRankingsTab";
 import { ExportPopover } from "./components/exportPopover";
 import { MCPTab } from "./components/mcpTab";
 import { ModelRankingsTab } from "./components/modelRankingsTab";
@@ -80,6 +83,10 @@ export default function DashboardPage() {
 
 	// Data states - Rankings
 	const [rankingsData, setRankingsData] = useState<ModelRankingsResponse | null>(null);
+	const [teamRankingsData, setTeamRankingsData] = useState<DimensionRankingsResponse | null>(null);
+	const [customerRankingsData, setCustomerRankingsData] = useState<DimensionRankingsResponse | null>(null);
+	const [buRankingsData, setBuRankingsData] = useState<DimensionRankingsResponse | null>(null);
+	const [userRankingsData, setUserRankingsData] = useState<DimensionRankingsResponse | null>(null);
 
 	// Loading states - Overview
 	const [loadingHistogram, setLoadingHistogram] = useState(true);
@@ -98,6 +105,10 @@ export default function DashboardPage() {
 
 	// Loading states - Rankings
 	const [loadingRankings, setLoadingRankings] = useState(true);
+	const [loadingTeamRankings, setLoadingTeamRankings] = useState(true);
+	const [loadingCustomerRankings, setLoadingCustomerRankings] = useState(true);
+	const [loadingBuRankings, setLoadingBuRankings] = useState(true);
+	const [loadingUserRankings, setLoadingUserRankings] = useState(true);
 
 	// RTK Query lazy hooks - Overview
 	const [triggerHistogram] = useLazyGetLogsHistogramQuery({});
@@ -117,6 +128,7 @@ export default function DashboardPage() {
 
 	// RTK Query lazy hooks - Rankings
 	const [triggerRankings] = useLazyGetModelRankingsQuery();
+	const [triggerDimensionRankings] = useLazyGetDimensionRankingsQuery();
 
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
@@ -411,6 +423,21 @@ export default function DashboardPage() {
 		setLoadingRankings(false);
 	}, [filters, triggerRankings]);
 
+	const fetchDimensionRankings = useCallback(
+		async (dimension: RankingDimension, setData: (d: DimensionRankingsResponse | null) => void, setLoading: (l: boolean) => void) => {
+			setLoading(true);
+			const result = await triggerDimensionRankings({ filters, dimension }, false);
+			setData(result.data ?? null);
+			setLoading(false);
+		},
+		[filters, triggerDimensionRankings],
+	);
+
+	const fetchTeamRankings = useCallback(() => fetchDimensionRankings("team", setTeamRankingsData, setLoadingTeamRankings), [fetchDimensionRankings]);
+	const fetchCustomerRankings = useCallback(() => fetchDimensionRankings("customer", setCustomerRankingsData, setLoadingCustomerRankings), [fetchDimensionRankings]);
+	const fetchBuRankings = useCallback(() => fetchDimensionRankings("business_unit", setBuRankingsData, setLoadingBuRankings), [fetchDimensionRankings]);
+	const fetchUserRankings = useCallback(() => fetchDimensionRankings("user", setUserRankingsData, setLoadingUserRankings), [fetchDimensionRankings]);
+
 	// --- Lazy-load refs: each tab fetches only once per filter change ---
 	const overviewFetchedRef = useRef(false);
 	const overviewLoadingRef = useRef(false);
@@ -431,6 +458,26 @@ export default function DashboardPage() {
 	const rankingsLoadingRef = useRef(false);
 	const rankingsGenRef = useRef(0);
 	const rankingsPromiseRef = useRef<Promise<void> | null>(null);
+
+	const teamRankingsFetchedRef = useRef(false);
+	const teamRankingsLoadingRef = useRef(false);
+	const teamRankingsGenRef = useRef(0);
+	const teamRankingsPromiseRef = useRef<Promise<void> | null>(null);
+
+	const customerRankingsFetchedRef = useRef(false);
+	const customerRankingsLoadingRef = useRef(false);
+	const customerRankingsGenRef = useRef(0);
+	const customerRankingsPromiseRef = useRef<Promise<void> | null>(null);
+
+	const buRankingsFetchedRef = useRef(false);
+	const buRankingsLoadingRef = useRef(false);
+	const buRankingsGenRef = useRef(0);
+	const buRankingsPromiseRef = useRef<Promise<void> | null>(null);
+
+	const userRankingsFetchedRef = useRef(false);
+	const userRankingsLoadingRef = useRef(false);
+	const userRankingsGenRef = useRef(0);
+	const userRankingsPromiseRef = useRef<Promise<void> | null>(null);
 
 	const ensureOverviewDataLoaded = useCallback(async () => {
 		if (overviewFetchedRef.current) return;
@@ -508,6 +555,54 @@ export default function DashboardPage() {
 		return promise;
 	}, [fetchRankingsData]);
 
+	const ensureTeamRankingsLoaded = useCallback(async () => {
+		if (teamRankingsFetchedRef.current) return;
+		if (teamRankingsLoadingRef.current) return teamRankingsPromiseRef.current ?? undefined;
+		const gen = teamRankingsGenRef.current;
+		teamRankingsLoadingRef.current = true;
+		const promise = fetchTeamRankings()
+			.then(() => { if (gen === teamRankingsGenRef.current) teamRankingsFetchedRef.current = true; })
+			.finally(() => { if (gen === teamRankingsGenRef.current) { teamRankingsLoadingRef.current = false; teamRankingsPromiseRef.current = null; } });
+		teamRankingsPromiseRef.current = promise;
+		return promise;
+	}, [fetchTeamRankings]);
+
+	const ensureCustomerRankingsLoaded = useCallback(async () => {
+		if (customerRankingsFetchedRef.current) return;
+		if (customerRankingsLoadingRef.current) return customerRankingsPromiseRef.current ?? undefined;
+		const gen = customerRankingsGenRef.current;
+		customerRankingsLoadingRef.current = true;
+		const promise = fetchCustomerRankings()
+			.then(() => { if (gen === customerRankingsGenRef.current) customerRankingsFetchedRef.current = true; })
+			.finally(() => { if (gen === customerRankingsGenRef.current) { customerRankingsLoadingRef.current = false; customerRankingsPromiseRef.current = null; } });
+		customerRankingsPromiseRef.current = promise;
+		return promise;
+	}, [fetchCustomerRankings]);
+
+	const ensureBuRankingsLoaded = useCallback(async () => {
+		if (buRankingsFetchedRef.current) return;
+		if (buRankingsLoadingRef.current) return buRankingsPromiseRef.current ?? undefined;
+		const gen = buRankingsGenRef.current;
+		buRankingsLoadingRef.current = true;
+		const promise = fetchBuRankings()
+			.then(() => { if (gen === buRankingsGenRef.current) buRankingsFetchedRef.current = true; })
+			.finally(() => { if (gen === buRankingsGenRef.current) { buRankingsLoadingRef.current = false; buRankingsPromiseRef.current = null; } });
+		buRankingsPromiseRef.current = promise;
+		return promise;
+	}, [fetchBuRankings]);
+
+	const ensureUserRankingsLoaded = useCallback(async () => {
+		if (userRankingsFetchedRef.current) return;
+		if (userRankingsLoadingRef.current) return userRankingsPromiseRef.current ?? undefined;
+		const gen = userRankingsGenRef.current;
+		userRankingsLoadingRef.current = true;
+		const promise = fetchUserRankings()
+			.then(() => { if (gen === userRankingsGenRef.current) userRankingsFetchedRef.current = true; })
+			.finally(() => { if (gen === userRankingsGenRef.current) { userRankingsLoadingRef.current = false; userRankingsPromiseRef.current = null; } });
+		userRankingsPromiseRef.current = promise;
+		return promise;
+	}, [fetchUserRankings]);
+
 	// Reset all lazy-load flags when filters change (not on tab switch)
 	useEffect(() => {
 		overviewFetchedRef.current = false;
@@ -519,6 +614,18 @@ export default function DashboardPage() {
 		rankingsFetchedRef.current = false;
 		rankingsLoadingRef.current = false;
 		rankingsGenRef.current += 1;
+		teamRankingsFetchedRef.current = false;
+		teamRankingsLoadingRef.current = false;
+		teamRankingsGenRef.current += 1;
+		customerRankingsFetchedRef.current = false;
+		customerRankingsLoadingRef.current = false;
+		customerRankingsGenRef.current += 1;
+		buRankingsFetchedRef.current = false;
+		buRankingsLoadingRef.current = false;
+		buRankingsGenRef.current += 1;
+		userRankingsFetchedRef.current = false;
+		userRankingsLoadingRef.current = false;
+		userRankingsGenRef.current += 1;
 	}, [filters]);
 
 	useEffect(() => {
@@ -535,7 +642,11 @@ export default function DashboardPage() {
 		else if (tab === "provider-usage") void ensureProviderDataLoaded();
 		else if (tab === "rankings") void ensureRankingsDataLoaded();
 		else if (tab === "mcp") void ensureMcpDataLoaded();
-	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
+		else if (tab === "team-rankings") void ensureTeamRankingsLoaded();
+		else if (tab === "customer-rankings") void ensureCustomerRankingsLoaded();
+		else if (tab === "bu-rankings") void ensureBuRankingsLoaded();
+		else if (tab === "user-rankings") void ensureUserRankingsLoaded();
+	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded, ensureTeamRankingsLoaded, ensureCustomerRankingsLoaded, ensureBuRankingsLoaded, ensureUserRankingsLoaded]);
 
 	// Warm other tabs in the background after 150ms
 	useEffect(() => {
@@ -545,9 +656,13 @@ export default function DashboardPage() {
 			if (tab !== "provider-usage") void ensureProviderDataLoaded();
 			if (tab !== "mcp") void ensureMcpDataLoaded();
 			if (tab !== "rankings") void ensureRankingsDataLoaded();
+			if (tab !== "team-rankings") void ensureTeamRankingsLoaded();
+			if (tab !== "customer-rankings") void ensureCustomerRankingsLoaded();
+			if (tab !== "bu-rankings") void ensureBuRankingsLoaded();
+			if (tab !== "user-rankings") void ensureUserRankingsLoaded();
 		}, 150);
 		return () => window.clearTimeout(timeoutId);
-	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureMcpDataLoaded, ensureRankingsDataLoaded]);
+	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureMcpDataLoaded, ensureRankingsDataLoaded, ensureTeamRankingsLoaded, ensureCustomerRankingsLoaded, ensureBuRankingsLoaded, ensureUserRankingsLoaded]);
 
 	// Tab change handler
 	const handleTabChange = useCallback(
@@ -676,6 +791,10 @@ export default function DashboardPage() {
 			mcpHistogramData,
 			mcpCostData,
 			mcpTopToolsData,
+			teamRankingsData,
+			customerRankingsData,
+			buRankingsData,
+			userRankingsData,
 		}),
 		[
 			histogramData,
@@ -691,6 +810,10 @@ export default function DashboardPage() {
 			mcpHistogramData,
 			mcpCostData,
 			mcpTopToolsData,
+			teamRankingsData,
+			customerRankingsData,
+			buRankingsData,
+			userRankingsData,
 		],
 	);
 
@@ -701,8 +824,17 @@ export default function DashboardPage() {
 
 	// Preload all tab data (used by CSV and PDF export)
 	const handlePreloadData = useCallback(async () => {
-		await Promise.all([ensureOverviewDataLoaded(), ensureProviderDataLoaded(), ensureRankingsDataLoaded(), ensureMcpDataLoaded()]);
-	}, [ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
+		await Promise.all([
+			ensureOverviewDataLoaded(),
+			ensureProviderDataLoaded(),
+			ensureRankingsDataLoaded(),
+			ensureMcpDataLoaded(),
+			ensureTeamRankingsLoaded(),
+			ensureCustomerRankingsLoaded(),
+			ensureBuRankingsLoaded(),
+			ensureUserRankingsLoaded(),
+		]);
+	}, [ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded, ensureTeamRankingsLoaded, ensureCustomerRankingsLoaded, ensureBuRankingsLoaded, ensureUserRankingsLoaded]);
 
 	// PDF export mode — when true, all TabsContent are force-mounted so
 	// html2canvas can capture every tab.
@@ -752,7 +884,7 @@ export default function DashboardPage() {
 			});
 		});
 
-		const ids = ["dashboard-section-overview", "dashboard-section-provider-usage", "dashboard-section-rankings", "dashboard-section-mcp"];
+		const ids = ["dashboard-section-overview", "dashboard-section-provider-usage", "dashboard-section-rankings", "dashboard-section-mcp", "dashboard-section-team-rankings", "dashboard-section-customer-rankings", "dashboard-section-bu-rankings", "dashboard-section-user-rankings"];
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
 
@@ -854,6 +986,15 @@ export default function DashboardPage() {
 							</TabsTrigger>
 							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
 								MCP usage
+							</TabsTrigger>
+							<TabsTrigger value="team-rankings" data-testid="dashboard-tab-team-rankings">
+								Team Rankings
+							</TabsTrigger>
+							<TabsTrigger value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+								Customer Rankings
+							</TabsTrigger>
+							<TabsTrigger value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+								BU Rankings
 							</TabsTrigger>
 							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
 								User Rankings
@@ -965,9 +1106,52 @@ export default function DashboardPage() {
 							</div>
 						</TabsContent>
 
-						{/* User Rankings Tab (Enterprise) */}
-						<TabsContent value="user-rankings">
-							<UserRankingsTab />
+						{/* Team Rankings Tab */}
+						<TabsContent value="team-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-team-rankings">
+								<DimensionRankingsTab
+									data={teamRankingsData}
+									loading={loadingTeamRankings}
+									dimensionLabel="Team"
+									testIdPrefix="dashboard-team-rankings"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Customer Rankings Tab */}
+						<TabsContent value="customer-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-customer-rankings">
+								<DimensionRankingsTab
+									data={customerRankingsData}
+									loading={loadingCustomerRankings}
+									dimensionLabel="Customer"
+									testIdPrefix="dashboard-customer-rankings"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Business Unit Rankings Tab */}
+						<TabsContent value="bu-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-bu-rankings">
+								<DimensionRankingsTab
+									data={buRankingsData}
+									loading={loadingBuRankings}
+									dimensionLabel="Business Unit"
+									testIdPrefix="dashboard-bu-rankings"
+								/>
+							</div>
+						</TabsContent>
+
+						{/* User Rankings Tab */}
+						<TabsContent value="user-rankings" {...(pdfMode && { forceMount: true })}>
+							<div id="dashboard-section-user-rankings">
+								<DimensionRankingsTab
+									data={userRankingsData}
+									loading={loadingUserRankings}
+									dimensionLabel="User"
+									testIdPrefix="dashboard-user-rankings"
+								/>
+							</div>
 						</TabsContent>
 					</Tabs>
 				</div>
