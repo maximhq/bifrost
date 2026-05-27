@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
@@ -76,6 +77,27 @@ func safeObserve(histogram *prometheus.HistogramVec, value float64, labels ...st
 			metric.Observe(value)
 		}
 	}
+}
+
+// filterDisabledLabels returns labels with any entry present in disabled
+// removed (using the same hyphen/underscore-insensitive match as
+// containsLabel). It logs each disabled default at info level so operators
+// can see the effective label set on plugin startup. setName is the
+// human-readable label set name used in the log message
+// (e.g. "default Bifrost", "default HTTP").
+func filterDisabledLabels(labels, disabled []string, setName string, logger schemas.Logger) []string {
+	if len(disabled) == 0 {
+		return labels
+	}
+	out := labels[:0:0] // new backing array; never alias the caller's slice
+	for _, label := range labels {
+		if containsLabel(disabled, label) {
+			logger.Info("%s label %s is disabled via disabled_labels, it will be omitted from all metrics", setName, label)
+			continue
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 // containsLabel checks if a string slice contains a specific label, ignoring differences

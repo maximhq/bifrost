@@ -390,6 +390,16 @@ bifrost:
       version: 1
       config:
         custom_labels: []
+        # Default labels to omit from every metric. Use this when a default
+        # label carries unbounded cardinality for your deployment — e.g. you
+        # mint a Bifrost virtual key per upstream request, in which case
+        # `virtual_key_id` / `virtual_key_name` will blow up histogram series
+        # counts proportional to request volume × bucket count and the scrape
+        # body will grow fast enough to OOM the Prometheus agent. Per-request
+        # drilldown should live in logs / traces, not metric labels.
+        # Names use the same hyphen/underscore-insensitive match as
+        # `custom_labels`. See docs/features/observability/prometheus.mdx.
+        disabled_labels: []
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""

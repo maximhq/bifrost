@@ -189,8 +189,23 @@ type PrometheusPlugin struct {
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
-	Registry     *prometheus.Registry
-	PushGateway  *PushGatewayConfig `json:"push_gateway"`
+	// DisabledLabels lists default labels to omit from every Bifrost and HTTP
+	// metric. Use this when a default label carries unbounded cardinality for
+	// your deployment — e.g. operators who mint a Bifrost virtual key per
+	// upstream request will see `virtual_key_id` / `virtual_key_name` blow up
+	// histogram series counts proportional to request volume × bucket count,
+	// at which point the scrape body grows fast enough to OOM the Prometheus
+	// agent doing the scrape. Disabling those labels is the supported escape
+	// hatch — per-request drilldown should live in logs / traces, not metric
+	// labels. Names are matched against `defaultBifrostLabels` and
+	// `defaultHTTPLabels` using the same hyphen/underscore-insensitive rule
+	// as `CustomLabels`.
+	//
+	// Disabling a label is a breaking change for any dashboard / alert that
+	// groups by it; verify before rolling out.
+	DisabledLabels []string `json:"disabled_labels"`
+	Registry       *prometheus.Registry
+	PushGateway    *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
 }
@@ -271,13 +286,26 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"customer_name",
 	}
 
+	// Strip operator-disabled defaults BEFORE registering metrics. Once a
+	// MetricVec is created with a label set, prom-client rejects any later
+	// attempt to omit a registered label, so this has to happen up front.
+	if len(config.DisabledLabels) > 0 {
+		defaultBifrostLabels = filterDisabledLabels(defaultBifrostLabels, config.DisabledLabels, "default Bifrost", logger)
+		defaultHTTPLabels = filterDisabledLabels(defaultHTTPLabels, config.DisabledLabels, "default HTTP", logger)
+	}
+
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) {
-				filteredCustomLabels = append(filteredCustomLabels, label)
-			} else {
+			switch {
+			case containsLabel(defaultBifrostLabels, label) || containsLabel(defaultHTTPLabels, label):
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
+			case containsLabel(config.DisabledLabels, label):
+				// Don't let a custom label silently re-add a label the operator
+				// just disabled — the disable wins.
+				logger.Info("custom label %s is disabled via disabled_labels, it will be ignored", label)
+			default:
+				filteredCustomLabels = append(filteredCustomLabels, label)
 			}
 		}
 	}
