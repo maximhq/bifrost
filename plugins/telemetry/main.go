@@ -162,6 +162,10 @@ type PrometheusPlugin struct {
 	InputTokensTotal               *prometheus.CounterVec
 	OutputTokensTotal              *prometheus.CounterVec
 	CacheHitsTotal                 *prometheus.CounterVec
+	CacheReadInputTokensTotal      *prometheus.CounterVec
+	CacheWriteInputTokensTotal     *prometheus.CounterVec
+	CacheWriteInputTokens5mTotal   *prometheus.CounterVec
+	CacheWriteInputTokens1hTotal   *prometheus.CounterVec
 	CostTotal                      *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
@@ -380,6 +384,40 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(append(defaultBifrostLabels, "cache_type"), filteredCustomLabels...),
 	)
 
+	// Provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt caching). Distinct
+	// from bifrost_cache_hits_total, which counts Bifrost's own semantic-cache hits.
+	bifrostCacheReadInputTokensTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cache_read_input_tokens_total",
+			Help: "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider.",
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostCacheWriteInputTokensTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cache_write_input_tokens_total",
+			Help: "Total provider-side prompt-cache creation (write) input tokens.",
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostCacheWriteInputTokens5mTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cache_write_input_tokens_5m_total",
+			Help: "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostCacheWriteInputTokens1hTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cache_write_input_tokens_1h_total",
+			Help: "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
 	bifrostCostTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_cost_total",
@@ -460,6 +498,10 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		InputTokensTotal:               bifrostInputTokensTotal,
 		OutputTokensTotal:              bifrostOutputTokensTotal,
 		CacheHitsTotal:                 bifrostCacheHitsTotal,
+		CacheReadInputTokensTotal:      bifrostCacheReadInputTokensTotal,
+		CacheWriteInputTokensTotal:     bifrostCacheWriteInputTokensTotal,
+		CacheWriteInputTokens5mTotal:   bifrostCacheWriteInputTokens5mTotal,
+		CacheWriteInputTokens1hTotal:   bifrostCacheWriteInputTokens1hTotal,
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
@@ -575,6 +617,41 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	ctx.SetValue(activeRequestTypeKey, req.RequestType)
 	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
 	return req, nil, nil
+}
+
+// extractProviderCacheTokens returns provider-side prompt-cache token counts from a
+// response's usage: cache-read (cached) input tokens, cache-write (creation) input tokens,
+// and the Anthropic-only 5m/1h TTL breakdown of the write total. Chat/text-completion carry
+// these on Usage.PromptTokensDetails; the Responses API carries them on
+// Usage.InputTokensDetails. Mirrors the response-type switch used for input/output tokens.
+func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, write5m, write1h int) {
+	var promptDetails *schemas.ChatPromptTokensDetails
+	var inputDetails *schemas.ResponsesResponseInputTokens
+
+	switch {
+	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+		promptDetails = result.TextCompletionResponse.Usage.PromptTokensDetails
+	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+		promptDetails = result.ChatResponse.Usage.PromptTokensDetails
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		inputDetails = result.ResponsesResponse.Usage.InputTokensDetails
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		inputDetails = result.ResponsesStreamResponse.Response.Usage.InputTokensDetails
+	}
+
+	switch {
+	case promptDetails != nil:
+		read, write = promptDetails.CachedReadTokens, promptDetails.CachedWriteTokens
+		if d := promptDetails.CachedWriteTokenDetails; d != nil {
+			write5m, write1h = d.CachedWriteTokens5m, d.CachedWriteTokens1h
+		}
+	case inputDetails != nil:
+		read, write = inputDetails.CachedReadTokens, inputDetails.CachedWriteTokens
+		if d := inputDetails.CachedWriteTokenDetails; d != nil {
+			write5m, write1h = d.CachedWriteTokens5m, d.CachedWriteTokens1h
+		}
+	}
+	return
 }
 
 // PostLLMHook calculates duration and records upstream metrics for successful requests.
@@ -807,6 +884,23 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))
 			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(outputTokens))
+
+			// Record provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt
+			// caching). Distinct from the cache-hit counter below, which tracks Bifrost's
+			// own semantic cache. 5m/1h are an Anthropic-only TTL breakdown of the write total.
+			cacheRead, cacheWrite, cacheWrite5m, cacheWrite1h := extractProviderCacheTokens(result)
+			if cacheRead > 0 {
+				p.CacheReadInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(cacheRead))
+			}
+			if cacheWrite > 0 {
+				p.CacheWriteInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite))
+			}
+			if cacheWrite5m > 0 {
+				p.CacheWriteInputTokens5mTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite5m))
+			}
+			if cacheWrite1h > 0 {
+				p.CacheWriteInputTokens1hTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite1h))
+			}
 
 			// Record cache hits with cache type
 			extraFields := result.GetExtraFields()
