@@ -431,15 +431,38 @@ type ConfigStore interface {
 	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
 	// ListAllPendingMCPPerUserHeaderFlows returns every non-expired flow row
-	// with status='pending', regardless of caller identity. Visibility scoping
-	// happens at the enterprise configstore layer via DAC scope; OSS sees
-	// everything. Used by the sessions list endpoint to surface pending
-	// submission flows alongside completed credentials. Mirrors
-	// ListAllPendingOauthUserSessions on the OAuth side.
+	// with status='pending'. Used by the sessions list endpoint to surface
+	// pending submission flows alongside completed credentials. Mirrors
+	// ListAllPendingOauthUserSessions on the OAuth side. The implementation
+	// reads via ScopedDB(ctx), so a query-scope stashed on ctx (e.g. by
+	// enterprise DAC) narrows the result; with no scope, every pending
+	// row is returned.
 	ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error)
 	// DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
 	// ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error)
+
+	// Per-user credential reconciliation.
+	//
+	// Called whenever a VK ↔ MCP grant might have changed (direct
+	// dashboard edit, AP propagation, SCIM auto-assign). Orphans
+	// vk-keyed credentials whose MCP is no longer in the VK's effective
+	// allowlist (explicit per-VK row ∪ MCPs with
+	// AllowOnAllVirtualKeys=true) and reactivates orphaned rows when the
+	// grant returns. Pending flow rows for lost grants are hard-deleted.
+	//
+	// Session-keyed rows are never touched — they carry no notion of
+	// "lost access".
+	//
+	// Handlers should invoke both surfaces (OAuth + headers) after every
+	// grant-change so both stay consistent.
+	ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error
+	ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error
+	// MCP-side variants: called when the change originates on the MCP
+	// client (vk_configs edit OR AllowOnAllVirtualKeys toggle). Each
+	// re-evaluates every VK that holds a credential for the changed MCP.
+	ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error
+	ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)

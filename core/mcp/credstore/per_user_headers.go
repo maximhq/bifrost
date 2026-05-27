@@ -108,9 +108,14 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 }
 
 // missingRequiredHeaderKeys returns the names of any required header key
-// that's absent or whose stored value is empty in storedHeaders. Comparison
-// is case-insensitive at the wire level but the schema is the source of
-// truth — we look up by the exact key the admin declared.
+// that's absent or whose stored value is empty in storedHeaders.
+//
+// Both inputs are assumed to be in canonical form (lowercase + trimmed) —
+// see the invariant doc on mcputils.CanonicalizeHeaderKey. All write
+// boundaries (HTTP create/update, flow submit, config.json load) run
+// the inputs through that helper, so exact map lookup here is correct.
+// Do NOT add defensive case-folding inside this function: it would mask
+// a missed write-side canonicalization rather than catching it.
 func missingRequiredHeaderKeys(required []string, storedHeaders map[string]string) []string {
 	if len(storedHeaders) == 0 {
 		return append([]string(nil), required...)
@@ -128,6 +133,12 @@ func missingRequiredHeaderKeys(required []string, storedHeaders map[string]strin
 // user-submitted credential values for the required keys. Keys not declared
 // by the current schema are dropped on purpose so a stale row that still
 // stores a deprecated key cannot leak it onto the wire.
+//
+// Required keys and storedHeaders keys are both canonical (lowercase +
+// trimmed) by the write-side invariant — see missingRequiredHeaderKeys
+// above and mcputils.CanonicalizeHeaderKey. http.Header.Set runs its own
+// MIME canonicalization on the way out (so "authorization" becomes
+// "Authorization" on the wire), which is what upstream servers expect.
 func buildPerUserHeaderValues(required []string, storedHeaders map[string]string) http.Header {
 	out := http.Header{}
 	for _, key := range required {

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -406,22 +407,34 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list when auth_type is 'per_user_headers'")
 			return
 		}
-		normalisedHeaders := make([]string, 0, len(req.PerUserHeaderKeys))
-		for i, key := range req.PerUserHeaderKeys {
-			if strings.TrimSpace(key) == "" {
+		// Canonicalize (lowercase + trim) at the request boundary so the
+		// stored schema, credential rows, and runtime comparisons all
+		// agree on one form. See the invariant doc on
+		// mcputils.CanonicalizeHeaderKey — defensive case-folding on the
+		// read side was removed in favor of write-side normalization, so
+		// every key that enters this handler MUST go through here before
+		// it reaches the schemas/store layer.
+		canonHeaderKeys := mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
+		for i, key := range canonHeaderKeys {
+			if key == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
 				return
 			}
-			normalisedHeaders = append(normalisedHeaders, strings.ToLower(strings.TrimSpace(key)))
 		}
 		// HTTP header names are case-insensitive on the wire — reject duplicates
 		// like ["X-Api-Key", "x-api-key"] so downstream change-detection and
-		// credential storage stay correct.
-		if lib.HasDuplicates(normalisedHeaders) {
+		// credential storage stay correct. Run the dup check on the canon
+		// form so case-only collisions are caught.
+		if lib.HasDuplicates(canonHeaderKeys) {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
 			return
 		}
-		if missing := missingPerUserHeaderValues(req.PerUserHeaderKeys, req.UserHeaders); len(missing) > 0 {
+		// Canonicalize the admin's sample header values too so the
+		// "missing values for required keys" check matches by canonical
+		// form. Without this, a UI that sends "Authorization" as a key
+		// and "authorization" as a value-map entry would spuriously fail.
+		canonUserHeaders := mcputils.CanonicalizeHeaderMap(req.UserHeaders)
+		if missing := missingPerUserHeaderValues(canonHeaderKeys, canonUserHeaders); len(missing) > 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("sample user_headers missing values for required keys: %s", strings.Join(missing, ", ")))
 			return
 		}
@@ -451,7 +464,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
 			AuthType:              schemas.MCPAuthTypePerUserHeaders,
-			PerUserHeaderKeys:     req.PerUserHeaderKeys,
+			PerUserHeaderKeys:     canonHeaderKeys,
 			ToolsToExecute:        req.ToolsToExecute,
 			ToolsToAutoExecute:    req.ToolsToAutoExecute,
 			ToolPricing:           req.ToolPricing,
@@ -463,8 +476,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// Verify connection and discover tools using the admin's sample
 		// header values. Discovered tools land on schemasConfig before we
 		// persist so the DB row includes them from the start — same
-		// convention as the per-user OAuth branch below.
-		tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(ctx, schemasConfig, req.UserHeaders)
+		// convention as the per-user OAuth branch below. Pass the canon
+		// form so the verify path sees the same keys the schema declares.
+		tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(ctx, schemasConfig, canonUserHeaders)
 		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
@@ -483,7 +497,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
-		h.mcpManager.SetClientTools(schemasConfig.ID, tools, toolNameMapping)
 
 		SendJSON(ctx, map[string]any{
 			"status":  "success",
@@ -771,6 +784,18 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	// Snapshot fields we need to diff against the request AFTER UpdateMCPClient
+	// runs further below — UpdateMCPClient mutates the *MCPClientConfig in
+	// place (it's the same pointer the manager holds in MCPConfig.ClientConfigs),
+	// so post-update reads would already reflect the new value and the diff
+	// would always be false.
+	//
+	// PerUserHeaderKeys is snapshotted via append (independent backing array)
+	// rather than a bare slice-header copy, so we're safe if a future change
+	// mutates the slice contents in-place instead of reassigning the header.
+	existingAllowOnAllVirtualKeys := existingConfig.AllowOnAllVirtualKeys
+	existingPerUserHeaderKeys := append([]string(nil), existingConfig.PerUserHeaderKeys...)
+
 	// connection_type and auth_type and connection string are permanently immutable
 	if req.ConnectionType != "" && req.ConnectionType != string(existingConfig.ConnectionType) {
 		SendError(ctx, fasthttp.StatusBadRequest, "connection_type cannot be changed for an existing MCP client")
@@ -822,7 +847,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Validate per_user_header_keys only when the request explicitly provides
 	// the field — otherwise resolvePerUserHeaderKeys carries the existing list
-	// forward unchanged (already validated at create time).
+	// forward unchanged (already validated at create time). Canonicalization
+	// happens here AND inside resolvePerUserHeaderKeys; doing it twice is
+	// cheap and keeps the validation error messages aligned with the canon
+	// form that ultimately gets persisted (see invariant doc on
+	// mcputils.CanonicalizeHeaderKey).
 	if req.PerUserHeaderKeys != nil {
 		// Reject an explicit empty list for per_user_headers clients.
 		// AuthType is immutable on update (enforced at clientmanager.go:911),
@@ -830,22 +859,16 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// auth types may legitimately carry no per_user_header_keys, but for
 		// per_user_headers an empty schema means the auth mode has nothing
 		// to collect or validate, which violates the feature contract.
-		// Without this guard, resolvePerUserHeaderKeys returns [] and the
-		// resolver errors on every subsequent tool call with "no PerUser-
-		// HeaderKeys declared" — and MarkMCPPerUserHeaderCredentialsNeedsUpdate
-		// fires first, flipping all active credentials to needs_update for
-		// nothing.
 		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders && len(req.PerUserHeaderKeys) == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list for per_user_headers clients")
 			return
 		}
-		canonHeaderKeys := make([]string, 0, len(req.PerUserHeaderKeys))
-		for i, key := range req.PerUserHeaderKeys {
-			if strings.TrimSpace(key) == "" {
+		canonHeaderKeys := mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
+		for i, key := range canonHeaderKeys {
+			if key == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
 				return
 			}
-			canonHeaderKeys = append(canonHeaderKeys, strings.ToLower(strings.TrimSpace(key)))
 		}
 		if lib.HasDuplicates(canonHeaderKeys) {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
@@ -1013,18 +1036,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		PerUserHeaderKeys:     resolvePerUserHeaderKeys(existingConfig, req),
 	}
 
-	// If the per-user-headers schema changed, flip every existing active row
-	// to 'needs_update' so callers are forced to resubmit on next tool use.
-	// The rows are preserved (status only flips) so the submission UI can
-	// prefill known values.
-	if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders &&
-		perUserHeaderKeysChanged(existingConfig.PerUserHeaderKeys, schemasConfig.PerUserHeaderKeys) &&
-		h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, existingConfig.ID); err != nil {
-			logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
-		}
-	}
-
 	// Update MCP client config in memory (always — applies name/tools/header changes,
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
 		// Rollback DB update to keep DB and memory in sync
@@ -1036,6 +1047,26 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
 		return
+	}
+
+	// If the per-user-headers schema now requires additional keys, flip every
+	// existing active row to 'needs_update' so callers are forced to submit the
+	// new values on next tool use. Removed-only schema changes do not need a
+	// resubmission: runtime resolution and flow-submit both filter stored
+	// credentials to the current schema before using/persisting them.
+	//
+	// Runs AFTER the in-memory UpdateMCPClient succeeds — if we flipped
+	// credentials first and the runtime update then failed, the rollback
+	// above would revert the DB row but leave every credential stuck in
+	// needs_update, even though the old schema is still the active one.
+	// Users would see a spurious "resubmit" prompt with no actual schema
+	// change to reconcile.
+	if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders &&
+		perUserHeaderKeysAdded(existingPerUserHeaderKeys, schemasConfig.PerUserHeaderKeys) &&
+		h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, existingConfig.ID); err != nil {
+			logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
+		}
 	}
 
 	// Reload every VK currently referencing this MCP client so the governance
@@ -1188,6 +1219,28 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// 	})
 	// 	return
 	// }
+
+	// Per-user credential reconciliation for changes that mutate who can
+	// access this MCP. Two trigger conditions:
+	//   1. vk_configs explicitly diffed (rows added/removed/updated).
+	//   2. AllowOnAllVirtualKeys flipped — the implicit fallback toggled,
+	//      every VK with a credential for this MCP needs re-evaluation.
+	//
+	// Reconcile is enterprise-only behavior (no-op in OSS). It orphans
+	// credentials whose MCP just lost the grant and reactivates orphaned
+	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
+	// are reconciled — they share the same VK→MCP allowlist model.
+	if h.store.ConfigStore != nil {
+		shouldReconcile := req.VKConfigs != nil || req.AllowOnAllVirtualKeys != existingAllowOnAllVirtualKeys
+		if shouldReconcile {
+			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
+				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
+			}
+			if err := h.store.ConfigStore.ReconcileMCPHeadersAfterMCPChange(ctx, id); err != nil {
+				logger.Error(fmt.Sprintf("reconcile per-user-headers credentials after MCP %s update failed: %v", id, err))
+			}
+		}
+	}
 
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
@@ -1612,12 +1665,20 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 }
 
 // resolvePerUserHeaderKeys returns the per-user-header-key list to persist on
-// the updated MCP client. If the request explicitly sets the field (even to
-// an empty list when the caller is removing all keys), the request wins;
-// otherwise the existing schema is preserved.
+// the updated MCP client. If the request explicitly sets the field, the
+// request wins; otherwise the existing schema is preserved. The handler
+// rejects an explicit empty list for per_user_headers clients upstream
+// (see updateMCPClient validation), so this function cannot be invoked
+// with an empty slice for that auth type.
+//
+// Request-supplied keys are canonicalized (lowercase + trim) here so the
+// persisted slice matches the canon form already in stored credential rows
+// — see mcputils.CanonicalizeHeaderKey for the invariant. Existing values
+// are already canon (they came through this path on create/update), so
+// they pass through untouched.
 func resolvePerUserHeaderKeys(existing *schemas.MCPClientConfig, req MCPClientUpdateRequest) []string {
 	if req.PerUserHeaderKeys != nil {
-		return req.PerUserHeaderKeys
+		return mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
 	}
 	if existing != nil {
 		return existing.PerUserHeaderKeys
@@ -1625,14 +1686,13 @@ func resolvePerUserHeaderKeys(existing *schemas.MCPClientConfig, req MCPClientUp
 	return nil
 }
 
-// perUserHeaderKeysChanged reports whether the new key set differs from the
-// old set (order-insensitive). Used by updateMCPClient to decide whether to
-// flip existing user credentials to 'needs_update'.
-func perUserHeaderKeysChanged(oldKeys, newKeys []string) bool {
-	if len(oldKeys) != len(newKeys) {
-		return true
-	}
-	if len(oldKeys) == 0 {
+// perUserHeaderKeysAdded reports whether the new schema introduces any key
+// absent from the old schema (order-insensitive). Used by updateMCPClient to
+// decide whether existing user credentials must be marked 'needs_update'.
+// Removed-only changes do not require resubmission because stale stored keys
+// are filtered out before use.
+func perUserHeaderKeysAdded(oldKeys, newKeys []string) bool {
+	if len(newKeys) == 0 {
 		return false
 	}
 	seen := make(map[string]struct{}, len(oldKeys))
