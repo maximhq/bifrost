@@ -47,6 +47,7 @@ export function TeamsView() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
+		isFetching,
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
@@ -91,7 +92,7 @@ export function TeamsView() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col overflow-y-auto">
 			<TeamsTable
 				teams={teamsData?.teams || []}
 				totalCount={teamsData?.total_count || 0}
@@ -109,6 +110,7 @@ export function TeamsView() {
 					setUrlState({ selected_team: team?.id ?? null });
 				}}
 				onDialogClose={() => setUrlState({ selected_team: null })}
+				isLoading={isFetching}
 			/>
 		</div>
 	);
