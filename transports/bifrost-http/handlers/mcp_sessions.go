@@ -78,6 +78,13 @@ type mcpSessionRow struct {
 	LastRefreshedAt *string            `json:"last_refreshed_at,omitempty"` // OAuth token rows only; nil if never refreshed
 	UpdatedAt       *string            `json:"updated_at,omitempty"`        // Headers rows: timestamp of last submission/edit
 	OauthConfigID   string             `json:"oauth_config_id,omitempty"`   // OAuth rows only
+	// CanReauth mirrors the server-side identity gate on POST /reauth: user-mode
+	// rows are only reauthable by the bound user (admin DAC scope is enough to
+	// see the row, but reauthing mints credentials for whoever clicks the URL).
+	// Non-user-mode rows are always reauthable. The UI hides the action when false.
+	// Always false for kind == "flow" — flow rows are completed via
+	// /api/oauth/per-user/flows/{id}/start, not /reauth.
+	CanReauth bool `json:"can_reauth"`
 }
 
 type mcpSessionsListResponse struct {
@@ -154,6 +161,17 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		}
 		rows = append(rows, headerFlowRow(f))
 	}
+	caller := callerUserIDFromCtx(ctx)
+	for i := range rows {
+		// Flow rows are completed via /api/oauth/per-user/flows/{id}/start, not
+		// /reauth — passing a flow ID to /reauth always 404s before the identity
+		// gate runs. Leave CanReauth at its zero value so the wire field matches
+		// the endpoint's actual behavior.
+		if rows[i].Kind == "flow" {
+			continue
+		}
+		rows[i].CanReauth = canReauthRow(rows[i].AuthMode, rows[i].UserID, caller)
+	}
 	SendJSON(ctx, mcpSessionsListResponse{Sessions: rows})
 }
 
@@ -195,6 +213,30 @@ func bindingKeyFromFlow(f tables.TableOauthUserSession) sessionBindingKey {
 		k.Identity = f.SessionID
 	}
 	return k
+}
+
+// canReauthRow encodes the identity gate on POST /reauth. User-mode rows are
+// only reauthable by the bound user — admin DAC scope lets them see the row,
+// but the OAuth callback or header submission lands under whoever clicks the
+// URL, so an admin-initiated reauth would either overwrite identity or let
+// admin submit secret material in the bound user's name. VK / session rows
+// are intentionally shared and have no identity-of-clicker problem.
+func canReauthRow(authMode string, rowUserID *string, caller string) bool {
+	if authMode != string(schemas.MCPAuthModeUser) {
+		return true
+	}
+	if rowUserID == nil || *rowUserID == "" {
+		return false
+	}
+	return caller != "" && caller == *rowUserID
+}
+
+// callerUserIDFromCtx pulls the SCIM-authenticated user_id off the request
+// context. Returns "" when unauthenticated or in OSS — callers should treat
+// empty as "no user identity" (which fails the user-mode reauth gate).
+func callerUserIDFromCtx(ctx *fasthttp.RequestCtx) string {
+	v, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	return v
 }
 
 // reauth starts a fresh OAuth flow OR a fresh header-submission flow for
@@ -246,6 +288,16 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Identity gate: user-mode rows can only be reauthed by the bound user.
+	// Admin DAC scope is enough to see the row (revoke/list still work), but
+	// the OAuth callback lands under whoever clicks the authorize URL — an
+	// admin clicking would either get a "wrong user" credential or overwrite
+	// the row's identity. Mirrored on the wire via mcpSessionRow.CanReauth.
+	if !canReauthRow(tok.AuthMode, tok.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can re-authenticate this session.")
+		return
+	}
+
 	// The new flow must reuse the existing row's identity so the callback's
 	// upsert lands on the same (identity, mcp_client) row. Inject the row's
 	// values into context; InitiateUserOAuthFlow reads them per-mode.
@@ -292,6 +344,14 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, cred *tables.TableMCPPerUserHeaderCredential) {
 	if cred.Status == "orphaned" {
 		SendError(ctx, fasthttp.StatusForbidden, "Access to this MCP has been revoked. Re-submitting headers will not restore access - contact your administrator.")
+		return
+	}
+	// Identity gate: user-mode header credentials can only be resubmitted by the
+	// bound user. An admin clicking through would submit secret material under
+	// their own identity, attached to the bound user's row. Same rule as the
+	// OAuth branch; surfaced to the UI via mcpSessionRow.CanReauth.
+	if !canReauthRow(cred.AuthMode, cred.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can re-submit headers for this session.")
 		return
 	}
 	provider := h.store.MCPHeadersProvider

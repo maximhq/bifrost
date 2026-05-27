@@ -64,6 +64,13 @@ export interface MCPSessionRow {
 	// last submission/edit. OAuth rows omit this field.
 	updated_at?: string | null;
 	oauth_config_id?: string;
+	// can_reauth mirrors the server-side identity gate on POST /reauth. For
+	// user-bound rows it's true only when the calling user matches the row's
+	// bound user; for vk/session rows it's always true. The UI hides the
+	// Re-authenticate / Edit values action when false. Always false for
+	// kind === "flow" rows — those are completed via /api/oauth/per-user/
+	// flows/{id}/start, not /reauth, and the UI's flow branch ignores this field.
+	can_reauth: boolean;
 }
 
 export interface MCPSessionsListResponse {
