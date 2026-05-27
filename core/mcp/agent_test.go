@@ -83,6 +83,13 @@ func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)  {}
 func (m *MockClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
+func (m *MockClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
+}
 
 func TestHasToolCallsForChatResponse(t *testing.T) {
 	// Test nil response
@@ -567,6 +574,13 @@ func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             {
 func (m *MockAutoClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *MockAutoClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
+}
+func (m *MockAutoClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
 }
 
 // TestParallelToolCallsHaveUniqueMCPLogIDs verifies that parallel tool calls within a
