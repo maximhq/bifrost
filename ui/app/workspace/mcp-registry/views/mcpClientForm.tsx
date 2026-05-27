@@ -339,7 +339,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														</a>
 													</TooltipTrigger>
 													<TooltipContent>
-														<p>Learn more about Code Mode</p>
+														<p>Click to learn more about Code Mode</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
