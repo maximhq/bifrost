@@ -5138,33 +5138,45 @@ func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (
 	return &token, nil
 }
 
-// ListAllOauthUserTokens returns every token row regardless of status. Used by
-// the sessions tab UI, which renders distinct affordances per state; filtering
-// here would only hide rows the user needs to see (especially needs_reauth).
-// Runtime lookups apply their own status='active' filter and don't use this.
-func (s *RDBConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
+// ListOauthUserTokens returns token rows matching params, regardless of status.
+// The sessions tab UI renders distinct affordances per state; default status
+// filtering here would only hide rows the user needs to see (especially
+// needs_reauth). Runtime lookups apply their own status='active' filter and
+// don't use this. Pagination is handler-side because cross-table de-dup with
+// the pending-session list happens after the merge.
+func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserToken{})
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "oauth_user_tokens",
+		authModeColumn: "auth_mode",
+	})
 	var tokens []tables.TableOauthUserToken
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Order("created_at DESC").
+		Order("oauth_user_tokens.created_at DESC").
 		Find(&tokens).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all oauth user tokens: %w", err)
+		return nil, fmt.Errorf("failed to list oauth user tokens: %w", err)
 	}
 	return tokens, nil
 }
 
-// ListAllPendingOauthUserSessions returns all pending OAuth flow rows whose
-// expiry is in the future. Companion to ListAllOauthUserTokens.
-func (s *RDBConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
+// ListPendingOauthUserSessions returns pending OAuth flow rows matching params
+// whose expiry is in the future. Companion to ListOauthUserTokens.
+func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserSession{}).
+		Where("oauth_user_sessions.status = ? AND oauth_user_sessions.expires_at > ?", "pending", time.Now())
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "oauth_user_sessions",
+		authModeColumn: "flow_mode",
+	})
 	var sessions []tables.TableOauthUserSession
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Where("status = ? AND expires_at > ?", "pending", time.Now()).
-		Order("created_at DESC").
+		Order("oauth_user_sessions.created_at DESC").
 		Find(&sessions).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all pending oauth user sessions: %w", err)
+		return nil, fmt.Errorf("failed to list pending oauth user sessions: %w", err)
 	}
 	return sessions, nil
 }
@@ -5317,19 +5329,25 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, i
 	return nil
 }
 
-// ListAllMCPPerUserHeaderCredentials returns every row regardless of status.
-// The sessions UI surfaces non-active states (needs_update / orphaned) with
-// distinct affordances; filtering here would only hide rows the user needs to
-// act on. Runtime lookups apply their own status='active' filter and don't go
-// through this method.
-func (s *RDBConfigStore) ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error) {
+// ListMCPPerUserHeaderCredentials returns credential rows matching params,
+// regardless of status. The sessions UI surfaces non-active states
+// (needs_update / orphaned) with distinct affordances; default status
+// filtering here would only hide rows the user needs to act on. Runtime
+// lookups apply their own status='active' filter and don't go through
+// this method.
+func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderCredential{})
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "mcp_per_user_header_credentials",
+		authModeColumn: "auth_mode",
+	})
 	var creds []tables.TableMCPPerUserHeaderCredential
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Order("created_at DESC").
+		Order("mcp_per_user_header_credentials.created_at DESC").
 		Find(&creds).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all mcp per-user header credentials: %w", err)
+		return nil, fmt.Errorf("failed to list mcp per-user header credentials: %w", err)
 	}
 	return creds, nil
 }
@@ -5485,21 +5503,67 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(c
 	return nil
 }
 
-// ListAllPendingMCPPerUserHeaderFlows returns all pending header-submission
-// flow rows whose expiry is in the future. Uses ScopedDB so a query-scope
-// stashed on ctx (if any) narrows the result; otherwise returns every row.
-// Mirrors ListAllPendingOauthUserSessions.
-func (s *RDBConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
+// ListPendingMCPPerUserHeaderFlows returns pending header-submission flow rows
+// matching params whose expiry is in the future. Uses ScopedDB so a
+// query-scope stashed on ctx (if any) narrows the result; otherwise returns
+// every matching pending row. Mirrors ListPendingOauthUserSessions.
+func (s *RDBConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderFlow{}).
+		Where("mcp_per_user_header_flows.status = ? AND mcp_per_user_header_flows.expires_at > ?", "pending", time.Now())
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "mcp_per_user_header_flows",
+		authModeColumn: "flow_mode",
+	})
 	var flows []tables.TableMCPPerUserHeaderFlow
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Where("status = ? AND expires_at > ?", "pending", time.Now()).
-		Order("created_at DESC").
+		Order("mcp_per_user_header_flows.created_at DESC").
 		Find(&flows).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all pending mcp per-user header flows: %w", err)
+		return nil, fmt.Errorf("failed to list pending mcp per-user header flows: %w", err)
 	}
 	return flows, nil
+}
+
+// mcpSessionFilterTable carries the table-specific column names needed to
+// build a generic filter chain. The auth-mode column is named differently
+// on the credential tables ("auth_mode") and the pending-flow tables
+// ("flow_mode"), but the value space is identical.
+type mcpSessionFilterTable struct {
+	table          string
+	authModeColumn string // "auth_mode" or "flow_mode"
+}
+
+// applyMCPSessionFilters appends the shared MCP-sessions WHERE clauses and
+// the search LEFT JOINs to a query. The search JOINs (config_mcp_clients,
+// governance_virtual_keys) and the LIKE WHERE are emitted only when
+// params.Search is non-empty; when absent the columns are never referenced
+// and no JOIN is added. The join cardinality is 1:1 on FK columns, so
+// Count is safe without DISTINCT.
+func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mcpSessionFilterTable) *gorm.DB {
+	if len(params.Statuses) > 0 {
+		query = query.Where(t.table+".status IN ?", params.Statuses)
+	}
+	if len(params.AuthModes) > 0 {
+		query = query.Where(t.table+"."+t.authModeColumn+" IN ?", params.AuthModes)
+	}
+	if len(params.MCPClientIDs) > 0 {
+		query = query.Where(t.table+".mcp_client_id IN ?", params.MCPClientIDs)
+	}
+	if params.Search != "" {
+		needle := "%" + strings.ToLower(params.Search) + "%"
+		query = query.
+			Joins("LEFT JOIN config_mcp_clients ON config_mcp_clients.client_id = " + t.table + ".mcp_client_id").
+			Joins("LEFT JOIN governance_virtual_keys ON governance_virtual_keys.id = " + t.table + ".virtual_key_id")
+		whereClause := "LOWER(config_mcp_clients.name) LIKE ? OR LOWER(config_mcp_clients.client_id) LIKE ? OR LOWER(" + t.table + ".user_id) LIKE ? OR LOWER(" + t.table + ".session_id) LIKE ? OR LOWER(governance_virtual_keys.id) LIKE ? OR LOWER(governance_virtual_keys.name) LIKE ?"
+		whereArgs := []any{needle, needle, needle, needle, needle, needle}
+		if len(params.MatchedUserIDs) > 0 {
+			whereClause += " OR " + t.table + ".user_id IN ?"
+			whereArgs = append(whereArgs, params.MatchedUserIDs)
+		}
+		query = query.Where(whereClause, whereArgs...)
+	}
+	return query
 }
 
 // DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
