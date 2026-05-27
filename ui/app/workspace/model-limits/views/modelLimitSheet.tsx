@@ -322,6 +322,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													placeholder="Search for a model..."
 													isSingleSelect
 													loadModelsOnEmptyProvider="base_models"
+													allowAllOption
 													disabled={isEditing}
 												/>
 											</div>

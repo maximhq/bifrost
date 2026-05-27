@@ -516,6 +516,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
+			// Wildcard model configs back provider governance; refresh the provider page too.
+			invalidatesTags: ["ProviderGovernance"],
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -545,6 +547,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
+			invalidatesTags: ["ProviderGovernance"],
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -577,6 +580,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/model-configs/${id}`,
 				method: "DELETE",
 			}),
+			// Wildcard model configs back provider governance; refresh the provider page too.
+			invalidatesTags: ["ProviderGovernance"],
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
@@ -749,6 +754,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
+			// Provider governance is now backed by wildcard model configs; refresh the Model Limits view too.
+			invalidatesTags: ["ModelConfigs"],
 			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -779,6 +786,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/providers/${encodeURIComponent(provider)}`,
 				method: "DELETE",
 			}),
+			// Provider governance is now backed by wildcard model configs; refresh the Model Limits view too.
+			invalidatesTags: ["ModelConfigs"],
 			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
 				try {
 					await queryFulfilled;
