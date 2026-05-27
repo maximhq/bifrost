@@ -1281,6 +1281,51 @@ func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, old
 	return 0, nil
 }
 
+// Per-user MCP header credentials
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error { return nil }
+func (m *MockConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 // Routing rules
 func (m *MockConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
 	return nil, nil

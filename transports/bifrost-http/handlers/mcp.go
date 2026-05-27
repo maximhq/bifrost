@@ -36,6 +36,11 @@ type MCPManager interface {
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary access
 	// token and discovers available tools. The connection is closed after verification.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	// VerifyHeadersConnection verifies an MCP server using a caller-supplied set
+	// of header values (admin sample or user-submitted) and discovers available
+	// tools. The connection is closed after verification. Mirrors
+	// VerifyPerUserOAuthConnection's role for MCPAuthTypePerUserHeaders.
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 }
@@ -223,6 +228,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 			Disabled:              dbClient.Disabled,
+			PerUserHeaderKeys:     dbClient.PerUserHeaderKeys,
 		}
 		// Populate oauth client credentials from pre-fetched batch
 		if dbClient.OauthConfigID != nil {
@@ -322,10 +328,17 @@ type OAuthConfigRequest struct {
 	Scopes          []string        `json:"scopes"`
 }
 
-// MCPClientRequest represents the full MCP client creation request with OAuth support
+// MCPClientRequest represents the full MCP client creation request with OAuth support.
+//
+// UserHeaders carries a sample set of per-user-headers values used only for
+// upstream verification + tool discovery during create. Mirrors the per-user
+// OAuth flow where the admin's temp access token is used the same way: the
+// server runs discovery, attaches DiscoveredTools to the persisted config,
+// and discards the credentials. Ignored for non-per_user_headers auth types.
 type MCPClientRequest struct {
 	configstoreTables.TableMCPClient
 	OauthConfig *OAuthConfigRequest `json:"oauth_config,omitempty"`
+	UserHeaders map[string]string   `json:"user_headers,omitempty"`
 }
 
 // MCPVKConfigRequest represents a per-VK tool access config for an MCP client
@@ -382,10 +395,107 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Handle per-user headers: admin declares the required key names (schema)
+	// AND supplies a sample set of values inline so the server can verify
+	// upstream + discover tools in a single round-trip. Mirrors the per-user
+	// OAuth flow exactly — the sample values are used once for verification
+	// and discarded (never persisted); each end-user submits their own values
+	// later via the inline-401 flow.
+	if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) {
+		if len(req.PerUserHeaderKeys) == 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list when auth_type is 'per_user_headers'")
+			return
+		}
+		normalisedHeaders := make([]string, 0, len(req.PerUserHeaderKeys))
+		for i, key := range req.PerUserHeaderKeys {
+			if strings.TrimSpace(key) == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
+				return
+			}
+			normalisedHeaders = append(normalisedHeaders, strings.ToLower(strings.TrimSpace(key)))
+		}
+		// HTTP header names are case-insensitive on the wire — reject duplicates
+		// like ["X-Api-Key", "x-api-key"] so downstream change-detection and
+		// credential storage stay correct.
+		if lib.HasDuplicates(normalisedHeaders) {
+			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
+			return
+		}
+		if missing := missingPerUserHeaderValues(req.PerUserHeaderKeys, req.UserHeaders); len(missing) > 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("sample user_headers missing values for required keys: %s", strings.Join(missing, ", ")))
+			return
+		}
+
+		toolSyncInterval := mcp.DefaultToolSyncInterval
+		if req.ToolSyncInterval != 0 {
+			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+		} else {
+			config, cfgErr := h.store.ConfigStore.GetClientConfig(ctx)
+			if cfgErr == nil && config != nil {
+				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+			}
+		}
+
+		isPingAvailable := true
+		if req.IsPingAvailable != nil {
+			isPingAvailable = *req.IsPingAvailable
+		}
+
+		schemasConfig := &schemas.MCPClientConfig{
+			ID:                    req.ClientID,
+			Name:                  req.Name,
+			IsCodeModeClient:      req.IsCodeModeClient,
+			IsPingAvailable:       &isPingAvailable,
+			ToolSyncInterval:      toolSyncInterval,
+			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:      req.ConnectionString,
+			StdioConfig:           req.StdioConfig,
+			AuthType:              schemas.MCPAuthTypePerUserHeaders,
+			PerUserHeaderKeys:     req.PerUserHeaderKeys,
+			ToolsToExecute:        req.ToolsToExecute,
+			ToolsToAutoExecute:    req.ToolsToAutoExecute,
+			ToolPricing:           req.ToolPricing,
+			Headers:               req.Headers,
+			AllowedExtraHeaders:   req.AllowedExtraHeaders,
+			AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+		}
+
+		// Verify connection and discover tools using the admin's sample
+		// header values. Discovered tools land on schemasConfig before we
+		// persist so the DB row includes them from the start — same
+		// convention as the per-user OAuth branch below.
+		tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(ctx, schemasConfig, req.UserHeaders)
+		if verifyErr != nil {
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
+			return
+		}
+		schemasConfig.DiscoveredTools = tools
+		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+
+		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
+			return
+		}
+		if err := h.mcpManager.AddMCPClient(ctx, schemasConfig); err != nil {
+			if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); delErr != nil {
+				logger.Error(fmt.Sprintf("Failed to roll back MCP client config after AddMCPClient failure: %v", delErr))
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
+			return
+		}
+		h.mcpManager.SetClientTools(schemasConfig.ID, tools, toolNameMapping)
+
+		SendJSON(ctx, map[string]any{
+			"status":  "success",
+			"message": fmt.Sprintf("MCP client registered. %d tools discovered. Each user will submit their own headers on first tool use.", len(tools)),
+		})
+		return
+	}
+
 	// Handle per-user OAuth: admin does a test OAuth login to verify the configuration.
 	// Uses the same pending_oauth pattern as server-level OAuth, but on completion we
 	// verify the connection, discover tools, save the client, and discard the admin's token.
-	if req.AuthType == "per_user_oauth" {
+	if req.AuthType == string(schemas.MCPAuthTypePerUserOauth) {
 		if req.OauthConfig == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'per_user_oauth'")
 			return
@@ -465,7 +575,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if server-level OAuth flow is needed
-	if req.AuthType == "oauth" {
+	if req.AuthType == string(schemas.MCPAuthTypeOauth) {
 		if req.OauthConfig == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'oauth'")
 			return
@@ -710,6 +820,38 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
 		return
 	}
+	// Validate per_user_header_keys only when the request explicitly provides
+	// the field — otherwise resolvePerUserHeaderKeys carries the existing list
+	// forward unchanged (already validated at create time).
+	if req.PerUserHeaderKeys != nil {
+		// Reject an explicit empty list for per_user_headers clients.
+		// AuthType is immutable on update (enforced at clientmanager.go:911),
+		// so existingConfig.AuthType is the reliable gate — clients on other
+		// auth types may legitimately carry no per_user_header_keys, but for
+		// per_user_headers an empty schema means the auth mode has nothing
+		// to collect or validate, which violates the feature contract.
+		// Without this guard, resolvePerUserHeaderKeys returns [] and the
+		// resolver errors on every subsequent tool call with "no PerUser-
+		// HeaderKeys declared" — and MarkMCPPerUserHeaderCredentialsNeedsUpdate
+		// fires first, flipping all active credentials to needs_update for
+		// nothing.
+		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders && len(req.PerUserHeaderKeys) == 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list for per_user_headers clients")
+			return
+		}
+		canonHeaderKeys := make([]string, 0, len(req.PerUserHeaderKeys))
+		for i, key := range req.PerUserHeaderKeys {
+			if strings.TrimSpace(key) == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
+				return
+			}
+			canonHeaderKeys = append(canonHeaderKeys, strings.ToLower(strings.TrimSpace(key)))
+		}
+		if lib.HasDuplicates(canonHeaderKeys) {
+			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
+			return
+		}
+	}
 
 	// OAuth credential rotation is temporarily disabled.
 	if req.OauthConfig != nil {
@@ -868,6 +1010,19 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolPricing:           req.ToolPricing,
 		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
 		Disabled:              req.Disabled,
+		PerUserHeaderKeys:     resolvePerUserHeaderKeys(existingConfig, req),
+	}
+
+	// If the per-user-headers schema changed, flip every existing active row
+	// to 'needs_update' so callers are forced to resubmit on next tool use.
+	// The rows are preserved (status only flips) so the submission UI can
+	// prefill known values.
+	if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders &&
+		perUserHeaderKeysChanged(existingConfig.PerUserHeaderKeys, schemasConfig.PerUserHeaderKeys) &&
+		h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, existingConfig.ID); err != nil {
+			logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
+		}
 	}
 
 	// Update MCP client config in memory (always — applies name/tools/header changes,
@@ -1454,4 +1609,40 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		message = "MCP client OAuth credentials updated successfully"
 	}
 	SendJSON(ctx, map[string]any{"status": "success", "message": message})
+}
+
+// resolvePerUserHeaderKeys returns the per-user-header-key list to persist on
+// the updated MCP client. If the request explicitly sets the field (even to
+// an empty list when the caller is removing all keys), the request wins;
+// otherwise the existing schema is preserved.
+func resolvePerUserHeaderKeys(existing *schemas.MCPClientConfig, req MCPClientUpdateRequest) []string {
+	if req.PerUserHeaderKeys != nil {
+		return req.PerUserHeaderKeys
+	}
+	if existing != nil {
+		return existing.PerUserHeaderKeys
+	}
+	return nil
+}
+
+// perUserHeaderKeysChanged reports whether the new key set differs from the
+// old set (order-insensitive). Used by updateMCPClient to decide whether to
+// flip existing user credentials to 'needs_update'.
+func perUserHeaderKeysChanged(oldKeys, newKeys []string) bool {
+	if len(oldKeys) != len(newKeys) {
+		return true
+	}
+	if len(oldKeys) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(oldKeys))
+	for _, k := range oldKeys {
+		seen[k] = struct{}{}
+	}
+	for _, k := range newKeys {
+		if _, ok := seen[k]; !ok {
+			return true
+		}
+	}
+	return false
 }
