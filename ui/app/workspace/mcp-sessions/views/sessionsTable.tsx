@@ -128,7 +128,7 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 				<Table>
 					<TableHeader>
 						<TableRow>
-							<TableHead>MCP Client</TableHead>
+							<TableHead>MCP server</TableHead>
 							<TableHead>
 								<HeaderWithTooltip
 									label="Type"
@@ -282,9 +282,14 @@ function StatusBadge({ status, kind }: { status: string; kind: string }) {
 		return <Badge variant="destructive">Needs re-auth</Badge>;
 	}
 	if (status === "needs_update") {
-		// Same destructive treatment as needs_reauth — user action required.
-		// Distinct copy so the row affordance ("Edit") matches.
-		return <Badge variant="destructive">Needs update</Badge>;
+		// Outlined red: signals user action required, but visually distinct from
+		// needs_reauth's solid destructive badge (which represents a hard auth failure).
+		// Distinct copy so the row affordance ("Update values") matches.
+		return (
+			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
+				Needs update
+			</Badge>
+		);
 	}
 	return <Badge>Active</Badge>;
 }
@@ -439,7 +444,7 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 	// column already conveys lifecycle state (Active / Needs update /
 	// Orphaned), so this column collapses to a dash for headers.
 	if (row.kind === "header") {
-		return "—";
+		return "-";
 	}
 	if (!row.expires_at) return "-";
 	try {
