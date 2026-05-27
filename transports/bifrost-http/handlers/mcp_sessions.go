@@ -214,7 +214,17 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 
 	// Header credential rows and OAuth token rows are both UUIDs in
 	// separate tables. Try headers first; on miss fall through to OAuth.
-	if headerCred, _ := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID); headerCred != nil {
+	// Don't swallow store errors here — a real DB outage would otherwise
+	// surface as a misleading 404 from the OAuth fallback path, which
+	// hides the outage from the caller and from any retry logic that
+	// switches on status code.
+	headerCred, headerCredErr := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID)
+	if headerCredErr != nil {
+		logger.Error("[mcp/sessions] load header credential failed: id=%s err=%v", rowID, headerCredErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to load MCP session")
+		return
+	}
+	if headerCred != nil {
 		h.reauthHeaderCredential(ctx, bfCtx, headerCred)
 		return
 	}
@@ -351,8 +361,16 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	// Row IDs from three tables (OAuth tokens, header credentials, header
 	// flows) are all UUIDs. Try headers first (credential, then pending
 	// flow); on miss fall through to OAuth tokens. Each branch returns;
-	// only one delete runs per request.
-	if headerCred, _ := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID); headerCred != nil {
+	// only one delete runs per request. Store errors must surface as 500
+	// (not be swallowed into a miss) so a DB outage doesn't manifest as
+	// a misleading 404 from the OAuth fallback.
+	headerCred, headerCredErr := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID)
+	if headerCredErr != nil {
+		logger.Error("[mcp/sessions] load header credential failed: id=%s err=%v", rowID, headerCredErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+		return
+	}
+	if headerCred != nil {
 		// Drop pending submission flow rows for the same binding BEFORE
 		// the credential. If a flow finishes (submit lands) after the
 		// credential is gone, the upsert would mint a fresh credential and
@@ -387,7 +405,13 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
-	if headerFlow, _ := h.store.ConfigStore.GetMCPPerUserHeaderFlowByID(ctx, rowID); headerFlow != nil {
+	headerFlow, headerFlowErr := h.store.ConfigStore.GetMCPPerUserHeaderFlowByID(ctx, rowID)
+	if headerFlowErr != nil {
+		logger.Error("[mcp/sessions] load header flow failed: id=%s err=%v", rowID, headerFlowErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+		return
+	}
+	if headerFlow != nil {
 		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderFlow(ctx, headerFlow.ID); err != nil {
 			logger.Error("[mcp/sessions] delete header flow failed: id=%s err=%v", rowID, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")

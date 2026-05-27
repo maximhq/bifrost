@@ -25,9 +25,16 @@ func FlattenHeaders(h http.Header) map[string]string {
 // BuildMCPCallbackBaseURL extracts the base URL set on the BifrostContext by
 // the HTTP middleware (e.g. "https://host"). Per-user OAuth and per-user
 // headers resolvers append their respective paths on top.
+//
+// Trailing slashes are stripped defensively. The sole writer today
+// (lib/ctx.go BuildBaseURL) already normalizes, but OAuth providers match
+// redirect URIs exactly — a `https://host//api/oauth/callback` produced by
+// a future writer that forgets to trim would silently break every per-user
+// OAuth flow. Guarding once on the read side keeps that invariant local
+// to this function rather than spread across every potential writer.
 func BuildMCPCallbackBaseURL(ctx *schemas.BifrostContext) string {
 	if base, ok := ctx.Value(schemas.BifrostContextKeyMCPCallbackBaseURL).(string); ok && base != "" {
-		return base
+		return strings.TrimRight(base, "/")
 	}
 	return ""
 }
@@ -89,6 +96,69 @@ func matchesPerUserHeaderKey(name string, perUserKeys []string) bool {
 		}
 	}
 	return false
+}
+
+// Canonical-form invariant for per-user-headers data
+// =====================================================
+// HTTP header names are case-insensitive on the wire (RFC 7230 §3.2),
+// so anywhere the per-user-headers feature compares a schema key against
+// a stored or submitted header name we'd need EqualFold lookups. Doing
+// that defensively at every read site is fragile — a single missed call
+// site re-introduces the bug (stored `authorization` looking missing
+// against schema `Authorization`, etc.).
+//
+// Instead we enforce a write-time invariant: every external boundary
+// that accepts a header key (or a credential header map) lowercases and
+// trims via the helpers below before persisting. Downstream code can
+// then assume canonical form and use plain map lookups.
+//
+// Write boundaries that MUST call these:
+//   - createMCPClient / updateMCPClient / resolvePerUserHeaderKeys
+//     (handlers/mcp.go) for MCPClientConfig.PerUserHeaderKeys
+//   - flowSubmit (handlers/mcp_per_user_headers.go) for the
+//     user-submitted credential.Headers map
+//   - loadMCPClientConfigFromFile (lib/config.go) for the config.json
+//     load path
+//
+// New write paths added in the future must canonicalize too — there is
+// no defensive case-folding on the read side anymore.
+
+// CanonicalizeHeaderKey returns the canonical lowercase + trimmed form
+// of a single header key. Empty input returns empty.
+func CanonicalizeHeaderKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+// CanonicalizeHeaderKeys returns a new slice with every entry passed
+// through CanonicalizeHeaderKey. Nil in → nil out so a caller that
+// uses "nil means preserve existing" semantics (e.g.
+// resolvePerUserHeaderKeys, UpdateMCPClientConfig) keeps that signal.
+// The input slice is not mutated.
+func CanonicalizeHeaderKeys(keys []string) []string {
+	if keys == nil {
+		return nil
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = CanonicalizeHeaderKey(k)
+	}
+	return out
+}
+
+// CanonicalizeHeaderMap returns a new map whose keys are passed through
+// CanonicalizeHeaderKey. On collision (e.g. "Authorization" and
+// "authorization" both present in the input), the last value wins —
+// callers that need duplicate detection should run it on the raw input
+// before calling this. Nil in → nil out.
+func CanonicalizeHeaderMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[CanonicalizeHeaderKey(k)] = v
+	}
+	return out
 }
 
 // ExtractFilteredExtras returns just the per-request "extra" headers carried
