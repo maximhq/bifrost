@@ -257,6 +257,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
+		AllowDirectKeys:                       config.AllowDirectKeys,
 		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
@@ -520,6 +521,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
+		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }

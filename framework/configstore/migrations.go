@@ -813,6 +813,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationReAddAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddMCPClientTLSConfigColumn(ctx, db); err != nil {
 		return err
 	}
@@ -8894,6 +8897,37 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationReAddAllowDirectKeysColumn re-adds the allow_direct_keys column to config_client.
+// The column was originally added then dropped in v1.5.0 when the direct key bypass feature
+// was removed. It is re-added here as the feature is being restored with header-gated access.
+func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "re_add_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return fmt.Errorf("failed to re-add allow_direct_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Migrator().DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_direct_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running re_add_allow_direct_keys_column migration: %s", err.Error())
 	}
 	return nil
 }
