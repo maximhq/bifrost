@@ -29,7 +29,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSetsActiveVKProviders(t *testing
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-active",
-				IsActive: true,
+				IsActive: schemas.Ptr(true),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 					{Provider: " anthropic "},
@@ -102,22 +102,43 @@ func TestApplyListModelsVirtualKeyProviderFilterReturnsUnavailableWithoutConfigS
 }
 
 func TestApplyListModelsVirtualKeyProviderFilterSkipsWhenVKNotFound(t *testing.T) {
-	h := &CompletionHandler{
-		config: &lib.Config{
-			ConfigStore: &mockListModelsVKConfigStore{},
-		},
-	}
+	t.Run("nil return from store", func(t *testing.T) {
+		h := &CompletionHandler{
+			config: &lib.Config{
+				ConfigStore: &mockListModelsVKConfigStore{},
+			},
+		}
 
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.Set("Authorization", "Bearer sk-bf-missing")
-	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Authorization", "Bearer sk-bf-missing")
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 
-	if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
-		t.Fatalf("expected missing VK to be ignored without failing request")
-	}
-	if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
-		t.Fatalf("expected missing VK not to set available providers, got %#v", got)
-	}
+		if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
+			t.Fatalf("expected missing VK to be ignored without failing request")
+		}
+		if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
+			t.Fatalf("expected missing VK not to set available providers, got %#v", got)
+		}
+	})
+
+	t.Run("ErrNotFound from store", func(t *testing.T) {
+		h := &CompletionHandler{
+			config: &lib.Config{
+				ConfigStore: &mockListModelsVKConfigStore{err: configstore.ErrNotFound},
+			},
+		}
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Authorization", "Bearer sk-bf-missing")
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
+
+		if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
+			t.Fatalf("expected ErrNotFound to be ignored without failing request")
+		}
+		if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
+			t.Fatalf("expected ErrNotFound not to set available providers, got %#v", got)
+		}
+	})
 }
 
 func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
@@ -125,7 +146,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
 		config: &lib.Config{
 			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
 				Value:    "sk-bf-inactive",
-				IsActive: false,
+				IsActive: schemas.Ptr(false),
 				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 					{Provider: "openai"},
 				},
