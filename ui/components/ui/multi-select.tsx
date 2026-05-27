@@ -109,6 +109,7 @@ function MultiSelect({
 						<ChevronDown className="ml-auto h-4 w-4 shrink-0 opacity-50" />
 					</div>
 				</PopoverTrigger>
+
 				<PopoverContent id={popupId} className="w-full p-0" align="start">
 					<Command>
 						{searchable && <CommandInput placeholder={searchPlaceholder} />}
@@ -142,6 +143,7 @@ function MultiSelectGroup({ children, className, ...props }: React.HTMLAttribute
 function MultiSelectItem({ children, className, value, ...props }: { children: React.ReactNode; className?: string; value: string }) {
 	const ctx = useMultiSelect();
 	const isSelected = ctx.value.includes(value);
+
 	return (
 		<CommandItem
 			data-testid={`multi-select-item-${toTestId(value)}`}
@@ -159,4 +161,12 @@ function MultiSelectItem({ children, className, value, ...props }: { children: R
 	);
 }
 
-export { MultiSelect, MultiSelectContent, MultiSelectGroup, MultiSelectItem };
+function MultiSelectTrigger({ children }: React.HTMLAttributes<HTMLDivElement>) {
+	return <>{children}</>;
+}
+
+function MultiSelectValue(_props: { placeholder?: string }) {
+	return null;
+}
+
+export { MultiSelect, MultiSelectContent, MultiSelectGroup, MultiSelectItem, MultiSelectTrigger, MultiSelectValue };

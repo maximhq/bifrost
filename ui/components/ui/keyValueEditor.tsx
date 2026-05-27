@@ -1,3 +1,5 @@
+"use client";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,6 +77,7 @@ export function KeyValueEditor({
 	valuePlaceholder = "Value",
 }: KeyValueEditorProps) {
 	const nextId = useRef(0);
+
 	// Persisted key -> id map so a given key keeps the same stable React key
 	// across external value syncs (reorder / add / remove from the parent).
 	const idMapRef = useRef<Map<string, number>>(new Map());
@@ -94,6 +97,7 @@ export function KeyValueEditor({
 	const [keyErrors, setKeyErrors] = useState<FieldErrors>({});
 	const isFirstRender = useRef(true);
 	const suppressOnChange = useRef(false);
+
 	// Last record we emitted to (or received from) the parent. Used to ignore
 	// the parent echoing our own onChange back as a new object reference, which
 	// would otherwise drop an in-progress empty row and regenerate IDs.
@@ -106,6 +110,7 @@ export function KeyValueEditor({
 		if (recordsEqual(value, lastSyncedRef.current)) {
 			return;
 		}
+
 		lastSyncedRef.current = value;
 		suppressOnChange.current = true;
 		setPairs(buildPairs(value));
@@ -114,17 +119,21 @@ export function KeyValueEditor({
 	useEffect(() => {
 		const validation = validatePairs(pairs);
 		setKeyErrors(validation.keyErrors);
+
 		if (Object.keys(validation.keyErrors).length > 0) {
 			return;
 		}
+
 		if (isFirstRender.current) {
 			isFirstRender.current = false;
 			return;
 		}
+
 		if (suppressOnChange.current) {
 			suppressOnChange.current = false;
 			return;
 		}
+
 		const record = validation.record;
 		lastSyncedRef.current = record;
 		onChangeRef.current(record);
@@ -153,16 +162,20 @@ export function KeyValueEditor({
 				if (i !== index) {
 					return pair;
 				}
+
 				if (field === "key") {
 					const oldKey = pair.key.trim();
 					const nextKey = newValue.trim();
+
 					if (oldKey) {
 						idMapRef.current.delete(oldKey);
 					}
+
 					if (nextKey) {
 						idMapRef.current.set(nextKey, pair.id);
 					}
 				}
+
 				return { ...pair, [field]: newValue };
 			}),
 		);
@@ -180,7 +193,11 @@ export function KeyValueEditor({
 					Add
 				</Button>
 			</div>
-			{pairs.length === 0 && <p className="text-muted-foreground py-2 text-center text-xs">No entries defined. Click Add to create one.</p>}
+
+			{pairs.length === 0 && (
+				<p className="text-muted-foreground py-2 text-center text-xs">No entries defined. Click Add to create one.</p>
+			)}
+
 			{pairs.map((pair, index) => (
 				<div key={pair.id} className="mb-2 flex items-center gap-2">
 					<div className="flex-1">
@@ -205,6 +222,7 @@ export function KeyValueEditor({
 							</p>
 						)}
 					</div>
+
 					<div className="flex-[2]">
 						{index === 0 && (
 							<Label className="text-xs" htmlFor={`key-value-editor-value-${pair.id}`}>
@@ -220,6 +238,7 @@ export function KeyValueEditor({
 							data-testid={`key-value-editor-value-input-${index}`}
 						/>
 					</div>
+
 					<Button
 						type="button"
 						variant="ghost"
