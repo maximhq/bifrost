@@ -509,12 +509,18 @@ type BedrockConverseTrace struct {
 	Guardrail *BedrockGuardrailTrace `json:"guardrail,omitempty"` // Guardrail trace details
 }
 
-// BedrockGuardrailTrace represents detailed guardrail trace information
+// BedrockGuardrailTrace represents detailed guardrail trace information.
+// Field shapes match the AWS Bedrock Runtime GuardrailTraceAssessment type:
+//   https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_GuardrailTraceAssessment.html
+// InputAssessment is a map keyed by guardrail ID (singular, per the AWS API),
+// and OutputAssessments is a map whose values are arrays of assessments.
 type BedrockGuardrailTrace struct {
-	Action            *string                      `json:"action,omitempty"`            // Action taken by guardrail
-	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments
-	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments
-	Trace             *BedrockGuardrailTraceDetail `json:"trace,omitempty"`             // Detailed trace information
+	Action            *string                                 `json:"action,omitempty"`            // Action taken by guardrail
+	ActionReason      *string                                 `json:"actionReason,omitempty"`      // Reason for the guardrail action
+	InputAssessment   map[string]BedrockGuardrailAssessment   `json:"inputAssessment,omitempty"`   // Input assessments, keyed by guardrail ID
+	ModelOutput       []string                                `json:"modelOutput,omitempty"`       // Model output assessed by the guardrail
+	OutputAssessments map[string][]BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments, keyed by guardrail ID
+	Trace             *BedrockGuardrailTraceDetail            `json:"trace,omitempty"`             // Detailed trace information
 }
 
 // BedrockGuardrailAssessment represents a guardrail assessment
