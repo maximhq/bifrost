@@ -261,6 +261,7 @@ interface VirtualKeysTableProps {
 	onSortChange: (sortBy: string, order: string) => void;
 	selectedVkId: string;
 	onSelectedVkChange: (id: string, options?: { offset?: number }) => void;
+	isFetching?: boolean
 }
 
 export default function VirtualKeysTable({
@@ -283,6 +284,7 @@ export default function VirtualKeysTable({
 	onSortChange,
 	selectedVkId,
 	onSelectedVkChange,
+	isFetching
 }: VirtualKeysTableProps) {
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
@@ -569,7 +571,7 @@ export default function VirtualKeysTable({
 	};
 
 	// True empty state: no VKs at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters) {
+	if (totalCount === 0 && !hasActiveFilters && !isFetching) {
 		return (
 			<>
 				{showVirtualKeySheet && (
