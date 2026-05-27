@@ -38009,6 +38009,92 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of virtual keys to return",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of virtual keys to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive search by virtual key name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "description": "Filter virtual keys by customer ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "query",
+            "description": "Filter virtual keys by team ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Field to sort by",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "budget_spent",
+                "created_at",
+                "status"
+              ]
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "Sort order",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "name": "export",
+            "in": "query",
+            "description": "If true, enables export pagination limits",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "exclude_access_profile_managed_virtual",
+            "in": "query",
+            "description": "If true, excludes virtual keys managed by access profiles",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -38110,35 +38196,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "Virtual key quota response (self-service, no admin auth required)",
-                  "properties": {
-                    "virtual_key_name": {
-                      "type": "string",
-                      "description": "Name of the virtual key"
-                    },
-                    "is_active": {
-                      "type": "boolean",
-                      "description": "Whether the virtual key is active"
-                    },
-                    "budgets": {
-                      "type": "array",
-                      "description": "Overall budget quotas assigned to this virtual key",
-                      "items": {
-                        "$ref": "#/components/schemas/Budget"
-                      }
-                    },
-                    "rate_limit": {
-                      "$ref": "#/components/schemas/RateLimit"
-                    },
-                    "provider_configs": {
-                      "type": "array",
-                      "description": "Per-provider budget quotas and rate limits (provider-level splits and limits)",
-                      "items": {
-                        "$ref": "#/components/schemas/VirtualKeyProviderConfig"
-                      }
-                    }
-                  }
+                  "$ref": "#/components/schemas/VirtualKeyQuotaResponse"
                 }
               }
             }
@@ -38206,6 +38264,9 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "virtual_key"
+                  ],
                   "properties": {
                     "virtual_key": {
                       "$ref": "#/components/schemas/VirtualKey"
@@ -66707,6 +66768,18 @@
       "VirtualKey": {
         "type": "object",
         "description": "Virtual key configuration",
+        "required": [
+          "id",
+          "name",
+          "value",
+          "is_active",
+          "provider_configs",
+          "mcp_configs",
+          "calendar_aligned",
+          "config_hash",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -66734,12 +66807,59 @@
             "items": {
               "$ref": "#/components/schemas/VirtualKeyMCPConfig"
             }
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "rate_limit_id": {
+            "type": "string"
+          },
+          "calendar_aligned": {
+            "type": "boolean"
+          },
+          "team": {
+            "$ref": "#/components/schemas/Team"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer"
+          },
+          "budgets": {
+            "type": "array",
+            "description": "Budget quotas assigned directly to this virtual key",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "rate_limit": {
+            "$ref": "#/components/schemas/RateLimit"
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "description": "User that created this virtual key, when available"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
       "VirtualKeyResponse": {
         "type": "object",
         "description": "Virtual key operation response",
+        "required": [
+          "message",
+          "virtual_key"
+        ],
         "properties": {
           "message": {
             "type": "string"
@@ -66752,6 +66872,16 @@
       "VirtualKeyProviderConfig": {
         "type": "object",
         "description": "Provider configuration for a virtual key",
+        "required": [
+          "id",
+          "virtual_key_id",
+          "provider",
+          "weight",
+          "allowed_models",
+          "blacklisted_models",
+          "allow_all_keys",
+          "keys"
+        ],
         "properties": {
           "id": {
             "type": "integer"
@@ -66763,8 +66893,10 @@
             "type": "string"
           },
           "weight": {
-            "type": "number",
-            "nullable": true,
+            "type": [
+              "number",
+              "null"
+            ],
             "description": "Weight for provider load balancing. Null means excluded from weighted routing."
           },
           "allowed_models": {
@@ -66783,8 +66915,7 @@
             "type": "boolean"
           },
           "rate_limit_id": {
-            "type": "string",
-            "nullable": true
+            "type": "string"
           },
           "budgets": {
             "type": "array",
@@ -66797,8 +66928,10 @@
             "$ref": "#/components/schemas/RateLimit"
           },
           "keys": {
-            "type": "array",
-            "nullable": true,
+            "type": [
+              "array",
+              "null"
+            ],
             "description": "Associated API keys for this provider config. **Always null in the quota endpoint** — keys are intentionally not loaded here to keep the response lean and avoid exposing sensitive credentials. Use the admin virtual-key API to inspect actual key assignments.\n",
             "items": {
               "$ref": "#/components/schemas/TableKey"
@@ -66809,12 +66942,25 @@
       "VirtualKeyMCPConfig": {
         "type": "object",
         "description": "MCP configuration for a virtual key",
+        "required": [
+          "id",
+          "virtual_key_id",
+          "mcp_client_id",
+          "mcp_client",
+          "tools_to_execute"
+        ],
         "properties": {
           "id": {
             "type": "integer"
           },
-          "mcp_client_name": {
+          "virtual_key_id": {
             "type": "string"
+          },
+          "mcp_client_id": {
+            "type": "integer"
+          },
+          "mcp_client": {
+            "$ref": "#/components/schemas/MCPClientConfig"
           },
           "tools_to_execute": {
             "type": "array",
@@ -66827,6 +66973,13 @@
       "ListVirtualKeysResponse": {
         "type": "object",
         "description": "List virtual keys response",
+        "required": [
+          "virtual_keys",
+          "count",
+          "total_count",
+          "limit",
+          "offset"
+        ],
         "properties": {
           "virtual_keys": {
             "type": "array",
@@ -66836,6 +66989,70 @@
           },
           "count": {
             "type": "integer"
+          },
+          "total_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of virtual keys matching the query"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size used for the response"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Page offset used for the response"
+          }
+        }
+      },
+      "VirtualKeyQuotaResponse": {
+        "type": "object",
+        "description": "Virtual key quota response (self-service, no admin auth required)",
+        "required": [
+          "virtual_key_name",
+          "is_active",
+          "budgets",
+          "rate_limit",
+          "provider_configs"
+        ],
+        "properties": {
+          "virtual_key_name": {
+            "type": "string",
+            "description": "Name of the virtual key"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "Whether the virtual key is active"
+          },
+          "budgets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Overall budget quotas assigned to this virtual key",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "rate_limit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateLimit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_configs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Per-provider budget quotas and rate limits (provider-level splits and limits)",
+            "items": {
+              "$ref": "#/components/schemas/VirtualKeyProviderConfig"
+            }
           }
         }
       },
@@ -66862,8 +67079,10 @@
                   "type": "string"
                 },
                 "weight": {
-                  "type": "number",
-                  "nullable": true,
+                  "type": [
+                    "number",
+                    "null"
+                  ],
                   "description": "Weight for load balancing. Null means excluded from weighted routing."
                 },
                 "allowed_models": {
@@ -66872,8 +67091,18 @@
                     "type": "string"
                   }
                 },
-                "budget": {
-                  "$ref": "#/components/schemas/CreateBudgetRequest"
+                "blacklisted_models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "budgets": {
+                  "type": "array",
+                  "description": "Provider-specific budget quotas",
+                  "items": {
+                    "$ref": "#/components/schemas/CreateBudgetRequest"
+                  }
                 },
                 "rate_limit": {
                   "$ref": "#/components/schemas/CreateRateLimitRequest"
@@ -66911,14 +67140,22 @@
           "customer_id": {
             "type": "string"
           },
-          "budget": {
-            "$ref": "#/components/schemas/CreateBudgetRequest"
+          "budgets": {
+            "type": "array",
+            "description": "Budget quotas assigned directly to this virtual key",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           },
           "rate_limit": {
             "$ref": "#/components/schemas/CreateRateLimitRequest"
           },
           "is_active": {
             "type": "boolean"
+          },
+          "calendar_aligned": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
@@ -66944,8 +67181,10 @@
                   "type": "string"
                 },
                 "weight": {
-                  "type": "number",
-                  "nullable": true,
+                  "type": [
+                    "number",
+                    "null"
+                  ],
                   "description": "Weight for load balancing. Null means excluded from weighted routing."
                 },
                 "allowed_models": {
@@ -66954,8 +67193,18 @@
                     "type": "string"
                   }
                 },
-                "budget": {
-                  "$ref": "#/components/schemas/UpdateBudgetRequest"
+                "blacklisted_models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "budgets": {
+                  "type": "array",
+                  "description": "Provider-specific budget quotas. Replaces all budgets for that provider config when provided.",
+                  "items": {
+                    "$ref": "#/components/schemas/CreateBudgetRequest"
+                  }
                 },
                 "rate_limit": {
                   "$ref": "#/components/schemas/UpdateRateLimitRequest"
@@ -66995,14 +67244,25 @@
           "customer_id": {
             "type": "string"
           },
-          "budget": {
-            "$ref": "#/components/schemas/UpdateBudgetRequest"
+          "budgets": {
+            "type": "array",
+            "description": "Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest"
           },
           "is_active": {
             "type": "boolean"
+          },
+          "calendar_aligned": {
+            "type": "boolean"
+          },
+          "reset_budget_usage": {
+            "type": "boolean",
+            "description": "When true, resets usage for virtual-key and provider-config budget records reconciled by this update."
           }
         }
       },
@@ -67029,8 +67289,10 @@
             "$ref": "#/components/schemas/Budget"
           },
           "virtual_keys": {
-            "type": "array",
-            "nullable": true,
+            "type": [
+              "array",
+              "null"
+            ],
             "description": "Virtual keys assigned to this team. This field may be omitted or returned as null in some responses (for example, when a team is embedded inside a virtual-key response) to avoid nested `virtual_keys` recursion.\n",
             "items": {
               "$ref": "#/components/schemas/VirtualKey"
@@ -67049,8 +67311,10 @@
             "additionalProperties": true
           },
           "config_hash": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string",
@@ -67220,6 +67484,16 @@
       "Budget": {
         "type": "object",
         "description": "Budget configuration",
+        "required": [
+          "id",
+          "max_limit",
+          "reset_duration",
+          "last_reset",
+          "current_usage",
+          "config_hash",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -67244,9 +67518,23 @@
           "current_usage": {
             "type": "number"
           },
-          "config_hash": {
+          "team_id": {
             "type": "string",
-            "nullable": true
+            "description": "Team that owns this budget, when the budget is team-scoped"
+          },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "Virtual key that owns this budget, when the budget is virtual-key-scoped"
+          },
+          "provider_config_id": {
+            "type": "integer",
+            "description": "Provider config that owns this budget, when the budget is provider-config-scoped"
+          },
+          "config_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string",
@@ -67261,6 +67549,16 @@
       "RateLimit": {
         "type": "object",
         "description": "Rate limit configuration",
+        "required": [
+          "id",
+          "token_current_usage",
+          "token_last_reset",
+          "request_current_usage",
+          "request_last_reset",
+          "config_hash",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -67281,13 +67579,17 @@
             "format": "date-time"
           },
           "request_max_limit": {
-            "type": "integer",
-            "format": "int64",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "request_reset_duration": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_current_usage": {
             "type": "integer",
@@ -67298,8 +67600,10 @@
             "format": "date-time"
           },
           "config_hash": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string",
@@ -67373,8 +67677,10 @@
             "type": "string"
           },
           "calendar_aligned": {
-            "type": "boolean",
-            "nullable": true,
+            "type": [
+              "boolean",
+              "null"
+            ],
             "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start.\n"
           }
         }
@@ -67459,19 +67765,25 @@
               },
               "properties": {
                 "provider": {
-                  "type": "string",
-                  "description": "Target provider (omit or empty to use the incoming request provider)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target provider (omit or empty to use the incoming request provider)"
                 },
                 "model": {
-                  "type": "string",
-                  "description": "Target model (omit or empty to use the incoming request model)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target model (omit or empty to use the incoming request model)"
                 },
                 "key_id": {
-                  "type": "string",
-                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)"
                 },
                 "weight": {
                   "type": "number",
@@ -67501,18 +67813,22 @@
             "description": "Scope level for the rule"
           },
           "scope_id": {
-            "type": "string",
-            "description": "ID for the scope (empty for global scope)",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ID for the scope (empty for global scope)"
           },
           "priority": {
             "type": "integer",
             "description": "Priority for rule evaluation (lower number = higher priority)"
           },
           "query": {
-            "type": "object",
-            "description": "Visual rule tree structure from query builder",
-            "nullable": true
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Visual rule tree structure from query builder"
           },
           "created_at": {
             "type": "string",
@@ -67634,19 +67950,25 @@
               },
               "properties": {
                 "provider": {
-                  "type": "string",
-                  "description": "Target provider (omit or empty to use the incoming request provider)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target provider (omit or empty to use the incoming request provider)"
                 },
                 "model": {
-                  "type": "string",
-                  "description": "Target model (omit or empty to use the incoming request model)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target model (omit or empty to use the incoming request model)"
                 },
                 "key_id": {
-                  "type": "string",
-                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)"
                 },
                 "weight": {
                   "type": "number",
@@ -67676,18 +67998,22 @@
             "description": "Scope level for the rule"
           },
           "scope_id": {
-            "type": "string",
-            "description": "ID for the scope (required if scope is not global)",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ID for the scope (required if scope is not global)"
           },
           "priority": {
             "type": "integer",
             "description": "Priority for rule evaluation (lower number = higher priority)"
           },
           "query": {
-            "type": "object",
-            "description": "Visual rule tree structure",
-            "nullable": true
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Visual rule tree structure"
           }
         },
         "oneOf": [
@@ -67762,19 +68088,25 @@
               },
               "properties": {
                 "provider": {
-                  "type": "string",
-                  "description": "Target provider (omit or empty to use the incoming request provider)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target provider (omit or empty to use the incoming request provider)"
                 },
                 "model": {
-                  "type": "string",
-                  "description": "Target model (omit or empty to use the incoming request model)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Target model (omit or empty to use the incoming request model)"
                 },
                 "key_id": {
-                  "type": "string",
-                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "UUID of the API key to pin for this target (omit for load-balanced key selection)"
                 },
                 "weight": {
                   "type": "number",
@@ -67796,8 +68128,10 @@
             "type": "integer"
           },
           "query": {
-            "type": "object",
-            "nullable": true
+            "type": [
+              "object",
+              "null"
+            ]
           }
         }
       },
@@ -67842,18 +68176,24 @@
             }
           },
           "weight": {
-            "type": "number",
-            "nullable": true
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "enabled": {
-            "type": "boolean",
-            "default": true,
-            "nullable": true
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": true
           },
           "use_for_batch_api": {
-            "type": "boolean",
-            "default": false,
-            "nullable": true
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": false
           },
           "created_at": {
             "type": "string",
@@ -67864,216 +68204,296 @@
             "format": "date-time"
           },
           "config_hash": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "azure_endpoint": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "azure_client_id": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "azure_client_secret": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "azure_tenant_id": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "vertex_project_id": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "vertex_project_number": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "vertex_region": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "vertex_auth_credentials": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "bedrock_access_key": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "bedrock_secret_key": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "bedrock_session_token": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "bedrock_region": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           },
           "bedrock_arn": {
-            "type": "object",
-            "description": "Environment variable configuration",
-            "properties": {
-              "value": {
-                "type": "string"
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "Environment variable configuration",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                }
               },
-              "env_var": {
-                "type": "string"
-              },
-              "from_env": {
-                "type": "boolean"
+              {
+                "type": "null"
               }
-            },
-            "nullable": true
+            ]
           }
         }
       },
@@ -68471,18 +68891,24 @@
             "description": "Scope that determines which requests this override applies to"
           },
           "virtual_key_id": {
-            "type": "string",
-            "nullable": true,
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Required for virtual_key* scopes"
           },
           "provider_id": {
-            "type": "string",
-            "nullable": true,
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Required for provider and virtual_key_provider scopes"
           },
           "provider_key_id": {
-            "type": "string",
-            "nullable": true,
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Required for provider_key and virtual_key_provider_key scopes"
           },
           "match_type": {
@@ -68514,8 +68940,10 @@
             "description": "Decoded pricing fields (present in API responses)"
           },
           "config_hash": {
-            "type": "string",
-            "nullable": true,
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Auto-managed hash for config-file-sourced overrides. Do not set manually."
           },
           "created_at": {
@@ -69629,12 +70057,23 @@
       "LogStats": {
         "type": "object",
         "description": "Log statistics",
+        "required": [
+          "total_requests",
+          "total_tokens",
+          "total_cost",
+          "average_latency",
+          "success_rate",
+          "user_facing_success_rate",
+          "user_facing_total_requests"
+        ],
         "properties": {
           "total_requests": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           },
           "total_tokens": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           },
           "total_cost": {
             "type": "number"
@@ -69643,7 +70082,32 @@
             "type": "number"
           },
           "success_rate": {
-            "type": "number"
+            "type": "number",
+            "description": "Percentage of completed provider attempts that succeeded"
+          },
+          "user_facing_success_rate": {
+            "type": "number",
+            "description": "Percentage of user requests that ultimately succeeded, counting fallback chains as one request"
+          },
+          "user_facing_total_requests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Count of root requests used as the denominator for user_facing_success_rate"
+          },
+          "cache_hit_rate_total_requests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Completed requests used as the local-cache hit-rate denominator"
+          },
+          "direct_cache_hits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of direct local-cache hits"
+          },
+          "semantic_cache_hits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of semantic local-cache hits"
           }
         }
       },
