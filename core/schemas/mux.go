@@ -1073,15 +1073,16 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	if cr.Params != nil {
 		brr.Params = &ResponsesParameters{
 			// Map common fields
-			ParallelToolCalls: cr.Params.ParallelToolCalls,
-			PromptCacheKey:    cr.Params.PromptCacheKey,
-			SafetyIdentifier:  cr.Params.SafetyIdentifier,
-			ServiceTier:       cr.Params.ServiceTier,
-			Store:             cr.Params.Store,
-			Temperature:       cr.Params.Temperature,
-			TopLogProbs:       cr.Params.TopLogProbs,
-			TopP:              cr.Params.TopP,
-			ExtraParams:       cr.Params.ExtraParams,
+			ParallelToolCalls:    cr.Params.ParallelToolCalls,
+			PromptCacheKey:       cr.Params.PromptCacheKey,
+			PromptCacheRetention: cr.Params.PromptCacheRetention,
+			SafetyIdentifier:     cr.Params.SafetyIdentifier,
+			ServiceTier:          cr.Params.ServiceTier,
+			Store:                cr.Params.Store,
+			Temperature:          cr.Params.Temperature,
+			TopLogProbs:          cr.Params.TopLogProbs,
+			TopP:                 cr.Params.TopP,
+			ExtraParams:          cr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxOutputTokens: cr.Params.MaxCompletionTokens, // max_completion_tokens -> max_output_tokens
@@ -1187,15 +1188,16 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	if brr.Params != nil {
 		bcr.Params = &ChatParameters{
 			// Map common fields
-			ParallelToolCalls: brr.Params.ParallelToolCalls,
-			PromptCacheKey:    brr.Params.PromptCacheKey,
-			SafetyIdentifier:  brr.Params.SafetyIdentifier,
-			ServiceTier:       brr.Params.ServiceTier,
-			Store:             brr.Params.Store,
-			Temperature:       brr.Params.Temperature,
-			TopLogProbs:       brr.Params.TopLogProbs,
-			TopP:              brr.Params.TopP,
-			ExtraParams:       brr.Params.ExtraParams,
+			ParallelToolCalls:    brr.Params.ParallelToolCalls,
+			PromptCacheKey:       brr.Params.PromptCacheKey,
+			PromptCacheRetention: brr.Params.PromptCacheRetention,
+			SafetyIdentifier:     brr.Params.SafetyIdentifier,
+			ServiceTier:          brr.Params.ServiceTier,
+			Store:                brr.Params.Store,
+			Temperature:          brr.Params.Temperature,
+			TopLogProbs:          brr.Params.TopLogProbs,
+			TopP:                 brr.Params.TopP,
+			ExtraParams:          brr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxCompletionTokens: brr.Params.MaxOutputTokens, // max_output_tokens -> max_completion_tokens
