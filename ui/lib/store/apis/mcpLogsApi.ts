@@ -216,6 +216,8 @@ export const {
 	useLazyGetMCPAvailableFilterDataQuery,
 	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
+	useGetMCPCostHistogramQuery,
+	useGetMCPTopToolsQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,
 	useDeleteMCPLogsMutation,
