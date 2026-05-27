@@ -30,12 +30,27 @@ type UsageUpdate struct {
 	HasUsageData bool `json:"has_usage_data"` // Whether this chunk contains usage data
 }
 
+// UsageObserver is an optional callback that UsageTracker calls after
+// budget or rate-limit usage is bumped. The enterprise alerting engine
+// implements this to evaluate alert thresholds after each usage update.
+// vkID is empty when no virtual key is involved.
+// teamID and customerID are empty when the virtual key has no team/customer.
+// When set, the observer records into team/customer rolling windows so
+// team/customer-scoped anomaly rules see data.
+type UsageObserver interface {
+	OnUsageUpdated(ctx context.Context, update *UsageUpdate, vkID string, provider schemas.ModelProvider, model string, teamID string, customerID string)
+}
+
 // UsageTracker manages VK-level usage tracking and budget management
 type UsageTracker struct {
 	store       GovernanceStore
 	resolver    *BudgetResolver
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
+
+	// Optional observer for alerting after usage bumps
+	usageObserverMu sync.RWMutex
+	usageObserver UsageObserver
 
 	// Background workers
 	trackerCtx    context.Context
@@ -46,7 +61,8 @@ type UsageTracker struct {
 }
 
 const (
-	workerInterval = 10 * time.Second
+	workerInterval   = 10 * time.Second
+	evaluatorTimeout = 5 * time.Second
 )
 
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
@@ -64,6 +80,13 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 	tracker.startWorkers(tracker.trackerCtx)
 
 	return tracker
+}
+
+// SetUsageObserver registers an optional observer called after usage updates.
+func (t *UsageTracker) SetUsageObserver(o UsageObserver) {
+	t.usageObserverMu.Lock()
+	t.usageObserver = o
+	t.usageObserverMu.Unlock()
 }
 
 // UpdateUsage queues a usage update for async processing (main business entry point)
@@ -130,7 +153,16 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 4. Now handle virtual key-level updates (if virtual key exists)
 	if update.VirtualKey == "" {
-		// No virtual key, provider-level and model-level updates already done above
+		// No virtual key, provider-level and model-level updates already done above.
+		// Fire alert evaluator for provider/model-level scope with timeout.
+		t.usageObserverMu.RLock()
+		observer := t.usageObserver
+		t.usageObserverMu.RUnlock()
+		if observer != nil {
+			evalCtx, cancel := context.WithTimeout(ctx, evaluatorTimeout)
+			defer cancel()
+			observer.OnUsageUpdated(evalCtx, update, "", update.Provider, update.Model, "", "")
+		}
 		return
 	}
 
@@ -169,6 +201,30 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		if err := t.store.UpdateVirtualKeyBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
 		}
+	}
+
+	// Fire alert evaluator after all usage bumps are complete with timeout.
+	// The timeout prevents a slow evaluator implementation from blocking
+	// the request path. Pattern matches MCP toolmanager.go:672.
+	t.usageObserverMu.RLock()
+	observer := t.usageObserver
+	t.usageObserverMu.RUnlock()
+	if observer != nil {
+		evalCtx, cancel := context.WithTimeout(ctx, evaluatorTimeout)
+		defer cancel()
+		teamID := ""
+		if vk.TeamID != nil {
+			teamID = *vk.TeamID
+		} else if vk.Team != nil {
+			teamID = vk.Team.ID
+		}
+		customerID := ""
+		if vk.CustomerID != nil {
+			customerID = *vk.CustomerID
+		} else if vk.Customer != nil {
+			customerID = vk.Customer.ID
+		}
+		observer.OnUsageUpdated(evalCtx, update, vk.ID, update.Provider, update.Model, teamID, customerID)
 	}
 }
 

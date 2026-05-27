@@ -2098,6 +2098,32 @@ func setupLegacyBudgetOwnerMigrationDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func setupLegacyRateLimitOwnerMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to create test database")
+
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableCustomer{},
+		&tables.TableTeam{},
+		&tables.TableVirtualKey{},
+		&tables.TableVirtualKeyProviderConfig{},
+		&tables.TableRateLimit{},
+	), "Failed to auto-migrate legacy rate limit owner test tables")
+
+	mig := db.Migrator()
+	for _, columnName := range []string{"virtual_key_id", "team_id", "customer_id", "provider_config_id"} {
+		if mig.HasColumn(&tables.TableRateLimit{}, columnName) {
+			require.NoError(t, mig.DropColumn(&tables.TableRateLimit{}, columnName))
+		}
+	}
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
 func insertProviderConfigRaw(t *testing.T, db *gorm.DB, id uint, virtualKeyID, provider string) {
 	t.Helper()
 	err := db.Exec(`
@@ -2106,6 +2132,17 @@ func insertProviderConfigRaw(t *testing.T, db *gorm.DB, id uint, virtualKeyID, p
 		VALUES (?, ?, ?, '[]', 1)
 	`, id, virtualKeyID, provider).Error
 	require.NoError(t, err, "Failed to insert provider config %d", id)
+}
+
+func insertCustomerRaw(t *testing.T, db *gorm.DB, id, name string) {
+	t.Helper()
+	now := time.Now()
+	err := db.Exec(`
+		INSERT INTO governance_customers
+		  (id, name, config_hash, created_at, updated_at)
+		VALUES (?, ?, '', ?, ?)
+	`, id, name, now, now).Error
+	require.NoError(t, err, "Failed to insert customer %s", id)
 }
 
 func insertTeamRaw(t *testing.T, db *gorm.DB, id, name string) {
@@ -2117,6 +2154,51 @@ func insertTeamRaw(t *testing.T, db *gorm.DB, id, name string) {
 		VALUES (?, ?, '', ?, ?)
 	`, id, name, now, now).Error
 	require.NoError(t, err, "Failed to insert team %s", id)
+}
+
+func TestMigrationAddRateLimitOwnerColumns_AddsColumnsAndBackfillsOwners(t *testing.T) {
+	db := setupLegacyRateLimitOwnerMigrationDB(t)
+	ctx := context.Background()
+	mig := db.Migrator()
+
+	insertRateLimitRaw(t, db, "rl-vk")
+	vkRateLimitID := "rl-vk"
+	insertVKRaw(t, db, "vk-owner", "vk-owner", "vk-owner-value", &vkRateLimitID, true)
+
+	insertRateLimitRaw(t, db, "rl-team")
+	insertTeamRaw(t, db, "team-owner", "Team Owner")
+	require.NoError(t, db.Exec(`UPDATE governance_teams SET rate_limit_id = ? WHERE id = ?`, "rl-team", "team-owner").Error)
+
+	insertRateLimitRaw(t, db, "rl-customer")
+	insertCustomerRaw(t, db, "customer-owner", "Customer Owner")
+	require.NoError(t, db.Exec(`UPDATE governance_customers SET rate_limit_id = ? WHERE id = ?`, "rl-customer", "customer-owner").Error)
+
+	insertRateLimitRaw(t, db, "rl-provider")
+	insertVKRaw(t, db, "vk-provider", "vk-provider", "vk-provider-value", nil, true)
+	insertProviderConfigRaw(t, db, 1001, "vk-provider", "openai")
+	require.NoError(t, db.Exec(`UPDATE governance_virtual_key_provider_configs SET rate_limit_id = ? WHERE id = ?`, "rl-provider", 1001).Error)
+
+	require.NoError(t, migrationAddRateLimitOwnerColumns(ctx, db))
+
+	for _, columnName := range []string{"virtual_key_id", "team_id", "customer_id", "provider_config_id"} {
+		require.True(t, mig.HasColumn(&tables.TableRateLimit{}, columnName), "governance_rate_limits.%s should exist", columnName)
+	}
+
+	var virtualKeyOwner string
+	require.NoError(t, db.Table("governance_rate_limits").Select("virtual_key_id").Where("id = ?", "rl-vk").Scan(&virtualKeyOwner).Error)
+	assert.Equal(t, "vk-owner", virtualKeyOwner)
+
+	var teamOwner string
+	require.NoError(t, db.Table("governance_rate_limits").Select("team_id").Where("id = ?", "rl-team").Scan(&teamOwner).Error)
+	assert.Equal(t, "team-owner", teamOwner)
+
+	var customerOwner string
+	require.NoError(t, db.Table("governance_rate_limits").Select("customer_id").Where("id = ?", "rl-customer").Scan(&customerOwner).Error)
+	assert.Equal(t, "customer-owner", customerOwner)
+
+	var providerConfigOwner uint
+	require.NoError(t, db.Table("governance_rate_limits").Select("provider_config_id").Where("id = ?", "rl-provider").Scan(&providerConfigOwner).Error)
+	assert.Equal(t, uint(1001), providerConfigOwner)
 }
 
 // TestMigrationCalendarAligned_AddColumnsAndBackfill exercises the full migration:
