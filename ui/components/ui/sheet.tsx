@@ -67,13 +67,14 @@ function SheetContent({
 	// Check if the target is a portaled element (like react-select menu)
 	const isPortaledElement = (target: HTMLElement | null): boolean => {
 		if (!target) return false;
-		// Check for react-select menu portal elements
 		return !!(
 			target.closest('[class*="-menu"]') ||
 			target.closest('[class*="MenuPortal"]') ||
 			target.closest('[role="listbox"]') ||
 			target.closest('[role="option"]') ||
-			target.closest("[data-radix-popper-content-wrapper]")
+			target.closest("[data-radix-popper-content-wrapper]") ||
+			target.closest("[data-sonner-toast]") ||
+			target.closest("[data-sonner-toaster]")
 		);
 	};
 
