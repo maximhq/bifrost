@@ -37,7 +37,7 @@ import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
@@ -212,25 +212,21 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 		});
 	}, [form, mcpClient]);
 
-	const handleNavigate = (direction: "prev" | "next") => {
-		if (form.formState.isDirty || vkConfigsDirty) {
-			setPendingNavDirection(direction);
-		} else {
-			onNavigate?.(direction);
-		}
-	};
+	const isDirty = form.formState.isDirty || vkConfigsDirty;
 
-	const confirmNavigation = () => {
-		if (pendingNavDirection) {
-			onNavigate?.(pendingNavDirection);
-			setPendingNavDirection(null);
-		}
-	};
-
-	const cancelNavigation = () => setPendingNavDirection(null);
+	const handleNavigate = useCallback(
+		(direction: "prev" | "next") => {
+			if (isDirty) {
+				setPendingNavDirection(direction);
+			} else {
+				onNavigate?.(direction);
+			}
+		},
+		[isDirty, onNavigate],
+	);
 
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
-		enabled: !!onNavigate,
+		enabled: !pendingNavDirection,
 		hasPrev,
 		hasNext,
 		onNavigate: handleNavigate,
@@ -406,7 +402,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 	};
 
 	return (
-		<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
+		<>
+			<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
 				<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<div className="flex w-full items-center justify-between">
@@ -1310,20 +1307,27 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 					isPerUserOauth={oauthFlow.isPerUserOauth}
 				/>
 			)}
-			<AlertDialog open={!!pendingNavDirection} onOpenChange={(open) => !open && cancelNavigation()}>
+			</Sheet>
+			<AlertDialog open={!!pendingNavDirection} onOpenChange={(open) => !open && setPendingNavDirection(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
-						<AlertDialogDescription>
-							You have unsaved changes. Navigating away will discard them.
-						</AlertDialogDescription>
+						<AlertDialogDescription>You have unsaved changes. Are you sure you want to navigate away? Your changes will be lost.</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel onClick={cancelNavigation}>Stay</AlertDialogCancel>
-						<AlertDialogAction onClick={confirmNavigation}>Discard & Navigate</AlertDialogAction>
+						<AlertDialogCancel onClick={() => setPendingNavDirection(null)}>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => {
+								const dir = pendingNavDirection;
+								setPendingNavDirection(null);
+								if (dir) onNavigate?.(dir);
+							}}
+						>
+							Discard Changes
+						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</Sheet>
+		</>
 	);
 }
