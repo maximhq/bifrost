@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/framework
 
-go 1.26.2
+go 1.26.3
 
 require (
 	cloud.google.com/go/storage v1.61.3
