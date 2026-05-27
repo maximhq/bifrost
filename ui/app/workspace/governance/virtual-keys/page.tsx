@@ -35,6 +35,7 @@ export default function GovernanceVirtualKeysPage() {
       offset: parseAsInteger.withDefault(0),
       sort_by: parseAsString.withDefault(""),
       order: parseAsString.withDefault(""),
+      selected_vk: parseAsString.withDefault(""),
     },
     { history: "push" },
   );
@@ -147,6 +148,19 @@ export default function GovernanceVirtualKeysPage() {
     });
   };
 
+  const handleSelectedVkChange = (
+    id: string,
+    options?: { offset?: number },
+  ) => {
+    const update: Record<string, string | number | null> = {
+      selected_vk: id || null,
+    };
+    if (options?.offset !== undefined) {
+      update.offset = options.offset;
+    }
+    setUrlState(update);
+  };
+
   return (
     <div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden p-4">
       <VirtualKeysTable
@@ -167,6 +181,8 @@ export default function GovernanceVirtualKeysPage() {
         sortBy={urlState.sort_by}
         order={urlState.order}
         onSortChange={handleSortChange}
+        selectedVkId={urlState.selected_vk}
+        onSelectedVkChange={handleSelectedVkChange}
       />
     </div>
   );

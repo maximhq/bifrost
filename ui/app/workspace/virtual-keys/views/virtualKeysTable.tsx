@@ -79,7 +79,7 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 			? `Team: ${vk.team.name}`
 			: vk.customer
 				? `Customer: ${vk.customer.name}`
-					: "";
+				: "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
@@ -259,6 +259,8 @@ interface VirtualKeysTableProps {
 	sortBy?: string;
 	order?: string;
 	onSortChange: (sortBy: string, order: string) => void;
+	selectedVkId: string;
+	onSelectedVkChange: (id: string, options?: { offset?: number }) => void;
 }
 
 export default function VirtualKeysTable({
@@ -279,12 +281,12 @@ export default function VirtualKeysTable({
 	sortBy,
 	order,
 	onSortChange,
+	selectedVkId,
+	onSelectedVkChange,
 }: VirtualKeysTableProps) {
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
 	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
-	const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null);
-	const [showDetailSheet, setShowDetailSheet] = useState(false);
 	const [showExportDialog, setShowExportDialog] = useState(false);
 	const [exportScope, setExportScope] = useState<ExportScope>("current_page");
 	const [exportMaxLimit, setExportMaxLimit] = useState("");
@@ -298,8 +300,8 @@ export default function VirtualKeysTable({
 		[editingVirtualKeyId, virtualKeys],
 	);
 	const selectedVirtualKey = useMemo(
-		() => (selectedVirtualKeyId ? (virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null) : null),
-		[selectedVirtualKeyId, virtualKeys],
+		() => (selectedVkId ? (virtualKeys.find((vk) => vk.id === selectedVkId) ?? null) : null),
+		[selectedVkId, virtualKeys],
 	);
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
@@ -422,13 +424,67 @@ export default function VirtualKeysTable({
 	};
 
 	const handleRowClick = (vk: VirtualKey) => {
-		setSelectedVirtualKeyId(vk.id);
-		setShowDetailSheet(true);
+		onSelectedVkChange(vk.id);
 	};
 
 	const handleDetailSheetClose = () => {
-		setShowDetailSheet(false);
-		setSelectedVirtualKeyId(null);
+		onSelectedVkChange("");
+	};
+
+	const selectedVirtualKeyIndex = useMemo(
+		() => (selectedVkId ? virtualKeys.findIndex((vk) => vk.id === selectedVkId) : -1),
+		[selectedVkId, virtualKeys],
+	);
+
+	const handleDetailNavigate = (direction: "prev" | "next") => {
+		const currentVkId = selectedVkId;
+		if (direction === "prev") {
+			if (selectedVirtualKeyIndex > 0) {
+				onSelectedVkChange(virtualKeys[selectedVirtualKeyIndex - 1].id);
+			} else if (offset > 0) {
+				const newOffset = Math.max(0, offset - limit);
+				onSelectedVkChange("", { offset: newOffset });
+				fetchVirtualKeys({
+					limit,
+					offset: newOffset,
+					search: debouncedSearch || undefined,
+					customer_id: customerFilter || undefined,
+					team_id: teamFilter || undefined,
+					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
+					order: (order as "asc" | "desc") || undefined,
+				}).then((result) => {
+					if (result.data?.virtual_keys?.length) {
+						const lastVk = result.data.virtual_keys[result.data.virtual_keys.length - 1];
+						onSelectedVkChange(lastVk.id);
+					} else if (result.error) {
+						onSelectedVkChange(currentVkId, { offset });
+					}
+				});
+			}
+		} else {
+			if (selectedVirtualKeyIndex >= 0 && selectedVirtualKeyIndex < virtualKeys.length - 1) {
+				onSelectedVkChange(virtualKeys[selectedVirtualKeyIndex + 1].id);
+			} else if (offset + limit < totalCount) {
+				const newOffset = offset + limit;
+				onSelectedVkChange("", { offset: newOffset });
+				fetchVirtualKeys({
+					limit,
+					offset: newOffset,
+					search: debouncedSearch || undefined,
+					customer_id: customerFilter || undefined,
+					team_id: teamFilter || undefined,
+					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
+					order: (order as "asc" | "desc") || undefined,
+				}).then((result) => {
+					if (result.data?.virtual_keys?.length) {
+						const firstVk = result.data.virtual_keys[0];
+						onSelectedVkChange(firstVk.id);
+					} else if (result.error) {
+						onSelectedVkChange(currentVkId, { offset });
+					}
+				});
+			}
+		}
 	};
 
 	const toggleKeyVisibility = (vkId: string) => {
@@ -542,7 +598,15 @@ export default function VirtualKeysTable({
 				/>
 			)}
 
-			{showDetailSheet && selectedVirtualKey && <VirtualKeyDetailSheet virtualKey={selectedVirtualKey} onClose={handleDetailSheetClose} />}
+			{!!selectedVkId && selectedVirtualKey && (
+				<VirtualKeyDetailSheet
+					virtualKey={selectedVirtualKey}
+					onClose={handleDetailSheetClose}
+					onNavigate={handleDetailNavigate}
+					hasPrev={selectedVirtualKeyIndex > 0 || (selectedVirtualKeyIndex !== -1 && offset > 0)}
+					hasNext={selectedVirtualKeyIndex !== -1 && (selectedVirtualKeyIndex < virtualKeys.length - 1 || offset + limit < totalCount)}
+				/>
+			)}
 
 			{/* Export Dialog */}
 			<Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
@@ -659,8 +723,8 @@ export default function VirtualKeysTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="flex min-h-0 w-full grow flex-col gap-4 overflow-hidden">
-				<div className="flex shrink-0 items-center justify-between">
+			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
+				<div className="flex shrink-0 items-center justify-between mb-4">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
@@ -689,7 +753,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="flex shrink-0 items-center gap-3">
+				<div className="flex shrink-0 items-center gap-3  mb-4">
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -720,7 +784,7 @@ export default function VirtualKeysTable({
 					/>
 				</div>
 
-				<div className="min-h-0 grow overflow-hidden rounded-sm border">
+				<div className="min-h-0 grow overflow-hidden rounded-sm border mb-2">
 					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
@@ -846,30 +910,38 @@ export default function VirtualKeysTable({
 
 				{/* Pagination */}
 				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between px-2 text-xs">
-						<p className="text-muted-foreground">
-							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-						</p>
-						<div className="flex gap-2">
+					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+						<div className="text-muted-foreground flex items-center gap-2">
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+						</div>
+
+						<div className="flex items-center gap-2">
 							<Button
-								variant="outline"
+								variant="ghost"
 								size="sm"
-								disabled={offset === 0}
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+								disabled={offset === 0}
 								data-testid="vk-pagination-prev-btn"
+								aria-label="Previous page"
 							>
-								<ChevronLeft className="mr-1 h-4 w-4" />
-								Previous
+								<ChevronLeft className="size-3" />
 							</Button>
+
+							<div className="flex items-center gap-1">
+								<span>Page</span>
+								<span>{Math.floor(offset / limit) + 1}</span>
+								<span>of {Math.ceil(totalCount / limit)}</span>
+							</div>
+
 							<Button
-								variant="outline"
+								variant="ghost"
 								size="sm"
-								disabled={offset + limit >= totalCount}
 								onClick={() => onOffsetChange(offset + limit)}
+								disabled={offset + limit >= totalCount}
 								data-testid="vk-pagination-next-btn"
+								aria-label="Next page"
 							>
-								Next
-								<ChevronRight className="ml-1 h-4 w-4" />
+								<ChevronRight className="size-3" />
 							</Button>
 						</div>
 					</div>
