@@ -48,6 +48,13 @@ func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipelin
 func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
+func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op codemcp.MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
+}
 
 func TestStarlarkToGo(t *testing.T) {
 	t.Run("Convert None", func(t *testing.T) {

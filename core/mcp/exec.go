@@ -112,7 +112,7 @@ func (m *MCPManager) executeToolWithHooks(
 		toolNameMapping = state.ToolNameMapping
 	}
 
-	resp, bErr := m.runWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
 		if opErr != nil {
 			return nil, opErr
