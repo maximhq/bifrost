@@ -1,3 +1,13 @@
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Fragment } from "react";
@@ -23,6 +33,8 @@ import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -33,6 +45,9 @@ interface MCPClientSheetProps {
 	mcpClient: MCPClient;
 	onClose: () => void;
 	onSubmitSuccess: () => void;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 /** API sends tool_sync_interval as nanoseconds (Go time.Duration). Normalize to minutes for form/store. */
@@ -44,9 +59,12 @@ function toolSyncIntervalToMinutes(v: number | undefined | null): number {
 	return n;
 }
 
-export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: MCPClientSheetProps) {
+export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, onNavigate, hasPrev = false, hasNext = false }: MCPClientSheetProps) {
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
+
+	const [pendingNavDirection, setPendingNavDirection] = useState<"prev" | "next" | null>(null);
+
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const { toast } = useToast();
@@ -193,6 +211,30 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				: undefined,
 		});
 	}, [form, mcpClient]);
+
+	const handleNavigate = (direction: "prev" | "next") => {
+		if (form.formState.isDirty || vkConfigsDirty) {
+			setPendingNavDirection(direction);
+		} else {
+			onNavigate?.(direction);
+		}
+	};
+
+	const confirmNavigation = () => {
+		if (pendingNavDirection) {
+			onNavigate?.(pendingNavDirection);
+			setPendingNavDirection(null);
+		}
+	};
+
+	const cancelNavigation = () => setPendingNavDirection(null);
+
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: !!onNavigate,
+		hasPrev,
+		hasNext,
+		onNavigate: handleNavigate,
+	});
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
@@ -375,6 +417,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 							</SheetTitle>
 							<SheetDescription>MCP server configuration and available tools</SheetDescription>
 						</div>
+						<SheetNavigationButtons
+							hasPrev={hasPrev}
+							hasNext={hasNext}
+							onNavigate={handleNavigate}
+							prevKeys={prevKeys}
+							nextKeys={nextKeys}
+							entityLabel="server"
+						/>
 					</div>
 				</SheetHeader>
 				<Form {...form}>
@@ -1260,6 +1310,20 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					isPerUserOauth={oauthFlow.isPerUserOauth}
 				/>
 			)}
+			<AlertDialog open={!!pendingNavDirection} onOpenChange={(open) => !open && cancelNavigation()}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
+						<AlertDialogDescription>
+							You have unsaved changes. Navigating away will discard them.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={cancelNavigation}>Stay</AlertDialogCancel>
+						<AlertDialogAction onClick={confirmNavigation}>Discard & Navigate</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</Sheet>
 	);
 }
