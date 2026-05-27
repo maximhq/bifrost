@@ -33,18 +33,51 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Info } from "lucide-react";
+import { ChevronLeft, ChevronRight, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
+import SessionsFilterBar from "./sessionsFilterBar";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
+	totalCount: number;
+	isFetching: boolean;
+	search: string;
+	onSearchChange: (value: string) => void;
+	kindFilter: string[];
+	onKindFilterChange: (value: string[]) => void;
+	statusFilter: string[];
+	onStatusFilterChange: (value: string[]) => void;
+	authModeFilter: string[];
+	onAuthModeFilterChange: (value: string[]) => void;
+	hasActiveFilters: boolean;
+	onClearFilters: () => void;
+	offset: number;
+	limit: number;
+	onOffsetChange: (offset: number) => void;
 }
 
-export default function SessionsTable({ sessions }: SessionsTableProps) {
+export default function SessionsTable({
+	sessions,
+	totalCount,
+	isFetching,
+	search,
+	onSearchChange,
+	kindFilter,
+	onKindFilterChange,
+	statusFilter,
+	onStatusFilterChange,
+	authModeFilter,
+	onAuthModeFilterChange,
+	hasActiveFilters,
+	onClearFilters,
+	offset,
+	limit,
+	onOffsetChange,
+}: SessionsTableProps) {
 	const { toast } = useToast();
 	const [reauth, { isLoading: reauthing }] = useReauthMCPSessionMutation();
 	const [revoke, { isLoading: revoking }] = useRevokeMCPSessionMutation();
@@ -124,7 +157,20 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 				</div>
 			</div>
 
-			<div className="overflow-auto rounded-sm border">
+			<SessionsFilterBar
+				search={search}
+				onSearchChange={onSearchChange}
+				kindFilter={kindFilter}
+				onKindFilterChange={onKindFilterChange}
+				statusFilter={statusFilter}
+				onStatusFilterChange={onStatusFilterChange}
+				authModeFilter={authModeFilter}
+				onAuthModeFilterChange={onAuthModeFilterChange}
+				hasActiveFilters={hasActiveFilters}
+				onClearFilters={onClearFilters}
+			/>
+
+			<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
 				<Table>
 					<TableHeader>
 						<TableRow>
@@ -161,10 +207,17 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 						{sessions.length === 0 ? (
 							<TableRow>
 								<TableCell colSpan={7} className="h-24 text-center">
-									<span className="text-muted-foreground text-sm">
-										No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
-										(OAuth or header submission).
-									</span>
+									{hasActiveFilters ? (
+										<div className="text-muted-foreground text-sm">
+										No sessions match these filters.
+								
+										</div>
+									) : (
+										<span className="text-muted-foreground text-sm">
+											No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
+											(OAuth or header submission).
+										</span>
+									)}
 								</TableCell>
 							</TableRow>
 						) : (
@@ -205,6 +258,36 @@ export default function SessionsTable({ sessions }: SessionsTableProps) {
 					</TableBody>
 				</Table>
 			</div>
+
+			{totalCount > 0 && (
+				<div className="flex shrink-0 items-center justify-between px-2 text-xs">
+					<p className="text-muted-foreground">
+						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+					</p>
+					<div className="flex gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={offset === 0}
+							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+							data-testid="mcp-sessions-pagination-prev-btn"
+						>
+							<ChevronLeft className="mr-1 h-4 w-4" />
+							Previous
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={offset + limit >= totalCount}
+							onClick={() => onOffsetChange(offset + limit)}
+							data-testid="mcp-sessions-pagination-next-btn"
+						>
+							Next
+							<ChevronRight className="ml-1 h-4 w-4" />
+						</Button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
