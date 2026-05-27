@@ -1,4 +1,3 @@
-import FormFooter from "@/components/formFooter";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,13 +9,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
@@ -27,7 +20,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   resetDurationOptions,
   supportsCalendarAlignment,
@@ -52,7 +58,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 
-interface TeamDialogProps {
+interface TeamSheetProps {
   team?: Team | null;
   customers: Customer[];
   onSave: () => void;
@@ -107,12 +113,12 @@ const createInitialState = (
   };
 };
 
-export default function TeamDialog({
+export default function TeamSheet({
   team,
   customers,
   onSave,
   onCancel,
-}: TeamDialogProps) {
+}: TeamSheetProps) {
   const isEditing = !!team;
   const [initialState, setInitialState] = useState<
     Omit<TeamFormData, "isDirty">
@@ -248,34 +254,34 @@ export default function TeamDialog({
 
       // Rate limit validation - token limits
       ...(formData.tokenMaxLimit !== undefined &&
-      formData.tokenMaxLimit !== null
+        formData.tokenMaxLimit !== null
         ? [
-            Validator.minValue(
-              tokenMaxLimitNum || 0,
-              1,
-              "Token max limit must be at least 1",
-            ),
-            Validator.required(
-              formData.tokenResetDuration,
-              "Token reset duration is required",
-            ),
-          ]
+          Validator.minValue(
+            tokenMaxLimitNum || 0,
+            1,
+            "Token max limit must be at least 1",
+          ),
+          Validator.required(
+            formData.tokenResetDuration,
+            "Token reset duration is required",
+          ),
+        ]
         : []),
 
       // Rate limit validation - request limits
       ...(formData.requestMaxLimit !== undefined &&
-      formData.requestMaxLimit !== null
+        formData.requestMaxLimit !== null
         ? [
-            Validator.minValue(
-              requestMaxLimitNum || 0,
-              1,
-              "Request max limit must be at least 1",
-            ),
-            Validator.required(
-              formData.requestResetDuration,
-              "Request reset duration is required",
-            ),
-          ]
+          Validator.minValue(
+            requestMaxLimitNum || 0,
+            1,
+            "Request max limit must be at least 1",
+          ),
+          Validator.required(
+            formData.requestResetDuration,
+            "Request reset duration is required",
+          ),
+        ]
         : []),
     ]);
   }, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
@@ -381,23 +387,31 @@ export default function TeamDialog({
   };
 
   return (
-    <Dialog open onOpenChange={onCancel}>
-      <DialogContent className="sm:max-w-2xl" data-testid="team-dialog-content">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+    <Sheet open onOpenChange={(open) => !open && onCancel()}>
+      <SheetContent
+        className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
+        data-testid="team-sheet-content"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={() => onCancel()}
+      >
+        <SheetHeader
+          className="flex flex-col items-start px-8 py-4"
+          headerClassName="mb-0 sticky -top-4 bg-card z-10"
+        >
+          <SheetTitle className="flex items-center gap-2">
             {isEditing ? "Edit Team" : "Create Team"}
-          </DialogTitle>
-          <DialogDescription>
+          </SheetTitle>
+          <SheetDescription>
             {isEditing
               ? "Update the team information and settings."
               : "Create a new team to organize users and manage shared resources."}
-          </DialogDescription>
-        </DialogHeader>
+          </SheetDescription>
+        </SheetHeader>
 
-        <form onSubmit={handleSubmit} className="">
-          <div className="space-y-6">
+        <form onSubmit={handleSubmit} className="flex h-full flex-col gap-6">
+          <div className="grow space-y-6 px-8">
             {/* Basic Information */}
-            <div className="">
+            <div className="flex flex-col gap-6">
               <div className="space-y-2">
                 <Label htmlFor="name">Team Name *</Label>
                 <Input
@@ -641,8 +655,8 @@ export default function TeamDialog({
                           >
                             {b.max_limit > 0
                               ? Math.round(
-                                  (b.current_usage / b.max_limit) * 100,
-                                )
+                                (b.current_usage / b.max_limit) * 100,
+                              )
                               : 0}
                             %
                           </Badge>
@@ -666,7 +680,7 @@ export default function TeamDialog({
                           <Badge
                             variant={
                               team.rate_limit.token_max_limit > 0 &&
-                              team.rate_limit.token_current_usage >=
+                                team.rate_limit.token_current_usage >=
                                 team.rate_limit.token_max_limit
                                 ? "destructive"
                                 : "default"
@@ -675,10 +689,10 @@ export default function TeamDialog({
                           >
                             {team.rate_limit.token_max_limit > 0
                               ? Math.round(
-                                  (team.rate_limit.token_current_usage /
-                                    team.rate_limit.token_max_limit) *
-                                    100,
-                                )
+                                (team.rate_limit.token_current_usage /
+                                  team.rate_limit.token_max_limit) *
+                                100,
+                              )
                               : 0}
                             %
                           </Badge>
@@ -706,7 +720,7 @@ export default function TeamDialog({
                           <Badge
                             variant={
                               team.rate_limit.request_max_limit > 0 &&
-                              team.rate_limit.request_current_usage >=
+                                team.rate_limit.request_current_usage >=
                                 team.rate_limit.request_max_limit
                                 ? "destructive"
                                 : "default"
@@ -715,10 +729,10 @@ export default function TeamDialog({
                           >
                             {team.rate_limit.request_max_limit > 0
                               ? Math.round(
-                                  (team.rate_limit.request_current_usage /
-                                    team.rate_limit.request_max_limit) *
-                                    100,
-                                )
+                                (team.rate_limit.request_current_usage /
+                                  team.rate_limit.request_max_limit) *
+                                100,
+                              )
                               : 0}
                             %
                           </Badge>
@@ -737,16 +751,53 @@ export default function TeamDialog({
               )}
           </div>
 
-          <FormFooter
-            validator={validator}
-            label="Team"
-            onCancel={onCancel}
-            isLoading={loading}
-            isEditing={isEditing}
-            hasPermission={hasPermission}
-          />
+          <div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onCancel}
+                disabled={loading}
+              >
+                Cancel
+              </Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-block">
+                      <Button
+                        type="submit"
+                        disabled={
+                          loading || !validator.isValid() || !hasPermission
+                        }
+                        data-testid="team-save-btn"
+                      >
+                        {loading
+                          ? "Saving..."
+                          : isEditing
+                            ? "Update Team"
+                            : "Create Team"}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  {(loading || !validator.isValid() || !hasPermission) && (
+                    <TooltipContent>
+                      <p>
+                        {!hasPermission
+                          ? "You don't have permission to perform this action"
+                          : loading
+                            ? "Saving..."
+                            : validator.getFirstError() ||
+                            "Please fix validation errors"}
+                      </p>
+                    </TooltipContent>
+                  )}
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+          </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
