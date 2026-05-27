@@ -216,23 +216,6 @@ func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.Ch
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
-// ExecuteToolCall executes a single tool call and returns the result.
-// This is the primary tool executor and is used by both Chat Completions and Responses APIs.
-//
-// The method accepts an MCP request containing either a ChatAssistantMessageToolCall or
-// ResponsesToolMessage, and returns the appropriate result format based on the request type.
-//
-// Parameters:
-//   - ctx: Context for the tool execution
-//   - request: The MCP request containing the tool call (ChatAssistantMessageToolCall or ResponsesToolMessage)
-//
-// Returns:
-//   - *schemas.BifrostMCPResponse: The result response containing tool execution output (ChatMessage or ResponsesMessage)
-//   - error: Any error that occurred during tool execution
-func (m *MCPManager) ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-	return m.toolsManager.ExecuteTool(ctx, request)
-}
-
 // UpdateToolManagerConfig updates the configuration for the tool manager.
 // This allows runtime updates to settings like execution timeout and max agent depth.
 //

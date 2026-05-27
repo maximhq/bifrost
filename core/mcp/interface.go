@@ -9,8 +9,8 @@ import (
 )
 
 // MCPManagerInterface defines the interface for MCP management functionality.
-// This interface allows different implementations (OSS and Enterprise) to be used
-// interchangeably in the Bifrost core.
+// This interface allows different implementations to be used interchangeably
+// in the Bifrost core.
 type MCPManagerInterface interface {
 	// Tool Operations
 	// AddToolsToRequest parses available MCP tools and adds them to the request
@@ -18,9 +18,6 @@ type MCPManagerInterface interface {
 
 	// GetAvailableTools returns all available MCP tools for the given context
 	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
-
-	// ExecuteToolCall executes a single tool call and returns the result
-	ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
 	// UpdateToolManagerConfig updates the configuration for the tool manager.
 	// DisableAutoToolInject in the config controls auto injection — pass the

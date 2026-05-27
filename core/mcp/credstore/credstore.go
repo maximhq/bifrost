@@ -80,15 +80,20 @@ func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) b
 }
 
 // resolverFor returns the resolver matching config.AuthType, or an error if
-// the type is unknown / config is nil. The DB layer defaults AuthType to
-// 'headers' (see TableMCPClient.AuthType default), so this should only fire
-// on programmatically-constructed configs that bypass persistence — a sign
-// of a real configuration bug worth surfacing.
+// the type is truly unknown / config is nil. Empty AuthType is normalized to
+// MCPAuthTypeHeaders — matching the DB column default
+// (TableMCPClient.AuthType default 'headers') and clientmanager.UpdateClient's
+// long-standing normalization. Programmatically-constructed configs that
+// leave AuthType blank therefore behave as plain "headers" auth.
 func (s *CredStore) resolverFor(config *schemas.MCPClientConfig) (resolver, error) {
 	if config == nil {
 		return nil, fmt.Errorf("MCP client config is nil")
 	}
-	if r, ok := s.resolvers[config.AuthType]; ok {
+	authType := config.AuthType
+	if authType == "" {
+		authType = schemas.MCPAuthTypeHeaders
+	}
+	if r, ok := s.resolvers[authType]; ok {
 		return r, nil
 	}
 	return nil, fmt.Errorf("unsupported MCP auth type %q for client %q", config.AuthType, config.Name)
