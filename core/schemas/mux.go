@@ -986,11 +986,12 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
-			TextTokens:        cu.PromptTokensDetails.TextTokens,
-			AudioTokens:       cu.PromptTokensDetails.AudioTokens,
-			ImageTokens:       cu.PromptTokensDetails.ImageTokens,
-			CachedReadTokens:  cu.PromptTokensDetails.CachedReadTokens,
-			CachedWriteTokens: cu.PromptTokensDetails.CachedWriteTokens,
+			TextTokens:              cu.PromptTokensDetails.TextTokens,
+			AudioTokens:             cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:             cu.PromptTokensDetails.ImageTokens,
+			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
+			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
+			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -1022,11 +1023,12 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:        ru.InputTokensDetails.TextTokens,
-			AudioTokens:       ru.InputTokensDetails.AudioTokens,
-			ImageTokens:       ru.InputTokensDetails.ImageTokens,
-			CachedReadTokens:  ru.InputTokensDetails.CachedReadTokens,
-			CachedWriteTokens: ru.InputTokensDetails.CachedWriteTokens,
+			TextTokens:              ru.InputTokensDetails.TextTokens,
+			AudioTokens:             ru.InputTokensDetails.AudioTokens,
+			ImageTokens:             ru.InputTokensDetails.ImageTokens,
+			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
+			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
+			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
