@@ -178,6 +178,9 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "per-user headers credential provider is not configured")
 		return
 	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+	defer cancel()
+
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(flowID) == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid flow id")
@@ -236,7 +239,7 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(ctx, config, filtered); verifyErr != nil {
+	if _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
 	}

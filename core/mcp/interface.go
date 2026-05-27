@@ -55,7 +55,7 @@ type MCPManagerInterface interface {
 	GetClients() []schemas.MCPClientState
 
 	// AddClient adds a new MCP client with the given configuration
-	AddClient(config *schemas.MCPClientConfig) error
+	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
