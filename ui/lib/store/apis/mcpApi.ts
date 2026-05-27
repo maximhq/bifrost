@@ -2,7 +2,6 @@ import {
 	CreateMCPClientRequest,
 	GetMCPClientsParams,
 	GetMCPClientsResponse,
-	MCPClient,
 	OAuthFlowResponse,
 	OAuthStatusResponse,
 	UpdateMCPClientRequest,
@@ -75,6 +74,7 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.name !== undefined) draft.clients[index].config.name = data.name;
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
+									if (data.per_user_header_keys !== undefined) draft.clients[index].config.per_user_header_keys = data.per_user_header_keys;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
