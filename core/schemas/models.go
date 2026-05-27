@@ -139,7 +139,7 @@ type Model struct {
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
 	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
-	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
+	Alias               *string            `json:"alias,omitempty"`           // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
 	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`
@@ -152,6 +152,9 @@ type Model struct {
 	DefaultParameters   *DefaultParameters `json:"default_parameters,omitempty"`
 	HuggingFaceID       *string            `json:"hugging_face_id,omitempty"`
 	Description         *string            `json:"description,omitempty"`
+
+	// Attributes holds additional metadata from the model catalog (governance_model_catalog).
+	Attributes map[string]string `json:"attributes,omitempty"`
 
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`

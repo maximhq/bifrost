@@ -2070,6 +2070,44 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
+// GetAllModelCatalogEntries retrieves every per-model catalog entry. The catalog
+// is small (one row per known model) so callers pull the full set and key by
+// (model, provider) in memory rather than issuing per-lookup queries.
+func (s *RDBConfigStore) GetAllModelCatalogEntries(ctx context.Context) ([]tables.TableModelCatalogEntry, error) {
+	var entries []tables.TableModelCatalogEntry
+	if err := s.DB().WithContext(ctx).Find(&entries).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return entries, nil
+}
+
+// UpsertModelCatalogEntry creates or replaces a catalog entry keyed by
+// (model, provider). UpdateAll matches the pattern used by UpsertModelPrices
+// so that re-syncing from the remote datasheet idempotently refreshes content.
+func (s *RDBConfigStore) UpsertModelCatalogEntry(ctx context.Context, entry *tables.TableModelCatalogEntry, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	if err := txDB.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}},
+		UpdateAll: true,
+	}).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// DeleteModelCatalogEntry removes a single catalog entry by primary key.
+func (s *RDBConfigStore) DeleteModelCatalogEntry(ctx context.Context, id uint) error {
+	if err := s.DB().WithContext(ctx).Delete(&tables.TableModelCatalogEntry{}, id).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	var overrides []tables.TablePricingOverride
 	q := s.DB().WithContext(ctx).Model(&tables.TablePricingOverride{})

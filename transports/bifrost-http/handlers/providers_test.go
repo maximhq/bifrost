@@ -50,6 +50,18 @@ func (m *mockModelsManager) GetUnfilteredModelsForProvider(provider schemas.Mode
 	return result
 }
 
+func (m *mockModelsManager) UpsertModelCatalogEntries(_ context.Context, _ []configstoreTables.TableModelCatalogEntry) error {
+	return nil
+}
+
+func (m *mockModelsManager) DeleteModelCatalogEntry(_ context.Context, _ uint) error {
+	return nil
+}
+
+func (m *mockModelsManager) ReloadModelCatalog(_ context.Context) error {
+	return nil
+}
+
 // providerHandlerForTest builds a handler with fixed provider config and model sets.
 func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{

@@ -1016,6 +1016,19 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
+// Model catalog
+func (m *MockConfigStore) GetAllModelCatalogEntries(ctx context.Context) ([]tables.TableModelCatalogEntry, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertModelCatalogEntry(ctx context.Context, entry *tables.TableModelCatalogEntry, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteModelCatalogEntry(ctx context.Context, id uint) error {
+	return nil
+}
+
 func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	return []tables.TablePricingOverride{}, nil
 }

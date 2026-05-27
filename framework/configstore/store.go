@@ -271,6 +271,11 @@ type ConfigStore interface {
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
+	// Model catalog CRUD
+	GetAllModelCatalogEntries(ctx context.Context) ([]tables.TableModelCatalogEntry, error)
+	UpsertModelCatalogEntry(ctx context.Context, entry *tables.TableModelCatalogEntry, tx ...*gorm.DB) error
+	DeleteModelCatalogEntry(ctx context.Context, id uint) error
+
 	// Governance pricing overrides CRUD
 	GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error)
 	GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error)

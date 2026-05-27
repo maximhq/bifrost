@@ -877,6 +877,22 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 					resp.Data[i].Pricing = pricing
 				}
 			}
+
+			// Attributes from governance_model_catalog. The catalog stores
+			// editorial fields (description, etc.) decoupled from pricing so
+			// they survive the pricing sync's bulk overwrite.
+			if cat := h.config.ModelCatalog.GetModelCatalogEntry(modelName, provider); cat != nil {
+				if resp.Data[i].Attributes == nil && len(cat.Attributes) > 0 {
+					resp.Data[i].Attributes = cat.Attributes
+				}
+			}
+
+			// Supported parameters from the model-parameters catalog.
+			if resp.Data[i].SupportedParameters == nil {
+				if params := h.config.ModelCatalog.GetSupportedParameters(modelName); len(params) > 0 {
+					resp.Data[i].SupportedParameters = params
+				}
+			}
 		}
 	}
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {

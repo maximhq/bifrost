@@ -39,6 +39,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"gorm.io/gorm"
 )
 
 // Constants
@@ -73,6 +74,12 @@ type ServerCallbacks interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// Model catalog (per-model attributes) callbacks. Enterprise wraps these
+	// to broadcast EntityTypeModelCatalog/ActionReloadFromDB to peers so the
+	// cluster converges on the latest table state without a URL re-fetch.
+	UpsertModelCatalogEntries(ctx context.Context, entries []tables.TableModelCatalogEntry) error
+	DeleteModelCatalogEntry(ctx context.Context, id uint) error
+	ReloadModelCatalog(ctx context.Context) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -943,6 +950,55 @@ func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string
 	}
 	s.Config.ModelCatalog.DeletePricingOverride(id)
 	return nil
+}
+
+// UpsertModelCatalogEntries persists a batch of catalog entries inside a
+// single transaction so a failure on any row rolls back the rest, then
+// reloads the in-memory cache once after commit. Enterprise overrides this
+// to also broadcast a peer reload after the local write succeeds.
+func (s *BifrostHTTPServer) UpsertModelCatalogEntries(ctx context.Context, entries []tables.TableModelCatalogEntry) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	if s.Config.ConfigStore == nil {
+		return fmt.Errorf("model catalog requires a config store")
+	}
+	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for i := range entries {
+			entry := entries[i]
+			if err := s.Config.ConfigStore.UpsertModelCatalogEntry(ctx, &entry, tx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upsert catalog entries: %w", err)
+	}
+	if err := s.Config.ModelCatalog.ReloadCatalog(ctx); err != nil {
+		return fmt.Errorf("failed to reload catalog cache: %w", err)
+	}
+	return nil
+}
+
+// DeleteModelCatalogEntry removes a single catalog row by primary key. The
+// ModelCatalog wrapper handles the DB delete and the cache reload.
+func (s *BifrostHTTPServer) DeleteModelCatalogEntry(ctx context.Context, id uint) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	return s.Config.ModelCatalog.DeleteModelCatalogEntry(ctx, id)
+}
+
+// ReloadModelCatalog refreshes the in-memory catalog cache from the database.
+// Peer nodes call this on receipt of an EntityTypeModelCatalog/ActionReloadFromDB
+// gossip message — the originator already committed the row, peers just need
+// to converge their caches.
+func (s *BifrostHTTPServer) ReloadModelCatalog(ctx context.Context) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	return s.Config.ModelCatalog.ReloadCatalog(ctx)
 }
 
 // ReloadProxyConfig reloads the proxy configuration

@@ -24,11 +24,21 @@ export interface ModelResponse {
 	name: string;
 	provider: string;
 	accessible_by_keys?: string[];
+	attributes?: Record<string, string>;
 }
 
 export interface ListModelsResponse {
 	models: ModelResponse[];
 	total: number;
+}
+
+// Per-model attribute blob from governance_model_catalog. (model, provider) is
+// the natural key; the table also exposes a numeric id used by DELETE.
+export interface ModelCatalogEntry {
+	id: number;
+	model: string;
+	provider: string;
+	attributes?: Record<string, string>;
 }
 
 export interface GetModelsRequest {
@@ -346,6 +356,28 @@ export const providersApi = baseApi.injectEndpoints({
 				return { data: result.data as ModelDatasheetResponse };
 			},
 		}),
+
+		// Model catalog CRUD. Backs the per-model attribute editor; entries
+		// are decoupled from pricing so they survive the pricing sync cycle.
+		getModelCatalog: builder.query<ModelCatalogEntry[], void>({
+			query: () => "/model-catalog",
+			providesTags: ["ModelCatalog"],
+		}),
+		upsertModelCatalogEntries: builder.mutation<ModelCatalogEntry[], ModelCatalogEntry[]>({
+			query: (entries) => ({
+				url: "/model-catalog",
+				method: "PUT",
+				body: entries,
+			}),
+			invalidatesTags: ["ModelCatalog", "Models"],
+		}),
+		deleteModelCatalogEntry: builder.mutation<void, number>({
+			query: (id) => ({
+				url: `/model-catalog/${id}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["ModelCatalog", "Models"],
+		}),
 	}),
 });
 
@@ -372,4 +404,8 @@ export const {
 	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
+	useGetModelCatalogQuery,
+	useLazyGetModelCatalogQuery,
+	useUpsertModelCatalogEntriesMutation,
+	useDeleteModelCatalogEntryMutation,
 } = providersApi;

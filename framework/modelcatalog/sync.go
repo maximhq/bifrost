@@ -170,6 +170,30 @@ func (mc *ModelCatalog) loadPricingIntoMemoryFromURL(ctx context.Context) error 
 	return nil
 }
 
+// loadCatalogFromDatabase loads catalog entries from the database into the
+// in-memory map. Companion to loadPricingFromDatabase — called on init,
+// after pricing sync, and on ReloadFromDB.
+func (mc *ModelCatalog) loadCatalogFromDatabase(ctx context.Context) error {
+	if mc.configStore == nil {
+		return nil
+	}
+
+	entries, err := mc.configStore.GetAllModelCatalogEntries(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load model catalog from database: %w", err)
+	}
+
+	mc.catalogMu.Lock()
+	defer mc.catalogMu.Unlock()
+	mc.modelCatalogData = make(map[string]*configstoreTables.TableModelCatalogEntry, len(entries))
+	for i := range entries {
+		e := entries[i]
+		mc.modelCatalogData[catalogKey(e.Model, e.Provider)] = &e
+	}
+	mc.logger.Debug("loaded %d model catalog entries from database", len(mc.modelCatalogData))
+	return nil
+}
+
 // loadPricingFromDatabase loads pricing data from database into memory cache
 func (mc *ModelCatalog) loadPricingFromDatabase(ctx context.Context) error {
 	if mc.configStore == nil {

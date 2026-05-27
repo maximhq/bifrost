@@ -55,6 +55,13 @@ type ModelCatalog struct {
 	// Values are parameter names the model accepts (e.g., "temperature", "top_p", "tools")
 	supportedParams map[string][]string
 
+	// modelCatalogData holds per-(model, provider) attribute blobs surfaced
+	// from governance_model_catalog. The key is "<model>|<provider>" using the
+	// raw datasheet provider string (not the normalized one) — matches the
+	// upsert key. catalogMu guards reads and writes of the map.
+	modelCatalogData map[string]*configstoreTables.TableModelCatalogEntry
+	catalogMu        sync.RWMutex
+
 	// Background sync worker
 	syncTicker *time.Ticker
 	done       chan struct{}
@@ -96,6 +103,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		baseModelIndex:         make(map[string]string),
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
+		modelCatalogData:       make(map[string]*configstoreTables.TableModelCatalogEntry),
 		done:                   make(chan struct{}),
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
@@ -210,6 +218,13 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		if paramsErr != nil {
 			return nil, paramsErr
 		}
+
+		// Catalog load is sequenced after pricing/params: pricing sync may
+		// upsert catalog rows from PricingEntry.Description, and we want the
+		// in-memory map to observe those before the catalog is queried.
+		if err := mc.loadCatalogFromDatabase(ctx); err != nil {
+			return nil, fmt.Errorf("failed to load model catalog: %w", err)
+		}
 	} else {
 		// Load pricing and model parameters from URL into memory (no config store)
 		if err := mc.loadPricingIntoMemoryFromURL(ctx); err != nil {
@@ -254,8 +269,10 @@ func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
 		return err
 	}
 	mc.populateModelPoolFromPricingData()
-	_, err := mc.loadModelParametersFromDatabase(ctx)
-	return err
+	if _, err := mc.loadModelParametersFromDatabase(ctx); err != nil {
+		return err
+	}
+	return mc.loadCatalogFromDatabase(ctx)
 }
 
 // UpdateSyncConfig updates the pricing URL and sync interval, restarts the background sync worker,
@@ -465,6 +482,70 @@ func (mc *ModelCatalog) Cleanup() error {
 	return nil
 }
 
+// GetModelCatalogEntry returns the cached catalog entry for (model, provider),
+// or nil when no entry exists. The provider is matched against the raw upsert
+// key used when the entry was written (matches schemas.ModelProvider casing).
+func (mc *ModelCatalog) GetModelCatalogEntry(model string, provider schemas.ModelProvider) *configstoreTables.TableModelCatalogEntry {
+	mc.catalogMu.RLock()
+	defer mc.catalogMu.RUnlock()
+	return mc.modelCatalogData[catalogKey(model, string(provider))]
+}
+
+// UpsertModelCatalogEntry persists an entry and refreshes the in-memory cache.
+// Safe to call from both the management CRUD API and the pricing-sync path.
+func (mc *ModelCatalog) UpsertModelCatalogEntry(ctx context.Context, entry *configstoreTables.TableModelCatalogEntry) error {
+	if mc.configStore == nil {
+		// In-memory-only deployment: still maintain the cache so reads return
+		// the value the caller just wrote.
+		mc.catalogMu.Lock()
+		mc.modelCatalogData[catalogKey(entry.Model, entry.Provider)] = entry
+		mc.catalogMu.Unlock()
+		return nil
+	}
+	if err := mc.configStore.UpsertModelCatalogEntry(ctx, entry); err != nil {
+		return err
+	}
+	return mc.loadCatalogFromDatabase(ctx)
+}
+
+// DeleteModelCatalogEntry removes an entry by primary key and reloads the cache.
+func (mc *ModelCatalog) DeleteModelCatalogEntry(ctx context.Context, id uint) error {
+	if mc.configStore == nil {
+		return nil
+	}
+	if err := mc.configStore.DeleteModelCatalogEntry(ctx, id); err != nil {
+		return err
+	}
+	return mc.loadCatalogFromDatabase(ctx)
+}
+
+// ReloadCatalog re-reads the catalog table into the in-memory cache
+func (mc *ModelCatalog) ReloadCatalog(ctx context.Context) error {
+	return mc.loadCatalogFromDatabase(ctx)
+}
+
+// GetAllModelCatalogEntries returns every catalog row. Reads through the
+// configstore so callers always see committed state.
+func (mc *ModelCatalog) GetAllModelCatalogEntries(ctx context.Context) ([]configstoreTables.TableModelCatalogEntry, error) {
+	if mc.configStore == nil {
+		mc.catalogMu.RLock()
+		defer mc.catalogMu.RUnlock()
+		out := make([]configstoreTables.TableModelCatalogEntry, 0, len(mc.modelCatalogData))
+		for _, e := range mc.modelCatalogData {
+			out = append(out, *e)
+		}
+		return out, nil
+	}
+	return mc.configStore.GetAllModelCatalogEntries(ctx)
+}
+
+// catalogKey returns the lookup key used by modelCatalogData. Provider is the
+// raw datasheet/store value (not normalized) so upserts and reads agree on the
+// same key.
+func catalogKey(model, provider string) string {
+	return model + "|" + provider
+}
+
 // NewTestCatalog creates a minimal ModelCatalog for testing purposes.
 // It does not start background sync workers or connect to external services.
 func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
@@ -478,6 +559,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		supportedResponseTypes: make(map[string][]string),
 		supportedParams:        make(map[string][]string),
+		modelCatalogData:       make(map[string]*configstoreTables.TableModelCatalogEntry),
 		done:                   make(chan struct{}),
 	}
 }

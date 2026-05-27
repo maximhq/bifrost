@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,11 @@ type ModelsManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+	// Model catalog (per-model attributes) — funneled through the manager so
+	// enterprise can wrap these with cluster broadcasts.
+	UpsertModelCatalogEntries(ctx context.Context, entries []tables.TableModelCatalogEntry) error
+	DeleteModelCatalogEntry(ctx context.Context, id uint) error
+	ReloadModelCatalog(ctx context.Context) error
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -128,6 +134,9 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.GET("/api/model-catalog", lib.ChainMiddlewares(h.listModelCatalog, middlewares...))
+	r.PUT("/api/model-catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
+	r.DELETE("/api/model-catalog/{id}", lib.ChainMiddlewares(h.deleteModelCatalogEntry, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -601,6 +610,7 @@ type ModelDetailsResponse struct {
 	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
 	Architecture     *schemas.Architecture `json:"architecture,omitempty"`
+	Attributes       map[string]string     `json:"attributes,omitempty"`
 	AccessibleByKeys []string              `json:"accessible_by_keys,omitempty"`
 }
 
@@ -712,6 +722,9 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
 			details.Architecture = capabilities.Architecture
+		}
+		if cat := modelCatalog.GetModelCatalogEntry(model.Name, model.Provider); cat != nil && len(cat.Attributes) > 0 {
+			details.Attributes = cat.Attributes
 		}
 		responseModels = append(responseModels, details)
 	}
@@ -1192,4 +1205,91 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 		}
 	}
 	return nil
+}
+
+// listModelCatalog handles GET /api/model-catalog - List all per-model
+// catalog entries (governance_model_catalog). The catalog stores editorial
+// attributes (e.g. "description") that are decoupled from pricing sync.
+func (h *ProviderHandler) listModelCatalog(ctx *fasthttp.RequestCtx) {
+	mc := h.inMemoryStore.ModelCatalog
+	if mc == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+		return
+	}
+	entries, err := mc.GetAllModelCatalogEntries(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list model catalog: %v", err))
+		return
+	}
+	if entries == nil {
+		entries = []tables.TableModelCatalogEntry{}
+	}
+	SendJSON(ctx, entries)
+}
+
+// upsertModelCatalogEntries handles PUT /api/model-catalog - Upsert a list
+// of catalog entries. The body is a JSON array of TableModelCatalogEntry
+// objects; (model, provider) is the natural key.
+//
+// The transactional write + cache reload live on the server callback so the
+// enterprise build can wrap them to broadcast peer reloads after the local
+// write succeeds. This handler keeps only the validation and serialization.
+func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
+	mc := h.inMemoryStore.ModelCatalog
+	if mc == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+		return
+	}
+	var payload []tables.TableModelCatalogEntry
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		return
+	}
+	for i := range payload {
+		if strings.TrimSpace(payload[i].Model) == "" || strings.TrimSpace(payload[i].Provider) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "model and provider are required for every catalog entry")
+			return
+		}
+	}
+
+	if err := h.modelsManager.UpsertModelCatalogEntries(ctx, payload); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+
+	entries, err := mc.GetAllModelCatalogEntries(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list model catalog: %v", err))
+		return
+	}
+	if entries == nil {
+		entries = []tables.TableModelCatalogEntry{}
+	}
+	SendJSON(ctx, entries)
+}
+
+// deleteModelCatalogEntry handles DELETE /api/model-catalog/{id} - Delete a
+// single catalog entry by primary key. The actual delete is delegated to the
+// server callback so the enterprise build can broadcast the change to peers.
+func (h *ProviderHandler) deleteModelCatalogEntry(ctx *fasthttp.RequestCtx) {
+	idVal := ctx.UserValue("id")
+	if idVal == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
+		return
+	}
+	idStr, ok := idVal.(string)
+	if !ok {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid id")
+		return
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid id: %v", err))
+		return
+	}
+	if err := h.modelsManager.DeleteModelCatalogEntry(ctx, uint(id)); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete catalog entry: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

@@ -1711,6 +1711,32 @@
     },
     "feature_flags": {
       "$ref": "#/$defs/feature_flags_config"
+    },
+    "model_catalog": {
+      "type": "array",
+      "description": "Per-model editorial attributes (e.g. description) seeded into the governance_model_catalog table at boot. Coexists with the /api/model-catalog management API: both write to the same table and (model, provider) is the natural key — last write wins.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Model name (e.g. \"gpt-4o\")."
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Provider key (e.g. \"openai\")."
+          },
+          "attributes": {
+            "type": "object",
+            "description": "Arbitrary key-value attributes. Well-known key: \"description\".",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "required": ["model", "provider"],
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false,

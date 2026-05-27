@@ -161,6 +161,20 @@ type ConfigData struct {
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+
+	// ModelCatalog seeds editorial per-model attributes into the
+	// governance_model_catalog table at boot. Mirrored by the management
+	// CRUD API at /api/model-catalog — both share the same table, and
+	// (model, provider) is the natural key (last write wins).
+	ModelCatalog []ModelCatalogEntryConfig `json:"model_catalog,omitempty"`
+}
+
+// ModelCatalogEntryConfig is the config.json shape for a single
+// governance_model_catalog row.
+type ModelCatalogEntryConfig struct {
+	Model      string            `json:"model"`
+	Provider   string            `json:"provider"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
@@ -239,6 +253,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		ModelCatalog      []ModelCatalogEntryConfig             `json:"model_catalog,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -257,6 +272,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
 	cd.FeatureFlags = temp.FeatureFlags
+	cd.ModelCatalog = temp.ModelCatalog
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -3273,6 +3289,36 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	if config.ModelCatalog != nil && config.GovernanceConfig != nil && len(config.GovernanceConfig.PricingOverrides) > 0 {
 		if err := config.ModelCatalog.SetPricingOverrides(config.GovernanceConfig.PricingOverrides); err != nil {
 			logger.Warn("failed to set pricing overrides from config file: %v", err)
+		}
+	}
+
+	// Apply config.json-sourced model catalog entries. Coexists with the
+	// management API: both write to the same table, last-write-wins on
+	// (model, provider). Skipped when no entries are declared so we don't
+	// run unnecessary upserts on every boot.
+	if config.ModelCatalog != nil && len(configData.ModelCatalog) > 0 {
+		applyModelCatalogFromConfig(ctx, config, configData.ModelCatalog)
+	}
+}
+
+// applyModelCatalogFromConfig upserts each ModelCatalogEntryConfig declared
+// in config.json into the model catalog. Errors are logged and continue
+// rather than fail boot — a misformatted entry should not block the gateway.
+func applyModelCatalogFromConfig(ctx context.Context, config *Config, entries []ModelCatalogEntryConfig) {
+	for _, e := range entries {
+		model := strings.TrimSpace(e.Model)
+		provider := strings.TrimSpace(e.Provider)
+		if model == "" || provider == "" {
+			logger.Warn("skipping model_catalog entry with empty model or provider")
+			continue
+		}
+		entry := &configstoreTables.TableModelCatalogEntry{
+			Model:      model,
+			Provider:   provider,
+			Attributes: e.Attributes,
+		}
+		if err := config.ModelCatalog.UpsertModelCatalogEntry(ctx, entry); err != nil {
+			logger.Warn("failed to upsert model_catalog entry %s/%s from config.json: %v", provider, model, err)
 		}
 	}
 }

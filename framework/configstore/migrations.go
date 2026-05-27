@@ -813,6 +813,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelCatalogTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8891,6 +8894,34 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelCatalogTable creates the governance_model_catalog table
+// holding per-model attribute blobs (e.g. {"description": "..."}). The table
+// is intentionally decoupled from governance_model_pricing so the pricing
+// sync's bulk delete-and-recreate cycle never wipes editorial content.
+func migrationAddModelCatalogTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_catalog_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.AutoMigrate(&tables.TableModelCatalogEntry{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableModelCatalogEntry{}) {
+				if err := mg.DropTable(&tables.TableModelCatalogEntry{}); err != nil {
+					return fmt.Errorf("drop governance_model_catalog: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_catalog_table migration: %s", err.Error())
 	}
 	return nil
 }
