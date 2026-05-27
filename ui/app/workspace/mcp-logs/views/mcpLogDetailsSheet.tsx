@@ -25,9 +25,10 @@ import { useGetMCPLogByIdQuery } from "@/lib/store";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { addMilliseconds, format, isValid } from "date-fns";
-import { ChevronDown, ChevronUp, Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
+import { Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 
 interface MCPLogDetailSheetProps {
@@ -86,8 +87,12 @@ export function MCPLogDetailSheet({
 	});
 
 	// Keyboard navigation: arrow up/down to navigate between logs
-	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
-	useHotkeys("down", () => onNavigate?.("next"), { enabled: open && hasNext, preventDefault: true });
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
+	});
 
 	if (!log) return null;
 
@@ -119,30 +124,14 @@ export function MCPLogDetailSheet({
 							</Badge>
 						</SheetTitle>
 					</div>
-					<div className="flex items-center">
-						<Button
-							variant="ghost"
-							className="size-8"
-							disabled={!hasPrev}
-							onClick={() => onNavigate?.("prev")}
-							aria-label="Previous log"
-							data-testid="mcp-log-nav-prev"
-							type="button"
-						>
-							<ChevronUp className="size-4" />
-						</Button>
-						<Button
-							variant="ghost"
-							className="size-8"
-							disabled={!hasNext}
-							onClick={() => onNavigate?.("next")}
-							aria-label="Next log"
-							data-testid="mcp-log-nav-next"
-							type="button"
-						>
-							<ChevronDown className="size-4" />
-						</Button>
-					</div>
+					<SheetNavigationButtons
+							hasPrev={hasPrev}
+							hasNext={hasNext}
+							onNavigate={(dir) => onNavigate?.(dir)}
+							prevKeys={prevKeys}
+							nextKeys={nextKeys}
+							entityLabel="log"
+						/>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 						<DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
 							<DropdownMenuTrigger asChild>
