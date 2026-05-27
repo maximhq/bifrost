@@ -39,7 +39,7 @@ func (a *AgentModeExecutor) ExecuteAgentForChatRequest(
 	initialResponse *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
@@ -92,7 +92,7 @@ func (a *AgentModeExecutor) ExecuteAgentForResponsesRequest(
 	initialResponse *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create adapter for Responses API
@@ -142,7 +142,7 @@ func (a *AgentModeExecutor) executeAgent(
 	maxAgentDepth int,
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
 	// Get initial response from adapter

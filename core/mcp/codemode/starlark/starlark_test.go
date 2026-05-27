@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/mark3labs/mcp-go/client"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
@@ -44,6 +45,9 @@ func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 }
 
 func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
+func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	return nil, func() {}, nil
+}
 
 func TestStarlarkToGo(t *testing.T) {
 	t.Run("Convert None", func(t *testing.T) {
