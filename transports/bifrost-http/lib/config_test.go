@@ -1318,7 +1318,9 @@ func (m *MockConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *
 func (m *MockConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
 	return nil
 }
-func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error { return nil }
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
+	return nil
+}
 func (m *MockConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
 	return nil, nil
 }

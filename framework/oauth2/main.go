@@ -921,7 +921,6 @@ func generateSecureRandomString(length int) (string, error) {
 // The function errors out cleanly on any misconfig (missing identity, unknown
 // mode, missing template config) — no fallbacks, no generated identities.
 func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
-
 	// 1. Load template OAuth config.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil {

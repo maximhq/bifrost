@@ -16,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { IS_ENTERPRISE } from "@/lib/constants/config";
 import {
   getErrorMessage,
   useGetCoreConfigQuery,
@@ -25,7 +24,6 @@ import {
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { EnvVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -41,13 +39,9 @@ export default function MCPView() {
     RbacOperation.Update,
   );
   const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
-  const { data: authType } = useGetAuthTypeQuery(undefined, {
-    skip: !IS_ENTERPRISE,
-  });
   const config = bifrostConfig?.client_config;
   const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
   const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
-  const isSCIMEnabled = IS_ENTERPRISE && authType?.type === "sso";
 
   const [localValues, setLocalValues] = useState<{
     mcp_agent_depth: string;
@@ -292,32 +286,30 @@ export default function MCPView() {
           />
         </div>
 
-        {isSCIMEnabled && (
-          /* Temp Token Auth */
-          <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
-            <div className="space-y-0.5">
-              <label
-                htmlFor="mcp-enable-temp-token-auth"
-                className="text-sm font-medium"
-              >
-                Allow Temp Token Auth Links
-              </label>
-              <p className="text-muted-foreground text-sm">
-                When enabled, per-user MCP OAuth links can include a short-lived
-                scoped token so someone without an active Bifrost dashboard
-                session can complete the flow. Keep disabled to require normal
-                dashboard authentication.
-              </p>
-            </div>
-            <Switch
-              id="mcp-enable-temp-token-auth"
-              checked={localConfig.mcp_enable_temp_token_auth ?? false}
-              onCheckedChange={handleTempTokenAuthChange}
-              disabled={!hasSettingsUpdateAccess}
-              data-testid="mcp-enable-temp-token-auth-switch"
-            />
+        {/* Temp Token Auth */}
+        <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+          <div className="space-y-0.5">
+            <label
+              htmlFor="mcp-enable-temp-token-auth"
+              className="text-sm font-medium"
+            >
+              Allow Temp Token Auth Links
+            </label>
+            <p className="text-muted-foreground text-sm">
+              When enabled, per-user MCP OAuth links can include a short-lived
+              scoped token so someone without an active Bifrost dashboard
+              session can complete the flow. Keep disabled to require normal
+              dashboard authentication.
+            </p>
           </div>
-        )}
+          <Switch
+            id="mcp-enable-temp-token-auth"
+            checked={localConfig.mcp_enable_temp_token_auth ?? false}
+            onCheckedChange={handleTempTokenAuthChange}
+            disabled={!hasSettingsUpdateAccess}
+            data-testid="mcp-enable-temp-token-auth-switch"
+          />
+        </div>
 
         {/* Code Mode Binding Level */}
         <div className="space-y-4 rounded-sm border p-4">
