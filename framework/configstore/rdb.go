@@ -1155,6 +1155,33 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		}
 	}
 
+	// Clean up model configs scoped to this provider
+	// Delete by snapshotted IDs rather than a second WHERE provider=? pass to avoid a race
+	// where a concurrent CreateModelConfig lands between the snapshot and the delete, leaving
+	// its owned budget/rate-limit rows dangling.
+	var providerModelConfigs []tables.TableModelConfig
+	if err := txDB.WithContext(ctx).Where("provider = ?", string(provider)).Find(&providerModelConfigs).Error; err != nil {
+		return err
+	}
+	for _, mc := range providerModelConfigs {
+		if mc.BudgetID != nil {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *mc.BudgetID).Error; err != nil {
+				return err
+			}
+		}
+		if mc.RateLimitID != nil {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *mc.RateLimitID).Error; err != nil {
+				return err
+			}
+		}
+	}
+	if len(providerModelConfigs) > 0 {
+		var mcIDs []string
+		if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -4220,6 +4247,18 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
 	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
+// GetProviderGovernanceModelConfigs retrieves the wildcard "all models on a provider" configs
+func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var modelConfigs []tables.TableModelConfig
+	if err := s.DB().WithContext(ctx).
+		Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
+		Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
 	return modelConfigs, nil
