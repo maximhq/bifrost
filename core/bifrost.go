@@ -3641,12 +3641,12 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //
 // Example:
 //
-//	err := bifrost.AddMCPClient(schemas.MCPClientConfig{
+//	err := bifrost.AddMCPClient(ctx, &schemas.MCPClientConfig{
 //	    Name: "my-mcp-client",
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
-func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
+func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
 		bifrost.mcpInitOnce.Do(func() {
@@ -3674,7 +3674,7 @@ func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("MCP manager is not initialized")
 	}
 
-	return bifrost.MCPManager.AddClient(config)
+	return bifrost.MCPManager.AddClient(ctx, config)
 }
 
 // RemoveMCPClient removes an MCP client from the Bifrost instance.

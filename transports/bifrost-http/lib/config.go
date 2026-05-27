@@ -4760,7 +4760,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	// Track new environment variables
 	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, clientConfig)
 	// Config with processed env vars
-	if err := c.client.AddMCPClient(clientConfig); err != nil {
+	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}

@@ -239,7 +239,7 @@ func (m *MCPManager) ReconnectClient(id string) error {
 
 	// Reconnect using the client's configuration
 	// Retry logic is handled internally by connectToMCPClient
-	if err := m.connectToMCPClient(config); err != nil {
+	if err := m.connectToMCPClient(m.ctx, config); err != nil {
 		return fmt.Errorf("failed to reconnect MCP client %s: %w", id, err)
 	}
 
@@ -256,7 +256,14 @@ func (m *MCPManager) ReconnectClient(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during client addition or connection
-func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
+//
+// AddClient adds a new MCP client using the provided context for
+// request-scoped connect hooks. Existing transport lifetimes still use the
+// manager context so persistent MCP connections are not tied to the caller.
+func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPClientConfig) error {
+	if requestCtx == nil {
+		requestCtx = m.ctx
+	}
 	if err := validateMCPClientConfig(config); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
@@ -349,7 +356,7 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 	}
 
 	// Connect using the copied config
-	if err := m.connectToMCPClient(configCopy); err != nil {
+	if err := m.connectToMCPClient(requestCtx, configCopy); err != nil {
 		// Clean up the failed entry — this is a user-initiated action (UI/API),
 		// so surface the error cleanly rather than retaining a ghost entry.
 		m.mu.Lock()
@@ -826,7 +833,7 @@ func (m *MCPManager) EnableClient(id string) error {
 	}
 	defer m.reconnectingClients.Delete(id)
 
-	if err := m.connectToMCPClient(configCopy); err != nil {
+	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// Connection failed — leave the entry as Disconnected so the health monitor can
 		// recover it, but only if the client has not been disabled in the meantime.
 		m.mu.Lock()
@@ -1028,7 +1035,7 @@ func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPCli
 	m.mu.RUnlock()
 
 	// connectToMCPClient will close the current connection and create a new clientMap entry.
-	if err := m.connectToMCPClient(&mergedConfig); err != nil {
+	if err := m.connectToMCPClient(m.ctx, &mergedConfig); err != nil {
 		m.mu.Lock()
 		if cs, exists := m.clientMap[id]; exists {
 			cs.ExecutionConfig = oldConfig
@@ -1162,7 +1169,10 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 // connectToMCPClient establishes a connection to an external MCP server and
 // registers its available tools with the manager. Uses exponential backoff
 // retry logic (5 retries, 1-30 seconds) for connection establishment.
-func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
+func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *schemas.MCPClientConfig) error {
+	if requestCtx == nil {
+		requestCtx = m.ctx
+	}
 	// First lock: Initialize or validate client entry
 	m.mu.Lock()
 
@@ -1261,10 +1271,9 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		connectReq.StdioArgs = append([]string(nil), config.StdioConfig.Args...)
 	}
 
-	// Fresh BifrostContext for the gate so it doesn't inherit any SkipPluginPipeline flag
-	// from the caller's request context. Connect runs as infrastructure, not as part of an
-	// in-flight LLM request.
-	gateCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
+	// Wrap the caller context so connection hooks can read request-scoped
+	// values, such as headers extracted by the HTTP transport.
+	gateCtx := schemas.NewBifrostContext(requestCtx, schemas.NoDeadline)
 
 	// To capture InitializeResult for the response, the op closure populates these.
 	var initResult *mcp.InitializeResult
