@@ -208,7 +208,7 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
 | `bifrost_active_requests` | Gauge | LLM requests currently in-flight (labeled by `method` only) |
 | `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
-| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by rate-limit failures (see below) <sup>v1.5.0-prerelease4+</sup> |
+| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 
 ### Default Labels
@@ -233,11 +233,17 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
 
-`bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a rate-limit failure causes the next retry to switch to a different key. It is **not** incremented for:
+`bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a per-key failure causes the next retry to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request:
 
-- terminal failures (no retry happens, including `max_retries = 0`),
-- same-key retries on transient network errors,
-- non-retryable failures.
+- `429 Too Many Requests` — this key is rate-limited; another may have capacity.
+- `401 Unauthorized` / `403 Forbidden` — bad / revoked key, or key lacks permission.
+- `402 Payment Required` — billing issue on this key's account.
+
+It is **not** incremented for:
+
+- terminal failures (no retry happens, including `max_retries = 0` or every key permanently dead),
+- same-key retries on transient 5xx / network errors,
+- non-retryable request-bound 4xx (400/404/422/...).
 
 Labels are attributed to the key that failed and triggered the rotation:
 
@@ -245,9 +251,9 @@ Labels are attributed to the key that failed and triggered the rotation:
 |-------|--------|-------------|
 | `provider` | e.g. `openai` | LLM provider |
 | `requested_model` | e.g. `gpt-4o` | Model as requested (before any alias resolution) |
-| `key_id` | UUID | The provider API key that hit a rate limit and was rotated away from |
+| `key_id` | UUID | The provider API key that failed and was rotated away from |
 | `key_name` | string | Human-readable name of the provider API key |
-| `fail_reason` | error type string | Provider error type that triggered the rotation (typically `rate_limit_error`) |
+| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error` (429), `authentication_error` (401/403), `billing_error` (402), or a provider-supplied error type for non-status-coded rate-limit messages |
 
 To inspect every attempted key on a failed request (including terminal failures that did not rotate), read the `attempt_trail` field on the corresponding log entry instead.
 

@@ -5,6 +5,7 @@ package bifrost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -5247,20 +5248,32 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 }
 
+// errAllKeysDead is returned by a keyProvider closure when every key in the configured pool
+// has been marked permanently dead via deadKeyIDs (or, for a fixed/sticky key, when that key
+// is itself dead). executeRequestWithRetries detects this via errors.Is and surfaces it as a
+// synthetic 502 upstream_credentials_exhausted, rather than bubbling the raw 401/403 which
+// would falsely suggest the *caller's* Bifrost API key is bad. Any other error from the
+// keyProvider (custom selector failure, etc.) is propagated unchanged.
+var errAllKeysDead = errors.New("all configured keys returned permanent per-key errors (401/402/403)")
+
 // executeRequestWithRetries is a generic function that handles common request processing logic.
 // It consolidates retry logic, backoff calculation, error handling, and key rotation.
 // It is not a bifrost method because interface methods in go cannot be generic.
 //
-// keyProvider, when non-nil, is called on the first attempt and again whenever a rate-limit error
-// triggers a key rotation. It receives the set of key IDs already used in the current rotation
-// cycle so it can exclude them; when the pool is exhausted the provider resets the set and starts
-// a fresh weighted round. Network errors (5xx) reuse the same key since they are transient server
-// issues rather than per-key capacity problems.
+// keyProvider, when non-nil, is called on the first attempt and again whenever a per-key error
+// triggers a rotation. It receives two sets of key IDs to exclude:
+//   - usedKeyIDs: keys that hit a transient per-key failure (429). When the pool is exhausted of
+//     non-dead keys, the provider resets this set and starts a fresh weighted round — a previously
+//     rate-limited key may have free quota by then.
+//   - deadKeyIDs: keys that hit a permanent per-key failure (401/402/403). These are NEVER reset
+//     within a single request — a bad credential will not become valid by waiting.
+//
+// Network/5xx errors reuse the same key since they are transient server issues, not per-key.
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
 	requestHandler func(key schemas.Key) (T, *schemas.BifrostError),
-	keyProvider func(usedKeyIDs map[string]bool) (schemas.Key, error),
+	keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error),
 	requestType schemas.RequestType,
 	providerKey schemas.ModelProvider,
 	model string,
@@ -5273,7 +5286,17 @@ func executeRequestWithRetries[T any](
 
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
-	lastWasRateLimit := false
+	var deadKeyIDs map[string]bool
+	lastWasPerKeyFailure := false
+	// True iff the previous attempt failed with a *permanent* per-key error (401/402/403).
+	// Used to suppress backoff on the next attempt only when we genuinely rotated to a
+	// different credential — a dead key gains nothing from waiting. 429 rotations stay
+	// subject to backoff because account-level rate limits share quota across keys.
+	lastWasPermanentKeyFailure := false
+	// ID of the key used on the previous attempt. Compared against the freshly selected
+	// key to confirm an actual credential swap happened before suppressing backoff —
+	// after a 429 pool reset, the selector can legitimately re-pick the same key.
+	previousKeyID := ""
 	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
@@ -5287,9 +5310,10 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{})
 		}
 
-		// Select / rotate key: always on attempt 0, and again when the previous failure was a
-		// rate-limit (different key may have remaining capacity). Network errors keep the same key.
-		if keyProvider != nil && (attempts == 0 || lastWasRateLimit) {
+		// Select / rotate key: always on attempt 0, and again when the previous failure was
+		// tied to the key itself (rate-limit, auth, billing, or permission error). Transient
+		// server errors (5xx, network) keep the same key since they're not per-key problems.
+		if keyProvider != nil && (attempts == 0 || lastWasPerKeyFailure) {
 			if usedKeyIDs == nil {
 				usedKeyIDs = make(map[string]bool)
 			}
@@ -5310,7 +5334,7 @@ func executeRequestWithRetries[T any](
 				}
 			}
 
-			selectedKey, err := keyProvider(usedKeyIDs)
+			selectedKey, err := keyProvider(usedKeyIDs, deadKeyIDs)
 
 			if keyTracer != nil {
 				if err != nil {
@@ -5328,6 +5352,30 @@ func executeRequestWithRetries[T any](
 
 			if err != nil {
 				var zero T
+				// Clear any selected_key_* set by a *previous* attempt: this early return
+				// skips the terminal cleanup at the end of the function, and the invariant
+				// is that selected_key_id / selected_key_name are populated only on a
+				// successful response. Use attempt_trail for failure attribution.
+				ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "")
+				ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "")
+				// Only collapse into 502 upstream_credentials_exhausted when keyProvider
+				// explicitly signals "every key is dead" via the errAllKeysDead sentinel.
+				// Any other error (custom selector failure, etc.) propagates unchanged so
+				// that a stray selector error doesn't get misreported as exhausted just
+				// because *some* keys happened to be dead.
+				if errors.Is(err, errAllKeysDead) {
+					statusCode := 502
+					errType := "upstream_credentials_exhausted"
+					return zero, &schemas.BifrostError{
+						IsBifrostError: false,
+						StatusCode:     &statusCode,
+						Type:           &errType,
+						Error: &schemas.ErrorField{
+							Type:    &errType,
+							Message: err.Error(),
+						},
+					}
+				}
 				return zero, newBifrostErrorFromMsg(err.Error())
 			}
 			currentKey = selectedKey
@@ -5372,11 +5420,22 @@ func executeRequestWithRetries[T any](
 			}
 			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
 
-			// Calculate and apply backoff
-			backoff := calculateBackoff(attempts-1, config)
-			logger.Debug("sleeping for %s before retry", backoff)
-
-			time.Sleep(backoff)
+			// Skip backoff only when (a) we genuinely rotated to a different credential AND
+			// (b) the previous failure was a *permanent* per-key error (401/402/403) where
+			// waiting offers nothing against a dead key.
+			//
+			// Backoff is preserved in every other case:
+			//   - 5xx / network retries (same key) — transient upstream issue, classic backoff.
+			//   - 429 rotations — account-level rate limits share quota across keys, so the
+			//     new key may not have fresh capacity; the backoff lets the quota window slide.
+			//   - 429 pool reset that re-picks the same key — no rotation actually happened.
+			//   - keyless providers — currentKey.ID stays empty, so keyChanged is false.
+			keyChanged := keyProvider != nil && currentKey.ID != previousKeyID
+			if !(lastWasPermanentKeyFailure && keyChanged) {
+				backoff := calculateBackoff(attempts-1, config)
+				logger.Debug("sleeping for %s before retry", backoff)
+				time.Sleep(backoff)
+			}
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
@@ -5566,9 +5625,14 @@ func executeRequestWithRetries[T any](
 			break
 		}
 
-		// Check if we should retry based on status code or error message
+		// Classify the failure to decide whether to retry and whether to rotate the key.
+		//
+		// isPerKeyFailure: failure is bound to this specific key/account (401/402/403/429, or a
+		//   rate-limit error surfaced via message text instead of a 429 status). The same key
+		//   won't help — try a different one.
+		// retryable 5xx / network errors: transient server issues — retry with the same key.
 		shouldRetry := false
-		isRateLimit := (bifrostError.StatusCode != nil && *bifrostError.StatusCode == 429) ||
+		isPerKeyFailure := (bifrostError.StatusCode != nil && perKeyFailureStatusCodes[*bifrostError.StatusCode]) ||
 			(bifrostError.Error != nil &&
 				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
 					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
@@ -5581,19 +5645,28 @@ func executeRequestWithRetries[T any](
 				bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
 			shouldRetry = true
 			logger.Debug("detected request HTTP/network error, will retry: %s", errMessage)
-		} else if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) || isRateLimit {
+		} else if (bifrostError.StatusCode != nil && transientServerStatusCodes[*bifrostError.StatusCode]) || isPerKeyFailure {
 			shouldRetry = true
 			logger.Debug("encountered error that should be retried: %s", errMessage)
 		}
 
-		// Fill FailReason on any failed attempt (retryable or terminal).
-		// Use the provider error type when present; fall back to "unknown".
+		// Fill FailReason on any failed attempt (retryable or terminal). The trail field
+		// answers "why was this key skipped?", so for rotation-triggering status codes the
+		// status itself is the truthful answer — provider Type labels can be misleading
+		// (e.g. OpenAI returns Type="invalid_request_error" for 401 invalid_api_key, which
+		// describes the request, not the rotation reason). Fall back to provider Type for
+		// non-rotation failures, then "unknown".
 		if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 			reason := "unknown"
-			if bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type != "" {
-				reason = *bifrostError.Error.Type
-			} else if isRateLimit {
+			switch {
+			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 429:
 				reason = "rate_limit_error"
+			case bifrostError.StatusCode != nil && (*bifrostError.StatusCode == 401 || *bifrostError.StatusCode == 403):
+				reason = "authentication_error"
+			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 402:
+				reason = "billing_error"
+			case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type != "":
+				reason = *bifrostError.Error.Type
 			}
 			trail[len(trail)-1].FailReason = &reason
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
@@ -5603,22 +5676,40 @@ func executeRequestWithRetries[T any](
 			break
 		}
 
-		// Mark current key as used so the next selection excludes it (rate-limit only).
-		// Network errors keep the same key — they are transient server issues, not per-key.
-		if isRateLimit && keyProvider != nil {
-			if usedKeyIDs == nil {
-				usedKeyIDs = make(map[string]bool)
+		// Track key state so the next keyProvider call excludes this key. Permanent
+		// per-key failures (401/402/403) go into deadKeyIDs which is never reset within
+		// this request — a bad credential won't become valid by waiting. Transient
+		// per-key failures (429) go into usedKeyIDs which the keyProvider may reset
+		// once all keys are exhausted, since a rate-limited key may have free quota by
+		// the time we come back to it.
+		isPermanentKeyFailure := false
+		if isPerKeyFailure && keyProvider != nil {
+			isPermanentKeyFailure = bifrostError.StatusCode != nil &&
+				(*bifrostError.StatusCode == 401 || *bifrostError.StatusCode == 402 || *bifrostError.StatusCode == 403)
+			if isPermanentKeyFailure {
+				if deadKeyIDs == nil {
+					deadKeyIDs = make(map[string]bool)
+				}
+				deadKeyIDs[currentKey.ID] = true
+			} else {
+				if usedKeyIDs == nil {
+					usedKeyIDs = make(map[string]bool)
+				}
+				usedKeyIDs[currentKey.ID] = true
 			}
-			usedKeyIDs[currentKey.ID] = true
 		}
-		lastWasRateLimit = isRateLimit
+		lastWasPerKeyFailure = isPerKeyFailure
+		lastWasPermanentKeyFailure = isPermanentKeyFailure
+		// Remember the key used on this attempt so the next iteration's backoff check
+		// can detect whether key selection genuinely picked a different credential.
+		previousKeyID = currentKey.ID
 
 		// Record the just-failed attempt as a *candidate* for rotation. The next iteration will
 		// confirm it (and set TriggeredRotation=true) only if key selection actually picks a
 		// different key — this avoids false positives for fixed-key providers whose keyProvider
 		// is non-nil but returns the same key. Network-error retries reuse the same key, and
 		// terminal attempts (attempts == MaxRetries) won't run another iteration.
-		if isRateLimit && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
+		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
 			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 				pendingRotationAttemptIdx = len(trail) - 1
 			}
@@ -5757,7 +5848,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
 		// batch/file/container operations that manage their own key lists.
-		var keyProvider func(usedKeyIDs map[string]bool) (schemas.Key, error)
+		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
 
 		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
@@ -5839,9 +5930,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
 						// Fixed key (explicit ID/name, session stickiness): always
-						// return the same key regardless of usedKeyIDs.
+						// return the same key — *unless* it has been marked permanently
+						// dead this request, in which case surface errAllKeysDead so the
+						// caller emits 502 upstream_credentials_exhausted instead of
+						// burning the remaining retries on the same bad credential.
 						fixedKey := supportedKeys[0]
-						keyProvider = func(_ map[string]bool) (schemas.Key, error) {
+						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+							if deadKeyIDs[fixedKey.ID] {
+								return schemas.Key{}, errAllKeysDead
+							}
 							return fixedKey, nil
 						}
 					} else {
@@ -5850,19 +5947,31 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						pool := supportedKeys
 						provKey := provider.GetProviderKey()
 						mdl := model
-						keyProvider = func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
 							available := make([]schemas.Key, 0, len(pool))
 							for _, k := range pool {
-								if !usedKeyIDs[k.ID] {
-									available = append(available, k)
+								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+									continue
 								}
+								available = append(available, k)
 							}
 							if len(available) == 0 {
-								// All keys exhausted — start a fresh weighted round.
+								// No non-dead keys remain in this cycle. If every key has been
+								// marked permanently dead, give up — retrying won't help.
+								// Otherwise reset usedKeyIDs and start a fresh weighted round
+								// across the still-live (non-dead) keys; a previously
+								// rate-limited key may have free quota by now.
+								for _, k := range pool {
+									if !deadKeyIDs[k.ID] {
+										available = append(available, k)
+									}
+								}
+								if len(available) == 0 {
+									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
+								}
 								for id := range usedKeyIDs {
 									delete(usedKeyIDs, id)
 								}
-								available = pool
 							}
 							return bifrost.keySelector(req.Context, available, provKey, mdl)
 						}

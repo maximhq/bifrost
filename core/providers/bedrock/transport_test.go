@@ -350,7 +350,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			assert.False(t, errChunk.BifrostError.IsBifrostError,
 				"%s must be IsBifrostError:false so retry gate can retry it", tc.excType)
 			require.NotNil(t, errChunk.BifrostError.StatusCode,
-				"%s must carry a StatusCode for the retryableStatusCodes gate", tc.excType)
+				"%s must carry a StatusCode for the retry gate", tc.excType)
 			assert.Equal(t, tc.expectedStatus, *errChunk.BifrostError.StatusCode,
 				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
 		})
@@ -445,7 +445,7 @@ func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.Bifros
 	assert.False(t, errChunk.BifrostError.IsBifrostError,
 		"%s must be IsBifrostError:false so retry gate can retry it", excType)
 	require.NotNil(t, errChunk.BifrostError.StatusCode,
-		"%s must carry a StatusCode for the retryableStatusCodes gate", excType)
+		"%s must carry a StatusCode for the retry gate", excType)
 	assert.Equal(t, expectedStatus, *errChunk.BifrostError.StatusCode,
 		"%s must map to HTTP %d", excType, expectedStatus)
 }

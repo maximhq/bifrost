@@ -618,27 +618,42 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
-// Test that retryableStatusCodes are properly defined
-func TestRetryableStatusCodes(t *testing.T) {
-	expectedCodes := map[int]bool{
-		500: true, // Internal Server Error
-		502: true, // Bad Gateway
-		503: true, // Service Unavailable
-		504: true, // Gateway Timeout
-		429: true, // Too Many Requests
-	}
-
-	for code, expected := range expectedCodes {
-		if retryableStatusCodes[code] != expected {
-			t.Errorf("Status code %d should be retryable=%v, got %v", code, expected, retryableStatusCodes[code])
+// Test that transientServerStatusCodes are properly defined.
+// These are upstream-side failures unrelated to the credential — the same key is retried.
+func TestTransientServerStatusCodes(t *testing.T) {
+	expected := []int{500, 502, 503, 504}
+	for _, code := range expected {
+		if !transientServerStatusCodes[code] {
+			t.Errorf("status code %d should be in transientServerStatusCodes", code)
 		}
 	}
 
-	// Test non-retryable codes
-	nonRetryableCodes := []int{200, 201, 400, 401, 403, 404, 422}
-	for _, code := range nonRetryableCodes {
-		if retryableStatusCodes[code] {
-			t.Errorf("Status code %d should not be retryable", code)
+	// Codes that must NOT be in transientServerStatusCodes: per-key codes (rotated, not
+	// retried-same-key), success codes, and request-bound 4xx (terminal).
+	notTransient := []int{200, 201, 400, 401, 402, 403, 404, 422, 429}
+	for _, code := range notTransient {
+		if transientServerStatusCodes[code] {
+			t.Errorf("status code %d should not be in transientServerStatusCodes", code)
+		}
+	}
+}
+
+// Test that perKeyFailureStatusCodes are properly defined.
+// These are credential/account-bound failures — rotate to the next key instead of retrying
+// the same one.
+func TestPerKeyFailureStatusCodes(t *testing.T) {
+	expected := []int{401, 402, 403, 429}
+	for _, code := range expected {
+		if !perKeyFailureStatusCodes[code] {
+			t.Errorf("status code %d should be in perKeyFailureStatusCodes", code)
+		}
+	}
+
+	// Request-bound 4xx, success codes, and transient-server 5xx must not trigger rotation.
+	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504}
+	for _, code := range notPerKey {
+		if perKeyFailureStatusCodes[code] {
+			t.Errorf("status code %d should not be in perKeyFailureStatusCodes", code)
 		}
 	}
 }
@@ -1041,7 +1056,7 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	}
 
 	fixedKey := pool[0]
-	keyProvider := func(_ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
+	keyProvider := func(_, _ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
 
 	// Simulate 3 rate-limit failures then success; all attempts must use key-a.
 	var usedKeyIDs []string
@@ -1146,7 +1161,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 
 	t.Run("RotatesKeyOnRateLimitRetry", func(t *testing.T) {
 		var selectedKeyIDs []string
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
 					return k, nil
@@ -1193,7 +1208,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 	t.Run("SameKeyOnNetworkError", func(t *testing.T) {
 		var selectedKeyIDs []string
 		keyProviderCalls := 0
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			keyProviderCalls++
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
@@ -1243,7 +1258,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 		var selectedKeyIDs []string
 		// 3 keys, 6 retries — should cycle through all 3 keys twice
 		config6 := createTestConfig(5, 0, 0) // 5 retries = 6 total attempts
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			available := make([]schemas.Key, 0)
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
