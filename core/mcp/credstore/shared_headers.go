@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// staticHeadersResolver handles MCPAuthTypeHeaders — the admin-configured
+// sharedHeadersResolver handles MCPAuthTypeHeaders — the admin-configured
 // static headers on the MCP client. ConnectionHeaders here returns ONLY the
 // Authorization header (if admin set one in config.Headers); other static
 // headers are layered by the caller via utils.StaticConfigHeaders so they
@@ -15,9 +15,9 @@ import (
 //
 // CredStore.resolverFor also normalizes empty AuthType to "headers" so this
 // resolver covers the legacy DB default.
-type staticHeadersResolver struct{}
+type sharedHeadersResolver struct{}
 
-func (r *staticHeadersResolver) ConnectionHeaders(_ *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
+func (r *sharedHeadersResolver) ConnectionHeaders(_ *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
 	headers := http.Header{}
 	if config == nil {
 		return headers, nil
@@ -34,4 +34,4 @@ func (r *staticHeadersResolver) ConnectionHeaders(_ *schemas.BifrostContext, con
 	return headers, nil
 }
 
-func (r *staticHeadersResolver) RequiresPerCallConnection() bool { return false }
+func (r *sharedHeadersResolver) RequiresPerCallConnection() bool { return false }
