@@ -20,22 +20,30 @@ reviews:
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
+        Apply standard Go review practices: small interfaces, clear error wrapping, context propagation, race-safe shared state, goroutine/channel cleanup, and table-driven tests for behavior changes.
+        Apply Go security practices: avoid logging secrets or request bodies by default, validate untrusted input before provider calls, use constant-time comparison for secrets/tokens, and prefer well-reviewed standard-library crypto primitives over custom crypto.
         Flag channel lifecycle changes that do not follow the ProviderQueue atomic closing/sync.Once pattern.
         For provider changes, verify streaming paths use the streaming client and preserve response/error metadata.
     - path: "framework/**"
       instructions: |
         Review persistence, streaming, and shared framework changes for backward-compatible data formats and careful memory ownership.
+        Apply standard Go review practices: explicit error handling, correct context cancellation, bounded resource usage, race-safe maps/slices, and tests that cover edge cases and failure paths.
+        Apply security practices for persistence and storage: parameterized queries, safe file permissions, secret redaction, encryption key handling, path traversal prevention, and least-privilege access to external stores.
         For logstore/configstore changes, check migration behavior, duration serialization, and map-copy race prevention.
         When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+        If a migration cannot be rolled back, explicitly flag it as non-rollbackable.
     - path: "transports/**"
       instructions: |
         Treat transports/config.schema.json as the source of truth for config fields.
+        Apply HTTP/API security review: authentication and authorization checks, fail-closed behavior, input size limits, request validation, SSRF/path traversal/header injection defenses, CORS/cookie safety, and secret redaction in logs/errors.
         Verify HTTP handlers preserve SDK compatibility, middleware ordering, context conversion, and route-level middleware behavior.
     - path: "plugins/**"
       instructions: |
         Review plugin changes for hook symmetry, nil response/error handling, fallback behavior, and module-local dependency hygiene.
+        Apply standard Go and security review practices: context propagation, race-safe shared state, bounded goroutines, least-privilege defaults, fail-closed auth/rate-limit behavior, secret redaction, and dependency vulnerability awareness.
         Each plugin has its own go.mod; do not assume root-level Go module commands apply.
         When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+        If a migration cannot be rolled back, explicitly flag it as non-rollbackable.
     - path: "ui/**"
       instructions: |
         Preserve existing UI conventions and data-testid attributes used by Playwright tests.
