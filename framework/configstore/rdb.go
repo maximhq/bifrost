@@ -700,7 +700,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				}
+			}
 
 			// Handle Vertex config
 			if key.VertexKeyConfig != nil {
@@ -2053,9 +2053,103 @@ func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMode
 	return modelPrices, nil
 }
 
+// pricingSyncUpdateColumns is the explicit set of governance_model_pricing
+// columns the pricing sync is allowed to overwrite via ON CONFLICT. Mirrors
+// every column on TableModelPricing except `id` (the primary key) and
+// `additional_attributes` (editorial metadata that must survive sync).
+// Keep this list in lockstep with the table definition in
+// framework/configstore/tables/modelpricing.go.
+var pricingSyncUpdateColumns = []string{
+	"model",
+	"base_model",
+	"provider",
+	"mode",
+	"context_length",
+	"max_input_tokens",
+	"max_output_tokens",
+	"architecture",
+	// Costs - Text
+	"input_cost_per_token",
+	"output_cost_per_token",
+	"input_cost_per_token_batches",
+	"output_cost_per_token_batches",
+	"input_cost_per_token_priority",
+	"output_cost_per_token_priority",
+	"input_cost_per_token_flex",
+	"output_cost_per_token_flex",
+	"input_cost_per_character",
+	// Costs - 128k Tier
+	"input_cost_per_token_above_128k_tokens",
+	"input_cost_per_image_above_128k_tokens",
+	"input_cost_per_video_per_second_above_128k_tokens",
+	"input_cost_per_audio_per_second_above_128k_tokens",
+	"output_cost_per_token_above_128k_tokens",
+	// Costs - 200k Tier
+	"input_cost_per_token_above_200k_tokens",
+	"input_cost_per_token_above_200k_tokens_priority",
+	"output_cost_per_token_above_200k_tokens",
+	"output_cost_per_token_above_200k_tokens_priority",
+	// Costs - 272k Tier
+	"input_cost_per_token_above_272k_tokens",
+	"input_cost_per_token_above_272k_tokens_priority",
+	"output_cost_per_token_above_272k_tokens",
+	"output_cost_per_token_above_272k_tokens_priority",
+	// Costs - Cache
+	"cache_creation_input_token_cost",
+	"cache_read_input_token_cost",
+	"cache_creation_input_token_cost_above_200k_tokens",
+	"cache_read_input_token_cost_above_200k_tokens",
+	"cache_read_input_token_cost_above_200k_tokens_priority",
+	"cache_creation_input_token_cost_above_1hr",
+	"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+	"cache_creation_input_audio_token_cost",
+	"cache_read_input_token_cost_priority",
+	"cache_read_input_token_cost_flex",
+	"cache_read_input_image_token_cost",
+	"cache_read_input_token_cost_above_272k_tokens",
+	"cache_read_input_token_cost_above_272k_tokens_priority",
+	// Costs - Image
+	"input_cost_per_image",
+	"input_cost_per_pixel",
+	"output_cost_per_image",
+	"output_cost_per_pixel",
+	"output_cost_per_image_premium_image",
+	"output_cost_per_image_above_512_and_512_pixels",
+	"output_cost_per_image_above_512x512_pixels_premium",
+	"output_cost_per_image_above_1024_and_1024_pixels",
+	"output_cost_per_image_above_1024x1024_pixels_premium",
+	"output_cost_per_image_above_2048_and_2048_pixels",
+	"output_cost_per_image_above_4096_and_4096_pixels",
+	"output_cost_per_image_low_quality",
+	"output_cost_per_image_medium_quality",
+	"output_cost_per_image_high_quality",
+	"output_cost_per_image_auto_quality",
+	"input_cost_per_image_token",
+	"output_cost_per_image_token",
+	// Costs - Audio/Video
+	"input_cost_per_audio_token",
+	"input_cost_per_audio_per_second",
+	"input_cost_per_second",
+	"input_cost_per_video_per_second",
+	"output_cost_per_audio_token",
+	"output_cost_per_video_per_second",
+	"output_cost_per_second",
+	// Costs - Other
+	"search_context_cost_per_query",
+	"code_interpreter_cost_per_session",
+	// Costs - OCR
+	"ocr_cost_per_page",
+	"annotation_cost_per_page",
+}
+
 // UpsertModelPrices creates or updates a model pricing record in the database.
 // Uses a single atomic ON CONFLICT statement to avoid deadlocks in multinode deployments
 // where multiple nodes may attempt concurrent upserts for the same model on startup.
+//
+// The update list is intentionally explicit (pricingSyncUpdateColumns) rather
+// than UpdateAll: every datasheet-sourced column is enumerated, but
+// `additional_attributes` is omitted so the 24-hour pricing sync never
+// overwrites editorial metadata set via UpsertModelPricingAttributes.
 func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -2067,11 +2161,44 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
-		UpdateAll: true,
+		DoUpdates: clause.AssignmentColumns(pricingSyncUpdateColumns),
 	}).Create(pricing).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
+}
+
+// UpsertModelPricingAttributes writes only the additional_attributes column
+// for the pricing row keyed by (model, provider). The row must already exist
+// — callers may not seed pricing rows through this path; the management API
+// enforces that. A nil/empty attrs map clears the column to an empty JSON object.
+func (s *RDBConfigStore) UpsertModelPricingAttributes(ctx context.Context, model, provider string, attrs map[string]string, tx ...*gorm.DB) (int64, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	var value string
+	if len(attrs) == 0 {
+		value = "{}"
+	} else {
+		encoded, err := json.Marshal(attrs)
+		if err != nil {
+			return 0, fmt.Errorf("marshal additional_attributes: %w", err)
+		}
+		value = string(encoded)
+	}
+
+	res := db.Model(&tables.TableModelPricing{}).
+		Where("model = ? AND provider = ?", model, provider).
+		Update("additional_attributes", value)
+	if res.Error != nil {
+		return 0, s.parseGormError(res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // DeleteModelPrices deletes all model pricing records from the database.
