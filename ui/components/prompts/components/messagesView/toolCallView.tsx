@@ -27,7 +27,7 @@ export default function ToolCallMessageView({
 	onSubmitToolResult?: (toolCallId: string, content: string) => void;
 	onExecuteToolCall?: (toolCall: ToolCall) => Promise<void>;
 	onSubmitAllToolResults?: (results: { toolCallId: string; content: string }[]) => Promise<void>;
-	onExecuteAllToolCalls?: (toolCalls: ToolCall[]) => Promise<void>;
+	onExecuteAllToolCalls?: (toolCalls: ToolCall[]) => Promise<{ toolCallId: string; content: string }[] | undefined>;
 	fetchToolResult?: (toolCall: ToolCall) => Promise<string>;
 	respondedToolCallIds?: Set<string>;
 }) {
@@ -166,7 +166,21 @@ export default function ToolCallMessageView({
 		);
 		setIsExecutingAll(true);
 		try {
-			await onExecuteAllToolCalls(latestCalls);
+			const partialResults = await onExecuteAllToolCalls(latestCalls);
+			if (partialResults) {
+				const newResponses: Record<string, string> = {};
+				const newResolved = new Set<string>();
+				for (const r of partialResults) {
+					newResponses[r.toolCallId] = r.content;
+					newResolved.add(r.toolCallId);
+				}
+				setResponses((prev) => ({ ...prev, ...newResponses }));
+				setResolvedIds((prev) => {
+					const next = new Set(prev);
+					for (const id of newResolved) next.add(id);
+					return next;
+				});
+			}
 		} finally {
 			setIsExecutingAll(false);
 		}
