@@ -7359,6 +7359,21 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		return []schemas.Key{}, false, nil
 	}
 
+	// Direct-key passthrough: if the provider opted in via AllowDirectKeys and
+	// the request carried a raw upstream key in headers (captured by the HTTP
+	// transport into BifrostContextKeyDirectKey), use that key for this request
+	// instead of normal pool selection. Passthrough is BYO-key, BYO-budget:
+	// the call is still logged with the key's fingerprint, but virtual-key
+	// governance does not apply. The provider opt-in is what bounds the
+	// security surface area.
+	if directKeyRaw := ctx.Value(schemas.BifrostContextKeyDirectKey); directKeyRaw != nil {
+		if directKey, ok := directKeyRaw.(schemas.Key); ok && strings.TrimSpace(directKey.Value.GetValue()) != "" {
+			if cfg, cfgErr := bifrost.account.GetConfigForProvider(providerKey); cfgErr == nil && cfg != nil && cfg.AllowDirectKeys {
+				return []schemas.Key{directKey}, false, nil
+			}
+		}
+	}
+
 	// Get keys for provider
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {

@@ -76,6 +76,7 @@ type ProviderResponse struct {
 	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	AllowDirectKeys          bool                             `json:"allow_direct_keys"`                // Forward header-supplied upstream keys (passthrough lane) when true
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
@@ -104,6 +105,7 @@ type providerCreatePayload struct {
 	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
+	AllowDirectKeys          *bool                             `json:"allow_direct_keys,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
@@ -115,6 +117,7 @@ type providerUpdatePayload struct {
 	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
+	AllowDirectKeys          *bool                            `json:"allow_direct_keys,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
@@ -301,6 +304,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
+		AllowDirectKeys:          payload.AllowDirectKeys != nil && *payload.AllowDirectKeys,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 	}
@@ -344,6 +348,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			AllowDirectKeys:          config.AllowDirectKeys,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -483,6 +488,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *payload.SendBackRawResponse
 	}
+	if payload.AllowDirectKeys != nil {
+		config.AllowDirectKeys = *payload.AllowDirectKeys
+	}
 	if payload.StoreRawRequestResponse != nil {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
@@ -541,6 +549,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			AllowDirectKeys:          config.AllowDirectKeys,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -1168,6 +1177,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
+		AllowDirectKeys:          config.AllowDirectKeys,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		ProviderStatus:           status,

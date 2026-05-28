@@ -402,6 +402,7 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	AllowDirectKeys          bool                              `json:"allow_direct_keys"`                     // Forward header-supplied upstream provider keys (passthrough lane) when true; default false
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
@@ -422,6 +423,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		AllowDirectKeys:          p.AllowDirectKeys,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		ConfigHash:               p.ConfigHash,
@@ -631,6 +633,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash AllowDirectKeys
+	if p.AllowDirectKeys {
+		hash.Write([]byte("allowDirectKeys"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

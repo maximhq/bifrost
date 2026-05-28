@@ -519,6 +519,14 @@ type ProviderConfig struct {
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	// AllowDirectKeys, when true, lets HTTP callers supply a raw upstream
+	// provider key via Authorization / x-api-key / x-goog-api-key headers and
+	// have it forwarded to this provider as-is. The request is still logged
+	// (with a sha256 fingerprint of the key, never the raw value) but is not
+	// subject to virtual-key governance — passthrough is BYO-key, BYO-budget.
+	// Default false: matches Bifrost's post-v1.5 security posture (header
+	// keys are ignored unless explicitly opted-in per provider).
+	AllowDirectKeys bool `json:"allow_direct_keys,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.

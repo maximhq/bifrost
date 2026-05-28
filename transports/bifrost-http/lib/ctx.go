@@ -8,6 +8,8 @@ package lib
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -636,7 +638,62 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
+
+	// Capture a raw upstream-provider key (e.g. sk-ant-…, sk-…) from
+	// Authorization / x-api-key / x-goog-api-key headers and stash it in
+	// BifrostContextKeyDirectKey for downstream key selection. We capture
+	// unconditionally here because the target provider isn't known yet;
+	// selectKeyFromProviderForModelWithPool gates actual use of this key on
+	// the resolved provider's AllowDirectKeys flag (default false). Bifrost
+	// virtual keys (`sk-bf-*` prefix) are skipped — those belong to the
+	// virtual-key flow, not passthrough.
+	if directKey := extractDirectKeyFromHeaders(ctx); directKey != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, *directKey)
+	}
+
 	return bifrostCtx, cancel
+}
+
+// extractDirectKeyFromHeaders pulls a raw upstream-provider API key from
+// standard auth headers (Authorization Bearer, x-api-key, x-goog-api-key) for
+// passthrough forwarding. Returns nil if no usable key is present or the value
+// looks like a Bifrost virtual key (`sk-bf-*`). The returned Key.ID is a
+// sha256 fingerprint of the raw value (first 12 hex chars), giving per-caller
+// attribution in usage logs without ever writing the raw key to disk.
+func extractDirectKeyFromHeaders(ctx *fasthttp.RequestCtx) *schemas.Key {
+	var apiKey string
+
+	if v := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization"))); v != "" {
+		if strings.HasPrefix(strings.ToLower(v), "bearer ") {
+			tok := strings.TrimSpace(v[7:])
+			if tok != "" && !strings.HasPrefix(strings.ToLower(tok), governance.VirtualKeyPrefix) {
+				apiKey = tok
+			}
+		}
+	}
+	if apiKey == "" {
+		if v := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); v != "" && !strings.HasPrefix(strings.ToLower(v), governance.VirtualKeyPrefix) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		if v := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); v != "" && !strings.HasPrefix(strings.ToLower(v), governance.VirtualKeyPrefix) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		return nil
+	}
+
+	sum := sha256.Sum256([]byte(apiKey))
+	fingerprint := hex.EncodeToString(sum[:])[:12]
+	return &schemas.Key{
+		ID:     "direct:" + fingerprint,
+		Name:   "direct-key",
+		Value:  *schemas.NewEnvVar(apiKey),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1.0,
+	}
 }
 
 // ValidateBaseURL checks that a URL is parseable with both scheme and host —
