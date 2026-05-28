@@ -730,56 +730,62 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									)}
 
 									{/* TLS / Certificate */}
-									<div className="space-y-4 rounded-lg border p-4">
-										<h4 className="text-sm font-medium">TLS / Certificate</h4>
-										<FormField
-											control={control}
-											name="tls_config.insecure_skip_verify"
-											render={({ field }) => (
-												<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-													<div className="space-y-0.5">
-														<FormLabel>Skip TLS verification</FormLabel>
-														<p className="text-muted-foreground text-sm">
-															Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
-														</p>
-													</div>
-													<FormControl>
-														<Switch
-															checked={field.value ?? false}
-															onCheckedChange={field.onChange}
-															data-testid="mcp-tls-insecure-skip-verify"
-														/>
-													</FormControl>
-												</FormItem>
-											)}
-										/>
-										<FormField
-											control={control}
-											name="tls_config.ca_cert_pem"
-											render={({ field }) => (
-												<FormItem>
-													<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
-													<FormControl>
-														<EnvVarInput
-															variant="textarea"
-															placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
-															className="font-mono text-xs"
-															rows={6}
-															hideValueWhenEnv
-															redactNonEnvValue
-															{...field}
-															value={field.value}
-															data-testid="mcp-tls-ca-cert-pem"
-														/>
-													</FormControl>
-													<p className="text-muted-foreground text-sm">
-														PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
-													</p>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-									</div>
+									<Accordion type="single" collapsible className="w-full">
+										<AccordionItem value="tls-config" className="border-b-0">
+											<AccordionTrigger className="py-0" data-testid="tls-config-trigger">
+												<span className="text-sm font-medium">TLS / Certificate</span>
+											</AccordionTrigger>
+											<AccordionContent className="space-y-4 pt-4 pb-0">
+												<FormField
+													control={control}
+													name="tls_config.insecure_skip_verify"
+													render={({ field }) => (
+														<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+															<div className="space-y-0.5">
+																<FormLabel>Skip TLS verification</FormLabel>
+																<p className="text-muted-foreground text-sm">
+																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
+																</p>
+															</div>
+															<FormControl>
+																<Switch
+																	checked={field.value ?? false}
+																	onCheckedChange={field.onChange}
+																	data-testid="mcp-tls-insecure-skip-verify"
+																/>
+															</FormControl>
+														</FormItem>
+													)}
+												/>
+												<FormField
+													control={control}
+													name="tls_config.ca_cert_pem"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+															<FormControl>
+																<EnvVarInput
+																	variant="textarea"
+																	placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
+																	className="font-mono text-xs"
+																	rows={6}
+																	hideValueWhenEnv
+																	redactNonEnvValue
+																	{...field}
+																	value={field.value}
+																	data-testid="mcp-tls-ca-cert-pem"
+																/>
+															</FormControl>
+															<p className="text-muted-foreground text-sm">
+																PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
+															</p>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											</AccordionContent>
+										</AccordionItem>
+									</Accordion>
 								</>
 							)}
 

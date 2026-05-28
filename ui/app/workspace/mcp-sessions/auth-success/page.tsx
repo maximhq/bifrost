@@ -12,7 +12,7 @@ export default function MCPSessionsAuthSuccessPage() {
         </h1>
         <p className="text-muted-foreground mt-2 text-sm">
           Your credential has been stored. You can close this tab and return to
-          your MCP client — future requests will use this credential
+          your MCP client - future requests will use this credential
           automatically.
         </p>
       </div>
