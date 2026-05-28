@@ -1,4 +1,4 @@
-import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type VariableMap } from "@/lib/message";
+import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type ToolCall, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import {
@@ -16,7 +16,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { executePrompt } from "./utils/executor";
+import { executePrompt, executeToolCall } from "./utils/executor";
 
 interface PromptContextValue {
 	// Data
@@ -94,7 +94,9 @@ interface PromptContextValue {
 	handleDeleteFolder: () => Promise<void>;
 	handleDeletePrompt: () => Promise<void>;
 	handleSendMessage: (pendingMessage?: Message) => Promise<void>;
+	handleStopStreaming: () => void;
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
+	handleExecuteToolCall: (afterIndex: number, toolCall: ToolCall) => Promise<void>;
 
 	// RBAC permissions
 	canCreate: boolean;
@@ -160,6 +162,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
+	const abortRef = useRef<AbortController | null>(null);
 	const [variables, setVariables] = useState<VariableMap>({});
 	const [customHeaders, setCustomHeaders] = useState<Record<string, string>>({});
 
@@ -457,6 +460,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		async (pendingMessage?: Message) => {
 			const runToken = Symbol();
 			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
 			const isActive = () => activeRunRef.current === runToken;
 
 			setIsStreaming(true);
@@ -512,6 +517,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						setIsStreaming(false);
 					},
 				},
+				abortController.signal,
 			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
@@ -521,6 +527,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		async (afterIndex: number, toolCallId: string, content: string) => {
 			const runToken = Symbol();
 			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
 			const isActive = () => activeRunRef.current === runToken;
 
 			const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
@@ -591,10 +599,32 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						setIsStreaming(false);
 					},
 				},
+				abortController.signal,
 			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
 	);
+
+	const handleExecuteToolCall = useCallback(
+		async (afterIndex: number, toolCall: ToolCall) => {
+			try {
+				const content = await executeToolCall(toolCall, { apiKeyId, customHeaders });
+				await handleSubmitToolResult(afterIndex, toolCall.id, content);
+			} catch (err) {
+				toast.error("Failed to execute tool", {
+					description: getErrorMessage(err),
+				});
+			}
+		},
+		[apiKeyId, customHeaders, handleSubmitToolResult],
+	);
+
+	const handleStopStreaming = useCallback(() => {
+		abortRef.current?.abort();
+		abortRef.current = null;
+		activeRunRef.current = null;
+		setIsStreaming(false);
+	}, []);
 
 	const value: PromptContextValue = {
 		folders,
@@ -649,7 +679,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		handleDeleteFolder,
 		handleDeletePrompt,
 		handleSendMessage,
+		handleStopStreaming,
 		handleSubmitToolResult,
+		handleExecuteToolCall,
 		canCreate,
 		canUpdate,
 		canDelete,
