@@ -97,6 +97,9 @@ interface PromptContextValue {
 	handleStopStreaming: () => void;
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
 	handleExecuteToolCall: (afterIndex: number, toolCall: ToolCall) => Promise<void>;
+	handleSubmitAllToolResults: (afterIndex: number, results: { toolCallId: string; content: string }[]) => Promise<void>;
+	handleExecuteAllToolCalls: (afterIndex: number, toolCalls: ToolCall[]) => Promise<void>;
+	fetchToolResult: (toolCall: ToolCall) => Promise<string>;
 
 	// RBAC permissions
 	canCreate: boolean;
@@ -619,12 +622,131 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		[apiKeyId, customHeaders, handleSubmitToolResult],
 	);
 
+	const handleSubmitAllToolResults = useCallback(
+		async (afterIndex: number, results: { toolCallId: string; content: string }[]) => {
+			if (results.length === 0) return;
+			if (results.length === 1) {
+				return handleSubmitToolResult(afterIndex, results[0].toolCallId, results[0].content);
+			}
+
+			const runToken = Symbol();
+			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
+			const isActive = () => activeRunRef.current === runToken;
+
+			const newMessages = [...messages];
+			let insertAt = afterIndex + 1;
+			while (insertAt < newMessages.length && newMessages[insertAt].type === MessageType.ToolResult) {
+				insertAt++;
+			}
+			for (const { toolCallId, content } of results) {
+				const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
+					role: MessageRole.TOOL,
+					content,
+					tool_call_id: toolCallId,
+				});
+				newMessages.splice(insertAt, 0, toolResultMsg);
+				insertAt++;
+			}
+			setMessages(newMessages);
+
+			setIsStreaming(true);
+			await executePrompt(
+				newMessages,
+				undefined,
+				{ provider, model, modelParams, apiKeyId, variables, customHeaders },
+				{
+					onStreamingStart: (allMessages, placeholder) => {
+						if (!isActive()) return;
+						setMessages([...allMessages, placeholder]);
+					},
+					onStreamChunk: (content) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							const last = updated[updated.length - 1];
+							const clone = last.clone();
+							clone.content = content;
+							updated[updated.length - 1] = clone;
+							return updated;
+						});
+					},
+					onComplete: (content, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.response(content, 0, usage);
+							return updated;
+						});
+					},
+					onToolCallComplete: (content, toolCalls, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
+							return updated;
+						});
+					},
+					onEmptyResponse: () => {
+						if (!isActive()) return;
+						setMessages((prev) => prev.slice(0, -1));
+					},
+					onError: (error) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const withoutPlaceholder = prev.slice(0, -1);
+							return [...withoutPlaceholder, Message.error(error)];
+						});
+					},
+					onFinally: () => {
+						if (!isActive()) return;
+						setIsStreaming(false);
+					},
+				},
+				abortController.signal,
+			);
+		},
+		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders, handleSubmitToolResult],
+	);
+
+	const handleExecuteAllToolCalls = useCallback(
+		async (afterIndex: number, toolCalls: ToolCall[]) => {
+			if (toolCalls.length === 0) return;
+			if (toolCalls.length === 1) {
+				return handleExecuteToolCall(afterIndex, toolCalls[0]);
+			}
+
+			try {
+				const results = await Promise.all(
+					toolCalls.map(async (tc) => {
+						const content = await executeToolCall(tc, { apiKeyId, customHeaders });
+						return { toolCallId: tc.id, content };
+					}),
+				);
+				await handleSubmitAllToolResults(afterIndex, results);
+			} catch (err) {
+				toast.error("Failed to execute tools", {
+					description: getErrorMessage(err),
+				});
+			}
+		},
+		[apiKeyId, customHeaders, handleExecuteToolCall, handleSubmitAllToolResults],
+	);
+
 	const handleStopStreaming = useCallback(() => {
 		abortRef.current?.abort();
 		abortRef.current = null;
 		activeRunRef.current = null;
 		setIsStreaming(false);
 	}, []);
+
+	const fetchToolResult = useCallback(
+		async (toolCall: ToolCall): Promise<string> => {
+			return executeToolCall(toolCall, { apiKeyId, customHeaders });
+		},
+		[apiKeyId, customHeaders],
+	);
 
 	const value: PromptContextValue = {
 		folders,
@@ -682,6 +804,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		handleStopStreaming,
 		handleSubmitToolResult,
 		handleExecuteToolCall,
+		handleSubmitAllToolResults,
+		handleExecuteAllToolCalls,
+		fetchToolResult,
 		canCreate,
 		canUpdate,
 		canDelete,

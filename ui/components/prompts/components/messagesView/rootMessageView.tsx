@@ -22,6 +22,9 @@ export function MessagesView() {
 		supportsVision,
 		handleSubmitToolResult,
 		handleExecuteToolCall,
+		handleSubmitAllToolResults,
+		handleExecuteAllToolCalls,
+		fetchToolResult,
 	} = usePromptContext();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const prevLengthRef = useRef(messages.length);
@@ -116,6 +119,9 @@ export function MessagesView() {
 									onRemove={canRemove ? () => handleRemoveMessage(index) : undefined}
 									onSubmitToolResult={(toolCallId, content) => handleSubmitToolResult(index, toolCallId, content)}
 									onExecuteToolCall={(toolCall) => handleExecuteToolCall(index, toolCall)}
+									onSubmitAllToolResults={(results) => handleSubmitAllToolResults(index, results)}
+									onExecuteAllToolCalls={(toolCalls) => handleExecuteAllToolCalls(index, toolCalls)}
+									fetchToolResult={fetchToolResult}
 									respondedToolCallIds={respondedIds}
 								/>
 							);
