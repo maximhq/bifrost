@@ -856,13 +856,17 @@ export default function VirtualKeySheet({
             data.teamId &&
             data.teamId.trim() !== ""
               ? data.teamId
-              : undefined,
+              : data.entityType === "none"
+                ? null
+                : undefined,
           customer_id:
             data.entityType === "customer" &&
             data.customerId &&
             data.customerId.trim() !== ""
               ? data.customerId
-              : undefined,
+              : data.entityType === "none"
+                ? null
+                : undefined,
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,

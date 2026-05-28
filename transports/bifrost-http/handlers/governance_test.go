@@ -97,6 +97,127 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 	return m.store.GetVirtualKey(ctx, id)
 }
 
+func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {
+	teamID := "team-1"
+	customerID := "customer-1"
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: &teamID, CustomerID: &customerID}
+	var req UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"name":"renamed"}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+		t.Fatalf("apply ownership update: %v", err)
+	}
+	if vk.TeamID == nil || *vk.TeamID != teamID || vk.CustomerID == nil || *vk.CustomerID != customerID {
+		t.Fatalf("omitted ownership fields changed association: %#v", vk)
+	}
+}
+
+func TestApplyVirtualKeyOwnershipUpdateSwitchesAndClearsAssociation(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		initialTeam  *string
+		initialCust  *string
+		wantTeam     *string
+		wantCustomer *string
+	}{
+		{
+			name:         "set team clears customer",
+			body:         `{"team_id":"team-2"}`,
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     schemas.Ptr("team-2"),
+			wantCustomer: nil,
+		},
+		{
+			name:         "set customer clears team",
+			body:         `{"customer_id":"customer-2"}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			wantTeam:     nil,
+			wantCustomer: schemas.Ptr("customer-2"),
+		},
+		{
+			name:         "null team clears both",
+			body:         `{"team_id":null}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     nil,
+			wantCustomer: nil,
+		},
+		{
+			name:         "empty customer clears both",
+			body:         `{"customer_id":""}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     nil,
+			wantCustomer: nil,
+		},
+		{
+			name:         "null team and customer clears both",
+			body:         `{"team_id":null,"customer_id":null}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     nil,
+			wantCustomer: nil,
+		},
+		{
+			name:         "empty team and customer clears both",
+			body:         `{"team_id":"","customer_id":""}`,
+			initialTeam:  schemas.Ptr("team-1"),
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     nil,
+			wantCustomer: nil,
+		},
+		{
+			name:         "team with null customer sets team",
+			body:         `{"team_id":"team-2","customer_id":null}`,
+			initialCust:  schemas.Ptr("customer-1"),
+			wantTeam:     schemas.Ptr("team-2"),
+			wantCustomer: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: tt.initialTeam, CustomerID: tt.initialCust}
+			var req UpdateVirtualKeyRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+				t.Fatalf("apply ownership update: %v", err)
+			}
+			assertStringPtrEqual(t, "team", vk.TeamID, tt.wantTeam)
+			assertStringPtrEqual(t, "customer", vk.CustomerID, tt.wantCustomer)
+		})
+	}
+}
+
+func TestApplyVirtualKeyOwnershipUpdateRejectsDualAssociation(t *testing.T) {
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-1"}
+	var req UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"team_id":"team-1","customer_id":"customer-1"}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &req); !errors.Is(err, errVirtualKeyDualAssociation) {
+		t.Fatalf("expected dual-association error, got %v", err)
+	}
+}
+
+func assertStringPtrEqual(t *testing.T, label string, got *string, want *string) {
+	t.Helper()
+	if got == nil || want == nil {
+		if got != want {
+			t.Fatalf("%s pointer nil mismatch: got %v, want %v", label, got, want)
+		}
+		return
+	}
+	if *got != *want {
+		t.Fatalf("%s value = %q, want %q", label, *got, *want)
+	}
+}
+
 func TestFindExistingBudgetPrefersIDOverResetDuration(t *testing.T) {
 	monthlyBudget := configstoreTables.TableBudget{
 		ID:            "budget-monthly",
