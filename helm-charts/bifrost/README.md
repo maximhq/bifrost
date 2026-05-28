@@ -4,16 +4,18 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.19
+**Latest Version:** 2.1.20
 
 ## Changelog
 
-### Upcoming
+### 2.1.20
 
-- **[Upcoming]** Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:
+- Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:
   - `insecureSkipVerify` — disable TLS certificate verification (development/testing only; takes priority over `caCertPem`).
   - `caCertPem` — PEM-encoded CA certificate for MCP servers that use a self-signed or private CA. Accepts a literal PEM string or an `env.VAR_NAME` reference (e.g. `"env.MY_MCP_CA_CERT"`).
   - Chart maps `tlsConfig.insecureSkipVerify` → `tls_config.insecure_skip_verify` and `tlsConfig.caCertPem` → `tls_config.ca_cert_pem` in the generated config JSON.
+- Added `authServerType` to the Okta SCIM config in `values.schema.json` and `config.schema.json`. Accepts `"org"` (Org Authorization Server) or `"custom"` (Custom Authorization Server); auto-detected from the issuer URL when omitted. Previously the field was documented but rejected by `additionalProperties: false` in both schemas.
+- Added `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` to the Okta provider branch in `config.schema.json`, aligning the transport runtime schema with the Helm chart schema which already included them.
 
 ### 2.1.19
 
