@@ -2910,6 +2910,21 @@
           "type": "boolean",
           "description": "When true, this MCP client is disabled (connection and workers are stopped while preserving configuration).",
           "default": false
+        },
+        "tls_config": {
+          "type": "object",
+          "description": "TLS configuration for HTTP and SSE connections. Not applicable to stdio or inprocess connection types.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean",
+              "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set. Use only in development or trusted isolated environments. Not recommended for production."
+            },
+            "ca_cert_pem": {
+              "type": "string",
+              "description": "PEM-encoded CA certificate to trust for MCP server connections. Use when the MCP server uses a self-signed or private CA certificate. Supports env.VAR_NAME syntax to read the certificate from an environment variable."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["name", "connection_type"],
