@@ -105,6 +105,10 @@ func (h *MCPPerUserHeadersHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "Headers submission flow not found")
 		return
 	}
+	if !canAccessUserFlow(flow.FlowMode, flow.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "This submission link is bound to a different user.")
+		return
+	}
 
 	config, cfgErr := h.loadMCPClientConfig(ctx, flow.MCPClientID)
 	if cfgErr != nil {
@@ -199,6 +203,10 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	}
 	if flow == nil {
 		SendError(ctx, fasthttp.StatusNotFound, "Headers submission flow not found")
+		return
+	}
+	if !canAccessUserFlow(flow.FlowMode, flow.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "This submission link is bound to a different user.")
 		return
 	}
 	if !flow.ExpiresAt.IsZero() && flow.ExpiresAt.Before(time.Now()) {
