@@ -65,7 +65,7 @@ The bearer token forwarded by Open WebUI should be issued for the audience confi
 1. In your OAuth/OIDC provider, create or configure the audience for the Open WebUI-to-Bifrost integration.
 2. Define or identify the delegated user scope for that audience in your identity provider.
 3. Add that audience scope to Open WebUI's `OAUTH_SCOPES` environment variable alongside the normal identity scopes, such as `openid`, `profile`, `email`, and `offline_access` when supported.
-4. Ensure Bifrost's [enterprise SSO/SCIM](/enterprise/user-provisioning) configuration trusts the same issuer and audience.
+4. Ensure Bifrost's [enterprise OIDC/SSO](/enterprise/user-provisioning) configuration trusts the same issuer and audience.
 5. Restart Open WebUI and sign in again so Open WebUI obtains a fresh token.
 
 Example:

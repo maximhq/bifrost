@@ -139,7 +139,7 @@ Web apps in Zitadel cannot use the `client_credentials` grant. Bifrost needs a d
 
 
 1. In Bifrost, go to **Governance → User Provisioning**.
-2. Select **Zitadel** as the SCIM Provider.
+2. Select **Zitadel** as the OIDC Provider.
 3. Fill in the fields:
 
 | Field | Value |
@@ -205,6 +205,18 @@ You can also map any custom attributes to any entity (role, team or business uni
 | `attributeRoleMappings` | Yes | Ordered list of attribute→role mappings. |
 | `attributeTeamMappings` | No | Attribute→team mappings (all matches apply). |
 | `attributeBusinessUnitMappings` | No | Attribute→business-unit mappings (all matches apply). |
+
+---
+
+## Background user sync
+
+Bifrost does not currently support Zitadel SCIM management APIs or inbound Zitadel SCIM provisioning. Do not configure a Zitadel SCIM connector, webhook worker, or automation layer to call Bifrost `/scim/v2` yet.
+
+For Zitadel, Bifrost uses the service account setup above to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Zitadel.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Zitadel whether the user is still active; if Zitadel reports the user is inactive, Bifrost decommissions that user locally.
+
+Support for Zitadel SCIM management APIs is coming soon.
 
 ---
 

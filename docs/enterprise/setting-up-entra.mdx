@@ -234,7 +234,19 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 
 ---
 
-## Step 8: Configure App Manifest
+## Step 8: Understand Microsoft Entra user sync
+
+Bifrost does not currently support Microsoft Entra SCIM management APIs or inbound Entra SCIM provisioning. Do not configure the Entra **Provisioning** tab with a Bifrost `/scim/v2` tenant URL yet.
+
+For Entra, Bifrost uses the application credentials from the setup above to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Entra.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Entra whether the user is still active; if Entra reports the user is inactive, Bifrost decommissions that user locally.
+
+Support for Microsoft Entra SCIM management APIs is coming soon.
+
+---
+
+## Step 9: Configure App Manifest
 
 <Frame>
 	<img src="/media/user-provisioning/entra-app-manifest.png" alt="Microsoft entra app manifest" />
@@ -294,7 +306,7 @@ Restrict the `groups` claim to groups assigned to this application (recommended)
   `"All"` only if you intentionally want broader group visibility.
 </Note>
 
-## Step 9: Configure Bifrost
+## Step 10: Configure Bifrost
 
 Now configure Bifrost to use Microsoft Entra as the identity provider.
 
@@ -305,7 +317,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 </Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
-2. Select **Microsoft Entra** as the SCIM Provider
+2. Select **Microsoft Entra** as the OIDC Provider
 3. Enter the following configuration:
 
 | Field             | Value                                            |
@@ -396,7 +408,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ### User not redirected to Microsoft login
 
-- Verify the SCIM provider is enabled in Bifrost
+- Verify the OIDC provider is enabled in Bifrost
 - Check that the Bifrost server was restarted after configuration
 - Ensure the Tenant ID and Client ID are correct
 
@@ -442,7 +454,7 @@ If users come in via **User Provisioning → Import users** and end up on the de
 
 ## Next Steps
 
-- **[User Provisioning (SCIM)](./user-provisioning)** - Overview of SCIM in Bifrost and alternative identity providers
+- **[User Provisioning (OIDC)](./user-provisioning)** - Overview of OIDC user provisioning in Bifrost and alternative identity providers
 - **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
 - **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
 - **[Audit Logs](./audit-logs)** - Monitor user authentication and activity
