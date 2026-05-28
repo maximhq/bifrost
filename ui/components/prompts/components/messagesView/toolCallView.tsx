@@ -4,7 +4,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Message, MessageRole, SerializedMessage, type ToolCall } from "@/lib/message";
 import { cn } from "@/lib/utils";
 import { isJson } from "@/lib/utils/validation";
-import { Check, Loader2, PencilLine, Play, Send, Wrench, XIcon } from "lucide-react";
+import { MCPAuthRequiredError } from "../../utils/executor";
+import { Check, ExternalLink, Loader2, PencilLine, Play, RefreshCw, Send, ShieldAlert, Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
@@ -36,6 +37,7 @@ export default function ToolCallMessageView({
 	const [executingIds, setExecutingIds] = useState<Set<string>>(new Set());
 	const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
 	const [manualEntryIds, setManualEntryIds] = useState<Set<string>>(new Set());
+	const [authErrors, setAuthErrors] = useState<Record<string, MCPAuthRequiredError>>({});
 	const [isExecutingAll, setIsExecutingAll] = useState(false);
 	const [isSubmittingAll, setIsSubmittingAll] = useState(false);
 	const messageRef = useRef(message);
@@ -129,6 +131,10 @@ export default function ToolCallMessageView({
 		setExecutingIds((prev) => new Set(prev).add(tc.id));
 		try {
 			await onExecuteToolCall(latestTc);
+		} catch (err) {
+			if (err instanceof MCPAuthRequiredError) {
+				setAuthErrors((prev) => ({ ...prev, [tc.id]: err }));
+			}
 		} finally {
 			setExecutingIds((prev) => {
 				const next = new Set(prev);
@@ -148,6 +154,10 @@ export default function ToolCallMessageView({
 			const content = await fetchToolResult(latestTc);
 			setResponses((prev) => ({ ...prev, [tc.id]: content }));
 			setResolvedIds((prev) => new Set(prev).add(tc.id));
+		} catch (err) {
+			if (err instanceof MCPAuthRequiredError) {
+				setAuthErrors((prev) => ({ ...prev, [tc.id]: err }));
+			}
 		} finally {
 			setExecutingIds((prev) => {
 				const next = new Set(prev);
@@ -164,6 +174,7 @@ export default function ToolCallMessageView({
 		const latestCalls = pendingToolCalls.map(
 			(tc) => messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc,
 		);
+		setAuthErrors({});
 		setIsExecutingAll(true);
 		try {
 			const partialResults = await onExecuteAllToolCalls(latestCalls);
@@ -234,6 +245,19 @@ export default function ToolCallMessageView({
 	};
 
 	const tcHasResult = (tcId: string) => resolvedIds.has(tcId) || (manualEntryIds.has(tcId) && !!responses[tcId]?.trim());
+
+	const handleRetry = (tc: ToolCall) => {
+		setAuthErrors((prev) => {
+			const next = { ...prev };
+			delete next[tc.id];
+			return next;
+		});
+		if (isMultiple) {
+			handleExecuteOne(tc);
+		} else {
+			handleExecuteSingle(tc);
+		}
+	};
 
 	return (
 		<div className="group rounded-lg border border-transparent px-3 py-2 transition-colors hover:border-border/80 focus-within:border-border/80">
@@ -421,8 +445,51 @@ export default function ToolCallMessageView({
 								</div>
 							)}
 
+							{/* Auth error inline banner */}
+							{!disabled && authErrors[tc.id] && !isResponded && (
+								<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none border-t border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+									<div className="flex flex-wrap items-center gap-2">
+										<div className="flex min-w-0 items-center gap-2">
+											<div className="rounded-md bg-amber-500/10 p-1 shrink-0">
+												<ShieldAlert className="size-3.5 text-amber-600 dark:text-amber-400" />
+											</div>
+											<div className="min-w-0">
+												<div className="text-xs font-medium text-foreground">
+													Authentication required for {authErrors[tc.id].mcpClientName}
+												</div>
+												<div className="text-[10px] text-muted-foreground">
+													Connect your account to execute this tool.
+												</div>
+											</div>
+										</div>
+										<div className="ml-auto flex items-center gap-1.5">
+											{authErrors[tc.id].authorizeUrl && (
+												<Button
+													size="sm"
+													className="h-8 active:scale-[0.97] transition-transform bg-primary text-primary-foreground hover:bg-primary/90"
+													onClick={() => window.open(authErrors[tc.id].authorizeUrl, "_blank", "noopener,noreferrer")}
+												>
+													<ExternalLink className="size-3.5" />
+													Authenticate
+												</Button>
+											)}
+											<Button
+												variant="secondary"
+												size="sm"
+												className="h-8 active:scale-[0.97] transition-transform"
+												onClick={() => handleRetry(tc)}
+												disabled={isBusy}
+											>
+												<RefreshCw className="size-3.5" />
+												Retry
+											</Button>
+										</div>
+									</div>
+								</div>
+							)}
+
 							{/* Per-card action bar (single mode: full actions, multi mode: per-card execute/manual) */}
-							{!disabled && onSubmitToolResult && !isResponded && !hasResult && !isManualEntryOpen && (
+							{!disabled && onSubmitToolResult && !isResponded && !hasResult && !isManualEntryOpen && !authErrors[tc.id] && (
 								<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2">
 									<div className="flex flex-wrap items-center gap-2">
 										{!isMultiple && (
