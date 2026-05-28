@@ -2512,6 +2512,14 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
+        },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (the 'passthrough' lane). Calls are still logged with a sha256 fingerprint of the key (never the raw value) but are not subject to virtual-key governance — passthrough is BYO-key, BYO-budget. Default false."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -2550,6 +2558,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -2590,6 +2602,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -2628,6 +2644,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -2668,6 +2688,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -2706,6 +2730,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -2746,6 +2774,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -2783,6 +2815,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "When true, this provider accepts a raw upstream API key from the request's Authorization / x-api-key / x-goog-api-key header and forwards it verbatim (passthrough lane). Calls are still logged with a sha256 fingerprint of the key. Default false."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

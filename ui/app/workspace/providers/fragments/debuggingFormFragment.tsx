@@ -30,6 +30,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			allow_direct_keys: provider.allow_direct_keys ?? false,
 		},
 	});
 	const sendBackRawRequest = form.watch("send_back_raw_request");
@@ -45,15 +46,17 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			allow_direct_keys: provider.allow_direct_keys ?? false,
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
+	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response, provider.allow_direct_keys]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
 		const updatedProvider = buildProviderUpdatePayload(provider, {
 			send_back_raw_request: data.send_back_raw_request,
 			send_back_raw_response: data.send_back_raw_response,
 			store_raw_request_response: data.store_raw_request_response,
+			allow_direct_keys: data.allow_direct_keys,
 		});
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -147,6 +150,51 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("send_back_raw_response");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					{/* Allow Direct API Keys (passthrough lane) */}
+					<FormField
+						control={form.control}
+						name="allow_direct_keys"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<div className="flex items-center gap-1.5">
+											<FormLabel>Allow Direct API Keys (passthrough)</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild data-testid="provider-debugging-allow-direct-keys-tooltip-trigger">
+														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
+													</TooltipTrigger>
+													<TooltipContent>
+														When on, the bearer from <code>Authorization</code> / <code>x-api-key</code> / <code>x-goog-api-key</code> is forwarded
+														to the upstream as-is. The call is logged with a sha256 fingerprint of the key (never the raw value).
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<p className="text-muted-foreground text-xs">
+											BYO-key, BYO-budget: passthrough requests are not subject to virtual-key governance. Use for personal
+											upstream keys (e.g. <code>sk-ant-…</code>). Default off.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-debugging-allow-direct-keys-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("allow_direct_keys");
 											}}
 										/>
 									</FormControl>

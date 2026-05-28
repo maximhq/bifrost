@@ -575,6 +575,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	allow_direct_keys: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -592,6 +593,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	allow_direct_keys: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -610,6 +612,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	allow_direct_keys: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 });
@@ -623,6 +626,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	allow_direct_keys: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 });
@@ -720,11 +724,12 @@ export const performanceFormSchema = z.object({
 		}),
 });
 
-// Debugging tab (raw request/response toggles)
+// Debugging tab (raw request/response toggles + the per-provider passthrough flag)
 export const debuggingFormSchema = z.object({
 	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
 	store_raw_request_response: z.boolean(),
+	allow_direct_keys: z.boolean(),
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
