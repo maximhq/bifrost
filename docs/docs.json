@@ -763,6 +763,68 @@
                 ]
               }
             ]
+          },
+          {
+            "item": "Helm",
+            "icon": "box",
+            "pages": [
+              "changelogs/helm-v2.1.19",
+              "changelogs/helm-v2.1.18",
+              "changelogs/helm-v2.1.17",
+              "changelogs/helm-v2.1.16",
+              "changelogs/helm-v2.1.15",
+              "changelogs/helm-v2.1.14",
+              "changelogs/helm-v2.1.13",
+              {
+                "group": "April 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.12",
+                  "changelogs/helm-v2.1.11",
+                  "changelogs/helm-v2.1.10",
+                  "changelogs/helm-v2.1.9",
+                  "changelogs/helm-v2.1.8",
+                  "changelogs/helm-v2.1.7",
+                  "changelogs/helm-v2.1.6",
+                  "changelogs/helm-v2.1.4",
+                  "changelogs/helm-v2.1.3",
+                  "changelogs/helm-v2.1.2",
+                  "changelogs/helm-v2.1.1",
+                  "changelogs/helm-v2.1.0-prerelease2",
+                  "changelogs/helm-v2.0.17",
+                  "changelogs/helm-v2.0.16",
+                  "changelogs/helm-v2.0.15"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.14",
+                  "changelogs/helm-v2.0.13",
+                  "changelogs/helm-v2.0.12",
+                  "changelogs/helm-v2.0.11",
+                  "changelogs/helm-v2.0.10"
+                ]
+              },
+              {
+                "group": "February 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.9",
+                  "changelogs/helm-v2.0.8",
+                  "changelogs/helm-v2.0.7",
+                  "changelogs/helm-v2.0.6",
+                  "changelogs/helm-v2.0.5"
+                ]
+              },
+              {
+                "group": "January 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.2",
+                  "changelogs/helm-v2.0.1",
+                  "changelogs/helm-v2.0.0",
+                  "changelogs/helm-v1.7.0"
+                ]
+              }
+            ]
           }
         ]
       }
