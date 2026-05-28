@@ -30,6 +30,15 @@ type ModelsManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+}
+
+// ModelPricingAttributesEntry is the wire shape for PUT /api/model-catalog.
+// (model, provider) is the natural key on governance_model_pricing.
+type ModelPricingAttributesEntry struct {
+	Model                string            `json:"model"`
+	Provider             string            `json:"provider"`
+	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -128,6 +137,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.PUT("/api/model-catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -595,13 +605,14 @@ type ListModelsResponse struct {
 
 // ModelDetailsResponse represents a model with capability metadata.
 type ModelDetailsResponse struct {
-	Name             string                `json:"name"`
-	Provider         string                `json:"provider"`
-	ContextLength    *int                  `json:"context_length,omitempty"`
-	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
-	Architecture     *schemas.Architecture `json:"architecture,omitempty"`
-	AccessibleByKeys []string              `json:"accessible_by_keys,omitempty"`
+	Name                 string                `json:"name"`
+	Provider             string                `json:"provider"`
+	ContextLength        *int                  `json:"context_length,omitempty"`
+	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
+	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
 }
 
 // ListModelDetailsResponse represents the response for listing detailed models.
@@ -712,6 +723,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
 			details.Architecture = capabilities.Architecture
+			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
 		responseModels = append(responseModels, details)
 	}
@@ -1192,4 +1204,32 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 		}
 	}
 	return nil
+}
+
+// upsertModelCatalogEntries handles PUT /api/model-catalog — batch-upserts
+// the additional_attributes JSON on the pricing rows keyed by
+// (model, provider). Every requested (model, provider) must already exist in
+// governance_model_pricing; the whole batch is rejected atomically if any
+// entry is missing. An entry with an empty AdditionalAttributes map clears
+// the column for that (model, provider).
+func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
+	var payload []ModelPricingAttributesEntry
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		return
+	}
+	for i := range payload {
+		payload[i].Model = strings.TrimSpace(payload[i].Model)
+		payload[i].Provider = strings.TrimSpace(payload[i].Provider)
+		if payload[i].Model == "" || payload[i].Provider == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "model and provider are required for every catalog entry")
+			return
+		}
+	}
+
+	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

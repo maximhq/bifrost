@@ -813,6 +813,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -8891,6 +8894,39 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAdditionalAttributesToPricing adds the additional_attributes
+// column to governance_model_pricing. The column stores editorial per-model
+// metadata (e.g. description) as a JSON blob. It is intentionally excluded
+// from UpsertModelPrices' update list so the 24-hour pricing sync never
+// overwrites it.
+func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_additional_attributes_to_pricing",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				if err := tx.Migrator().AddColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
+					return fmt.Errorf("failed to add additional_attributes column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				if err := tx.Migrator().DropColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
+					return fmt.Errorf("failed to drop additional_attributes column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_additional_attributes_to_pricing migration: %s", err.Error())
 	}
 	return nil
 }
