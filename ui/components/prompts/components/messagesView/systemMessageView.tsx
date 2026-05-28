@@ -166,6 +166,7 @@ export function SystemMessageView({
 						lang="json"
 						readonly={disabled}
 						autoResize
+						maxHeight={400}
 						onChange={(value) => {
 							jsonBufferRef.current = value ?? "";
 						}}
