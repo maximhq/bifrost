@@ -241,10 +241,17 @@ func (p *Provider) InitiateUserSubmissionFlow(ctx context.Context, mode schemas.
 	// logs, not in upstream Referer), unlike a query param. Best-effort:
 	// mint failure does not fail the flow init.
 	//
+	// User-mode flows skip the mint: the handler-side identity gate requires
+	// caller's user_id to match flow.UserID, which is only populated by
+	// normal SCIM enforcement on the auth-page route. Minting a temp token
+	// would route the request through the temp-token middleware branch that
+	// bypasses cookie resolution, leaving caller user_id empty and the gate
+	// would 403 even legitimate users. VK and session-mode flows are
+	// intentionally shareable and continue to mint.
 	// Gated by the same MCPEnableTempTokenAuth client-config toggle the
 	// OAuth surface reads, so the UI switch controls both per-user auth
 	// kinds uniformly.
-	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) {
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && mode != schemas.MCPAuthModeUser {
 		ttl := time.Until(flow.ExpiresAt)
 		if ttl > 0 {
 			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPHeadersAuthScopeName, flow.ID, ttl)

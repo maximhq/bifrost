@@ -1045,7 +1045,15 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// dashboard session can still call the per-user flow endpoints. The
 	// fragment never leaves the browser (not in server logs, not in the
 	// upstream-OAuth Referer), unlike a query param.
-	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) {
+	//
+	// User-mode flows skip the mint: the handler-side identity gate requires
+	// caller's user_id to match flow.UserID, which is only populated by normal
+	// SCIM enforcement on the auth-page route. Minting a temp token would
+	// route the request through the temp-token middleware branch that
+	// bypasses cookie resolution, leaving caller user_id empty and the gate
+	// would 403 even legitimate users. VK and session-mode flows are
+	// intentionally shareable and continue to mint.
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && flowMode != schemas.MCPAuthModeUser {
 		ttl := time.Until(expiresAt)
 		if ttl > 0 {
 			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
