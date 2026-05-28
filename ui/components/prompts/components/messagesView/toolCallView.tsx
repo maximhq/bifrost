@@ -1,27 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
 import { Message, MessageRole, SerializedMessage, type ToolCall } from "@/lib/message";
+import { cn } from "@/lib/utils";
 import { isJson } from "@/lib/utils/validation";
-import { Loader2, PencilLine, Play, Send, Wrench, XIcon } from "lucide-react";
+import { Check, Loader2, PencilLine, Play, Send, Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
-/**
- * Renders a UI for viewing and editing tool-call entries on a message, including optional argument editing and submitting tool responses.
- *
- * The component displays each tool call's name, id, and arguments (JSON arguments open in an editable code editor). JSON edits are buffered locally and only committed to `onChange` when the editor loses focus or when the message role changes. The component also exposes controls for switching the message role, deleting the message, and entering/submitting a response for individual tool calls.
- *
- * @param message - Message instance containing zero or more toolCalls to render; edits are serialized via `onChange`.
- * @param disabled - When true, disables interactive controls and makes editors read-only.
- * @param onChange - Called with the message's serialized form after committed edits (e.g., buffered JSON arguments flushed or role changed).
- * @param onRemove - If provided, called when the delete button is clicked.
- * @param onSubmitToolResult - If provided, called with (toolCallId, content) when a user submits a response for a tool call.
- * @param respondedToolCallIds - Optional set of toolCall ids that have already received responses; tool calls in this set hide the response UI.
- *
- * @returns The rendered React element for the tool-call message view.
- */
 export default function ToolCallMessageView({
 	message,
 	disabled,
@@ -29,6 +15,9 @@ export default function ToolCallMessageView({
 	onRemove,
 	onSubmitToolResult,
 	onExecuteToolCall,
+	onSubmitAllToolResults,
+	onExecuteAllToolCalls,
+	fetchToolResult,
 	respondedToolCallIds,
 }: {
 	message: Message;
@@ -37,15 +26,30 @@ export default function ToolCallMessageView({
 	onRemove?: () => void;
 	onSubmitToolResult?: (toolCallId: string, content: string) => void;
 	onExecuteToolCall?: (toolCall: ToolCall) => Promise<void>;
+	onSubmitAllToolResults?: (results: { toolCallId: string; content: string }[]) => Promise<void>;
+	onExecuteAllToolCalls?: (toolCalls: ToolCall[]) => Promise<void>;
+	fetchToolResult?: (toolCall: ToolCall) => Promise<string>;
 	respondedToolCallIds?: Set<string>;
 }) {
 	const toolCalls = message.toolCalls ?? [];
 	const [responses, setResponses] = useState<Record<string, string>>({});
 	const [executingIds, setExecutingIds] = useState<Set<string>>(new Set());
+	const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
 	const [manualEntryIds, setManualEntryIds] = useState<Set<string>>(new Set());
+	const [isExecutingAll, setIsExecutingAll] = useState(false);
+	const [isSubmittingAll, setIsSubmittingAll] = useState(false);
 	const messageRef = useRef(message);
 	messageRef.current = message;
 	const jsonBufferRef = useRef<Record<string, string>>({});
+
+	const pendingToolCalls = toolCalls.filter((tc) => !respondedToolCallIds?.has(tc.id));
+	const isMultiple = pendingToolCalls.length > 1;
+	const isBusy = isExecutingAll || isSubmittingAll || executingIds.size > 0;
+
+	const resolvedCount = pendingToolCalls.filter(
+		(tc) => resolvedIds.has(tc.id) || (manualEntryIds.has(tc.id) && responses[tc.id]?.trim()),
+	).length;
+	const allResolved = pendingToolCalls.length > 0 && resolvedCount === pendingToolCalls.length;
 
 	const applyPendingJsonBuffers = (msg: Message): Message => {
 		const keys = Object.keys(jsonBufferRef.current);
@@ -73,6 +77,22 @@ export default function ToolCallMessageView({
 		}
 	};
 
+	const flushAllJsonBuffers = () => {
+		const keys = Object.keys(jsonBufferRef.current);
+		if (keys.length === 0) return;
+		const clone = messageRef.current.clone();
+		let changed = false;
+		for (const toolCallId of keys) {
+			const tc = clone.toolCalls?.find((t) => t.id === toolCallId);
+			if (tc) {
+				tc.function.arguments = jsonBufferRef.current[toolCallId];
+				changed = true;
+			}
+		}
+		jsonBufferRef.current = {};
+		if (changed) onChange(clone.serialized);
+	};
+
 	const handleRoleChange = (role: string) => {
 		const latest = applyPendingJsonBuffers(messageRef.current);
 		const clone = latest.clone();
@@ -84,6 +104,7 @@ export default function ToolCallMessageView({
 		setResponses((prev) => ({ ...prev, [toolCallId]: value }));
 	};
 
+	// Single mode: submit one result and continue conversation immediately
 	const handleSubmitResponse = (toolCallId: string) => {
 		const content = responses[toolCallId]?.trim();
 		if (!content || !onSubmitToolResult) return;
@@ -100,7 +121,8 @@ export default function ToolCallMessageView({
 		});
 	};
 
-	const handleExecute = async (tc: ToolCall) => {
+	// Single mode: execute and immediately continue conversation
+	const handleExecuteSingle = async (tc: ToolCall) => {
 		if (!onExecuteToolCall) return;
 		flushJsonBuffer(tc.id);
 		const latestTc = messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc;
@@ -116,8 +138,67 @@ export default function ToolCallMessageView({
 		}
 	};
 
+	// Multi mode: execute one tool, store result locally (don't submit yet)
+	const handleExecuteOne = async (tc: ToolCall) => {
+		if (!fetchToolResult) return;
+		flushJsonBuffer(tc.id);
+		const latestTc = messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc;
+		setExecutingIds((prev) => new Set(prev).add(tc.id));
+		try {
+			const content = await fetchToolResult(latestTc);
+			setResponses((prev) => ({ ...prev, [tc.id]: content }));
+			setResolvedIds((prev) => new Set(prev).add(tc.id));
+		} finally {
+			setExecutingIds((prev) => {
+				const next = new Set(prev);
+				next.delete(tc.id);
+				return next;
+			});
+		}
+	};
+
+	// Multi mode: execute all pending tools in parallel, store results locally
+	const handleExecuteAll = async () => {
+		if (!onExecuteAllToolCalls) return;
+		flushAllJsonBuffers();
+		const latestCalls = pendingToolCalls.map(
+			(tc) => messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc,
+		);
+		setIsExecutingAll(true);
+		try {
+			await onExecuteAllToolCalls(latestCalls);
+		} finally {
+			setIsExecutingAll(false);
+		}
+	};
+
+	// Multi mode: submit all collected results at once
+	const handleSubmitAll = async () => {
+		if (!onSubmitAllToolResults) return;
+		const results: { toolCallId: string; content: string }[] = [];
+		for (const tc of pendingToolCalls) {
+			const content = responses[tc.id]?.trim();
+			if (!content) return;
+			results.push({ toolCallId: tc.id, content });
+		}
+		setIsSubmittingAll(true);
+		try {
+			await onSubmitAllToolResults(results);
+			setResponses({});
+			setManualEntryIds(new Set());
+			setResolvedIds(new Set());
+		} finally {
+			setIsSubmittingAll(false);
+		}
+	};
+
 	const showManualEntry = (toolCallId: string) => {
 		setManualEntryIds((prev) => new Set(prev).add(toolCallId));
+		setResolvedIds((prev) => {
+			const next = new Set(prev);
+			next.delete(toolCallId);
+			return next;
+		});
 	};
 
 	const hideManualEntry = (toolCallId: string) => {
@@ -126,7 +207,19 @@ export default function ToolCallMessageView({
 			next.delete(toolCallId);
 			return next;
 		});
+		setResponses((prev) => {
+			const next = { ...prev };
+			delete next[toolCallId];
+			return next;
+		});
+		setResolvedIds((prev) => {
+			const next = new Set(prev);
+			next.delete(toolCallId);
+			return next;
+		});
 	};
+
+	const tcHasResult = (tcId: string) => resolvedIds.has(tcId) || (manualEntryIds.has(tcId) && !!responses[tcId]?.trim());
 
 	return (
 		<div className="group rounded-lg border border-transparent px-3 py-2 transition-colors hover:border-border/80 focus-within:border-border/80">
@@ -167,9 +260,11 @@ export default function ToolCallMessageView({
 						}
 					}
 
-					const isExecuting = executingIds.has(tc.id);
+					const isExecuting = executingIds.has(tc.id) || isExecutingAll;
 					const isResponded = respondedToolCallIds?.has(tc.id);
 					const isManualEntryOpen = manualEntryIds.has(tc.id);
+					const hasResult = tcHasResult(tc.id);
+					const isResolved = resolvedIds.has(tc.id);
 
 					return (
 						<div
@@ -182,6 +277,7 @@ export default function ToolCallMessageView({
 							)}
 							style={{ animationDelay: `${i * 75}ms` }}
 						>
+							{/* Header */}
 							<div className="flex items-start gap-2 border-b bg-muted/40 px-3 py-2">
 								<div className="min-w-0 flex-1 items-center flex justify-between">
 									<div className="flex min-w-0 items-center gap-2">
@@ -203,6 +299,12 @@ export default function ToolCallMessageView({
 												Responded
 											</span>
 										)}
+										{!isResponded && isMultiple && hasResult && (
+											<span className="animate-in fade-in-0 zoom-in-90 duration-200 motion-reduce:animate-none shrink-0 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-600 dark:text-blue-400 flex items-center gap-0.5">
+												<Check className="size-2.5" />
+												Ready
+											</span>
+										)}
 									</div>
 
 									<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
@@ -211,6 +313,7 @@ export default function ToolCallMessageView({
 								</div>
 							</div>
 
+							{/* Arguments */}
 							{formattedArgs && (
 								<div className="px-3 py-2">
 									<div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -244,103 +347,174 @@ export default function ToolCallMessageView({
 								</div>
 							)}
 
-							{!disabled && onSubmitToolResult && !isResponded && (
-								<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2">
-									{isManualEntryOpen ? (
-										<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none space-y-2">
-											<div className="flex items-center gap-2">
-												<div>
-													<div className="text-xs font-medium text-foreground">Tool result</div>
-													<div className="text-[10px] text-muted-foreground">
-														Paste the result returned by this tool call.
-													</div>
-												</div>
-
-												<Button
-													variant="ghost"
-													size="sm"
-													className="ml-auto h-7 px-2 text-xs text-muted-foreground"
-													data-testid="tool-call-response-cancel"
-													onClick={() => hideManualEntry(tc.id)}
-													disabled={isExecuting}
-												>
-													Cancel
-												</Button>
-											</div>
-
-											<Textarea
-												autoFocus
-												placeholder="Paste tool result..."
-												value={responses[tc.id] ?? ""}
-												onChange={(e) => handleResponseChange(tc.id, e.target.value)}
-												data-testid="tool-call-response-textarea"
-												className="min-h-[84px] resize-none rounded-md bg-background font-mono text-xs"
-												rows={4}
-												disabled={isExecuting}
-											/>
-
-											<div className="flex justify-end">
-												<Button
-													variant="secondary"
-													size="sm"
-													className="h-8 active:scale-[0.97] transition-transform"
-													data-testid="tool-call-response-submit"
-													disabled={!responses[tc.id]?.trim() || isExecuting}
-													onClick={() => handleSubmitResponse(tc.id)}
-												>
-													<Send className="size-3.5" />
-													Submit result
-												</Button>
-											</div>
+							{/* Manual entry / executed result textarea */}
+							{!disabled && (isManualEntryOpen || isResolved) && !isResponded && (
+								<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2 space-y-2">
+									<div className="flex items-center gap-2">
+										<div className="text-xs font-medium text-foreground">
+											{isResolved && !isManualEntryOpen ? "Executed result" : "Tool result"}
 										</div>
-									) : (
-										<div className="flex flex-wrap items-center gap-2">
+										{isMultiple && (
+											<Button
+												variant="ghost"
+												size="sm"
+												className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+												onClick={() => hideManualEntry(tc.id)}
+												disabled={isBusy}
+											>
+												Clear
+											</Button>
+										)}
+										{!isMultiple && (
+											<Button
+												variant="ghost"
+												size="sm"
+												className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+												data-testid="tool-call-response-cancel"
+												onClick={() => hideManualEntry(tc.id)}
+												disabled={isBusy}
+											>
+												Cancel
+											</Button>
+										)}
+									</div>
+									<Textarea
+										autoFocus={isManualEntryOpen && !isResolved}
+										placeholder="Paste tool result..."
+										value={responses[tc.id] ?? ""}
+										onChange={(e) => handleResponseChange(tc.id, e.target.value)}
+										data-testid="tool-call-response-textarea"
+										className="max-h-[200px] min-h-[84px] resize-none rounded-md bg-background font-mono text-xs"
+										rows={3}
+										disabled={isBusy}
+									/>
+									{/* Single mode: inline submit */}
+									{!isMultiple && (
+										<div className="flex justify-end">
+											<Button
+												variant="secondary"
+												size="sm"
+												className="h-8 active:scale-[0.97] transition-transform"
+												data-testid="tool-call-response-submit"
+												disabled={!responses[tc.id]?.trim() || isBusy}
+												onClick={() => handleSubmitResponse(tc.id)}
+											>
+												<Send className="size-3.5" />
+												Submit result
+											</Button>
+										</div>
+									)}
+								</div>
+							)}
+
+							{/* Per-card action bar (single mode: full actions, multi mode: per-card execute/manual) */}
+							{!disabled && onSubmitToolResult && !isResponded && !hasResult && !isManualEntryOpen && (
+								<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2">
+									<div className="flex flex-wrap items-center gap-2">
+										{!isMultiple && (
 											<div className="min-w-0">
 												<div className="text-xs font-medium text-foreground">Awaiting tool result</div>
 												<div className="text-[10px] text-muted-foreground">
 													Execute the call or add the result manually.
 												</div>
 											</div>
-
-											<div className="ml-auto flex items-center gap-1.5">
-												{onExecuteToolCall && (
-													<Button
-														variant="secondary"
-														size="sm"
-														className="h-8 active:scale-[0.97] transition-transform"
-														data-testid="tool-call-execute"
-														disabled={isExecuting}
-														onClick={() => handleExecute(tc)}
-													>
-														{isExecuting ? (
-															<Loader2 className="size-3.5 animate-spin" />
-														) : (
-															<Play className="size-3.5" />
-														)}
-														{isExecuting ? "Executing" : "Execute"}
-													</Button>
-												)}
-
+										)}
+										<div className={cn("flex items-center gap-1.5", !isMultiple && "ml-auto")}>
+											{(isMultiple ? fetchToolResult : onExecuteToolCall) && (
 												<Button
-													variant="ghost"
+													variant="secondary"
 													size="sm"
 													className="h-8 active:scale-[0.97] transition-transform"
-													data-testid="tool-call-response-add-manually"
-													disabled={isExecuting}
-													onClick={() => showManualEntry(tc.id)}
+													data-testid="tool-call-execute"
+													disabled={isBusy}
+													onClick={() => isMultiple ? handleExecuteOne(tc) : handleExecuteSingle(tc)}
 												>
-													<PencilLine className="size-3.5" />
-													Add manually
+													{executingIds.has(tc.id) ? (
+														<Loader2 className="size-3.5 animate-spin" />
+													) : (
+														<Play className="size-3.5" />
+													)}
+													{executingIds.has(tc.id) ? "Executing" : "Execute"}
 												</Button>
-											</div>
+											)}
+											<Button
+												variant="ghost"
+												size="sm"
+												className="h-8 active:scale-[0.97] transition-transform"
+												data-testid="tool-call-response-add-manually"
+												disabled={isBusy}
+												onClick={() => showManualEntry(tc.id)}
+											>
+												<PencilLine className="size-3.5" />
+												Add manually
+											</Button>
 										</div>
-									)}
+									</div>
 								</div>
 							)}
 						</div>
 					);
 				})}
 			</div>
+
+			{/* Multi-tool: unified bottom bar with progress and submit */}
+			{!disabled && onSubmitToolResult && isMultiple && pendingToolCalls.length > 0 && (
+				<div className="sticky bottom-0 py-1.5 bg-card mt-3">
+					<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none rounded-lg border bg-muted/20 px-3 py-2.5">
+						<div className="flex flex-wrap items-center gap-2">
+							<div className="min-w-0">
+								<div className="text-xs font-medium text-foreground">
+									{allResolved
+										? `All ${pendingToolCalls.length} results ready`
+										: `${resolvedCount} of ${pendingToolCalls.length} results collected`}
+								</div>
+								<div className="text-[10px] text-muted-foreground">
+									{allResolved
+										? "Submit all results to continue the conversation."
+										: "Execute or fill each tool call above, then submit together."}
+								</div>
+							</div>
+							<div className="ml-auto flex items-center gap-1.5">
+								{onExecuteAllToolCalls && resolvedCount === 0 && (
+									<Button
+										size="sm"
+										className="h-8 active:scale-[0.97] transition-transform bg-primary text-primary-foreground hover:bg-primary/90"
+										data-testid="tool-call-execute-all"
+										disabled={isBusy}
+										onClick={handleExecuteAll}
+									>
+										{isExecutingAll ? (
+											<Loader2 className="size-3.5 animate-spin" />
+										) : (
+											<Play className="size-3.5" />
+										)}
+										{isExecutingAll ? "Executing all" : "Execute all"}
+									</Button>
+								)}
+								<Button
+									size="sm"
+									className={cn(
+										"h-8 active:scale-[0.97] transition-all",
+										allResolved
+											? "bg-primary text-primary-foreground hover:bg-primary/90"
+											: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+									)}
+									data-testid="tool-call-submit-all"
+									disabled={!allResolved || isBusy || isSubmittingAll}
+									onClick={handleSubmitAll}
+								>
+									{isSubmittingAll ? (
+										<Loader2 className="size-3.5 animate-spin" />
+									) : (
+										<Send className="size-3.5" />
+									)}
+									{isSubmittingAll ? "Submitting" : "Submit all results"}
+								</Button>
+							</div>
+						</div>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
