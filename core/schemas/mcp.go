@@ -277,18 +277,19 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID                string            `json:"client_id"`                     // Client ID
-	Name              string            `json:"name"`                          // Client name
-	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
-	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString  *EnvVar           `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig       *MCPStdioConfig   `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
-	AuthType          MCPAuthType       `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
-	OauthConfigID     *string           `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
-	OauthClientID     *EnvVar           `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret *EnvVar           `json:"oauth_client_secret,omitempty"` // Redacted OAuth client secret (populated on GET, not stored here)
-	State             string            `json:"state,omitempty"`               // Connection state (connected, disconnected, error)
-	Headers           map[string]EnvVar `json:"headers,omitempty"`             // Headers to send with the request (for headers auth type)
+	ID                  string            `json:"client_id"`                       // Client ID
+	Name                string            `json:"name"`                            // Client name
+	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
+	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
+	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
+	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
+	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
+	OauthClientID       *EnvVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret   *EnvVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
+	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
+	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
 	// PerUserHeaderKeys lists the header *names* each caller must supply for
 	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
 	// values live per-user in the mcp_per_user_header_credentials table and
@@ -448,6 +449,31 @@ type MCPStdioConfig struct {
 	Command string   `json:"command"` // Executable command to run
 	Args    []string `json:"args"`    // Command line arguments
 	Envs    []string `json:"envs"`    // Environment variables required
+}
+
+// MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.
+// InsecureSkipVerify takes priority over CACertPEM when both are set.
+type MCPTLSConfig struct {
+	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
+	CACertPEM          *EnvVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
+}
+
+// MarshalForStorage serializes MCPTLSConfig for DB persistence.
+// ca_cert_pem is stored as a plain string ("env.VAR_NAME" or literal PEM).
+// For HTTP API responses use json.Marshal so clients receive the full EnvVar object.
+func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
+	if t == nil {
+		return []byte("null"), nil
+	}
+	type tlsConfigStorage struct {
+		InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
+		CACertPEM          string `json:"ca_cert_pem,omitempty"`
+	}
+	a := tlsConfigStorage{InsecureSkipVerify: t.InsecureSkipVerify}
+	if t.CACertPEM != nil {
+		a.CACertPEM = EnvVarAsString(t.CACertPEM)
+	}
+	return json.Marshal(a)
 }
 
 type MCPConnectionState string

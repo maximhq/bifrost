@@ -20,6 +20,7 @@ type TableMCPClient struct {
 	ConnectionType          string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString        *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
 	StdioConfigJSON         *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
 	ToolsToExecuteJSON      string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	ToolsToAutoExecuteJSON  string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	HeadersJSON             string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
@@ -57,6 +58,7 @@ type TableMCPClient struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
 	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
 	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
@@ -83,6 +85,17 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.StdioConfigJSON = &config
 	} else {
 		c.StdioConfigJSON = nil
+	}
+
+	if c.TLSConfig != nil {
+		data, err := c.TLSConfig.MarshalForStorage()
+		if err != nil {
+			return err
+		}
+		config := string(data)
+		c.TLSConfigJSON = &config
+	} else {
+		c.TLSConfigJSON = nil
 	}
 
 	if c.ToolsToExecute != nil {
@@ -230,6 +243,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		c.StdioConfig = &config
+	}
+	if c.TLSConfigJSON != nil {
+		var config schemas.MCPTLSConfig
+		if err := sonic.Unmarshal([]byte(*c.TLSConfigJSON), &config); err != nil {
+			return err
+		}
+		c.TLSConfig = &config
 	}
 	if c.ToolsToExecuteJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {

@@ -1491,6 +1491,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:          dbClient.ConnectionString,
 					StdioConfig:               dbClient.StdioConfig,
+					TLSConfig:                 dbClient.TLSConfig,
 					AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 					OauthConfigID:             dbClient.OauthConfigID,
 					ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1532,6 +1533,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:          dbClient.ConnectionString,
 			StdioConfig:               dbClient.StdioConfig,
+			TLSConfig:                 dbClient.TLSConfig,
 			AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 			OauthConfigID:             dbClient.OauthConfigID,
 			ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1618,6 +1620,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:          dbClient.ConnectionString,
 		StdioConfig:               dbClient.StdioConfig,
+		TLSConfig:                 dbClient.TLSConfig,
 		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 		OauthConfigID:             dbClient.OauthConfigID,
 		ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1671,6 +1674,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ConnectionType:        string(clientConfigCopy.ConnectionType),
 			ConnectionString:      clientConfigCopy.ConnectionString,
 			StdioConfig:           clientConfigCopy.StdioConfig,
+			TLSConfig:             clientConfigCopy.TLSConfig,
 			AuthType:              string(clientConfigCopy.AuthType),
 			OauthConfigID:         clientConfigCopy.OauthConfigID,
 			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
@@ -1764,6 +1768,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			stdioStr := string(stdioData)
 			stdioConfigJSON = &stdioStr
 		}
+		var tlsConfigJSON *string
+		if clientConfigCopy.TLSConfig != nil {
+			tlsData, marshalErr := clientConfigCopy.TLSConfig.MarshalForStorage()
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal tls_config: %w", marshalErr)
+			}
+			tlsStr := string(tlsData)
+			tlsConfigJSON = &tlsStr
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1829,6 +1842,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.OauthConfigID != nil {
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 		}
+		updates["tls_config_json"] = tlsConfigJSON
 		if discoveredToolsJSON != "" {
 			updates["discovered_tools_json"] = discoveredToolsJSON
 		}
@@ -1862,6 +1876,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["connection_type"] = clientConfigCopy.ConnectionType
 			updates["connection_string"] = connectionStringToPersist
 			updates["stdio_config_json"] = stdioConfigJSON
+			updates["tls_config_json"] = tlsConfigJSON
 			updates["auth_type"] = clientConfigCopy.AuthType
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
