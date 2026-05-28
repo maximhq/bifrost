@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -63,8 +65,8 @@ func Validate(config *Config, requireStaticPassword bool) error {
 		return err
 	}
 	if config.PasswordCommand != nil {
-		if strings.TrimSpace(config.PasswordCommand.Command) == "" {
-			return fmt.Errorf("postgres password_command.command is required")
+		if err := validatePasswordCommand(config.PasswordCommand); err != nil {
+			return err
 		}
 		if config.Password != nil && config.Password.GetValue() != "" {
 			return fmt.Errorf("postgres password and password_command are mutually exclusive")
@@ -181,8 +183,8 @@ func RunPasswordCommand(ctx context.Context, config *PasswordCommandConfig) (str
 	if config == nil {
 		return "", fmt.Errorf("postgres password_command config is required")
 	}
-	if strings.TrimSpace(config.Command) == "" {
-		return "", fmt.Errorf("postgres password_command.command is required")
+	if err := validatePasswordCommand(config); err != nil {
+		return "", err
 	}
 	timeout, err := parsePasswordCommandTimeout(config)
 	if err != nil {
@@ -233,6 +235,26 @@ func passwordCommandError(err error, stderr string) error {
 		return fmt.Errorf("postgres password_command failed: %w", err)
 	}
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
+}
+
+func validatePasswordCommand(config *PasswordCommandConfig) error {
+	if config == nil {
+		return fmt.Errorf("postgres password_command config is required")
+	}
+	command := strings.TrimSpace(config.Command)
+	if command == "" {
+		return fmt.Errorf("postgres password_command.command is required")
+	}
+	if command != config.Command || strings.IndexFunc(command, unicode.IsSpace) >= 0 || strings.ContainsRune(command, 0) {
+		return fmt.Errorf("postgres password_command.command must be a single executable path or name; pass arguments via password_command.args")
+	}
+	base := strings.ToLower(filepath.Base(command))
+	base = strings.TrimSuffix(base, ".exe")
+	switch base {
+	case "sh", "bash", "dash", "zsh", "fish", "ksh", "cmd", "powershell", "pwsh":
+		return fmt.Errorf("postgres password_command.command must not invoke a shell interpreter directly")
+	}
+	return nil
 }
 
 func parseConnMaxLifetime(config *Config) (time.Duration, error) {

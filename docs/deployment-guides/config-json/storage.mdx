@@ -81,7 +81,7 @@ Production-grade storage suitable for high-availability and high-throughput depl
 | `port` | - | PostgreSQL port (as string) |
 | `user` | - | Database user (supports `env.` prefix) |
 | `password` | - | Database password (supports `env.` prefix). Mutually exclusive with `password_command`; configure only one password source alongside `db_name`. |
-| `password_command` | - | Command executed without a shell to produce the database password on stdout for each new physical connection. Mutually exclusive with `password`; runtime validation rejects configs that set both fields. |
+| `password_command` | - | Command executed without a shell to produce the database password on stdout for each new physical connection. Mutually exclusive with `password`; runtime validation rejects configs that set both fields. Put only the executable path or name in `command`; pass arguments through `args`. |
 | `db_name` | - | Database name |
 | `ssl_mode` | - | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
 | `max_idle_conns` | `5` | Maximum idle connections in the pool |

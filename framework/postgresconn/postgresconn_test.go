@@ -77,6 +77,23 @@ func TestRunPasswordCommandRequiresCommand(t *testing.T) {
 	require.ErrorContains(t, err, "postgres password_command.command is required")
 }
 
+func TestRunPasswordCommandRejectsCommandWithInlineArgs(t *testing.T) {
+	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
+		Command: "printf secret",
+	})
+
+	require.ErrorContains(t, err, "single executable")
+}
+
+func TestRunPasswordCommandRejectsShellInterpreter(t *testing.T) {
+	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
+		Command: "sh",
+		Args:    []string{"-c", "printf secret"},
+	})
+
+	require.ErrorContains(t, err, "must not invoke a shell interpreter")
+}
+
 func TestRunPasswordCommandRejectsEmptyOutput(t *testing.T) {
 	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
 		Command: "printf",
@@ -88,18 +105,18 @@ func TestRunPasswordCommandRejectsEmptyOutput(t *testing.T) {
 
 func TestRunPasswordCommandIncludesStderr(t *testing.T) {
 	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
-		Command: "sh",
-		Args:    []string{"-c", "echo useful failure detail >&2; exit 7"},
+		Command: "ls",
+		Args:    []string{"/definitely/not/a/real/postgres/password/file"},
 	})
 
-	require.ErrorContains(t, err, "exit status 7")
-	require.ErrorContains(t, err, "useful failure detail")
+	require.ErrorContains(t, err, "exit status")
+	require.ErrorContains(t, err, "definitely/not/a/real/postgres/password/file")
 }
 
 func TestRunPasswordCommandTimeout(t *testing.T) {
 	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
-		Command: "sh",
-		Args:    []string{"-c", "sleep 1"},
+		Command: "sleep",
+		Args:    []string{"1"},
 		Timeout: "1ms",
 	})
 

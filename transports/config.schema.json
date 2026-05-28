@@ -1054,6 +1054,7 @@
                       "command": {
                         "type": "string",
                         "minLength": 1,
+                        "pattern": "^\\S+$",
                         "description": "Executable path or name to run"
                       },
                       "args": {
@@ -1191,6 +1192,7 @@
                       "command": {
                         "type": "string",
                         "minLength": 1,
+                        "pattern": "^\\S+$",
                         "description": "Executable path or name to run"
                       },
                       "args": {

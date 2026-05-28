@@ -202,6 +202,10 @@ func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
 			config: postgresStoreConfig("config_store", `"password_command": {"command": ""}`),
 		},
 		{
+			name:   "config_store rejects inline args in password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws rds"}`),
+		},
+		{
 			name:   "logs_store rejects zero password command timeout",
 			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
 		},
