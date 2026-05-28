@@ -1,9 +1,10 @@
-import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Message, SerializedMessage } from "@/lib/message";
-import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { Wrench, XIcon } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import { Message, MessageRole, SerializedMessage, type ToolCall } from "@/lib/message";
+import { isJson } from "@/lib/utils/validation";
+import { Loader2, PencilLine, Play, Send, Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
@@ -27,6 +28,7 @@ export default function ToolCallMessageView({
 	onChange,
 	onRemove,
 	onSubmitToolResult,
+	onExecuteToolCall,
 	respondedToolCallIds,
 }: {
 	message: Message;
@@ -34,10 +36,13 @@ export default function ToolCallMessageView({
 	onChange: (serialized: SerializedMessage) => void;
 	onRemove?: () => void;
 	onSubmitToolResult?: (toolCallId: string, content: string) => void;
+	onExecuteToolCall?: (toolCall: ToolCall) => Promise<void>;
 	respondedToolCallIds?: Set<string>;
 }) {
 	const toolCalls = message.toolCalls ?? [];
 	const [responses, setResponses] = useState<Record<string, string>>({});
+	const [executingIds, setExecutingIds] = useState<Set<string>>(new Set());
+	const [manualEntryIds, setManualEntryIds] = useState<Set<string>>(new Set());
 	const messageRef = useRef(message);
 	messageRef.current = message;
 	const jsonBufferRef = useRef<Record<string, string>>({});
@@ -71,7 +76,7 @@ export default function ToolCallMessageView({
 	const handleRoleChange = (role: string) => {
 		const latest = applyPendingJsonBuffers(messageRef.current);
 		const clone = latest.clone();
-		clone.role = role as any;
+		clone.role = role as MessageRole;
 		onChange(clone.serialized);
 	};
 
@@ -88,30 +93,72 @@ export default function ToolCallMessageView({
 			delete next[toolCallId];
 			return next;
 		});
+		setManualEntryIds((prev) => {
+			const next = new Set(prev);
+			next.delete(toolCallId);
+			return next;
+		});
+	};
+
+	const handleExecute = async (tc: ToolCall) => {
+		if (!onExecuteToolCall) return;
+		flushJsonBuffer(tc.id);
+		const latestTc = messageRef.current.toolCalls?.find((t) => t.id === tc.id) ?? tc;
+		setExecutingIds((prev) => new Set(prev).add(tc.id));
+		try {
+			await onExecuteToolCall(latestTc);
+		} finally {
+			setExecutingIds((prev) => {
+				const next = new Set(prev);
+				next.delete(tc.id);
+				return next;
+			});
+		}
+	};
+
+	const showManualEntry = (toolCallId: string) => {
+		setManualEntryIds((prev) => new Set(prev).add(toolCallId));
+	};
+
+	const hideManualEntry = (toolCallId: string) => {
+		setManualEntryIds((prev) => {
+			const next = new Set(prev);
+			next.delete(toolCallId);
+			return next;
+		});
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors">
-			<div className="mb-1 flex items-center">
+		<div className="group rounded-lg border border-transparent px-3 py-2 transition-colors hover:border-border/80 focus-within:border-border/80">
+			<div className="mb-2 flex items-center gap-1">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
-				<div className="ml-auto h-5">
+
+				{toolCalls.length > 0 && (
+					<span className="animate-in fade-in-0 zoom-in-95 duration-200 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground motion-reduce:animate-none">
+						{toolCalls.length} tool call{toolCalls.length > 1 ? "s" : ""}
+					</span>
+				)}
+
+				<div className="ml-auto h-6">
 					{!disabled && onRemove && (
 						<button
 							type="button"
 							aria-label="Delete message"
 							data-testid="tool-call-msg-delete"
 							onClick={onRemove}
-							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
+							className="rounded-md p-1 opacity-0 transition hover:bg-destructive/10 focus:bg-destructive/10 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
 						>
-							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
+							<XIcon className="size-3.5 shrink-0 cursor-pointer text-muted-foreground transition-colors hover:text-destructive" />
 						</button>
 					)}
 				</div>
 			</div>
-			<div className="space-y-2">
-				{toolCalls.map((tc) => {
+
+			<div className="space-y-2.5">
+				{toolCalls.map((tc, i) => {
 					const argsIsJson = isJson(tc.function.arguments);
 					let formattedArgs = tc.function.arguments;
+
 					if (argsIsJson) {
 						try {
 							formattedArgs = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
@@ -119,59 +166,174 @@ export default function ToolCallMessageView({
 							// keep raw string
 						}
 					}
+
+					const isExecuting = executingIds.has(tc.id);
+					const isResponded = respondedToolCallIds?.has(tc.id);
+					const isManualEntryOpen = manualEntryIds.has(tc.id);
+
 					return (
-						<div key={tc.id} className="bg-muted/50 mt-2 rounded-sm border px-3 py-2">
-							<div className="flex items-center gap-2">
-								<Wrench className="text-muted-foreground size-3 shrink-0" />
-								<span className="mr-4 shrink-0 font-mono text-xs font-medium">{tc.function.name}</span>
-								<span className="text-muted-foreground ml-auto truncate font-mono text-[10px]">{tc.id}</span>
+						<div
+							key={tc.id}
+							className={cn(
+								"animate-in fade-in-0 slide-in-from-bottom-1 duration-200 fill-mode-both motion-reduce:animate-none overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow]",
+								isExecuting
+									? "border-primary/40 shadow-[0_0_0_1px_var(--color-primary)/0.1]"
+									: "hover:border-border",
+							)}
+							style={{ animationDelay: `${i * 75}ms` }}
+						>
+							<div className="flex items-start gap-2 border-b bg-muted/40 px-3 py-2">
+								<div className="min-w-0 flex-1 items-center flex justify-between">
+									<div className="flex min-w-0 items-center gap-2">
+										<div className={cn(
+											"rounded-md bg-background p-1 shrink-0 transition-colors duration-150",
+											isExecuting && "bg-primary/10",
+										)}>
+											<Wrench className={cn(
+												"size-3.5 shrink-0 transition-colors duration-150",
+												isExecuting ? "text-primary" : "text-muted-foreground",
+											)} />
+										</div>
+										<span className="truncate font-mono text-xs font-semibold text-foreground">
+											{tc.function.name}
+										</span>
+
+										{isResponded && (
+											<span className="animate-in fade-in-0 zoom-in-90 duration-200 motion-reduce:animate-none shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+												Responded
+											</span>
+										)}
+									</div>
+
+									<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+										{tc.id}
+									</div>
+								</div>
 							</div>
-							{formattedArgs &&
-								(argsIsJson ? (
-									<div className="mt-2">
-										<CodeEditor
-											wrap
-											code={formattedArgs}
-											lang="json"
-											readonly={disabled}
-											autoResize
-											onChange={(value) => {
-												jsonBufferRef.current[tc.id] = value ?? "";
-											}}
-											options={{
-												showIndentLines: false,
-												disableHover: true,
-											}}
-											onBlur={() => flushJsonBuffer(tc.id)}
-										/>
+
+							{formattedArgs && (
+								<div className="px-3 py-2">
+									<div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+										Arguments
 									</div>
-								) : (
-									<pre className="text-muted-foreground bg-card mt-2 overflow-x-auto rounded p-2 text-xs leading-relaxed">
-										{formattedArgs}
-									</pre>
-								))}
-							{!disabled && onSubmitToolResult && !respondedToolCallIds?.has(tc.id) && (
-								<div className="mt-2 border-t pt-2">
-									<div className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">Response</div>
-									<div className="flex items-end gap-2">
-										<Textarea
-											placeholder="Enter tool response..."
-											value={responses[tc.id] ?? ""}
-											onChange={(e) => handleResponseChange(tc.id, e.target.value)}
-											data-testid="tool-call-response-textarea"
-											className="min-h-[36px] resize-none font-mono text-xs"
-											rows={2}
-										/>
-										<Button
-											variant="secondary"
-											size="sm"
-											data-testid="tool-call-response-submit"
-											disabled={!responses[tc.id]?.trim()}
-											onClick={() => handleSubmitResponse(tc.id)}
-										>
-											Submit
-										</Button>
-									</div>
+
+									{argsIsJson ? (
+										<div className="overflow-hidden rounded-md border bg-background">
+											<CodeEditor
+												wrap
+												code={formattedArgs}
+												lang="json"
+												readonly={disabled}
+												autoResize
+												onChange={(value) => {
+													jsonBufferRef.current[tc.id] = value ?? "";
+												}}
+												options={{
+													showIndentLines: false,
+													disableHover: true,
+												}}
+												onBlur={() => flushJsonBuffer(tc.id)}
+											/>
+										</div>
+									) : (
+										<pre className="max-h-56 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed text-muted-foreground">
+											{formattedArgs}
+										</pre>
+									)}
+								</div>
+							)}
+
+							{!disabled && onSubmitToolResult && !isResponded && (
+								<div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none border-t bg-muted/20 px-3 py-2">
+									{isManualEntryOpen ? (
+										<div className="animate-in fade-in-0 duration-150 motion-reduce:animate-none space-y-2">
+											<div className="flex items-center gap-2">
+												<div>
+													<div className="text-xs font-medium text-foreground">Tool result</div>
+													<div className="text-[10px] text-muted-foreground">
+														Paste the result returned by this tool call.
+													</div>
+												</div>
+
+												<Button
+													variant="ghost"
+													size="sm"
+													className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+													data-testid="tool-call-response-cancel"
+													onClick={() => hideManualEntry(tc.id)}
+													disabled={isExecuting}
+												>
+													Cancel
+												</Button>
+											</div>
+
+											<Textarea
+												autoFocus
+												placeholder="Paste tool result..."
+												value={responses[tc.id] ?? ""}
+												onChange={(e) => handleResponseChange(tc.id, e.target.value)}
+												data-testid="tool-call-response-textarea"
+												className="min-h-[84px] resize-none rounded-md bg-background font-mono text-xs"
+												rows={4}
+												disabled={isExecuting}
+											/>
+
+											<div className="flex justify-end">
+												<Button
+													variant="secondary"
+													size="sm"
+													className="h-8 active:scale-[0.97] transition-transform"
+													data-testid="tool-call-response-submit"
+													disabled={!responses[tc.id]?.trim() || isExecuting}
+													onClick={() => handleSubmitResponse(tc.id)}
+												>
+													<Send className="size-3.5" />
+													Submit result
+												</Button>
+											</div>
+										</div>
+									) : (
+										<div className="flex flex-wrap items-center gap-2">
+											<div className="min-w-0">
+												<div className="text-xs font-medium text-foreground">Awaiting tool result</div>
+												<div className="text-[10px] text-muted-foreground">
+													Execute the call or add the result manually.
+												</div>
+											</div>
+
+											<div className="ml-auto flex items-center gap-1.5">
+												{onExecuteToolCall && (
+													<Button
+														variant="secondary"
+														size="sm"
+														className="h-8 active:scale-[0.97] transition-transform"
+														data-testid="tool-call-execute"
+														disabled={isExecuting}
+														onClick={() => handleExecute(tc)}
+													>
+														{isExecuting ? (
+															<Loader2 className="size-3.5 animate-spin" />
+														) : (
+															<Play className="size-3.5" />
+														)}
+														{isExecuting ? "Executing" : "Execute"}
+													</Button>
+												)}
+
+												<Button
+													variant="ghost"
+													size="sm"
+													className="h-8 active:scale-[0.97] transition-transform"
+													data-testid="tool-call-response-add-manually"
+													disabled={isExecuting}
+													onClick={() => showManualEntry(tc.id)}
+												>
+													<PencilLine className="size-3.5" />
+													Add manually
+												</Button>
+											</div>
+										</div>
+									)}
 								</div>
 							)}
 						</div>
