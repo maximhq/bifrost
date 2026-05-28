@@ -15,7 +15,7 @@ import (
 const (
 	// MCPAuthScopeName names the scope that authorizes the MCP per-user OAuth
 	// auth page to call the per-user flow endpoints. Bound resource_id is the
-	// OAuth flow ID. See transports/bifrost-http/handlers/temp_token_scopes.go.
+	// OAuth flow ID.
 	MCPAuthScopeName = "mcp_auth"
 
 	// MCPHeadersAuthScopeName names the scope that authorizes the MCP
