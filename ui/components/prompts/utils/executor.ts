@@ -19,6 +19,31 @@ function getBaseUrl() {
 	}
 }
 
+function buildHeaders(config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">): Record<string, string> {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (config.apiKeyId && config.apiKeyId !== "__auto__") {
+		if (config.apiKeyId.startsWith("sk-bf-")) {
+			headers["Authorization"] = `Bearer ${config.apiKeyId}`;
+		} else {
+			headers["x-bf-api-key-id"] = config.apiKeyId;
+		}
+	}
+	if (config.customHeaders) {
+		const reserved = new Set(["content-type", "authorization", "x-bf-api-key-id"]);
+		for (const [name, value] of Object.entries(config.customHeaders)) {
+			const trimmedName = name.trim();
+			const trimmedValue = value.trim();
+			if (!trimmedName || !trimmedValue) continue;
+			if (reserved.has(trimmedName.toLowerCase())) {
+				console.warn(`Ignoring custom header "${trimmedName}" — reserved by the playground.`);
+				continue;
+			}
+			headers[trimmedName] = trimmedValue;
+		}
+	}
+	return headers;
+}
+
 export interface ExecutionCallbacks {
 	onStreamingStart: (allMessages: Message[], placeholder: Message) => void;
 	onStreamChunk: (content: string) => void;
@@ -34,6 +59,7 @@ export async function executePrompt(
 	pendingMessage: Message | undefined,
 	config: ExecutionConfig,
 	callbacks: ExecutionCallbacks,
+	signal?: AbortSignal,
 ) {
 	let allMessages: Message[];
 	if (pendingMessage) {
@@ -49,34 +75,13 @@ export async function executePrompt(
 	const resolvedMessages = config.variables ? replaceVariablesInMessages(allMessages, config.variables) : allMessages;
 
 	try {
-		const headers: Record<string, string> = { "Content-Type": "application/json" };
-		if (config.apiKeyId && config.apiKeyId !== "__auto__") {
-			if (config.apiKeyId.startsWith("sk-bf-")) {
-				headers["Authorization"] = `Bearer ${config.apiKeyId}`;
-			} else {
-				headers["x-bf-api-key-id"] = config.apiKeyId;
-			}
-		}
-		if (config.customHeaders) {
-			// System headers we set above; custom headers must not overwrite them — doing
-			// so would break JSON parsing (Content-Type) or silently swap auth credentials.
-			const reserved = new Set(["content-type", "authorization", "x-bf-api-key-id"]);
-			for (const [name, value] of Object.entries(config.customHeaders)) {
-				const trimmedName = name.trim();
-				const trimmedValue = value.trim();
-				if (!trimmedName || !trimmedValue) continue;
-				if (reserved.has(trimmedName.toLowerCase())) {
-					console.warn(`Ignoring custom header "${trimmedName}" — reserved by the playground.`);
-					continue;
-				}
-				headers[trimmedName] = trimmedValue;
-			}
-		}
+		const headers = buildHeaders(config);
 
 		const { api_key_id: _, ...requestParams } = config.modelParams;
 		const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
 			method: "POST",
 			headers,
+			signal,
 			body: JSON.stringify({
 				model: `${config.provider}/${config.model}`,
 				messages: Message.toAPIMessages(resolvedMessages),
@@ -192,8 +197,47 @@ export async function executePrompt(
 			}
 		}
 	} catch (err) {
-		callbacks.onError(getErrorMessage(err));
+		if (err instanceof DOMException && err.name === "AbortError") {
+			// User cancelled — no error to display
+		} else {
+			callbacks.onError(getErrorMessage(err));
+		}
 	} finally {
 		callbacks.onFinally();
 	}
+}
+
+export async function executeToolCall(
+	toolCall: ToolCall,
+	config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">,
+): Promise<string> {
+	const headers = buildHeaders(config);
+
+	const response = await fetch(`${getBaseUrl()}/v1/mcp/tool/execute`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			id: toolCall.id,
+			type: toolCall.type,
+			index: 0,
+			function: {
+				name: toolCall.function.name,
+				arguments: toolCall.function.arguments,
+			},
+		}),
+	});
+
+	if (!response.ok) {
+		let errorMessage = `HTTP error! status: ${response.status}`;
+		try {
+			const data = await response.json();
+			errorMessage = data.error?.message || data.error?.error || errorMessage;
+		} catch {
+			// keep default message
+		}
+		throw new Error(errorMessage);
+	}
+
+	const data = await response.json();
+	return typeof data.content === "string" ? data.content : JSON.stringify(data.content);
 }
