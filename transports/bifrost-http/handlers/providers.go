@@ -41,6 +41,17 @@ type ModelPricingAttributesEntry struct {
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 }
 
+// ErrMissingPricingRows is returned by UpsertModelPricingAttributes when one
+// or more (model, provider) entries have no corresponding pricing row.
+// The HTTP handler maps this to 400 Bad Request; all other errors are 500.
+type ErrMissingPricingRows struct {
+	Models []string
+}
+
+func (e *ErrMissingPricingRows) Error() string {
+	return fmt.Sprintf("no pricing row for one or more (model, provider) entries: %s", strings.Join(e.Models, ", "))
+}
+
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
 	dbStore       configstore.ConfigStore
@@ -1228,7 +1239,12 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		var missingErr *ErrMissingPricingRows
+		if errors.As(err, &missingErr) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		} else {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		}
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)

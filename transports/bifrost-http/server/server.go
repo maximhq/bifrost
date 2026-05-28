@@ -976,11 +976,11 @@ func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, en
 			}
 		}
 		if len(missing) > 0 {
-			return fmt.Errorf("no pricing row for one or more (model, provider) entries: %s", strings.Join(missing, ", "))
+			return &handlers.ErrMissingPricingRows{Models: missing}
 		}
 		return nil
 	})
-	if err != nil {
+
 		return err
 	}
 	if err := s.Config.ModelCatalog.ReloadPricing(ctx); err != nil {
