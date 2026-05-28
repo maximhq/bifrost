@@ -1256,6 +1256,15 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash TLSConfig
+	if m.TLSConfig != nil {
+		data, err := sonic.Marshal(m.TLSConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash ToolsToExecute (sorted for deterministic hashing)
 	if len(m.ToolsToExecute) > 0 {
 		sortedTools := make([]string, len(m.ToolsToExecute))

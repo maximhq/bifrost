@@ -8,6 +8,13 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- **[Upcoming]** Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:
+  - `insecureSkipVerify` — disable TLS certificate verification (development/testing only; takes priority over `caCertPem`).
+  - `caCertPem` — PEM-encoded CA certificate for MCP servers that use a self-signed or private CA. Accepts a literal PEM string or an `env.VAR_NAME` reference (e.g. `"env.MY_MCP_CA_CERT"`).
+  - Chart maps `tlsConfig.insecureSkipVerify` → `tls_config.insecure_skip_verify` and `tlsConfig.caCertPem` → `tls_config.ca_cert_pem` in the generated config JSON.
+
 ### 2.1.19
 
 - Added `bifrost.modelCatalog.modelParametersUrl` to `values.yaml`, `values.schema.json`, and `_helpers.tpl`, allowing operators to override the URL Bifrost uses to fetch model parameter definitions.
@@ -644,6 +651,8 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`  | Code mode binding level (`server` or `tool`)                                                                                                                                                  | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection                                                                                                                                                          | `false`  |
 | `bifrost.mcp.toolSyncInterval`                        | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m`    |
+| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production. | `false`  |
+| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`    | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
 #### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
 

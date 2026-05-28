@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,14 +35,15 @@ type Provider struct {
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
 
-	// tempTokens, when non-nil, is used by InitiateUserSubmissionFlow to
-	// mint a short-lived mcp_headers_auth token and embed it in the
-	// returned auth-page URL as a fragment. Optional — when nil, the URL
-	// is returned without a fragment and the page works only for callers
-	// already authenticated to the dashboard. Mirrors
+	// tempTokens, when non-nil and enabled in client config, is used by
+	// InitiateUserSubmissionFlow to mint a short-lived mcp_headers_auth
+	// token and embed it in the returned auth-page URL as a fragment.
+	// Optional — when nil or disabled, the URL is returned without a
+	// fragment and the page works only for callers already authenticated
+	// to the dashboard. Held as an atomic.Pointer so it can be installed
+	// once at startup and read lock-free on the request path. Mirrors
 	// oauth2.OAuth2Provider.tempTokens exactly.
-	mu         sync.RWMutex
-	tempTokens *temptoken.Service
+	tempTokens atomic.Pointer[temptoken.Service]
 }
 
 // NewProvider constructs a configstore-backed MCPHeadersProvider. Mirrors
@@ -59,12 +60,31 @@ func NewProvider(configStore configstore.ConfigStore, logger schemas.Logger) *Pr
 // InitiateUserSubmissionFlow to mint the mcp_headers_auth token embedded
 // in the auth-page URL fragment. Called by server startup once both
 // services have been constructed (the provider is built first by
-// lib/config.go, the service later by the HTTP transport). Mirrors
-// oauth2.OAuth2Provider.SetTempTokenService.
+// lib/config.go, the service later by the HTTP transport).
 func (p *Provider) SetTempTokenService(svc *temptoken.Service) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.tempTokens = svc
+	p.tempTokens.Store(svc)
+}
+
+// tempTokenService returns the current temp-token service. Lock-free read
+// off the atomic.Pointer.
+func (p *Provider) tempTokenService() *temptoken.Service {
+	return p.tempTokens.Load()
+}
+
+// mcpTempTokenAuthEnabled reports whether MCP per-user-headers auth links may
+// include temp-token auth. Reads the same MCPEnableTempTokenAuth client-config
+// toggle the OAuth surface uses so the UI switch controls both per-user auth
+// kinds uniformly. Mirrors oauth2.OAuth2Provider.mcpTempTokenAuthEnabled.
+func (p *Provider) mcpTempTokenAuthEnabled(ctx context.Context) bool {
+	if p.configStore == nil {
+		return false
+	}
+	clientConfig, err := p.configStore.GetClientConfig(ctx)
+	if err != nil {
+		p.logger.Warn("Failed to read MCP temp-token auth setting: %v", err)
+		return false
+	}
+	return clientConfig != nil && clientConfig.MCPEnableTempTokenAuth
 }
 
 // GetCredentialByMode looks up the active credential row for the given
@@ -220,13 +240,21 @@ func (p *Provider) InitiateUserSubmissionFlow(ctx context.Context, mode schemas.
 	// endpoints. The fragment never leaves the browser (not in server
 	// logs, not in upstream Referer), unlike a query param. Best-effort:
 	// mint failure does not fail the flow init.
-	p.mu.RLock()
-	tempTokens := p.tempTokens
-	p.mu.RUnlock()
-	if tempTokens != nil {
+	//
+	// User-mode flows skip the mint: the handler-side identity gate requires
+	// caller's user_id to match flow.UserID, which is only populated by
+	// normal SCIM enforcement on the auth-page route. Minting a temp token
+	// would route the request through the temp-token middleware branch that
+	// bypasses cookie resolution, leaving caller user_id empty and the gate
+	// would 403 even legitimate users. VK and session-mode flows are
+	// intentionally shareable and continue to mint.
+	// Gated by the same MCPEnableTempTokenAuth client-config toggle the
+	// OAuth surface reads, so the UI switch controls both per-user auth
+	// kinds uniformly.
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && mode != schemas.MCPAuthModeUser {
 		ttl := time.Until(flow.ExpiresAt)
 		if ttl > 0 {
-			plaintext, mintErr := tempTokens.Mint(ctx, temptoken.MCPHeadersAuthScopeName, flow.ID, ttl)
+			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPHeadersAuthScopeName, flow.ID, ttl)
 			if mintErr != nil {
 				p.logger.Warn("Failed to mint mcp_headers_auth temp token for flow %s: %v (link still usable for dashboard-authenticated callers)", flow.ID, mintErr)
 			} else {

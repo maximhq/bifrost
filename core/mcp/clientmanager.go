@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -97,7 +100,15 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			targetURL = *preReq.ConnectionString
 		}
 
-		httpTransport, err := transport.NewStreamableHTTP(targetURL, transport.WithHTTPHeaders(finalHeaders))
+		perUserOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
+		perUserTLSClient, tlsErr := m.buildTLSHTTPClient(config.TLSConfig)
+		if tlsErr != nil {
+			return nil, fmt.Errorf("failed to build TLS HTTP client: %w", tlsErr)
+		}
+		if perUserTLSClient != nil {
+			perUserOpts = append(perUserOpts, transport.WithHTTPBasicClient(perUserTLSClient))
+		}
+		httpTransport, err := transport.NewStreamableHTTP(targetURL, perUserOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 		}
@@ -434,7 +445,15 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 		maps.Copy(finalHeaders, preReq.Headers)
 		finalHeaders["Authorization"] = fmt.Sprintf("Bearer %s", accessToken)
 
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, transport.WithHTTPHeaders(finalHeaders))
+		verifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
+		verifyHTTPClient, tlsErr := m.buildTLSHTTPClient(config.TLSConfig)
+		if tlsErr != nil {
+			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		}
+		if verifyHTTPClient != nil {
+			verifyOpts = append(verifyOpts, transport.WithHTTPBasicClient(verifyHTTPClient))
+		}
+		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, verifyOpts...)
 		if hErr != nil {
 			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
 		}
@@ -578,7 +597,15 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 			finalHeaders[k] = v
 		}
 
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, transport.WithHTTPHeaders(finalHeaders))
+		headersVerifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
+		headersVerifyTLSClient, tlsErr := m.buildTLSHTTPClient(config.TLSConfig)
+		if tlsErr != nil {
+			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		}
+		if headersVerifyTLSClient != nil {
+			headersVerifyOpts = append(headersVerifyOpts, transport.WithHTTPBasicClient(headersVerifyTLSClient))
+		}
+		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, headersVerifyOpts...)
 		if hErr != nil {
 			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
 		}
@@ -949,6 +976,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
 		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
 		Disabled:              updatedConfig.Disabled,
+		TLSConfig:             updatedConfig.TLSConfig,
 		PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
 	}
 
@@ -1553,6 +1581,39 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	return nil
 }
 
+// buildTLSHTTPClient constructs an *http.Client with a custom TLS configuration derived
+// from MCPTLSConfig. Returns nil when tlsCfg is nil so callers can use the library default.
+// InsecureSkipVerify takes priority over CACertPEM when both are set.
+func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Client, error) {
+	if tlsCfg == nil {
+		return nil, nil
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if tlsCfg.InsecureSkipVerify {
+		m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
+		tlsConfig.InsecureSkipVerify = true
+	} else if tlsCfg.CACertPEM != nil {
+		caPEM := tlsCfg.CACertPEM.GetValue()
+		if caPEM != "" {
+			rootCAs, err := x509.SystemCertPool()
+			if err != nil {
+				rootCAs = x509.NewCertPool()
+			}
+			if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
+				return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
+			}
+			tlsConfig.RootCAs = rootCAs
+		}
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	}
+	cloned := transport.Clone()
+	cloned.TLSClientConfig = tlsConfig
+	return &http.Client{Transport: cloned}, nil
+}
+
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.
 // If overrides is non-nil and carries a populated ConnectionString or Headers, those values
 // are used instead of resolving them from config. This is how plugin PreHook mutations flow
@@ -1590,7 +1651,15 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	}
 
 	// Create StreamableHTTP transport
-	httpTransport, err := transport.NewStreamableHTTP(url, transport.WithHTTPHeaders(headers))
+	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+	httpClient, err := m.buildTLSHTTPClient(config.TLSConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)
+	}
+	if httpClient != nil {
+		opts = append(opts, transport.WithHTTPBasicClient(httpClient))
+	}
+	httpTransport, err := transport.NewStreamableHTTP(url, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
@@ -1673,7 +1742,15 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 		}
 	}
 
-	sseTransport, err := transport.NewSSE(url, transport.WithHeaders(headers))
+	sseOpts := []transport.ClientOption{transport.WithHeaders(headers)}
+	sseHTTPClient, err := m.buildTLSHTTPClient(config.TLSConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)
+	}
+	if sseHTTPClient != nil {
+		sseOpts = append(sseOpts, transport.WithHTTPClient(sseHTTPClient))
+	}
+	sseTransport, err := transport.NewSSE(url, sseOpts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create SSE transport: %w", err)
 	}

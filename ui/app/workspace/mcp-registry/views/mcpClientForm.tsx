@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, MCPTLSConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
@@ -34,6 +34,15 @@ const emptyStdioConfig: MCPStdioConfig = {
 };
 
 const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+
+/** Strips empty TLS config so we don't send `{}` to the server. */
+function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | undefined {
+	if (!tls) return undefined;
+	const hasSkipVerify = tls.insecure_skip_verify === true;
+	const hasCACert = tls.ca_cert_pem?.value || tls.ca_cert_pem?.from_env;
+	if (!hasSkipVerify && !hasCACert) return undefined;
+	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
+}
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
@@ -217,6 +226,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						args: parseArrayFromText(argsText),
 						envs: parseArrayFromText(envsText),
 					}
+					: undefined,
+			tls_config:
+				connectionType === "http" || connectionType === "sse"
+					? buildTLSConfigPayload(data.tls_config)
 					: undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
@@ -715,6 +728,58 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											</AccordionItem>
 										</Accordion>
 									)}
+
+									{/* TLS / Certificate */}
+									<div className="space-y-4 rounded-lg border p-4">
+										<h4 className="text-sm font-medium">TLS / Certificate</h4>
+										<FormField
+											control={control}
+											name="tls_config.insecure_skip_verify"
+											render={({ field }) => (
+												<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+													<div className="space-y-0.5">
+														<FormLabel>Skip TLS verification</FormLabel>
+														<p className="text-muted-foreground text-sm">
+															Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
+														</p>
+													</div>
+													<FormControl>
+														<Switch
+															checked={field.value ?? false}
+															onCheckedChange={field.onChange}
+															data-testid="mcp-tls-insecure-skip-verify"
+														/>
+													</FormControl>
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={control}
+											name="tls_config.ca_cert_pem"
+											render={({ field }) => (
+												<FormItem>
+													<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+													<FormControl>
+														<EnvVarInput
+															variant="textarea"
+															placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
+															className="font-mono text-xs"
+															rows={6}
+															hideValueWhenEnv
+															redactNonEnvValue
+															{...field}
+															value={field.value}
+															data-testid="mcp-tls-ca-cert-pem"
+														/>
+													</FormControl>
+													<p className="text-muted-foreground text-sm">
+														PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
+													</p>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</div>
 								</>
 							)}
 

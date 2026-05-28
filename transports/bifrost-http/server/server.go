@@ -39,6 +39,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"gorm.io/gorm"
 )
 
 // Constants
@@ -73,6 +74,11 @@ type ServerCallbacks interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// UpsertModelPricingAttributes writes the additional_attributes JSON on
+	// pricing rows. Enterprise wraps this so that after the local DB write
+	// succeeds it can broadcast a peer reload via the existing pricing
+	// EntityTypeModelCatalog/ActionReloadFromDB gossip path.
+	UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -942,6 +948,44 @@ func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string
 		return fmt.Errorf("pricing manager not found")
 	}
 	s.Config.ModelCatalog.DeletePricingOverride(id)
+	return nil
+}
+
+// UpsertModelPricingAttributes writes the additional_attributes JSON for the
+// pricing rows keyed by (model, provider) for every entry in the batch. The
+// whole batch is wrapped in a single transaction so a missing pricing row
+// rolls back the lot. After a successful commit the in-memory pricing cache
+// is reloaded once. Enterprise overrides this method to broadcast a peer
+// reload after commit.
+func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	if s.Config.ConfigStore == nil {
+		return fmt.Errorf("model catalog requires a config store")
+	}
+	var missing []string
+	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for _, e := range entries {
+			rows, err := s.Config.ConfigStore.UpsertModelPricingAttributes(ctx, e.Model, e.Provider, e.AdditionalAttributes, tx)
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				missing = append(missing, fmt.Sprintf("%s/%s", e.Provider, e.Model))
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("no pricing row for one or more (model, provider) entries: %s", strings.Join(missing, ", "))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.Config.ModelCatalog.ReloadPricing(ctx); err != nil {
+		return fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
+	}
 	return nil
 }
 

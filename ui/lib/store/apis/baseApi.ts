@@ -89,7 +89,8 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (
 			}
 			clearAuthStorage();
 			if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
-				window.location.href = "/login";
+				const goto = window.location.pathname + window.location.search;
+				window.location.href = `/login?goto=${encodeURIComponent(goto)}`;
 			}
 			return result;
 		}

@@ -857,6 +857,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
 					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 				}
+				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
+					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
+				}
 				if modelEntry.Pricing == nil {
 					pricing := &schemas.Pricing{}
 					if pricingEntry.InputCostPerToken != nil {

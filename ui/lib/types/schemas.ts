@@ -1040,6 +1040,12 @@ export const mcpClientUpdateSchema = z.object({
 			client_secret: envVarSchema.optional(),
 		})
 		.optional(),
+	tls_config: z
+		.object({
+			insecure_skip_verify: z.boolean().optional(),
+			ca_cert_pem: envVarSchema.optional(),
+		})
+		.optional(),
 });
 
 // Global proxy type schema
