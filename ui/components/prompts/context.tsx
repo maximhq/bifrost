@@ -1,6 +1,7 @@
 import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type ToolCall, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
+import { v4 as uuidv4 } from "uuid";
 import {
 	useDeleteFolderMutation,
 	useDeletePromptMutation,
@@ -98,7 +99,7 @@ interface PromptContextValue {
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
 	handleExecuteToolCall: (afterIndex: number, toolCall: ToolCall) => Promise<void>;
 	handleSubmitAllToolResults: (afterIndex: number, results: { toolCallId: string; content: string }[]) => Promise<void>;
-	handleExecuteAllToolCalls: (afterIndex: number, toolCalls: ToolCall[]) => Promise<void>;
+	handleExecuteAllToolCalls: (afterIndex: number, toolCalls: ToolCall[]) => Promise<{ toolCallId: string; content: string }[] | undefined>;
 	fetchToolResult: (toolCall: ToolCall) => Promise<string>;
 
 	// RBAC permissions
@@ -534,7 +535,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			abortRef.current = abortController;
 			const isActive = () => activeRunRef.current === runToken;
 
-			const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
+			const toolResultMsg = new Message(uuidv4(), 0, MessageType.ToolResult, {
 				role: MessageRole.TOOL,
 				content,
 				tool_call_id: toolCallId,
@@ -641,7 +642,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				insertAt++;
 			}
 			for (const { toolCallId, content } of results) {
-				const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
+				const toolResultMsg = new Message(uuidv4(), 0, MessageType.ToolResult, {
 					role: MessageRole.TOOL,
 					content,
 					tool_call_id: toolCallId,
@@ -711,25 +712,51 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	);
 
 	const handleExecuteAllToolCalls = useCallback(
-		async (afterIndex: number, toolCalls: ToolCall[]) => {
-			if (toolCalls.length === 0) return;
+		async (afterIndex: number, toolCalls: ToolCall[]): Promise<{ toolCallId: string; content: string }[] | undefined> => {
+			if (toolCalls.length === 0) return undefined;
 			if (toolCalls.length === 1) {
-				return handleExecuteToolCall(afterIndex, toolCalls[0]);
+				await handleExecuteToolCall(afterIndex, toolCalls[0]);
+				return undefined;
 			}
 
-			try {
-				const results = await Promise.all(
-					toolCalls.map(async (tc) => {
-						const content = await executeToolCall(tc, { apiKeyId, customHeaders });
-						return { toolCallId: tc.id, content };
-					}),
-				);
-				await handleSubmitAllToolResults(afterIndex, results);
-			} catch (err) {
-				toast.error("Failed to execute tools", {
-					description: getErrorMessage(err),
+			const settled = await Promise.allSettled(
+				toolCalls.map(async (tc) => {
+					const content = await executeToolCall(tc, { apiKeyId, customHeaders });
+					return { toolCallId: tc.id, content };
+				}),
+			);
+
+			const successes = settled
+				.filter((r): r is PromiseFulfilledResult<{ toolCallId: string; content: string }> => r.status === "fulfilled")
+				.map((r) => r.value);
+
+			const failures = settled
+				.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+				.map((r) => getErrorMessage(r.reason));
+
+			if (failures.length > 0) {
+				const detail = failures.length <= 3
+					? failures.join("; ")
+					: `${failures.slice(0, 2).join("; ")} and ${failures.length - 2} more`;
+				toast.error(`${failures.length} of ${toolCalls.length} tool executions failed`, {
+					description: failures.length === toolCalls.length
+						? detail
+						: `${detail}. Successful results were kept — fill the rest manually.`,
 				});
 			}
+
+			if (successes.length === toolCalls.length) {
+				try {
+					await handleSubmitAllToolResults(afterIndex, successes);
+				} catch (err) {
+					toast.error("Failed to submit tool results", {
+						description: getErrorMessage(err),
+					});
+				}
+				return undefined;
+			}
+
+			return successes.length > 0 ? successes : undefined;
 		},
 		[apiKeyId, customHeaders, handleExecuteToolCall, handleSubmitAllToolResults],
 	);
