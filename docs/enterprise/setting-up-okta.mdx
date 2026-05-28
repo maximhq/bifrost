@@ -6,7 +6,7 @@ icon: "o"
 
 ## Overview
 
-This guide walks you through configuring Okta as your identity provider for Bifrost Enterprise. After completing this setup, your users will be able to sign in to Bifrost using their Okta credentials, with roles and team memberships automatically synchronized.
+This guide walks you through configuring Okta as your identity provider for Bifrost Enterprise. After completing this setup, your users will be able to sign in to Bifrost using their Okta credentials, with roles and team memberships synchronized from Okta.
 
 ## Prerequisites
 
@@ -262,7 +262,21 @@ To create an API token, navigate to **Security** → **API** → **Tokens**.
 
 2. Copy token to be used in the next step.
 
-## Step 8: Configure Bifrost
+---
+
+## Step 8: Understand Okta user sync
+
+Bifrost does not currently support Okta SCIM management APIs or inbound Okta SCIM provisioning. Do not create or configure an Okta SCIM app for Bifrost yet.
+
+For Okta, Bifrost uses the API token from Step 7 to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Okta.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Okta whether the user is still active; if Okta reports the user is inactive, Bifrost decommissions that user locally.
+
+Support for Okta SCIM management APIs is coming soon.
+
+---
+
+## Step 9: Configure Bifrost
 
 Now configure Bifrost to use Okta as the identity provider.
 
@@ -273,7 +287,7 @@ Now configure Bifrost to use Okta as the identity provider.
 </Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
-2. Select **Okta** as the SCIM Provider
+2. Select **Okta** as the OIDC Provider
 3. Enter the following configuration:
 
 | Field                    | Value                                                                |
@@ -283,6 +297,7 @@ Now configure Bifrost to use Okta as the identity provider.
 | **Authorization Server** | Select **Org Authorization Server** or **Custom Authorization Server** |
 | **Audience**             | Your API audience (required only for Custom Authorization Server)     |
 | **Client Secret**        | Your Okta application Client Secret (optional, for token revocation) |
+| **API Token**            | Okta API token used for bulk import and 24-hour background sync       |
 
 <Frame>
   <img src="/media/user-provisioning/okta-select-auth-server.png" alt="Select Okta authorization server type in Bifrost" />
@@ -387,7 +402,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ### User not redirected to Okta
 
-- Verify the SCIM provider is enabled in Bifrost
+- Verify the OIDC provider is enabled in Bifrost
 - Check that the Bifrost server was restarted after configuration
 - Ensure the Issuer URL is correct and accessible
 
@@ -405,7 +420,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ## Next Steps
 
-- **[User Provisioning (SCIM)](./user-provisioning)** - Overview of SCIM in Bifrost and alternative identity providers
+- **[User Provisioning (OIDC)](./user-provisioning)** - Overview of OIDC user provisioning in Bifrost and alternative identity providers
 - **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
 - **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
 - **[Audit Logs](./audit-logs)** - Monitor user authentication and activity

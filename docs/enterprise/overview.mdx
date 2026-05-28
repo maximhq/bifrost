@@ -45,23 +45,23 @@ Before anything else, make sure you can see traffic, exports, and incident-grade
 
 ## 2. Identity
 
-Federate user identity through your existing IdP so accounts, groups, and lifecycle events stay in sync.
+Federate user identity through your existing IdP so accounts, groups, and lifecycle state stay in sync.
 
-<Card title="User Provisioning (SCIM)" icon="users" href="/enterprise/user-provisioning">
-  Directory-based user and group sync for automated lifecycle management with token-driven group restriction.
+<Card title="User Provisioning (OIDC)" icon="users" href="/enterprise/user-provisioning">
+  OIDC login with directory-based user and group sync for lifecycle management.
 </Card>
 
 ### Connect your identity provider
 
 <CardGroup cols={3}>
   <Card title="Okta" icon="key" href="/enterprise/setting-up-okta">
-    OIDC + SCIM integration with Okta as your identity provider.
+    OIDC login with Okta plus 24-hour background user sync.
   </Card>
   <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
     Azure AD / Entra ID with GCC High and DoD cloud support.
   </Card>
   <Card title="Keycloak" icon="lock" href="/enterprise/setting-up-keycloak">
-    Self-hosted identity with full SCIM and OIDC support.
+    Self-hosted identity with OIDC login and Admin REST API backed sync.
   </Card>
   <Card title="Zitadel" icon="z" href="/enterprise/setting-up-zitadel">
     Cloud-native identity with first-class user grants and project mapping.
