@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!dist/**"
+    - "!tmp/**"
+    - "!test-reports/**"
+    - "!playwright-report/**"
+    - "go.work.sum"
+    - "**/go.sum"
+  path_instructions:
+    - path: "core/**"
+      instructions: |
+        Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
+        Flag channel lifecycle changes that do not follow the ProviderQueue atomic closing/sync.Once pattern.
+        For provider changes, verify streaming paths use the streaming client and preserve response/error metadata.
+    - path: "framework/**"
+      instructions: |
+        Review persistence, streaming, and shared framework changes for backward-compatible data formats and careful memory ownership.
+        For logstore/configstore changes, check migration behavior, duration serialization, and map-copy race prevention.
+        When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+    - path: "transports/**"
+      instructions: |
+        Treat transports/config.schema.json as the source of truth for config fields.
+        Verify HTTP handlers preserve SDK compatibility, middleware ordering, context conversion, and route-level middleware behavior.
+    - path: "plugins/**"
+      instructions: |
+        Review plugin changes for hook symmetry, nil response/error handling, fallback behavior, and module-local dependency hygiene.
+        Each plugin has its own go.mod; do not assume root-level Go module commands apply.
+        When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+    - path: "ui/**"
+      instructions: |
+        Preserve existing UI conventions and data-testid attributes used by Playwright tests.
+        Review interactive changes for expected loading, empty, error, and mobile states.
+        Alert if frontend code uses the browser crypto APIs because they can fail in non-HTTPS contexts, except localhost and other secure contexts.
+    - path: "tests/e2e/**"
+      instructions: |
+        Verify tests import fixtures from tests/e2e/core/fixtures/base.fixture and use data-testid selectors.
+        Do not marshal API payloads through Records, maps, Object.fromEntries, or JSON round trips because field order matters.
+    - path: "docs/**"
+      instructions: |
+        Check docs for parity with code, config.schema.json, and provider behavior.
+        Verify new or renamed Mintlify pages are reflected in docs/docs.json where appropriate.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - ".greptile/rules.md"
+
+chat:
+  auto_reply: true
