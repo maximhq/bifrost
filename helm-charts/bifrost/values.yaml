@@ -633,6 +633,7 @@ bifrost:
     config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
+      # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""

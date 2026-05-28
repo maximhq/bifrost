@@ -1737,6 +1737,11 @@
                         "format": "uri",
                         "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
                       },
+                      "authServerType": {
+                        "type": "string",
+                        "enum": ["org", "custom"],
+                        "description": "'org' for Org Authorization Server or 'custom' for Custom Authorization Server. Auto-detected from issuer URL when omitted."
+                      },
                       "clientId": {
                         "type": "string",
                         "description": "Okta application client ID"
