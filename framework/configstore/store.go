@@ -62,6 +62,35 @@ type CustomersQueryParams struct {
 	Search string
 }
 
+// MCPSessionsFilterParams is the filter set shared across the four
+// MCP-sessions list methods (oauth tokens, pending oauth sessions,
+// per-user header credentials, pending per-user header flows).
+//
+// Pagination is intentionally omitted: the four sources are merged and
+// de-duped in the handler before the page slice, so per-table LIMIT/OFFSET
+// would not compose into a correct global page. These methods are filter
+// pushdown only; the handler paginates the merged result.
+//
+// Search is a case-insensitive substring matched against the MCP client's
+// name/client_id, the row's identity columns (user_id, session_id), and
+// the virtual key's id/name (joined). Empty filter slices match all
+// values for that field.
+type MCPSessionsFilterParams struct {
+	Search       string
+	Statuses     []string
+	AuthModes    []string // matched against auth_mode (tokens, credentials) or flow_mode (sessions, flows)
+	MCPClientIDs []string
+	// MatchedUserIDs is an optional set of user_ids that should be treated
+	// as a positive search hit alongside Search. Callers that maintain a
+	// user directory (display names, emails) resolve the search string
+	// against that directory and pass the resulting user_ids in here so
+	// rows owned by those users surface even though the search columns on
+	// these tables only carry the opaque user_id. When non-empty the
+	// filter ORs `{table}.user_id IN (matched)` into the search WHERE.
+	// Only consulted when Search is non-empty.
+	MatchedUserIDs []string
+}
+
 // PricingOverrideFilters holds the filters for pricing overrides.
 type PricingOverrideFilters struct {
 	ScopeKind     *string
@@ -369,16 +398,20 @@ type ConfigStore interface {
 	// GetOauthUserTokenByID looks up a single token row by primary key.
 	// Returns nil, nil when not found.
 	GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error)
-	// ListAllOauthUserTokens returns every token row regardless of status.
-	// The sessions UI renders all three states (active / orphaned /
-	// needs_reauth) with distinct affordances, so hiding any of them only
-	// breaks the user's ability to act on rows that need their attention.
-	// Runtime token lookups apply their own status='active' filter and don't
-	// go through this method.
-	ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error)
-	// ListAllPendingOauthUserSessions returns all pending OAuth flow rows.
-	// Companion to ListAllOauthUserTokens for the admin view.
-	ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error)
+	// ListOauthUserTokens returns token rows matching the supplied filters,
+	// regardless of status. The sessions UI renders all three states
+	// (active / orphaned / needs_reauth) with distinct affordances, so
+	// hiding any of them by default would only break the user's ability
+	// to act on rows that need their attention; status filtering is the
+	// caller's responsibility via params.Statuses. Runtime token lookups
+	// apply their own status='active' filter and don't go through this
+	// method.
+	ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error)
+	// ListPendingOauthUserSessions returns pending OAuth flow rows matching
+	// the supplied filters. Companion to ListOauthUserTokens for the admin
+	// view. Always restricted to status='pending' AND expires_at > now;
+	// params.Statuses further narrows within that set.
+	ListPendingOauthUserSessions(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error)
 	// DeleteExpiredOauthUserSessions hard-deletes pending OAuth flow rows
 	// whose ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
@@ -394,10 +427,12 @@ type ConfigStore interface {
 	GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error)
 	UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error
 	DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error
-	// ListAllMCPPerUserHeaderCredentials returns every row regardless of
-	// status. Mirrors ListAllOauthUserTokens — the sessions UI surfaces
-	// non-active states (needs_update / orphaned) with distinct affordances.
-	ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error)
+	// ListMCPPerUserHeaderCredentials returns credential rows matching the
+	// supplied filters, regardless of status. Mirrors ListOauthUserTokens —
+	// the sessions UI surfaces non-active states (needs_update / orphaned)
+	// with distinct affordances, so status filtering is the caller's
+	// responsibility via params.Statuses.
+	ListMCPPerUserHeaderCredentials(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error)
 	// MarkMCPPerUserHeaderCredentialsNeedsUpdate flips status to 'needs_update'
 	// for every row tied to mcpClientID. Called when the admin changes
 	// PerUserHeaderKeys on the MCP client config: existing user submissions
@@ -430,14 +465,14 @@ type ConfigStore interface {
 	// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
 	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
-	// ListAllPendingMCPPerUserHeaderFlows returns every non-expired flow row
-	// with status='pending'. Used by the sessions list endpoint to surface
-	// pending submission flows alongside completed credentials. Mirrors
-	// ListAllPendingOauthUserSessions on the OAuth side. The implementation
-	// reads via ScopedDB(ctx), so a query-scope stashed on ctx (e.g. by
-	// enterprise DAC) narrows the result; with no scope, every pending
-	// row is returned.
-	ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error)
+	// ListPendingMCPPerUserHeaderFlows returns non-expired pending header
+	// submission flow rows matching the supplied filters. Mirrors
+	// ListPendingOauthUserSessions on the OAuth side. Always restricted to
+	// status='pending' AND expires_at > now; params.Statuses further
+	// narrows within that set. The implementation reads via ScopedDB(ctx),
+	// so a query-scope stashed on ctx (e.g. by enterprise DAC) narrows the
+	// result; with no scope, every matching pending row is returned.
+	ListPendingMCPPerUserHeaderFlows(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error)
 	// DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
 	// ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error)

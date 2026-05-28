@@ -1265,11 +1265,11 @@ func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) 
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
 	return nil, nil
 }
 
@@ -1294,7 +1294,7 @@ func (m *MockConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, 
 func (m *MockConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
 	return nil
 }
-func (m *MockConfigStore) ListAllMCPPerUserHeaderCredentials(ctx context.Context) ([]tables.TableMCPPerUserHeaderCredential, error) {
+func (m *MockConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
 	return nil, nil
 }
 func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
@@ -1321,7 +1321,7 @@ func (m *MockConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(
 func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
 	return nil
 }
-func (m *MockConfigStore) ListAllPendingMCPPerUserHeaderFlows(ctx context.Context) ([]tables.TableMCPPerUserHeaderFlow, error) {
+func (m *MockConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error) {
 	return nil, nil
 }
 func (m *MockConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
