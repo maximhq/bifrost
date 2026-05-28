@@ -3,6 +3,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
@@ -18,7 +19,7 @@ export function TeamsView() {
 
 	const [urlState, setUrlState] = useQueryStates(
 		{
-			search: parseAsString.withDefault(""),
+			search: parseAsSafeString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 			selected_team: parseAsString.withDefault(""),
 		},
