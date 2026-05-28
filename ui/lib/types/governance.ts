@@ -171,8 +171,8 @@ export interface UpdateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
-	team_id?: string;
-	customer_id?: string;
+	team_id?: string | null;
+	customer_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
