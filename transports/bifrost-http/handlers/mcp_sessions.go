@@ -160,9 +160,12 @@ func parseMCPSessionsListQuery(ctx *fasthttp.RequestCtx) (mcpSessionsListQuery, 
 }
 
 // kindAllowed reports whether the given wire-row kind passes the optional
-// kind filter. Empty filter matches all. Used for the two user-selectable
-// kinds (token, header); flow visibility is gated through flowsAllowed
-// instead since "flow" is no longer a UI-selectable kind.
+// kind filter. Empty filter matches all. The UI's Type column shows the
+// auth kind (OAuth / Headers) for all rows — including pending flows —
+// so flows follow the same filter as their eventual credential row:
+// kindAllowed("token") admits both token credentials and OAuth flows;
+// kindAllowed("header") admits both header credentials and header-
+// submission flows.
 func (q mcpSessionsListQuery) kindAllowed(kind string) bool {
 	if len(q.Kinds) == 0 {
 		return true
@@ -173,15 +176,6 @@ func (q mcpSessionsListQuery) kindAllowed(kind string) bool {
 		}
 	}
 	return false
-}
-
-// flowsAllowed reports whether flow rows should be returned given the kind
-// filter. "flow" used to be a selectable Type in the UI; it now lives under
-// the Status filter (Status=Pending). Flows surface when the user hasn't
-// narrowed to a specific kind — selecting Type=token or Type=header
-// suppresses flows.
-func (q mcpSessionsListQuery) flowsAllowed() bool {
-	return len(q.Kinds) == 0
 }
 
 // statusFilterAllowsPending reports whether the status filter would
@@ -227,10 +221,10 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		headerFlows []tables.TableMCPPerUserHeaderFlow
 		err         error
 	)
-	queryFlows := q.flowsAllowed() && q.statusFilterAllowsPending()
-	queryHeaderFlows := queryFlows
-	queryTokens := q.kindAllowed("token") || queryFlows
-	queryHeaders := q.kindAllowed("header") || queryHeaderFlows
+	queryFlows := q.kindAllowed("token") && q.statusFilterAllowsPending()
+	queryHeaderFlows := q.kindAllowed("header") && q.statusFilterAllowsPending()
+	queryTokens := q.kindAllowed("token")
+	queryHeaders := q.kindAllowed("header")
 
 	if queryTokens {
 		tokens, err = h.store.ConfigStore.ListOauthUserTokens(ctx, q.Filters)

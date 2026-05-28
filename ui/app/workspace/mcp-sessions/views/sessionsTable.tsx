@@ -178,7 +178,7 @@ export default function SessionsTable({
 							<TableHead>
 								<HeaderWithTooltip
 									label="Type"
-									tooltip="OAuth: per-user OAuth token stored after the user completed an upstream sign-in flow. Headers: per-user header values (API keys / signed tokens) submitted directly. Pending: an authentication flow that has not yet completed."
+									tooltip="OAuth: per-user OAuth credential — either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens) — either stored or pending submission."
 								/>
 							</TableHead>
 							<TableHead>
@@ -225,13 +225,13 @@ export default function SessionsTable({
 								<TableRow key={`${row.kind}-${row.id}`} className="group">
 									<TableCell className="font-medium">{row.mcp_client?.name || row.mcp_client?.client_id || "-"}</TableCell>
 									<TableCell>
-										<TypeBadge kind={row.kind} />
+										<TypeBadge authKind={row.auth_kind} />
 									</TableCell>
 									<TableCell>
 										<BindingCell row={row} />
 									</TableCell>
 									<TableCell>
-										<StatusBadge status={row.status} kind={row.kind} />
+										<StatusBadge status={row.status} />
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">
 										<div className="flex flex-col">
@@ -337,18 +337,15 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 	return <span className="text-muted-foreground text-sm">Session-bound</span>;
 }
 
-function TypeBadge({ kind }: { kind: string }) {
-	if (kind === "flow") {
-		return <Badge variant="secondary">Pending</Badge>;
-	}
-	if (kind === "header") {
+function TypeBadge({ authKind }: { authKind: string }) {
+	if (authKind === "headers") {
 		return <Badge variant="outline">Headers</Badge>;
 	}
 	return <Badge variant="outline">OAuth</Badge>;
 }
 
-function StatusBadge({ status, kind }: { status: string; kind: string }) {
-	if (kind === "flow") {
+function StatusBadge({ status }: { status: string }) {
+	if (status === "pending") {
 		return <Badge variant="secondary">Pending</Badge>;
 	}
 	if (status === "orphaned") {
