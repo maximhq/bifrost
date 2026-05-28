@@ -1385,6 +1385,8 @@ components:
       $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
     ListVirtualKeysResponse:
       $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
+    VirtualKeyQuotaResponse:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
     CreateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     UpdateVirtualKeyRequest:
