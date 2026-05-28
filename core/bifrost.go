@@ -5274,6 +5274,9 @@ func executeRequestWithRetries[T any](
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
 	lastWasRateLimit := false
+	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
+	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
+	pendingRotationAttemptIdx := -1
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -5330,6 +5333,19 @@ func executeRequestWithRetries[T any](
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
+
+			// Resolve any pending rotation marker from the previous failed attempt. Only mark
+			// TriggeredRotation=true if the newly selected key differs from the failed one —
+			// fixed-key paths return the same key, in which case no rotation actually happened.
+			if pendingRotationAttemptIdx >= 0 {
+				if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok &&
+					pendingRotationAttemptIdx < len(trail) &&
+					trail[pendingRotationAttemptIdx].KeyID != currentKey.ID {
+					trail[pendingRotationAttemptIdx].TriggeredRotation = true
+					ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+				}
+				pendingRotationAttemptIdx = -1
+			}
 		}
 
 		// Append a trail record for every attempt (key rotation and same-key retries alike).
@@ -5596,6 +5612,17 @@ func executeRequestWithRetries[T any](
 			usedKeyIDs[currentKey.ID] = true
 		}
 		lastWasRateLimit = isRateLimit
+
+		// Record the just-failed attempt as a *candidate* for rotation. The next iteration will
+		// confirm it (and set TriggeredRotation=true) only if key selection actually picks a
+		// different key — this avoids false positives for fixed-key providers whose keyProvider
+		// is non-nil but returns the same key. Network-error retries reuse the same key, and
+		// terminal attempts (attempts == MaxRetries) won't run another iteration.
+		if isRateLimit && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
+			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
+				pendingRotationAttemptIdx = len(trail) - 1
+			}
+		}
 	}
 
 	// Add retry information to error

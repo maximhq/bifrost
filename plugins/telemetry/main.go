@@ -250,6 +250,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	if err := systemRegistry.Register(goCollector); err != nil {
 		return nil, fmt.Errorf("failed to register Go collector: %v", err)
 	}
+
 	processCollector := collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})
 	if err := systemRegistry.Register(processCollector); err != nil {
 		return nil, fmt.Errorf("failed to register process collector: %v", err)
@@ -453,13 +454,15 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
-	// bifrostKeyRotationEventsTotal counts individual retry/rotation events from the attempt trail.
-	// One observation is emitted per failed attempt (where fail_reason is non-nil), not per request.
-	// Use this to track rate-limit pressure and network-error frequency per provider/key.
+	// bifrostKeyRotationEventsTotal counts key-swap events from the attempt trail.
+	// One observation is emitted only when a failed attempt triggered rotation to a different key
+	// on the next retry (TriggeredRotation == true, fail_reason non-nil). Use this to track actual
+	// key-rotation pressure per provider/key/failure reason.
+
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key retry/rotation events, broken down by provider, key, and failure reason. One increment per failed attempt.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per rate-limit failure that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -791,13 +794,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			cost = p.pricingManager.CalculateCost(result, pricingScopes)
 		}
 
-		// Emit one counter increment per failed attempt in the trail (fail_reason != nil).
-		// This decouples per-attempt retry visibility from the per-request metrics above.
+		// Emit one rotation counter increment per attempt that actually caused a key swap on the
+		// next try (rate-limit failure with retries remaining). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation.
 		for _, record := range attemptTrail {
-			if record.FailReason != nil {
+			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
+			}
+			if record.FailReason != nil {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}
