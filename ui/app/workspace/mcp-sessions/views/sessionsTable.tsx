@@ -350,11 +350,13 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 					)
 				) : row.kind === "header" ? (
 					<>
-						{row.status !== "orphaned" && (
+						{row.status !== "orphaned" && row.can_reauth && (
 							// "Edit values" hits reauth server-side: the handler mints a
 							// fresh header submission flow + temp token and returns the
 							// auth-landing URL. Same single-click → redirect dance as the
-							// OAuth row's "Re-authenticate" action.
+							// OAuth row's "Re-authenticate" action. Hidden when can_reauth
+							// is false — user-bound credentials are only resubmittable by
+							// the bound user (server enforces with 403).
 							<DropdownMenuItem
 								className="cursor-pointer"
 								disabled={busy}
@@ -384,10 +386,12 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 					</>
 				) : (
 					<>
-						{row.status !== "orphaned" && (
+						{row.status !== "orphaned" && row.can_reauth && (
 							// Re-auth on an orphaned row wouldn't help: the upstream
 							// credential is intact, the user just no longer has any
 							// granting VK. Surface guidance instead of an action.
+							// Hidden when can_reauth is false — user-bound rows are only
+							// reauthable by the bound user (server enforces with 403).
 							<DropdownMenuItem
 								className="cursor-pointer"
 								disabled={busy}
