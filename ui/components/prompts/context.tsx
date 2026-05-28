@@ -17,7 +17,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { executePrompt, executeToolCall } from "./utils/executor";
+import { executePrompt, executeToolCall, MCPAuthRequiredError } from "./utils/executor";
 
 interface PromptContextValue {
 	// Data
@@ -615,6 +615,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				const content = await executeToolCall(toolCall, { apiKeyId, customHeaders });
 				await handleSubmitToolResult(afterIndex, toolCall.id, content);
 			} catch (err) {
+				if (err instanceof MCPAuthRequiredError) throw err;
 				toast.error("Failed to execute tool", {
 					description: getErrorMessage(err),
 				});
