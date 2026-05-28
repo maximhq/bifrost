@@ -312,7 +312,7 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		if rows[i].Kind == "flow" {
 			continue
 		}
-		rows[i].CanReauth = canReauthRow(rows[i].AuthMode, rows[i].UserID, caller)
+		rows[i].CanReauth = canAccessUserFlow(rows[i].AuthMode, rows[i].UserID, caller)
 	}
 
 	totalCount := len(rows)
@@ -372,28 +372,34 @@ func bindingKeyFromFlow(f tables.TableOauthUserSession) sessionBindingKey {
 	return k
 }
 
-// canReauthRow encodes the identity gate on POST /reauth. User-mode rows are
-// only reauthable by the bound user — admin DAC scope lets them see the row,
-// but the OAuth callback or header submission lands under whoever clicks the
-// URL, so an admin-initiated reauth would either overwrite identity or let
-// admin submit secret material in the bound user's name. VK / session rows
-// are intentionally shared and have no identity-of-clicker problem.
-func canReauthRow(authMode string, rowUserID *string, caller string) bool {
+// callerUserIDFromCtx pulls the SCIM-authenticated user_id off the request
+// context. Returns "" when unauthenticated or in OSS — callers should treat
+// empty as "no user identity" (which fails the user-mode access gate).
+func callerUserIDFromCtx(ctx *fasthttp.RequestCtx) string {
+	v, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	return v
+}
+
+// canAccessUserFlow is the single identity gate for user-mode flow/credential
+// rows across every surface that lets a caller act on one: POST /reauth,
+// the per-user OAuth flow detail / start endpoints, and the per-user-headers
+// flow detail / submit endpoints. The CanReauth field on the sessions list
+// rows uses it too so the UI hides actions the caller cannot perform.
+//
+// For user-mode rows the caller's user_id must match the row's user_id —
+// admin DAC scope lets them see the row, but the OAuth callback or header
+// submission lands under whoever clicks the URL, so an admin acting here
+// would either overwrite identity or plant secret material under the bound
+// user's name. VK / session rows are intentionally shared and have no
+// identity-of-clicker problem; the gate passes through for those modes.
+func canAccessUserFlow(authMode string, rowUserID *string, callerUserID string) bool {
 	if authMode != string(schemas.MCPAuthModeUser) {
 		return true
 	}
 	if rowUserID == nil || *rowUserID == "" {
 		return false
 	}
-	return caller != "" && caller == *rowUserID
-}
-
-// callerUserIDFromCtx pulls the SCIM-authenticated user_id off the request
-// context. Returns "" when unauthenticated or in OSS — callers should treat
-// empty as "no user identity" (which fails the user-mode reauth gate).
-func callerUserIDFromCtx(ctx *fasthttp.RequestCtx) string {
-	v, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
-	return v
+	return callerUserID != "" && callerUserID == *rowUserID
 }
 
 // reauth starts a fresh OAuth flow OR a fresh header-submission flow for
@@ -450,7 +456,7 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 	// the OAuth callback lands under whoever clicks the authorize URL — an
 	// admin clicking would either get a "wrong user" credential or overwrite
 	// the row's identity. Mirrored on the wire via mcpSessionRow.CanReauth.
-	if !canReauthRow(tok.AuthMode, tok.UserID, callerUserIDFromCtx(ctx)) {
+	if !canAccessUserFlow(tok.AuthMode, tok.UserID, callerUserIDFromCtx(ctx)) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can re-authenticate this session.")
 		return
 	}
@@ -507,7 +513,7 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 	// bound user. An admin clicking through would submit secret material under
 	// their own identity, attached to the bound user's row. Same rule as the
 	// OAuth branch; surfaced to the UI via mcpSessionRow.CanReauth.
-	if !canReauthRow(cred.AuthMode, cred.UserID, callerUserIDFromCtx(ctx)) {
+	if !canAccessUserFlow(cred.AuthMode, cred.UserID, callerUserIDFromCtx(ctx)) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can re-submit headers for this session.")
 		return
 	}
@@ -704,6 +710,10 @@ func (h *MCPSessionsHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		_ = err
 		return
 	}
+	if !canAccessUserFlow(flow.FlowMode, flow.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "This authentication link is bound to a different user.")
+		return
+	}
 	resp := mcpFlowDetailResponse{
 		ID:            flow.ID,
 		FlowMode:      flow.FlowMode,
@@ -767,8 +777,13 @@ func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid flow id")
 		return
 	}
-	if _, err := h.loadAuthorizedFlow(ctx, flowID); err != nil {
+	flow, err := h.loadAuthorizedFlow(ctx, flowID)
+	if err != nil {
 		_ = err
+		return
+	}
+	if !canAccessUserFlow(flow.FlowMode, flow.UserID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "This authentication link is bound to a different user.")
 		return
 	}
 	if h.store.OAuthProvider == nil {
