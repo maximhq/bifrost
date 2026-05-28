@@ -1,6 +1,7 @@
 package postgresconn
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -171,19 +172,48 @@ func RunPasswordCommand(ctx context.Context, config *PasswordCommandConfig) (str
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, config.Command, config.Args...)
-	output, err := cmd.Output()
-	if cmdCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("postgres password_command timed out after %s", timeout)
+	cmd := exec.Command(config.Command, config.Args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("postgres password_command failed to start: %w", err)
 	}
-	if err != nil {
-		return "", fmt.Errorf("postgres password_command failed: %w", err)
+
+	waitErr := make(chan error, 1)
+	go func() {
+		waitErr <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitErr:
+		if err != nil {
+			return "", passwordCommandError(err, stderr.String())
+		}
+	case <-cmdCtx.Done():
+		_ = cmd.Process.Kill()
+		<-waitErr
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("postgres password_command timed out after %s", timeout)
+		}
+		return "", fmt.Errorf("postgres password_command canceled: %w", cmdCtx.Err())
 	}
-	password := strings.TrimRight(string(output), "\r\n")
+
+	password := strings.TrimRight(stdout.String(), "\r\n")
 	if password == "" {
 		return "", fmt.Errorf("postgres password_command returned empty stdout")
 	}
 	return password, nil
+}
+
+func passwordCommandError(err error, stderr string) error {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return fmt.Errorf("postgres password_command failed: %w", err)
+	}
+	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
 }
 
 func parsePasswordCommandTimeout(config *PasswordCommandConfig) (time.Duration, error) {

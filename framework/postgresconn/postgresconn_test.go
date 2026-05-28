@@ -49,6 +49,36 @@ func TestRunPasswordCommandRejectsEmptyOutput(t *testing.T) {
 	require.ErrorContains(t, err, "empty stdout")
 }
 
+func TestRunPasswordCommandIncludesStderr(t *testing.T) {
+	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
+		Command: "sh",
+		Args:    []string{"-c", "echo useful failure detail >&2; exit 7"},
+	})
+
+	require.ErrorContains(t, err, "exit status 7")
+	require.ErrorContains(t, err, "useful failure detail")
+}
+
+func TestRunPasswordCommandTimeout(t *testing.T) {
+	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
+		Command: "sh",
+		Args:    []string{"-c", "sleep 1"},
+		Timeout: "1ms",
+	})
+
+	require.ErrorContains(t, err, "timed out")
+}
+
+func TestRunPasswordCommandStartErrorIsNotTimeout(t *testing.T) {
+	_, err := RunPasswordCommand(context.Background(), &PasswordCommandConfig{
+		Command: "/definitely/not/a/real/postgres/password/command",
+		Timeout: "1ns",
+	})
+
+	require.ErrorContains(t, err, "failed to start")
+	require.NotContains(t, err.Error(), "timed out")
+}
+
 func validConfig() *Config {
 	return &Config{
 		Host:     schemas.NewEnvVar("localhost"),
