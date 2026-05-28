@@ -10,9 +10,13 @@ package handlers
 
 import (
 	"errors"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -88,29 +92,157 @@ type mcpSessionRow struct {
 }
 
 type mcpSessionsListResponse struct {
-	Sessions []mcpSessionRow `json:"sessions"`
+	Sessions   []mcpSessionRow `json:"sessions"`
+	Count      int             `json:"count"`
+	TotalCount int             `json:"total_count"`
+	Limit      int             `json:"limit"`
+	Offset     int             `json:"offset"`
 }
 
-// list returns sessions visible to the caller. Each row's identity column
-// matches the caller's derived AuthMode + identity.
+const (
+	mcpSessionsDefaultLimit = 50
+	mcpSessionsMaxLimit     = 500
+)
+
+// mcpSessionsListQuery is the parsed query string for GET /api/mcp/sessions.
+// Filters is forwarded to the four store list methods. Kinds is a wire-row
+// taxonomy filter (token/header/flow) applied in the handler — it doesn't
+// map to a column, just decides which store calls to skip. Limit/Offset
+// apply to the merged result after cross-table de-dup, so they're handled
+// here rather than in the store params struct.
+type mcpSessionsListQuery struct {
+	Filters configstore.MCPSessionsFilterParams
+	Kinds   []string
+	Limit   int
+	Offset  int
+}
+
+// parseMCPSessionsListQuery extracts and validates pagination + filter params
+// from the request query string. On validation failure it writes a 400
+// response and returns ok=false — the caller must early-return without
+// further writes.
+func parseMCPSessionsListQuery(ctx *fasthttp.RequestCtx) (mcpSessionsListQuery, bool) {
+	q := mcpSessionsListQuery{Limit: mcpSessionsDefaultLimit}
+	args := ctx.QueryArgs()
+	q.Filters.Search = strings.TrimSpace(string(args.Peek("q")))
+	q.Filters.Statuses = parseCommaSeparated(string(args.Peek("status")))
+	q.Filters.AuthModes = parseCommaSeparated(string(args.Peek("auth_mode")))
+	q.Filters.MCPClientIDs = parseCommaSeparated(string(args.Peek("mcp_client_id")))
+	q.Kinds = parseCommaSeparated(string(args.Peek("kind")))
+	if s := string(args.Peek("limit")); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid limit parameter: must be a number")
+			return q, false
+		}
+		if n <= 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid limit parameter: must be greater than zero")
+			return q, false
+		}
+		if n > mcpSessionsMaxLimit {
+			n = mcpSessionsMaxLimit
+		}
+		q.Limit = n
+	}
+	if s := string(args.Peek("offset")); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid offset parameter: must be a number")
+			return q, false
+		}
+		if n < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid offset parameter: must be non-negative")
+			return q, false
+		}
+		q.Offset = n
+	}
+	return q, true
+}
+
+// kindAllowed reports whether the given wire-row kind passes the optional
+// kind filter. Empty filter matches all. Used for the two user-selectable
+// kinds (token, header); flow visibility is gated through flowsAllowed
+// instead since "flow" is no longer a UI-selectable kind.
+func (q mcpSessionsListQuery) kindAllowed(kind string) bool {
+	if len(q.Kinds) == 0 {
+		return true
+	}
+	for _, k := range q.Kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// flowsAllowed reports whether flow rows should be returned given the kind
+// filter. "flow" used to be a selectable Type in the UI; it now lives under
+// the Status filter (Status=Pending). Flows surface when the user hasn't
+// narrowed to a specific kind — selecting Type=token or Type=header
+// suppresses flows.
+func (q mcpSessionsListQuery) flowsAllowed() bool {
+	return len(q.Kinds) == 0
+}
+
+// statusFilterAllowsPending reports whether the status filter would
+// admit a row with status='pending'. Empty filter (no filter) admits
+// everything, so returns true.
+func (q mcpSessionsListQuery) statusFilterAllowsPending() bool {
+	if len(q.Filters.Statuses) == 0 {
+		return true
+	}
+	for _, s := range q.Filters.Statuses {
+		if s == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+// list returns sessions visible to the caller, filtered + paginated. Each
+// row's identity column matches the caller's derived AuthMode + identity
+// (enforced by DAC scope at the configstore layer). Filtering is pushed
+// to SQL via the four List* store methods; pagination + cross-table
+// de-dup + sort happens here because per-table LIMIT/OFFSET would not
+// compose into a correct global page.
 func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
-	// Always call the unfiltered list methods. Row visibility is handled
-	// by DAC scope at the enterprise configstore layer (own-data narrows
-	// to the caller's identity + owned VKs; team-data widens to members;
-	// all-data / OSS-only sees everything). Matches the canonical pattern
-	// used by getVirtualKeys, getPrompts, getTeams, etc.
-	tokens, err := h.store.ConfigStore.ListAllOauthUserTokens(ctx)
-	var flows []tables.TableOauthUserSession
-	var headerCreds []tables.TableMCPPerUserHeaderCredential
-	var headerFlows []tables.TableMCPPerUserHeaderFlow
-	if err == nil {
-		flows, err = h.store.ConfigStore.ListAllPendingOauthUserSessions(ctx)
+	q, ok := parseMCPSessionsListQuery(ctx)
+	if !ok {
+		return
 	}
-	if err == nil {
-		headerCreds, err = h.store.ConfigStore.ListAllMCPPerUserHeaderCredentials(ctx)
+
+	// Skip store calls we know can't contribute rows. Cuts pointless DB
+	// work for common filter shapes:
+	//   - kind=token only → only the tokens table
+	//   - kind=header only → only the headers table
+	//   - status excludes pending → skip both flow tables (flow rows are
+	//     always status='pending')
+	// We still fetch tokens/headers when their corresponding flow table is
+	// queried, because cross-table de-dup (suppress a flow row when a
+	// matching token/header credential exists) needs that data.
+	var (
+		tokens      []tables.TableOauthUserToken
+		flows       []tables.TableOauthUserSession
+		headerCreds []tables.TableMCPPerUserHeaderCredential
+		headerFlows []tables.TableMCPPerUserHeaderFlow
+		err         error
+	)
+	queryFlows := q.flowsAllowed() && q.statusFilterAllowsPending()
+	queryHeaderFlows := queryFlows
+	queryTokens := q.kindAllowed("token") || queryFlows
+	queryHeaders := q.kindAllowed("header") || queryHeaderFlows
+
+	if queryTokens {
+		tokens, err = h.store.ConfigStore.ListOauthUserTokens(ctx, q.Filters)
 	}
-	if err == nil {
-		headerFlows, err = h.store.ConfigStore.ListAllPendingMCPPerUserHeaderFlows(ctx)
+	if err == nil && queryFlows {
+		flows, err = h.store.ConfigStore.ListPendingOauthUserSessions(ctx, q.Filters)
+	}
+	if err == nil && queryHeaders {
+		headerCreds, err = h.store.ConfigStore.ListMCPPerUserHeaderCredentials(ctx, q.Filters)
+	}
+	if err == nil && queryHeaderFlows {
+		headerFlows, err = h.store.ConfigStore.ListPendingMCPPerUserHeaderFlows(ctx, q.Filters)
 	}
 	if err != nil {
 		logger.Error("[mcp/sessions] list failed: %v", err)
@@ -137,30 +269,46 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	}
 
 	rows := make([]mcpSessionRow, 0, len(tokens)+len(flows)+len(headerCreds)+len(headerFlows))
-	for _, t := range tokens {
-		rows = append(rows, tokenRow(t))
-	}
-	for _, f := range flows {
-		if _, hasToken := tokenBindings[bindingKeyFromFlow(f)]; hasToken {
-			continue
+	if q.kindAllowed("token") {
+		for _, t := range tokens {
+			rows = append(rows, tokenRow(t))
 		}
-		// Skip deferred-fill user-mode flow rows (user_id not yet stamped).
-		// They have no concrete binding to render, and surfacing them in
-		// the table forces an ambiguous label.
-		if f.FlowMode == string(schemas.MCPAuthModeUser) && (f.UserID == nil || *f.UserID == "") {
-			continue
+	}
+	if queryFlows {
+		for _, f := range flows {
+			if _, hasToken := tokenBindings[bindingKeyFromFlow(f)]; hasToken {
+				continue
+			}
+			// Skip deferred-fill user-mode flow rows (user_id not yet stamped).
+			// They have no concrete binding to render, and surfacing them in
+			// the table forces an ambiguous label.
+			if f.FlowMode == string(schemas.MCPAuthModeUser) && (f.UserID == nil || *f.UserID == "") {
+				continue
+			}
+			rows = append(rows, flowRow(f))
 		}
-		rows = append(rows, flowRow(f))
 	}
-	for _, c := range headerCreds {
-		rows = append(rows, headerCredentialRow(c))
-	}
-	for _, f := range headerFlows {
-		if _, hasCred := headerCredBindings[bindingKeyFromHeaderFlow(f)]; hasCred {
-			continue
+	if q.kindAllowed("header") {
+		for _, c := range headerCreds {
+			rows = append(rows, headerCredentialRow(c))
 		}
-		rows = append(rows, headerFlowRow(f))
 	}
+	if queryHeaderFlows {
+		for _, f := range headerFlows {
+			if _, hasCred := headerCredBindings[bindingKeyFromHeaderFlow(f)]; hasCred {
+				continue
+			}
+			rows = append(rows, headerFlowRow(f))
+		}
+	}
+
+	// Stable sort across the merged set so pagination is deterministic.
+	// The per-table queries each ORDER BY created_at DESC, but cross-table
+	// merge order is undefined without this step.
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].CreatedAt > rows[j].CreatedAt
+	})
+
 	caller := callerUserIDFromCtx(ctx)
 	for i := range rows {
 		// Flow rows are completed via /api/oauth/per-user/flows/{id}/start, not
@@ -172,7 +320,22 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		}
 		rows[i].CanReauth = canReauthRow(rows[i].AuthMode, rows[i].UserID, caller)
 	}
-	SendJSON(ctx, mcpSessionsListResponse{Sessions: rows})
+
+	totalCount := len(rows)
+	start := min(q.Offset, totalCount)
+	end := start + q.Limit
+	if end > totalCount {
+		end = totalCount
+	}
+	page := rows[start:end]
+
+	SendJSON(ctx, mcpSessionsListResponse{
+		Sessions:   page,
+		Count:      len(page),
+		TotalCount: totalCount,
+		Limit:      q.Limit,
+		Offset:     q.Offset,
+	})
 }
 
 type sessionBindingKey struct {
