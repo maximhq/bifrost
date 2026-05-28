@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationLabels } from "@/lib/constants/governance";
+import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getErrorMessage, useDeleteModelConfigMutation } from "@/lib/store";
@@ -23,12 +23,13 @@ import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 import { getScopeLabel } from "@/lib/utils/labels";
+import { useNavigate } from "@tanstack/react-router";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -123,6 +124,7 @@ export default function ModelLimitsTable({
 	limit,
 	onOffsetChange,
 }: ModelLimitsTableProps) {
+	const navigate = useNavigate();
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
 	const [deleteModelConfigId, setDeleteModelConfigId] = useState<string | null>(null);
@@ -248,6 +250,7 @@ export default function ModelLimitsTable({
 								<TableHead className="font-medium">Model</TableHead>
 								<TableHead className="font-medium">Provider</TableHead>
 								<TableHead className="font-medium">Scope</TableHead>
+								<TableHead className="font-medium">Scope Target</TableHead>
 								<TableHead className="font-medium">Budget</TableHead>
 								<TableHead className="font-medium">Rate Limit</TableHead>
 								<TableHead className="w-[100px]"></TableHead>
@@ -256,14 +259,15 @@ export default function ModelLimitsTable({
 						<TableBody>
 							{modelConfigs.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={6} className="h-24 text-center">
+									<TableCell colSpan={7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching model limits found.</span>
 									</TableCell>
 								</TableRow>
 							) : (
 								modelConfigs.map((config) => {
-									const isBudgetExhausted =
-										config.budget?.max_limit && config.budget.max_limit > 0 && config.budget.current_usage >= config.budget.max_limit;
+									// Model configs can own multiple budgets; show all (like the VK table).
+									const budgets = config.budgets ?? (config.budget ? [config.budget] : []);
+									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 									const isRateLimitExhausted =
 										(config.rate_limit?.token_max_limit &&
 											config.rate_limit.token_max_limit > 0 &&
@@ -274,10 +278,6 @@ export default function ModelLimitsTable({
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
 									// Compute safe percentages to avoid division by zero
-									const budgetPercentage =
-										config.budget?.max_limit && config.budget.max_limit > 0
-											? Math.min((config.budget.current_usage / config.budget.max_limit) * 100, 100)
-											: 0;
 									const tokenPercentage =
 										config.rate_limit?.token_max_limit && config.rate_limit.token_max_limit > 0
 											? Math.min((config.rate_limit.token_current_usage / config.rate_limit.token_max_limit) * 100, 100)
@@ -318,41 +318,45 @@ export default function ModelLimitsTable({
 											<TableCell>
 												<Badge variant="secondary">{getScopeLabel(config.scope ?? "global")}</Badge>
 											</TableCell>
-											<TableCell className="min-w-[180px]">
-												{config.budget ? (
+											<TableCell>
+												{config.scope !== "global" && config.scope_id && config.scope_name ? (
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(config.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(config.budget.reset_duration)}
-																		</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
+																<Badge
+																	variant="secondary"
+																	className="flex max-w-[160px] cursor-pointer items-center gap-1 hover:opacity-80"
+																	data-testid={`model-limit-scope-target-${config.scope_id}`}
+																	onClick={() => navigate({ to: "/workspace/governance/virtual-keys", search: { vk: config.scope_id } })}
+																>
+																	<span className="truncate">{config.scope_name}</span>
+																	<ArrowUpRight className="h-3 w-3 shrink-0" />
+																</Badge>
 															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(config.budget.reset_duration)}
-																</p>
-															</TooltipContent>
+															<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
+												) : (
+													<span className="text-muted-foreground text-sm">—</span>
+												)}
+											</TableCell>
+											<TableCell className="min-w-[180px]">
+												{budgets.length > 0 ? (
+													<div className="flex flex-col gap-1">
+														{budgets.map((b, idx) => (
+															<div key={b.id ?? idx} className="flex flex-col">
+																<span
+																	className={cn("font-mono text-sm", b.max_limit > 0 && b.current_usage >= b.max_limit && "text-red-400")}
+																>
+																	{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																</span>
+																<span className="text-muted-foreground text-xs">
+																	Resets {formatResetDuration(b.reset_duration)}
+																	{config.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																</span>
+															</div>
+														))}
+													</div>
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
