@@ -279,12 +279,6 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 			if _, hasToken := tokenBindings[bindingKeyFromFlow(f)]; hasToken {
 				continue
 			}
-			// Skip deferred-fill user-mode flow rows (user_id not yet stamped).
-			// They have no concrete binding to render, and surfacing them in
-			// the table forces an ambiguous label.
-			if f.FlowMode == string(schemas.MCPAuthModeUser) && (f.UserID == nil || *f.UserID == "") {
-				continue
-			}
 			rows = append(rows, flowRow(f))
 		}
 	}
@@ -696,10 +690,8 @@ type mcpFlowDetailResponse struct {
 // flowDetail returns the pending flow row's metadata so the frontend sessions
 // auth page can render a "you're about to authenticate X" view.
 //
-// Permission model: deferred-fill flows (flow_mode='user' with user_id=nil)
-// are visible to any user-mode caller — the first SCIM-authenticated user to
-// open the URL will become the row's user_id at completion time. For all
-// other modes the caller's identity must match the row's identity column.
+// Permission model: the caller's identity must match the row's identity column
+// for the row's flow_mode. Enforced at the configstore layer via DAC scope.
 func (h *MCPSessionsHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
@@ -748,17 +740,6 @@ func (h *MCPSessionsHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		case schemas.MCPAuthModeUser:
 			if flow.UserID != nil && *flow.UserID != "" {
 				identity = *flow.UserID
-			} else if v, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); v != "" {
-				// Deferred-fill: flow.UserID is nil until completion. Fall
-				// back to the signed-in caller's user_id so HasActiveToken
-				// reflects whether THIS user already has a credential for
-				// the MCP client and we don't prompt an unnecessary re-auth.
-				//
-				// Use UserValue (not Value) — auth middleware stores via
-				// SetUserValue, and fasthttp's Value() only handles bare
-				// string keys, so a typed BifrostContextKey lookup via
-				// Value() always returns nil.
-				identity = v
 			}
 		case schemas.MCPAuthModeVK:
 			if flow.VirtualKeyID != nil {
@@ -817,9 +798,7 @@ func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
 // loadAuthorizedFlow looks up the pending flow row. Visibility is enforced
 // at the enterprise configstore layer via DAC scope on
 // GetOauthUserSessionByID: if the caller is not allowed to see this row,
-// the store returns (nil, nil) and we surface 404. Deferred-fill user-mode
-// flows (user_id IS NULL) are visible to any SCIM-authenticated caller by
-// the scope builder so they can claim the auth URL. Writes the appropriate
+// the store returns (nil, nil) and we surface 404. Writes the appropriate
 // HTTP error response and returns a sentinel error on failure.
 func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID string) (*tables.TableOauthUserSession, error) {
 	flow, err := h.store.ConfigStore.GetOauthUserSessionByID(ctx, flowID)
