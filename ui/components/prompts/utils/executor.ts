@@ -207,6 +207,20 @@ export async function executePrompt(
 	}
 }
 
+export class MCPAuthRequiredError extends Error {
+	kind: "oauth" | "headers";
+	mcpClientName: string;
+	authorizeUrl: string;
+
+	constructor(opts: { kind: "oauth" | "headers"; mcpClientName: string; authorizeUrl: string; message: string }) {
+		super(opts.message);
+		this.name = "MCPAuthRequiredError";
+		this.kind = opts.kind;
+		this.mcpClientName = opts.mcpClientName;
+		this.authorizeUrl = opts.authorizeUrl;
+	}
+}
+
 export async function executeToolCall(
 	toolCall: ToolCall,
 	config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">,
@@ -232,8 +246,18 @@ export async function executeToolCall(
 		try {
 			const data = await response.json();
 			errorMessage = data.error?.message || data.error?.error || errorMessage;
-		} catch {
-			// keep default message
+
+			const authRequired = data.extra_fields?.mcp_auth_required;
+			if (authRequired) {
+				throw new MCPAuthRequiredError({
+					kind: authRequired.kind,
+					mcpClientName: authRequired.mcp_client_name || "MCP server",
+					authorizeUrl: authRequired.authorize_url || authRequired.submit_url || "",
+					message: authRequired.message || errorMessage,
+				});
+			}
+		} catch (e) {
+			if (e instanceof MCPAuthRequiredError) throw e;
 		}
 		throw new Error(errorMessage);
 	}
