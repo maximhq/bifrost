@@ -374,6 +374,15 @@ bifrost:
       #   secretRef:
       #     name: ""                               # k8s secret name
       #     connectionStringKey: "connection-string"  # key within the secret
+      #
+      # - name: "example-https-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # TLS configuration for HTTP and SSE connection types.
+      #   # Use when the MCP server presents a self-signed or private CA certificate.
+      #   tlsConfig:
+      #     insecureSkipVerify: false              # Disable TLS verification (dev/test only — takes priority over caCertPem)
+      #     caCertPem: "env.MY_MCP_CA_CERT"       # PEM string or env.VAR_NAME reference
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
