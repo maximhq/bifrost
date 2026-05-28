@@ -40,10 +40,10 @@ The lazy-auth model is identical to [Per-User OAuth](./per-user-oauth) — the o
 The `mcp_auth_required` payload carries `kind: "headers"` so SDKs can branch on it. The natural-language message also embeds the URL so plain-text clients see it:
 
 ```text
-Authentication required for acme_api. Open this URL to submit the required headers: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>&kind=headers#t=<temp-token>
+Authentication required for acme_api. Open this URL to submit the required headers: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>&kind=headers
 ```
 
-The temp token in the URL fragment (`#t=…`) lets anonymous browser visitors complete the form without a dashboard session. The fragment never reaches server logs.
+VK and session-mode URLs may also carry a `#t=<temp-token>` fragment when [`mcp_enable_temp_token_auth`](./overview#the-mcp_enable_temp_token_auth-toggle) is turned on, letting anonymous browser visitors complete the form without a dashboard session (the fragment never reaches server logs). User-mode URLs never carry a temp token — visitors must complete SSO login first, and only the bound SSO user can finish the flow. See [Flow mode and access rules](./overview#flow-mode-and-access-rules).
 
 <Frame>
   <img src="/media/ui-mcp-per-user-headers-submit.png" alt="Per-user headers submission landing page at /workspace/mcp-sessions/auth?flow=<id>&kind=headers, showing required header inputs" />
