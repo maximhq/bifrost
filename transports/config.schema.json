@@ -1053,6 +1053,7 @@
                     "properties": {
                       "command": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Executable path or name to run"
                       },
                       "args": {
@@ -1066,7 +1067,7 @@
                       "timeout": {
                         "type": "string",
                         "description": "Command timeout as a Go duration string (default: 10s)",
-                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
                       }
                     },
@@ -1096,7 +1097,7 @@
                   "conn_max_lifetime": {
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
@@ -1106,7 +1107,7 @@
                   "db_name",
                   "ssl_mode"
                 ],
-                "anyOf": [
+                "oneOf": [
                   {
                     "required": ["password"]
                   },
@@ -1189,6 +1190,7 @@
                     "properties": {
                       "command": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "Executable path or name to run"
                       },
                       "args": {
@@ -1202,7 +1204,7 @@
                       "timeout": {
                         "type": "string",
                         "description": "Command timeout as a Go duration string (default: 10s)",
-                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
                       }
                     },
@@ -1238,7 +1240,7 @@
                   "conn_max_lifetime": {
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
@@ -1248,7 +1250,7 @@
                   "db_name",
                   "ssl_mode"
                 ],
-                "anyOf": [
+                "oneOf": [
                   {
                     "required": ["password"]
                   },

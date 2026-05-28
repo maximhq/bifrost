@@ -708,7 +708,7 @@ false
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.passwordCommand }}
 {{- $_ := set $pgConfig "password_command" .Values.postgresql.external.passwordCommand }}
-{{- $_ := set $pgConfig "password" "" }}
+{{- $_ := unset $pgConfig "password" }}
 {{- end }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.connMaxLifetime }}
 {{- $_ := set $pgConfig "conn_max_lifetime" .Values.postgresql.external.connMaxLifetime }}
@@ -733,7 +733,7 @@ false
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.passwordCommand }}
 {{- $_ := set $pgConfig "password_command" .Values.postgresql.external.passwordCommand }}
-{{- $_ := set $pgConfig "password" "" }}
+{{- $_ := unset $pgConfig "password" }}
 {{- end }}
 {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.connMaxLifetime }}
 {{- $_ := set $pgConfig "conn_max_lifetime" .Values.postgresql.external.connMaxLifetime }}

@@ -3,6 +3,7 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -177,6 +178,64 @@ func TestSchemaPostgresPasswordCommand(t *testing.T) {
 	if err := validateConfig(t, compiled, config); err != nil {
 		t.Fatalf("postgres password_command config should be valid, got: %v", err)
 	}
+}
+
+func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "config_store rejects password and password_command together",
+			config: postgresStoreConfig("config_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name: "logs_store rejects password and password_command together",
+			config: postgresStoreConfig("logs_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name:   "config_store rejects empty password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": ""}`),
+		},
+		{
+			name:   "logs_store rejects zero password command timeout",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name: "config_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func postgresStoreConfig(storeName string, passwordFields string) string {
+	return fmt.Sprintf(`{
+		"%s": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				%s,
+				"db_name": "bifrost",
+				"ssl_mode": "require"
+			}
+		}
+	}`, storeName, passwordFields)
 }
 
 // compileSchema loads and compiles the config.schema.json for validation tests.

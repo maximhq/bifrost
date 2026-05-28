@@ -59,8 +59,11 @@ func Validate(config *Config, requireStaticPassword bool) error {
 	if config.SSLMode == nil || config.SSLMode.GetValue() == "" {
 		return fmt.Errorf("postgres ssl mode is required")
 	}
+	if _, err := parseConnMaxLifetime(config); err != nil {
+		return err
+	}
 	if config.PasswordCommand != nil {
-		if config.PasswordCommand.Command == "" {
+		if strings.TrimSpace(config.PasswordCommand.Command) == "" {
 			return fmt.Errorf("postgres password_command.command is required")
 		}
 		if config.Password != nil && config.Password.GetValue() != "" {
@@ -142,9 +145,9 @@ func ApplyPoolTuning(db *gorm.DB, config *Config) error {
 	}
 	sqlDB.SetMaxOpenConns(maxOpenConns)
 	if config.ConnMaxLifetime != "" {
-		lifetime, err := time.ParseDuration(config.ConnMaxLifetime)
+		lifetime, err := parseConnMaxLifetime(config)
 		if err != nil {
-			return fmt.Errorf("invalid postgres conn_max_lifetime %q: %w", config.ConnMaxLifetime, err)
+			return err
 		}
 		sqlDB.SetConnMaxLifetime(lifetime)
 	}
@@ -153,18 +156,34 @@ func ApplyPoolTuning(db *gorm.DB, config *Config) error {
 
 // Close closes the *sql.DB backing a *gorm.DB, logging any error.
 func Close(db *gorm.DB, logger schemas.Logger) {
+	if db == nil {
+		if logger != nil {
+			logger.Debug("skipping close for nil DB connection")
+		}
+		return
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
-		logger.Error("failed to resolve *sql.DB for close: %v", err)
+		if logger != nil {
+			logger.Error("failed to resolve *sql.DB for close: %v", err)
+		}
 		return
 	}
 	if err := sqlDB.Close(); err != nil {
-		logger.Error("failed to close DB connection: %v", err)
+		if logger != nil {
+			logger.Error("failed to close DB connection: %v", err)
+		}
 	}
 }
 
 // RunPasswordCommand executes a configured password command and returns stdout.
 func RunPasswordCommand(ctx context.Context, config *PasswordCommandConfig) (string, error) {
+	if config == nil {
+		return "", fmt.Errorf("postgres password_command config is required")
+	}
+	if strings.TrimSpace(config.Command) == "" {
+		return "", fmt.Errorf("postgres password_command.command is required")
+	}
 	timeout, err := parsePasswordCommandTimeout(config)
 	if err != nil {
 		return "", err
@@ -214,6 +233,20 @@ func passwordCommandError(err error, stderr string) error {
 		return fmt.Errorf("postgres password_command failed: %w", err)
 	}
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
+}
+
+func parseConnMaxLifetime(config *Config) (time.Duration, error) {
+	if config == nil || config.ConnMaxLifetime == "" {
+		return 0, nil
+	}
+	lifetime, err := time.ParseDuration(config.ConnMaxLifetime)
+	if err != nil {
+		return 0, fmt.Errorf("invalid postgres conn_max_lifetime %q: %w", config.ConnMaxLifetime, err)
+	}
+	if lifetime <= 0 {
+		return 0, fmt.Errorf("postgres conn_max_lifetime must be positive")
+	}
+	return lifetime, nil
 }
 
 func parsePasswordCommandTimeout(config *PasswordCommandConfig) (time.Duration, error) {

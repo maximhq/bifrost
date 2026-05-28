@@ -184,9 +184,9 @@ Point Bifrost at an existing PostgreSQL instance - RDS, Cloud SQL, Azure Databas
 | `postgresql.external.user` | Username | `bifrost` |
 | `postgresql.external.database` | Database name | `bifrost` |
 | `postgresql.external.sslMode` | SSL mode (`disable`, `require`, `verify-ca`, `verify-full`) | `disable` |
-| `postgresql.external.existingSecret` | Secret name for the password | `""` |
+| `postgresql.external.existingSecret` | Secret name for the password. Mutually exclusive with `passwordCommand`. | `""` |
 | `postgresql.external.passwordKey` | Key within the secret | `"password"` |
-| `postgresql.external.passwordCommand` | Command executed by Bifrost to produce the database password on stdout for each new physical connection | unset |
+| `postgresql.external.passwordCommand` | Command executed by Bifrost to produce the database password on stdout for each new physical connection. Mutually exclusive with `existingSecret`. | unset |
 | `postgresql.external.connMaxLifetime` | Maximum lifetime for physical database connections, such as `"10m"` | unset |
 
 ```bash
