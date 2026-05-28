@@ -491,6 +491,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if len(key.AzureKeyConfig.Scopes) > 0 {
 				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
+			if key.AzureKeyConfig.APIVersion != nil {
+				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
+			}
+			azureConfig.UseV1API = key.AzureKeyConfig.UseV1API
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -1250,15 +1254,6 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	// Hash StdioConfig
 	if m.StdioConfig != nil {
 		data, err := sonic.Marshal(m.StdioConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-
-	// Hash TLSConfig
-	if m.TLSConfig != nil {
-		data, err := sonic.Marshal(m.TLSConfig)
 		if err != nil {
 			return "", err
 		}

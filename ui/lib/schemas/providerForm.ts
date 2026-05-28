@@ -74,6 +74,8 @@ const AllowedRequestsSchema = z.object({
 // Key configuration schemas
 const AzureKeyConfigSchema = z.object({
 	endpoint: z.string().min(1, "Endpoint is required for Azure keys"),
+	api_version: envVarSchema.optional(),
+	use_v1_api: z.boolean().optional(),
 	client_id: z.string().optional(),
 	client_secret: z.string().optional(),
 	tenant_id: z.string().optional(),

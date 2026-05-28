@@ -347,6 +347,13 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 			updateKey.AzureKeyConfig.TenantID.Equals(oldRedactedKey.AzureKeyConfig.TenantID) {
 			mergedKey.AzureKeyConfig.TenantID = oldRawKey.AzureKeyConfig.TenantID
 		}
+		if updateKey.AzureKeyConfig.APIVersion != nil &&
+			oldRedactedKey.AzureKeyConfig.APIVersion != nil &&
+			oldRawKey.AzureKeyConfig != nil &&
+			updateKey.AzureKeyConfig.APIVersion.IsRedacted() &&
+			updateKey.AzureKeyConfig.APIVersion.Equals(oldRedactedKey.AzureKeyConfig.APIVersion) {
+			mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
+		}
 	}
 
 	if updateKey.VertexKeyConfig != nil && oldRedactedKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig != nil {

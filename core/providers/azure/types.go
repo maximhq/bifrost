@@ -1,5 +1,14 @@
 package azure
 
+// AzureAPIVersionDefault is the default Azure API version for classic /deployments/ endpoints.
+const AzureAPIVersionDefault = "2024-10-21"
+
+// AzureAPIVersionPreview is the preview API version string.
+const AzureAPIVersionPreview = "preview"
+
+// AzureAPIVersionImageEditDefault is the default api-version for image-edit endpoints.
+const AzureAPIVersionImageEditDefault = "2025-04-01-preview"
+
 const AzureAnthropicAPIVersionDefault = "2023-06-01"
 
 type AzureModelCapabilities struct {

@@ -535,6 +535,36 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							/>
 						</>
 					)}
+					<FormField
+						control={control}
+						name={`key.azure_key_config.api_version`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>API Version (Optional)</FormLabel>
+								<FormControl>
+									<EnvVarInput data-testid="apikey-azure-api-version-input" placeholder="2024-10-21 or env.AZURE_API_VERSION" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.azure_key_config.use_v1_api"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Use v1 API</FormLabel>
+									<FormDescription>
+										Route requests through /openai/v1/ paths instead of classic /openai/deployments/{"{model}"}/ paths with api-version.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch data-testid="apikey-azure-use-v1-api-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}

@@ -171,7 +171,7 @@ Supports multiple keys with weighted load balancing. Mark one key with `use_for_
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint`. Bifrost uses the Azure OpenAI v1 API — no `api_version` needed. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
+Azure requires `azure_key_config` on every key with `endpoint`. By default Bifrost uses classic `/openai/deployments/{model}/` paths with `api-version=2024-10-21`. Set `use_v1_api: true` to switch to `/openai/v1/` paths instead. You can override the api version with `api_version`. List your Azure deployment names in `models` - Bifrost routes requests using the model name as the deployment name. If your deployment names differ from the model names you use in requests, add an `aliases` map on the key.
 
 <Tabs>
 <Tab title="API Key">

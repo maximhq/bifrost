@@ -38,6 +38,8 @@ type TableKey struct {
 	AzureClientSecret *schemas.EnvVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
 	AzureTenantID     *schemas.EnvVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
 	AzureScopesJSON   *string         `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
+	AzureAPIVersion   *schemas.EnvVar `gorm:"type:text" json:"azure_api_version,omitempty"`
+	AzureUseV1API     *bool           `gorm:"column:azure_use_v1_api" json:"azure_use_v1_api,omitempty"`
 
 	// Vertex config fields (embedded)
 	VertexProjectID       *schemas.EnvVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
@@ -163,12 +165,21 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.AzureScopesJSON = nil
 		}
+		if k.AzureKeyConfig.APIVersion != nil {
+			av := *k.AzureKeyConfig.APIVersion
+			k.AzureAPIVersion = &av
+		} else {
+			k.AzureAPIVersion = nil
+		}
+		k.AzureUseV1API = k.AzureKeyConfig.UseV1API
 	} else {
 		k.AzureEndpoint = nil
 		k.AzureClientID = nil
 		k.AzureClientSecret = nil
 		k.AzureTenantID = nil
 		k.AzureScopesJSON = nil
+		k.AzureAPIVersion = nil
+		k.AzureUseV1API = nil
 	}
 	if k.VertexKeyConfig != nil {
 		if k.VertexKeyConfig.ProjectID.IsSet() {
@@ -346,6 +357,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptEnvVarPtr(&k.AzureTenantID); err != nil {
 			return fmt.Errorf("failed to encrypt azure tenant id: %w", err)
 		}
+		if err := encryptEnvVarPtr(&k.AzureAPIVersion); err != nil {
+			return fmt.Errorf("failed to encrypt azure api version: %w", err)
+		}
 		// Vertex
 		if err := encryptEnvVarPtr(&k.VertexProjectID); err != nil {
 			return fmt.Errorf("failed to encrypt vertex project id: %w", err)
@@ -430,6 +444,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptEnvVarPtr(&k.AzureTenantID); err != nil {
 			return fmt.Errorf("failed to decrypt azure tenant id: %w", err)
 		}
+		if err := decryptEnvVarPtr(&k.AzureAPIVersion); err != nil {
+			return fmt.Errorf("failed to decrypt azure api version: %w", err)
+		}
 		// Vertex
 		if err := decryptEnvVarPtr(&k.VertexProjectID); err != nil {
 			return fmt.Errorf("failed to decrypt vertex project id: %w", err)
@@ -508,7 +525,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.UseForBatchAPI = &useForBatchAPI
 	}
 	// Reconstruct Azure config if fields are present
-	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
+	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") || k.AzureAPIVersion != nil || k.AzureUseV1API != nil {
 		var scopes []string
 		if k.AzureScopesJSON != nil && *k.AzureScopesJSON != "" {
 			if err := json.Unmarshal([]byte(*k.AzureScopesJSON), &scopes); err != nil {
@@ -526,6 +543,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if k.AzureEndpoint != nil {
 			azureConfig.Endpoint = *k.AzureEndpoint
 		}
+
+		azureConfig.APIVersion = k.AzureAPIVersion
+		azureConfig.UseV1API = k.AzureUseV1API
 
 		k.AzureKeyConfig = azureConfig
 	}

@@ -804,7 +804,10 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationDropAzureAPIVersionColumn(ctx, db); err != nil {
+	if err := migrationAddAzureAPIVersionColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAzureUseV1APIColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddPerUserHeadersTables(ctx, db); err != nil {
@@ -8872,35 +8875,6 @@ func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *go
 	return nil
 }
 
-// migrationDropAzureAPIVersionColumn adds the created_by_user_id column to the governance_virtual_keys table
-func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "drop_azure_api_version_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
-				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN azure_api_version").Error; err != nil {
-					return fmt.Errorf("failed to drop azure_api_version column: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
-				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT").Error; err != nil {
-					return fmt.Errorf("failed to re-add azure_api_version column: %w", err)
-				}
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
-	}
-	return nil
-}
-
 // migrationAddMCPClientTLSConfigColumn adds the tls_config_json column to the config_mcp_clients table.
 func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -8959,6 +8933,58 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB)
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_additional_attributes_to_pricing migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAzureAPIVersionColumn restores the azure_api_version column to config_keys.
+func migrationAddAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_azure_api_version_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT").Error; err != nil {
+					return fmt.Errorf("failed to add azure_api_version column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(_ *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAzureUseV1APIColumn adds the azure_use_v1_api boolean column to config_keys.
+func migrationAddAzureUseV1APIColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_azure_use_v1_api_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_use_v1_api") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_use_v1_api BOOLEAN").Error; err != nil {
+					return fmt.Errorf("failed to add azure_use_v1_api column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_use_v1_api") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN azure_use_v1_api").Error; err != nil {
+					return fmt.Errorf("failed to drop azure_use_v1_api column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_azure_use_v1_api_column migration: %s", err.Error())
 	}
 	return nil
 }

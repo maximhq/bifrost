@@ -34,8 +34,12 @@ func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model strin
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
 
-	return fmt.Sprintf("%s/openai/v1/realtime?model=%s",
-		endpoint, url.QueryEscape(model))
+	if azureUseV1API(key) {
+		return fmt.Sprintf("%s/openai/v1/realtime?model=%s",
+			endpoint, url.QueryEscape(model))
+	}
+	return fmt.Sprintf("%s/openai/v1/realtime?model=%s&api-version=%s",
+		endpoint, url.QueryEscape(model), url.QueryEscape(azureRealtimeAPIVersion(key)))
 }
 
 func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -219,7 +223,12 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	}
 
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
-	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime/client_secrets", endpoint)
+	var upstreamURL string
+	if azureUseV1API(key) {
+		upstreamURL = fmt.Sprintf("%s/openai/v1/realtime/client_secrets", endpoint)
+	} else {
+		upstreamURL = fmt.Sprintf("%s/openai/v1/realtime/client_secrets?api-version=%s", endpoint, url.QueryEscape(azureRealtimeAPIVersion(key)))
+	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -331,7 +340,6 @@ func newAzureRealtimeError(status int, errorType, message string, err error) *sc
 	return bifrostErr
 }
 
-
 func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
 	body, _ := providerUtils.CheckAndDecodeBody(resp)
 	var parsed struct {
@@ -363,4 +371,16 @@ func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.Bifro
 		}
 	}
 	return bifrostErr
+}
+
+// azureRealtimeAPIVersion returns the API version for realtime endpoints.
+// Realtime requires a preview API version. Honours any explicit key version; otherwise falls back
+// to AzureAPIVersionPreview rather than the stable default (which does not support realtime).
+func azureRealtimeAPIVersion(key schemas.Key) string {
+	if key.AzureKeyConfig != nil && key.AzureKeyConfig.APIVersion != nil {
+		if v := key.AzureKeyConfig.APIVersion.GetValue(); v != "" {
+			return v
+		}
+	}
+	return AzureAPIVersionPreview
 }

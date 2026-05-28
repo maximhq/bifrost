@@ -23,6 +23,8 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
+	api_version?: EnvVar;
+	use_v1_api?: boolean;
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
@@ -35,7 +37,7 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
 	scopes: [],
-} as const satisfies Required<AzureKeyConfig>;
+} satisfies AzureKeyConfig;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {

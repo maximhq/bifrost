@@ -726,6 +726,12 @@ TableKey:
       oneOf:
         - $ref: '../../schemas/management/common.yaml#/EnvVar'
         - type: 'null'
+    azure_api_version:
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
+    azure_use_v1_api:
+      type: [boolean, 'null']
     azure_client_id:
       oneOf:
         - $ref: '../../schemas/management/common.yaml#/EnvVar'
