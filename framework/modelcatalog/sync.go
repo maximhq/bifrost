@@ -170,6 +170,14 @@ func (mc *ModelCatalog) loadPricingIntoMemoryFromURL(ctx context.Context) error 
 	return nil
 }
 
+// ReloadPricing re-reads the pricing table into the in-memory cache. The
+// management API uses this after a batched write so the new attributes are
+// observable immediately. The existing 24-hour sync owns refreshing pricing
+// fields from the upstream datasheet; this method just refreshes the cache.
+func (mc *ModelCatalog) ReloadPricing(ctx context.Context) error {
+	return mc.loadPricingFromDatabase(ctx)
+}
+
 // loadPricingFromDatabase loads pricing data from database into memory cache
 func (mc *ModelCatalog) loadPricingFromDatabase(ctx context.Context) error {
 	if mc.configStore == nil {
