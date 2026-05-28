@@ -6,21 +6,13 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// PostgresConfig represents the configuration for a Postgres database.
 type PostgresConfig struct {
-	Host         *schemas.EnvVar `json:"host"`
-	Port         *schemas.EnvVar `json:"port"`
-	User         *schemas.EnvVar `json:"user"`
-	Password     *schemas.EnvVar `json:"password"`
-	DBName       *schemas.EnvVar `json:"db_name"`
-	SSLMode      *schemas.EnvVar `json:"ssl_mode"`
-	MaxIdleConns int             `json:"max_idle_conns"`
-	MaxOpenConns int             `json:"max_open_conns"`
+	postgresconn.Config
 	// MatViewRefreshInterval controls how often the materialized views backing
 	// /api/logs/stats and the dashboard histograms are refreshed. Accepts any
 	// Go duration string ("30s", "5m", "1h"). Empty / unset uses the default
@@ -30,6 +22,13 @@ type PostgresConfig struct {
 	// interval mostly affects how quickly idle clusters notice the rolling
 	// 30-day filter window has aged.
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
+}
+
+func toPostgresConnConfig(config *PostgresConfig) *postgresconn.Config {
+	if config == nil {
+		return nil
+	}
+	return &config.Config
 }
 
 // defaultMatViewRefreshInterval is used when MatViewRefreshInterval is unset
@@ -70,29 +69,11 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 // pool's connections never see pre-migration schema, so their cached
 // prepared-plans stay valid for the life of the process.
 func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (LogStore, error) {
-	if config == nil {
-		return nil, fmt.Errorf("config is required")
+	pgConfig := toPostgresConnConfig(config)
+	if err := postgresconn.Validate(pgConfig, true); err != nil {
+		return nil, err
 	}
-	// Validate required config
-	if config.Host == nil || config.Host.GetValue() == "" {
-		return nil, fmt.Errorf("postgres host is required")
-	}
-	if config.Port == nil || config.Port.GetValue() == "" {
-		return nil, fmt.Errorf("postgres port is required")
-	}
-	if config.User == nil || config.User.GetValue() == "" {
-		return nil, fmt.Errorf("postgres user is required")
-	}
-	if config.Password == nil || config.Password.GetValue() == "" {
-		return nil, fmt.Errorf("postgres password is required")
-	}
-	if config.DBName == nil || config.DBName.GetValue() == "" {
-		return nil, fmt.Errorf("postgres db name is required")
-	}
-	if config.SSLMode == nil || config.SSLMode.GetValue() == "" {
-		return nil, fmt.Errorf("postgres ssl mode is required")
-	}
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(), config.Password.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
+	dsn := postgresconn.BuildDSN(pgConfig)
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the throwaway
 	// migration pool so no statement plan is ever cached server-side; that makes
@@ -102,9 +83,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
 
 	openPool := func(connDSN string) (*gorm.DB, error) {
-		return gorm.Open(postgres.New(postgres.Config{DSN: connDSN}), &gorm.Config{
-			Logger: newGormLogger(logger),
-		})
+		return postgresconn.Open(connDSN, pgConfig, logger)
 	}
 
 	// closePoolStrict returns the close error so callers can abort startup
@@ -154,25 +133,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 
-	// Configure connection pool
-	sqlDB, err := db.DB()
-	if err != nil {
+	if err := postgresconn.ApplyPoolTuning(db, pgConfig); err != nil {
 		closePool(db)
 		return nil, err
 	}
-	// Set MaxIdleConns (default: 5)
-	maxIdleConns := config.MaxIdleConns
-	if maxIdleConns == 0 {
-		maxIdleConns = 5
-	}
-	sqlDB.SetMaxIdleConns(maxIdleConns)
-
-	// Set MaxOpenConns (default: 50)
-	maxOpenConns := config.MaxOpenConns
-	if maxOpenConns == 0 {
-		maxOpenConns = 50
-	}
-	sqlDB.SetMaxOpenConns(maxOpenConns)
 	d := &RDBLogStore{db: db, logger: logger}
 
 	// Run all index builds sequentially in a single goroutine to prevent

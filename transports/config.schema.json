@@ -1045,7 +1045,33 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -1066,15 +1092,27 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "anyOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }
@@ -1143,7 +1181,33 @@
                   },
                   "password": {
                     "type": "string",
-                    "description": "Database password. Leave empty if you want to use IAM role authentication."
+                    "description": "Database password. Use password_command instead when the password must be generated dynamically."
+                  },
+                  "password_command": {
+                    "type": "object",
+                    "description": "Command executed without a shell to produce the database password on stdout for each new physical connection.",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "description": "Executable path or name to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "description": "Arguments passed directly to the executable",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "timeout": {
+                        "type": "string",
+                        "description": "Command timeout as a Go duration string (default: 10s)",
+                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "default": "10s"
+                      }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
                   },
                   "db_name": {
                     "type": "string",
@@ -1170,15 +1234,27 @@
                     "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
                     "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
                     "default": "1m"
+                  },
+                  "conn_max_lifetime": {
+                    "type": "string",
+                    "description": "Maximum lifetime for physical database connections as a Go duration string",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
                   }
                 },
                 "required": [
                   "host",
                   "port",
                   "user",
-                  "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "anyOf": [
+                  {
+                    "required": ["password"]
+                  },
+                  {
+                    "required": ["password_command"]
+                  }
                 ],
                 "additionalProperties": false
               }

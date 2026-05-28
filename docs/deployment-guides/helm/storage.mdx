@@ -186,6 +186,8 @@ Point Bifrost at an existing PostgreSQL instance - RDS, Cloud SQL, Azure Databas
 | `postgresql.external.sslMode` | SSL mode (`disable`, `require`, `verify-ca`, `verify-full`) | `disable` |
 | `postgresql.external.existingSecret` | Secret name for the password | `""` |
 | `postgresql.external.passwordKey` | Key within the secret | `"password"` |
+| `postgresql.external.passwordCommand` | Command executed by Bifrost to produce the database password on stdout for each new physical connection | unset |
+| `postgresql.external.connMaxLifetime` | Maximum lifetime for physical database connections, such as `"10m"` | unset |
 
 ```bash
 kubectl create secret generic external-postgres-credentials \
@@ -218,6 +220,35 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f external-postgres-values.yaml
+```
+
+For dynamic credentials such as AWS RDS IAM auth tokens, use `passwordCommand` instead of `existingSecret`:
+
+```yaml
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "your-rds-endpoint.us-east-1.rds.amazonaws.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    passwordCommand:
+      command: aws
+      args:
+        - rds
+        - generate-db-auth-token
+        - --hostname
+        - your-rds-endpoint.us-east-1.rds.amazonaws.com
+        - --port
+        - "5432"
+        - --region
+        - us-east-1
+        - --username
+        - bifrost
+      timeout: 10s
+    connMaxLifetime: 10m
 ```
 
 **Test connectivity before installing:**

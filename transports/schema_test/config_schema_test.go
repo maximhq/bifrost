@@ -134,6 +134,51 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 	})
 }
 
+func TestSchemaPostgresPasswordCommand(t *testing.T) {
+	compiled := compileSchema(t)
+
+	config := `{
+		"config_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		},
+		"logs_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		}
+	}`
+
+	if err := validateConfig(t, compiled, config); err != nil {
+		t.Fatalf("postgres password_command config should be valid, got: %v", err)
+	}
+}
+
 // compileSchema loads and compiles the config.schema.json for validation tests.
 func compileSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
