@@ -9,13 +9,6 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
-  path_filters:
-    - "!dist/**"
-    - "!tmp/**"
-    - "!test-reports/**"
-    - "!playwright-report/**"
-    - "go.work.sum"
-    - "**/go.sum"
   path_instructions:
     - path: "core/**"
       instructions: |
