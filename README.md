@@ -94,7 +94,7 @@ In addition to private networking, custom security controls, and governance, ent
 ### Enterprise & Security
 
 - **[Budget Management](https://docs.getbifrost.ai/features/governance/budget-and-limits)** - Hierarchical cost control with virtual keys, teams, and customer budgets
-- **[User Provisioning (SCIM)](https://docs.getbifrost.ai/enterprise/user-provisioning)** - SCIM-backed identity provisioning with OAuth 2.0 / OIDC for teams, roles, and business units
+- **[User Provisioning (OIDC)](https://docs.getbifrost.ai/enterprise/user-provisioning)** - OAuth 2.0 / OIDC login with background directory sync for teams, roles, and business units
 - **[Observability](https://docs.getbifrost.ai/features/observability/default)** - Native Prometheus metrics, distributed tracing, and comprehensive logging
 - **[Secrets Management](https://docs.getbifrost.ai/deployment-guides/config-json#environment-variable-references)** - Secure API key management with environment variables and deployment secrets
 
