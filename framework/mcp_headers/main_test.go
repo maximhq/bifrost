@@ -151,13 +151,15 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 		assert.Empty(t, store.tempTokens, "Mint must not be called when toggle is off")
 	})
 
-	t.Run("toggle enabled: URL carries fragment", func(t *testing.T) {
+	t.Run("toggle enabled (VK mode): URL carries fragment", func(t *testing.T) {
+		// VK/session-mode flows are intentionally shareable and continue to mint
+		// when the toggle is on; user-mode is gated separately (see subtest below).
 		store := newTestConfigStore()
 		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: true}
 		provider := newTestProvider(store)
 		provider.SetTempTokenService(newTempTokenService(t, store))
 
-		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, identity, mcpClientID, baseURL)
+		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeVK, identity, mcpClientID, baseURL)
 		require.NoError(t, err)
 		assert.Contains(t, initiation.FrontendURL, "#t=", "temp-token fragment must be appended when toggle is on")
 		require.Len(t, store.tempTokens, 1, "Mint must be called exactly once when toggle is on")
@@ -165,6 +167,22 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 			assert.Equal(t, temptoken.MCPHeadersAuthScopeName, tok.Scope)
 			assert.Equal(t, initiation.FlowID, tok.ResourceID, "minted token must be bound to the flow row's ID")
 		}
+	})
+
+	t.Run("toggle enabled (user mode): mint is skipped", func(t *testing.T) {
+		// User-mode flows must never mint a temp token even when the toggle is on:
+		// the handler-side identity gate requires caller user_id to match
+		// flow.UserID, and the temp-token middleware bypasses cookie resolution,
+		// which would 403 even legitimate users.
+		store := newTestConfigStore()
+		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: true}
+		provider := newTestProvider(store)
+		provider.SetTempTokenService(newTempTokenService(t, store))
+
+		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, identity, mcpClientID, baseURL)
+		require.NoError(t, err)
+		assert.NotContains(t, initiation.FrontendURL, "#t=", "user-mode flows must not carry a temp-token fragment")
+		assert.Empty(t, store.tempTokens, "Mint must not be called for user-mode flows")
 	})
 
 	t.Run("no temp-token service installed: URL has no fragment", func(t *testing.T) {
