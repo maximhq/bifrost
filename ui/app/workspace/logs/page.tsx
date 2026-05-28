@@ -26,6 +26,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -85,7 +86,7 @@ export default function LogsPage() {
 			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
-			content_search: parseAsString.withDefault(""),
+			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
