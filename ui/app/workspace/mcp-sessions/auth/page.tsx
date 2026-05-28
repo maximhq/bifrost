@@ -220,32 +220,6 @@ function OAuthAuthView() {
 				)}
 			</p>
 
-      {showTempTokenSSOWarning ? (
-        <Alert variant="warning" className="mt-6">
-          <TriangleAlert />
-          <AlertTitle>Temporary token in use</AlertTitle>
-          <AlertDescription>
-            <p>
-              If you continue with the temporary link, activity from this
-              credential will be attributed to the bound key instead of your
-              user account.
-            </p>
-            <Button
-              asChild
-              variant="outline"
-              size="sm"
-              className="mt-2"
-              data-testid="mcp-auth-login-instead-warning-button"
-            >
-              <a href={loginHref}>
-                <LogIn className="size-4" />
-                Log in instead
-              </a>
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
 			<dl className="bg-muted/40 mt-6 space-y-3 rounded-sm border p-4 text-sm">
 				<DetailRow
 					label="MCP client"
