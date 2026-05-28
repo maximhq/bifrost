@@ -305,7 +305,13 @@
                 "pages": [
                   "enterprise/guardrails",
                   "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex"
+                  "enterprise/guardrails/custom-regex",
+                  "integrations/guardrails/aws-bedrock",
+                  "integrations/guardrails/azure-content-safety",
+                  "integrations/guardrails/google-model-armor",
+                  "integrations/guardrails/crowdstrike-aidr",
+                  "integrations/guardrails/grayswan",
+                  "integrations/guardrails/patronus-ai"
                 ]
               },
               "enterprise/audit-logs",
@@ -403,6 +409,8 @@
             "group": "Content Safety (Guardrails)",
             "icon": "road-barrier",
             "pages": [
+              "enterprise/guardrails/secrets-detection",
+              "enterprise/guardrails/custom-regex",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",
