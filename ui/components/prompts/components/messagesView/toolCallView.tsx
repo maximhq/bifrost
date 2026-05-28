@@ -225,6 +225,7 @@ export default function ToolCallMessageView({
 												lang="json"
 												readonly={disabled}
 												autoResize
+												maxHeight={400}
 												onChange={(value) => {
 													jsonBufferRef.current[tc.id] = value ?? "";
 												}}
