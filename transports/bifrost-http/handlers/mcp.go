@@ -349,13 +349,26 @@ type MCPVKConfigRequest struct {
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
 }
 
-// MCPClientUpdateRequest wraps TableMCPClient and adds optional VK assignment management, ToolsToExecute and ToolsToAutoExecute
+// MCPClientUpdateRequest is the body for PUT /api/mcp/client/{id}.
+// All fields are optional — omitting a field retains its existing value (PATCH semantics).
+// Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
+// accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	configstoreTables.TableMCPClient
-	VKConfigs          *[]MCPVKConfigRequest `json:"vk_configs,omitempty"`
-	ToolsToExecute     *schemas.WhiteList    `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute *schemas.WhiteList    `json:"tools_to_auto_execute,omitempty"`
-	OauthConfig        *OAuthConfigRequest   `json:"oauth_config,omitempty"`
+	Name                  *string                   `json:"name,omitempty"`
+	Disabled              *bool                     `json:"disabled,omitempty"`
+	AllowOnAllVirtualKeys *bool                     `json:"allow_on_all_virtual_keys,omitempty"`
+	IsCodeModeClient      *bool                     `json:"is_code_mode_client,omitempty"`
+	IsPingAvailable       *bool                     `json:"is_ping_available,omitempty"`
+	ToolSyncInterval      *int                      `json:"tool_sync_interval,omitempty"`
+	Headers               map[string]schemas.EnvVar `json:"headers,omitempty"`
+	AllowedExtraHeaders   *schemas.WhiteList        `json:"allowed_extra_headers,omitempty"`
+	ToolPricing           map[string]float64        `json:"tool_pricing,omitempty"`
+	ToolsToExecute        *schemas.WhiteList        `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute    *schemas.WhiteList        `json:"tools_to_auto_execute,omitempty"`
+	PerUserHeaderKeys     *[]string                 `json:"per_user_header_keys,omitempty"`
+	TLSConfig             *schemas.MCPTLSConfig     `json:"tls_config,omitempty"`
+	VKConfigs             *[]MCPVKConfigRequest     `json:"vk_configs,omitempty"`
+	OauthConfig           *OAuthConfigRequest       `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -769,13 +782,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-	// Accept the full table client config to support tool_pricing, plus optional vk_configs
 	var req MCPClientUpdateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
-	req.ClientID = id
 
 	// Fetch existing config first — needed to resolve optional fields before validation.
 	var existingConfig *schemas.MCPClientConfig
@@ -791,34 +802,74 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
-	// Snapshot fields we need to diff against the request AFTER UpdateMCPClient
-	// runs further below — UpdateMCPClient mutates the *MCPClientConfig in
-	// place (it's the same pointer the manager holds in MCPConfig.ClientConfigs),
-	// so post-update reads would already reflect the new value and the diff
-	// would always be false.
+	// Snapshot fields we need to diff against the resolved values AFTER UpdateMCPClient
+	// runs further below — UpdateMCPClient mutates the *MCPClientConfig in place (it's
+	// the same pointer the manager holds in MCPConfig.ClientConfigs), so post-update
+	// reads would already reflect the new value and the diff would always be false.
 	//
-	// PerUserHeaderKeys is snapshotted via append (independent backing array)
-	// rather than a bare slice-header copy, so we're safe if a future change
-	// mutates the slice contents in-place instead of reassigning the header.
+	// PerUserHeaderKeys is snapshotted via append (independent backing array) rather
+	// than a bare slice-header copy, so we're safe if a future change mutates the
+	// slice contents in-place instead of reassigning the header.
 	existingAllowOnAllVirtualKeys := existingConfig.AllowOnAllVirtualKeys
 	existingPerUserHeaderKeys := append([]string(nil), existingConfig.PerUserHeaderKeys...)
 
-	// connection_type and auth_type and connection string are permanently immutable
-	if req.ConnectionType != "" && req.ConnectionType != string(existingConfig.ConnectionType) {
-		SendError(ctx, fasthttp.StatusBadRequest, "connection_type cannot be changed for an existing MCP client")
-		return
+	// Resolve all mutable fields with PATCH semantics: use the provided value if
+	// present, otherwise fall back to the existing value.
+	name := existingConfig.Name
+	if req.Name != nil {
+		name = *req.Name
 	}
-	if req.AuthType != "" && req.AuthType != string(existingConfig.AuthType) {
-		SendError(ctx, fasthttp.StatusBadRequest, "auth_type cannot be changed for an existing MCP client")
-		return
+	disabled := existingConfig.Disabled
+	if req.Disabled != nil {
+		disabled = *req.Disabled
 	}
-	if req.ConnectionString != nil && !req.ConnectionString.Equals(existingConfig.ConnectionString) {
-		SendError(ctx, fasthttp.StatusBadRequest, "connection_string cannot be changed for an existing MCP client")
-		return
+	allowOnAllVKs := existingConfig.AllowOnAllVirtualKeys
+	if req.AllowOnAllVirtualKeys != nil {
+		allowOnAllVKs = *req.AllowOnAllVirtualKeys
 	}
-	if req.StdioConfig != nil && !stdioConfigsEqual(req.StdioConfig, existingConfig.StdioConfig) {
-		SendError(ctx, fasthttp.StatusBadRequest, "stdio_config cannot be changed for an existing MCP client")
-		return
+	isCodeMode := existingConfig.IsCodeModeClient
+	if req.IsCodeModeClient != nil {
+		isCodeMode = *req.IsCodeModeClient
+	}
+	isPingAvailable := existingConfig.IsPingAvailable
+	if req.IsPingAvailable != nil {
+		isPingAvailable = req.IsPingAvailable
+	}
+	toolPricing := existingConfig.ToolPricing
+	if req.ToolPricing != nil {
+		toolPricing = req.ToolPricing
+	}
+	allowedExtraHeaders := existingConfig.AllowedExtraHeaders
+	if req.AllowedExtraHeaders != nil {
+		allowedExtraHeaders = *req.AllowedExtraHeaders
+	}
+	// Headers: merge incoming with existing, preserving redacted values that are unchanged.
+	headers := existingConfig.Headers
+	if req.Headers != nil {
+		redactedExisting := h.store.RedactMCPClientConfig(existingConfig)
+		headers = mergeMCPHeaders(req.Headers, existingConfig.Headers, redactedExisting.Headers)
+	}
+	// TLSConfig: if omitted keep existing; if provided, restore raw CACertPEM when the
+	// incoming value is the redacted placeholder returned by the API.
+	tlsConfig := existingConfig.TLSConfig
+	if req.TLSConfig != nil {
+		tlsCopy := *req.TLSConfig
+		if tlsCopy.CACertPEM != nil && existingConfig.TLSConfig != nil && existingConfig.TLSConfig.CACertPEM != nil {
+			redactedExisting := h.store.RedactMCPClientConfig(existingConfig)
+			if redactedExisting.TLSConfig != nil && redactedExisting.TLSConfig.CACertPEM != nil &&
+				tlsCopy.CACertPEM.IsRedacted() && tlsCopy.CACertPEM.Equals(redactedExisting.TLSConfig.CACertPEM) {
+				tlsCopy.CACertPEM = existingConfig.TLSConfig.CACertPEM
+			}
+		}
+		tlsConfig = &tlsCopy
+	}
+	// ToolSyncInterval: keep the existing duration when not provided, otherwise
+	// take the request value (minutes, matching the create paths). Both the DB
+	// column and the rdb load path use seconds, so we convert at the DB-write
+	// boundary below; the in-memory duration is the source of truth here.
+	resolvedToolSyncInterval := existingConfig.ToolSyncInterval
+	if req.ToolSyncInterval != nil {
+		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
 	}
 
 	// Resolve tools_to_execute and tools_to_auto_execute.
@@ -833,22 +884,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		resolvedToolsToAutoExecute = *req.ToolsToAutoExecute
 	}
 
-	// Validate tools_to_execute
+	// Validate
 	if err := validateToolsToExecute(resolvedToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
 		return
 	}
-	// Validate tools_to_auto_execute
 	if err := validateToolsToAutoExecute(resolvedToolsToAutoExecute, resolvedToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
-	// Validate client name
-	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
+	if err := mcp.ValidateMCPClientName(name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
-	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
+	if err := validateAllowedExtraHeaders(allowedExtraHeaders); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
 		return
 	}
@@ -866,11 +915,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// auth types may legitimately carry no per_user_header_keys, but for
 		// per_user_headers an empty schema means the auth mode has nothing
 		// to collect or validate, which violates the feature contract.
-		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders && len(req.PerUserHeaderKeys) == 0 {
+		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders && len(*req.PerUserHeaderKeys) == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list for per_user_headers clients")
 			return
 		}
-		canonHeaderKeys := mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
+		canonHeaderKeys := mcputils.CanonicalizeHeaderKeys(*req.PerUserHeaderKeys)
 		for i, key := range canonHeaderKeys {
 			if key == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
@@ -899,7 +948,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// 	SendError(ctx, fasthttp.StatusBadRequest, "oauth_config can only be updated for MCP clients using auth_type 'oauth' or 'per_user_oauth'")
 	// 	return
 	// }
-	// if shouldRotateOAuthConfig && req.Disabled {
+	// if shouldRotateOAuthConfig && disabled {
 	// 	SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
 	// 	return
 	// }
@@ -964,9 +1013,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// 		return
 	// 	}
 	// }
-	// Merge redacted values - preserve old values if incoming values are redacted and unchanged
-	merged := mergeMCPRedactedValues(&req.TableMCPClient, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
-	req.TableMCPClient = *merged
 
 	var oldDBConfig *configstoreTables.TableMCPClient
 	if h.store.ConfigStore != nil {
@@ -978,13 +1024,34 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	req.TableMCPClient.ToolsToExecute = resolvedToolsToExecute
-	req.TableMCPClient.ToolsToAutoExecute = resolvedToolsToAutoExecute
-	dbUpdateRecord := req.TableMCPClient
+	perUserHeaderKeys := resolvePerUserHeaderKeys(existingConfig, req)
+
+	// Build the DB update record from all resolved values.
+	dbUpdateRecord := configstoreTables.TableMCPClient{
+		ClientID:              id,
+		Name:                  name,
+		IsCodeModeClient:      isCodeMode,
+		ConnectionType:        string(existingConfig.ConnectionType),
+		ConnectionString:      existingConfig.ConnectionString,
+		StdioConfig:           existingConfig.StdioConfig,
+		ToolsToExecute:        resolvedToolsToExecute,
+		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
+		Headers:               headers,
+		AllowedExtraHeaders:   allowedExtraHeaders,
+		IsPingAvailable:       isPingAvailable,
+		ToolPricing:           toolPricing,
+		ToolSyncInterval:      int(resolvedToolSyncInterval / time.Second),
+		AuthType:              string(existingConfig.AuthType),
+		OauthConfigID:         existingConfig.OauthConfigID,
+		AllowOnAllVirtualKeys: allowOnAllVKs,
+		Disabled:              disabled,
+		PerUserHeaderKeys:     perUserHeaderKeys,
+		TLSConfig:             tlsConfig,
+	}
 	// Rebind persisted discovered tool keys (and inner Function.Name) to the current
 	// client name so a restart restores them under the right prefix.
 	if oldDBConfig != nil && len(oldDBConfig.DiscoveredTools) > 0 {
-		newPrefix := req.TableMCPClient.Name + "-"
+		newPrefix := name + "-"
 		migrated := make(map[string]schemas.ChatTool, len(oldDBConfig.DiscoveredTools))
 		for oldKey, tool := range oldDBConfig.DiscoveredTools {
 			newKey := oldKey
@@ -1008,10 +1075,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	toolSyncInterval := mcp.DefaultToolSyncInterval
-	if req.ToolSyncInterval != 0 {
-		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
-	} else {
+	toolSyncInterval := resolvedToolSyncInterval
+	if toolSyncInterval == 0 {
+		toolSyncInterval = mcp.DefaultToolSyncInterval
 		config, err := h.store.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
@@ -1021,27 +1087,27 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
 		}
 	}
-	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
+	// Build in-memory config from resolved values.
 	schemasConfig := &schemas.MCPClientConfig{
-		ID:                    req.ClientID,
-		Name:                  req.Name,
-		IsCodeModeClient:      req.IsCodeModeClient,
+		ID:                    id,
+		Name:                  name,
+		IsCodeModeClient:      isCodeMode,
 		ConnectionType:        existingConfig.ConnectionType,
 		ConnectionString:      existingConfig.ConnectionString,
 		StdioConfig:           existingConfig.StdioConfig,
-		TLSConfig:             req.TLSConfig,
+		TLSConfig:             tlsConfig,
 		ToolsToExecute:        resolvedToolsToExecute,
 		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
-		Headers:               req.Headers,
-		AllowedExtraHeaders:   req.AllowedExtraHeaders,
+		Headers:               headers,
+		AllowedExtraHeaders:   allowedExtraHeaders,
 		AuthType:              existingConfig.AuthType,
 		OauthConfigID:         existingConfig.OauthConfigID,
-		IsPingAvailable:       req.IsPingAvailable,
+		IsPingAvailable:       isPingAvailable,
 		ToolSyncInterval:      toolSyncInterval,
-		ToolPricing:           req.ToolPricing,
-		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
-		Disabled:              req.Disabled,
-		PerUserHeaderKeys:     resolvePerUserHeaderKeys(existingConfig, req),
+		ToolPricing:           toolPricing,
+		AllowOnAllVirtualKeys: allowOnAllVKs,
+		Disabled:              disabled,
+		PerUserHeaderKeys:     perUserHeaderKeys,
 	}
 
 	// Update MCP client config in memory (always — applies name/tools/header changes,
@@ -1239,7 +1305,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
 	// are reconciled — they share the same VK→MCP allowlist model.
 	if h.store.ConfigStore != nil {
-		shouldReconcile := req.VKConfigs != nil || req.AllowOnAllVirtualKeys != existingAllowOnAllVirtualKeys
+		shouldReconcile := req.VKConfigs != nil || allowOnAllVKs != existingAllowOnAllVirtualKeys
 		if shouldReconcile {
 			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
@@ -1312,30 +1378,6 @@ func validateAllowedExtraHeaders(allowedExtraHeaders schemas.WhiteList) error {
 	return nil
 }
 
-// stdioConfigsEqual returns true when a and b represent the same STDIO configuration.
-// A nil config is only equal to another nil config.
-func stdioConfigsEqual(a, b *schemas.MCPStdioConfig) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	if a.Command != b.Command {
-		return false
-	}
-	if len(a.Args) != len(b.Args) || len(a.Envs) != len(b.Envs) {
-		return false
-	}
-	for i, arg := range a.Args {
-		if b.Args[i] != arg {
-			return false
-		}
-	}
-	for i, env := range a.Envs {
-		if b.Envs[i] != env {
-			return false
-		}
-	}
-	return true
-}
 
 func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExecute schemas.WhiteList) error {
 	if err := toolsToAutoExecute.Validate(); err != nil {
@@ -1362,66 +1404,25 @@ func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExe
 	return nil
 }
 
-// mergeMCPRedactedValues merges incoming MCP client config with existing config,
-// preserving old values when incoming values are redacted and unchanged.
-// This follows the same pattern as provider config updates.
-func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, oldRedacted *schemas.MCPClientConfig) *configstoreTables.TableMCPClient {
-	merged := incoming
-
-	// Handle ConnectionString - if incoming is redacted and equals old redacted, keep old raw value
-	if incoming.ConnectionString != nil && oldRaw.ConnectionString != nil && oldRedacted.ConnectionString != nil {
-		if incoming.ConnectionString.IsRedacted() && incoming.ConnectionString.Equals(oldRedacted.ConnectionString) {
-			merged.ConnectionString = oldRaw.ConnectionString
-		}
-	}
-
-	// Handle Headers - merge incoming with old, preserving redacted values
-	if incoming.Headers != nil {
-		incomingHeaders := incoming.Headers
-		merged.Headers = make(map[string]schemas.EnvVar, len(incomingHeaders))
-		for key, incomingValue := range incomingHeaders {
-			if oldRaw.Headers != nil && oldRedacted.Headers != nil {
-				if oldRedactedValue, existsInRedacted := oldRedacted.Headers[key]; existsInRedacted {
-					if oldRawValue, existsInRaw := oldRaw.Headers[key]; existsInRaw {
-						if incomingValue.IsRedacted() && incomingValue.Equals(&oldRedactedValue) {
-							merged.Headers[key] = oldRawValue
-							continue
-						}
+// mergeMCPHeaders merges incoming request headers with the existing raw headers,
+// preserving stored raw values when an incoming header value is redacted and unchanged.
+// Only called when the caller explicitly provided a headers map (req.Headers != nil);
+// when headers are omitted entirely the caller retains the existing value directly.
+func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.EnvVar) map[string]schemas.EnvVar {
+	merged := make(map[string]schemas.EnvVar, len(incoming))
+	for key, incomingValue := range incoming {
+		if redactedExisting != nil && rawExisting != nil {
+			if redactedValue, ok := redactedExisting[key]; ok {
+				if rawValue, ok := rawExisting[key]; ok {
+					if incomingValue.IsRedacted() && incomingValue.Equals(&redactedValue) {
+						merged[key] = rawValue
+						continue
 					}
 				}
 			}
-			merged.Headers[key] = incomingValue
 		}
-	} else if oldRaw.Headers != nil {
-		merged.Headers = oldRaw.Headers
+		merged[key] = incomingValue
 	}
-
-	// Preserve IsPingAvailable if not explicitly set in incoming request
-	// This prevents the zero-value (false) from overwriting the existing DB value
-	if incoming.IsPingAvailable == nil {
-		merged.IsPingAvailable = oldRaw.IsPingAvailable
-	}
-	// Preserve AllowedExtraHeaders if not explicitly set in incoming request
-	if incoming.AllowedExtraHeaders == nil {
-		merged.AllowedExtraHeaders = oldRaw.AllowedExtraHeaders
-	}
-
-	// Handle TLSConfig - preserve existing when not sent, restore raw CA cert when redacted
-	if incoming.TLSConfig == nil {
-		merged.TLSConfig = oldRaw.TLSConfig
-	} else {
-		tlsCopy := *incoming.TLSConfig
-		// If CACertPEM is a redacted placeholder that matches the old redacted value,
-		// restore the raw value to avoid writing ***** to the DB.
-		if tlsCopy.CACertPEM != nil &&
-			oldRaw.TLSConfig != nil && oldRaw.TLSConfig.CACertPEM != nil &&
-			oldRedacted.TLSConfig != nil && oldRedacted.TLSConfig.CACertPEM != nil &&
-			tlsCopy.CACertPEM.IsRedacted() && tlsCopy.CACertPEM.Equals(oldRedacted.TLSConfig.CACertPEM) {
-			tlsCopy.CACertPEM = oldRaw.TLSConfig.CACertPEM
-		}
-		merged.TLSConfig = &tlsCopy
-	}
-
 	return merged
 }
 
@@ -1705,7 +1706,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 // they pass through untouched.
 func resolvePerUserHeaderKeys(existing *schemas.MCPClientConfig, req MCPClientUpdateRequest) []string {
 	if req.PerUserHeaderKeys != nil {
-		return mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
+		return mcputils.CanonicalizeHeaderKeys(*req.PerUserHeaderKeys)
 	}
 	if existing != nil {
 		return existing.PerUserHeaderKeys
