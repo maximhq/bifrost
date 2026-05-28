@@ -38,9 +38,13 @@ type TableModelConfig struct {
 	// Scope determines where this config applies: "global" (default) or "virtual_key".
 	Scope string `gorm:"type:varchar(50);not null;default:'global';uniqueIndex:idx_model_scope_provider,priority:1" json:"scope"`
 	// ScopeID is the target of a non-global scope (e.g. the virtual key ID). NULL for global.
-	ScopeID     *string `gorm:"type:varchar(255);uniqueIndex:idx_model_scope_provider,priority:2" json:"scope_id,omitempty"`
-	BudgetID    *string `gorm:"type:varchar(255);index:idx_model_config_budget" json:"budget_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index:idx_model_config_rate_limit" json:"rate_limit_id,omitempty"`
+	ScopeID *string `gorm:"type:varchar(255);uniqueIndex:idx_model_scope_provider,priority:2" json:"scope_id,omitempty"`
+	// CalendarAligned snaps this config's budget resets to calendar boundaries (e.g. a
+	// monthly budget resets on the 1st) rather than rolling windows. Propagated to owned
+	// budgets via AfterFind. For virtual_key-scoped configs it inherits the VK's setting.
+	CalendarAligned bool    `gorm:"not null;default:false" json:"calendar_aligned"`
+	BudgetID        *string `gorm:"type:varchar(255);index:idx_model_config_budget" json:"budget_id,omitempty"`
+	RateLimitID     *string `gorm:"type:varchar(255);index:idx_model_config_rate_limit" json:"rate_limit_id,omitempty"`
 
 	// ScopeName is a non-persisted, API-only field carrying the human-readable name of
 	// the scope target (e.g. the virtual key's name) so the UI can render a label
@@ -48,6 +52,13 @@ type TableModelConfig struct {
 	ScopeName string `gorm:"-" json:"scope_name,omitempty"`
 
 	// Relationships
+	// Budgets are owned by this model config via TableBudget.ModelConfigID (a model
+	// config may carry multiple budgets with different reset windows). This is the
+	// active representation. The legacy single Budget/BudgetID below is kept inert
+	// for backward compatibility and is no longer read by enforcement.
+	Budgets []TableBudget `gorm:"foreignKey:ModelConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`
+	// Legacy (inert): superseded by Budgets. Retained so existing rows/columns keep
+	// parsing; not read by the governance store after the multi-budget cutover.
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 
@@ -62,6 +73,16 @@ type TableModelConfig struct {
 // TableName sets the table name for each model
 func (TableModelConfig) TableName() string {
 	return "governance_model_configs"
+}
+
+// AfterFind propagates calendar_aligned down to owned budgets so the reset path reads
+// the stamped value off each budget. Mirrors TableTeam/TableVirtualKey. The governance
+// store's Update*InMemory paths re-stamp on every model-config update.
+func (mc *TableModelConfig) AfterFind(tx *gorm.DB) error {
+	for i := range mc.Budgets {
+		mc.Budgets[i].IsCalendarAligned = mc.CalendarAligned
+	}
+	return nil
 }
 
 // BeforeSave hook for ModelConfig to validate required fields
