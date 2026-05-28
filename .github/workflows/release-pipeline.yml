@@ -90,6 +90,9 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
+            dl.google.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             dl.google.com:443
@@ -161,6 +164,7 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
+            bifrost-gateway-resource.openai.azure.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
@@ -289,6 +293,7 @@ jobs:
             github.com:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
@@ -371,8 +376,11 @@ jobs:
             _grpc_config.localhost:443
             _http._tcp.azure.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
+            _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            production.cloudfront.docker.com:443
+            dl.google.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -469,10 +477,18 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # bifrost-http binary runs on the host and connects to Postgres via
+          # the published port mapping (5432:5432) at 127.0.0.1. The integration
+          # test configs in .github/workflows/configs/*/config.json use
+          # "host": "localhost". The 172.38.0.12 entries below are weaviate's
+          # pinned bridge IP from .github/workflows/configs/docker-compose.yml;
+          # they are kept for any container-to-container traffic but the binary
+          # itself reaches weaviate via 127.0.0.1:9000 (published port).
           allowed-endpoints: >
+            127.0.0.1:5432
             172.38.0.12:8080
             172.38.0.12:8301
-            172.38.0.2:5432
+            iojs.org:443
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -485,6 +501,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -544,8 +561,14 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # Migration test binary runs on the host (not in a container) and
+          # connects to Postgres via the published port mapping (5432:5432) at
+          # 127.0.0.1. See run-migration-tests.sh:46 (POSTGRES_HOST defaults to
+          # localhost).
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -555,6 +578,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -609,8 +633,13 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # API integrations test compiles bifrost-http and runs it on the host
+          # (not in a container), connecting to Postgres via the published port
+          # mapping (5432:5432) at 127.0.0.1. See test-api-integrations.sh which
+          # defaults POSTGRES_HOST to localhost.
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -637,6 +666,7 @@ jobs:
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -730,7 +760,17 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -840,7 +880,17 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -1480,13 +1530,7 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs:
-      [
-        build-binaries-x86,
-        build-binaries-arm64,
-        detect-changes,
-        bifrost-http-prep,
-      ]
+    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ubuntu-latest
     permissions:
@@ -1725,6 +1769,7 @@ jobs:
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
@@ -1924,13 +1969,7 @@ jobs:
 
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
-    needs:
-      [
-        check-skip,
-        detect-changes,
-        docker-build-ubi9-amd64,
-        docker-build-ubi9-arm64,
-      ]
+    needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
     env:
@@ -1946,6 +1985,7 @@ jobs:
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository

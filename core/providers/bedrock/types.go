@@ -201,6 +201,9 @@ type BedrockContentBlock struct {
 	// Image content
 	Image *BedrockImageSource `json:"image,omitempty"`
 
+	// Video content
+	Video *BedrockVideoBlock `json:"video,omitempty"`
+
 	// Document content
 	Document *BedrockDocumentSource `json:"document,omitempty"`
 
@@ -218,6 +221,9 @@ type BedrockContentBlock struct {
 
 	// For Tool Call Result content
 	JSON json.RawMessage `json:"json,omitempty"`
+
+	// Search result content (only valid inside toolResult.content per AWS Converse API)
+	SearchResult *BedrockSearchResultBlock `json:"searchResult,omitempty"`
 
 	// Cache point for the content block
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
@@ -261,6 +267,28 @@ type BedrockDocumentSourceData struct {
 	Text  *string `json:"text,omitempty"`  // Plain text content
 }
 
+// BedrockVideoBlock represents a video content block.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_VideoBlock.html
+type BedrockVideoBlock struct {
+	Format string             `json:"format"` // Required: mkv|mov|mp4|webm|flv|mpeg|mpg|wmv|three_gp
+	Source BedrockVideoSource `json:"source"` // Required: video source (bytes or s3Location, union)
+}
+
+// BedrockVideoSource is the source for a BedrockVideoBlock.
+// This is a tagged union — exactly one of Bytes or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_VideoSource.html
+type BedrockVideoSource struct {
+	Bytes      *string            `json:"bytes,omitempty"`      // Optional: base64-encoded video bytes (<25MB)
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location
+}
+
+// BedrockS3Location represents a storage location in an Amazon S3 bucket.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_S3Location.html
+type BedrockS3Location struct {
+	URI         string  `json:"uri"`                   // Required: object URI starting with s3://
+	BucketOwner *string `json:"bucketOwner,omitempty"` // Optional: 12-digit AWS account ID if cross-account
+}
+
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
 	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
@@ -275,6 +303,27 @@ type BedrockToolResult struct {
 	Content   []BedrockContentBlock `json:"content"`          // Required: Content of the tool result
 	Status    *string               `json:"status,omitempty"` // Optional: Status of tool execution ("success" or "error")
 	Type      *string               `json:"type,omitempty"`   // Optional: result type e.g. "nova_code_interpreter_result"
+}
+
+// BedrockSearchResultBlock represents a search result tool-result content block.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_SearchResultBlock.html
+type BedrockSearchResultBlock struct {
+	Source    string                       `json:"source"`              // Required: source URL or identifier
+	Title     string                       `json:"title"`               // Required: descriptive title
+	Content   []BedrockSearchResultContent `json:"content"`             // Required: search result content blocks
+	Citations *BedrockCitationsConfig      `json:"citations,omitempty"` // Optional: citations config
+}
+
+// BedrockSearchResultContent represents a single content block inside a SearchResult.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_SearchResultContentBlock.html
+type BedrockSearchResultContent struct {
+	Text string `json:"text"` // Required: actual text content
+}
+
+// BedrockCitationsConfig represents citations configuration for a search result.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsConfig.html
+type BedrockCitationsConfig struct {
+	Enabled bool `json:"enabled"` // Required: whether citations are enabled
 }
 
 // BedrockGuardContent represents guard content for guardrails

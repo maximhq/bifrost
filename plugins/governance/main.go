@@ -770,7 +770,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
 	blacklistedProviders := make(map[string]bool)
 	for _, config := range providerConfigs {
-		if config.BlacklistedModels.IsBlocked(modelStr) {
+		if isModelBlockedByList(config.BlacklistedModels, modelStr) {
 			blacklistedProviders[config.Provider] = true
 		}
 	}

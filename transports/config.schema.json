@@ -218,6 +218,11 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_enable_temp_token_auth": {
+          "type": "boolean",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,
@@ -2404,10 +2409,6 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
-                "api_version": {
-                  "type": "string",
-                  "description": "Azure API version"
-                },
                 "client_id": {
                   "type": "string",
                   "description": "Azure client ID for Entra authentication (can use env. prefix)"
@@ -2424,6 +2425,10 @@
                   "type": "array",
                   "items": { "type": "string" },
                   "description": "OAuth2 scopes for Entra authentication"
+                },
+                "api_version": {
+                  "type": "string",
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
                 }
               },
               "required": ["endpoint"],

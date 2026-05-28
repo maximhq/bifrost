@@ -34,6 +34,13 @@ Bifrost has been installed!
 
 {{- end }}
 
+{{- if and .Values.postgresql.enabled (eq .Values.postgresql.auth.password "bifrost_password") }}
+WARNING: PostgreSQL is using the default password "bifrost_password". Set postgresql.auth.password to a strong password before going to production.
+{{- end }}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.enabled .Values.vectorStore.redis.auth.enabled (eq .Values.vectorStore.redis.auth.password "redis_password") }}
+WARNING: Redis is using the default password "redis_password". Set vectorStore.redis.auth.password to a strong password before going to production.
+{{- end }}
+
 Configuration:
 - Storage Mode: {{ .Values.storage.mode }}
 {{- if eq .Values.storage.mode "postgres" }}

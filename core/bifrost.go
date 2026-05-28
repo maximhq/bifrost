@@ -4573,7 +4573,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
 		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(fallback.Provider)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
 		tracer.SetAttribute(handle, "fallback.index", i+1)
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
@@ -4654,7 +4655,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
 		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(fallback.Provider)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
 		tracer.SetAttribute(handle, "fallback.index", i+1)
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
@@ -5268,10 +5270,11 @@ func executeRequestWithRetries[T any](
 			var keyHandle schemas.SpanHandle
 			if keyTracer != nil {
 				keySpanCtx, keyHandle = keyTracer.StartSpan(ctx, "key.selection", schemas.SpanKindInternal)
-				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, string(providerKey))
+				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
+				keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
 				if attempts > 0 {
-					keyTracer.SetAttribute(keyHandle, "retry.count", attempts)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrLegacyRetryCount, attempts)
 				}
 			}
 
@@ -5341,50 +5344,92 @@ func executeRequestWithRetries[T any](
 		}
 		var spanName string
 		var spanKind schemas.SpanKind
+		otelOp := schemas.OTelOperationName(requestType)
 		if attempts > 0 {
 			spanName = fmt.Sprintf("retry.attempt.%d", attempts)
 			spanKind = schemas.SpanKindRetry
 		} else {
-			spanName = "llm.call"
+			// Span name format per OTel GenAI semconv: "{operation} {model}".
+			spanName = fmt.Sprintf("%s %s", otelOp, model)
 			spanKind = schemas.SpanKindLLMCall
 		}
 		spanCtx, handle := tracer.StartSpan(ctx, spanName, spanKind)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(providerKey))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, model)
-		tracer.SetAttribute(handle, "request.type", string(requestType))
+		tracer.SetAttribute(handle, schemas.AttrOperationName, otelOp)
+		tracer.SetAttribute(handle, schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
 		if attempts > 0 {
-			tracer.SetAttribute(handle, "retry.count", attempts)
+			tracer.SetAttribute(handle, schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
 		}
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
+		// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: the
+		// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
+		// are the canonical home going forward; once all dashboards migrate, drop the
+		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID)
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName)
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID)
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName)
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID)
+			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName)
+			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID)
+			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName)
+			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerName, customerName)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex)
+			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts)
+		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
+		tracer.SetAttribute(handle, schemas.AttrBifrostRetries, attempts)
+
+		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
+		// header forwarding) as span attributes so observability backends see the
+		// same set Bifrost forwards to the upstream provider.
+		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			for name, values := range extraHeaders {
+				if name == "" || len(values) == 0 {
+					continue
+				}
+				// Never export credential-bearing headers verbatim. The transport
+				// layer denylists most sensitive headers, but plain authorization /
+				// set-cookie can still reach here, and core SDK callers bypass that
+				// guard entirely. Keep the key (presence is useful) but redact the value.
+				if schemas.IsSensitiveHeader(name) {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, schemas.RedactedAttrValue)
+					continue
+				}
+				if len(values) == 1 {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values[0])
+				} else {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values)
+				}
+			}
+		}
 
 		// Populate LLM request attributes (messages, parameters, etc.)
 		if req != nil {

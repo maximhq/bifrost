@@ -1751,6 +1751,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							streamState.UsedStructuredOutputTool = true
 							continue
 						}
 					}

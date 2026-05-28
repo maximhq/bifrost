@@ -247,6 +247,7 @@ bifrost:
     # mcpCodeModeBindingLevel: "server"
     # mcpToolSyncInterval: 10
     # mcpDisableAutoToolInject: false
+    # mcpEnableTempTokenAuth: false
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
@@ -725,13 +726,14 @@ bifrost:
       #   cel_expression: "!contains(request.body, 'SSN')"
       #   apply_to: "input"
       #   sampling_rate: 100
-      #   timeout: 1000
+      #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
       #   policy_name: "content-filter"
       #   enabled: true
+      #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
@@ -874,6 +876,10 @@ postgresql:
     username: bifrost
     password: bifrost_password
     database: bifrost
+    # Use existing Kubernetes secret for password (takes precedence over password field).
+    # The postgres pod and bifrost will both read from this secret.
+    existingSecret: ""
+    passwordKey: "password"
 
   primary:
     persistence:
@@ -887,6 +893,11 @@ postgresql:
       requests:
         cpu: 250m
         memory: 256Mi
+
+    podSecurityContext:
+      fsGroup: 999
+
+    containerSecurityContext: {}
 
   metrics:
     enabled: false

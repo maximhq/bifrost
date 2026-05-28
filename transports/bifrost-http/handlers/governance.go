@@ -4214,5 +4214,6 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          vk.Budgets,
 		"rate_limit":       vk.RateLimit,
+		"provider_configs": vk.ProviderConfigs,
 	})
 }

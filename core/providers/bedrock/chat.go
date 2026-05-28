@@ -64,6 +64,10 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
 
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
+
 	return bedrockReq, nil
 }
 
@@ -79,6 +83,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var reasoningDetails []schemas.ChatReasoningDetails
 	var reasoningText string
+	var usedStructuredOutputTool bool
 
 	if response.Output.Message != nil {
 		for _, contentBlock := range response.Output.Message.Content {
@@ -98,6 +103,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					if contentBlock.ToolUse.Input != nil {
 						jsonStr := string(contentBlock.ToolUse.Input)
 						contentStr = &jsonStr
+						usedStructuredOutputTool = true
 					}
 					continue // Skip adding to toolCalls
 				}
@@ -233,7 +239,14 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(convertBedrockStopReason(response.StopReason)),
+			FinishReason: func() *string {
+				mapped := convertBedrockStopReason(response.StopReason)
+				if usedStructuredOutputTool && len(toolCalls) == 0 &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				return &mapped
+			}(),
 		},
 	}
 	var usage *schemas.BifrostLLMUsage

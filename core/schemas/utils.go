@@ -1283,6 +1283,12 @@ func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// BedrockModelSupportsCachePoints reports whether the Bedrock model supports
+// explicit prompt-caching cache points in the Converse API request.
+func BedrockModelSupportsCachePoints(model string) bool {
+	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")

@@ -16,6 +16,41 @@ import (
 // helpers
 // ---------------------------------------------------------------------------
 
+// syncedPanicBody is a controlled io.ReadCloser used to deterministically
+// reproduce the race in SetupStreamCancellation.
+//
+// Read blocks until Close() is called, then panics — simulating what fasthttp's
+// streaming body does when the underlying TCP connection is force-closed.
+//
+// Close() triggers the panic (by closing panicTrigger) and then blocks on
+// allowReturn until the test signals it. This keeps SetupStreamCancellation
+// stuck inside Close() so BifrostContextKeyConnectionClosed is guaranteed to
+// be unset when idleTimeoutReader.Read's recover block runs — the exact race
+// window that exists in the current code.
+type syncedPanicBody struct {
+	panicTrigger chan struct{}
+	allowReturn  chan struct{}
+	closeOnce    sync.Once
+}
+
+func newSyncedPanicBody() *syncedPanicBody {
+	return &syncedPanicBody{
+		panicTrigger: make(chan struct{}),
+		allowReturn:  make(chan struct{}),
+	}
+}
+
+func (s *syncedPanicBody) Read(_ []byte) (int, error) {
+	<-s.panicTrigger
+	panic("use of closed network connection")
+}
+
+func (s *syncedPanicBody) Close() error {
+	s.closeOnce.Do(func() { close(s.panicTrigger) })
+	<-s.allowReturn
+	return nil
+}
+
 var errPanicReader = errors.New("panic reader called")
 
 type panicReader struct{}
@@ -385,5 +420,69 @@ func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	case <-cleanupDone:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("cleanup did not return after timer callback finished")
+	}
+}
+
+// TestSetupStreamCancellation_NoPanicOnCancelledContext reproduces the race where
+// SetupStreamCancellation calls Close() before setting BifrostContextKeyConnectionClosed.
+//
+// Timeline with current (unfixed) code:
+//  1. cancel() fires → SetupStreamCancellation goroutine calls closer.Close()
+//  2. Close() closes panicTrigger → Read goroutine unblocks and panics
+//  3. Close() blocks on allowReturn → flag is NOT yet set
+//  4. idleTimeoutReader.Read recover: r.fired=false, connectionClosed=false → re-panics (BUG)
+//
+// Timeline after fix (set flag before Close()):
+//  1. cancel() fires → SetupStreamCancellation sets flag → calls closer.Close()
+//  2. Close() closes panicTrigger → Read goroutine unblocks and panics
+//  3. idleTimeoutReader.Read recover: connectionClosed=true → returns ErrStreamClosed (OK)
+func TestSetupStreamCancellation_NoPanicOnCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	body := newSyncedPanicBody()
+	goCtx, cancel := context.WithCancel(context.Background())
+	bifrostCtx := schemas.NewBifrostContext(goCtx, time.Time{})
+
+	reader, cleanupReader := NewIdleTimeoutReader(body, body, time.Minute, bifrostCtx)
+	// Defers run LIFO: allowReturn first, then stopCancel, then cleanupReader.
+	// This order ensures Close() can return before we wait for the goroutine.
+	defer cleanupReader()
+	stopCancel := SetupStreamCancellation(bifrostCtx, body, getLogger())
+	defer stopCancel()
+	defer close(body.allowReturn)
+
+	type readResult struct {
+		err     error
+		panicked any
+	}
+	resultCh := make(chan readResult, 1)
+	go func() {
+		var res readResult
+		defer func() {
+			if r := recover(); r != nil {
+				res.panicked = r
+			}
+			resultCh <- res
+		}()
+		buf := make([]byte, 1)
+		_, res.err = reader.Read(buf)
+	}()
+
+	// Cancelling triggers SetupStreamCancellation → Close() → Read panics.
+	// Close() is blocked on allowReturn so the flag has not been set yet when
+	// the recover block in idleTimeoutReader.Read runs — worst-case ordering.
+	cancel()
+
+	select {
+	case res := <-resultCh:
+		if res.panicked != nil {
+			t.Errorf("Read re-panicked (flag not set before Close — BUG): %v", res.panicked)
+			return
+		}
+		if !errors.Is(res.err, ErrStreamClosed) {
+			t.Errorf("expected ErrStreamClosed, got: %v", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Read goroutine did not unblock after context cancellation")
 	}
 }

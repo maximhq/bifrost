@@ -845,3 +845,267 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 		t.Errorf("expected Display to be nil for non-Opus 4.7, got %q", *result.Thinking.Display)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Structured output (response_format: json_schema) round-trip tests
+// ---------------------------------------------------------------------------
+
+// makeSOResponseFormat returns a response_format interface value in the
+// OpenAI wire format expected by convertChatResponseFormatToTool.
+func makeSOResponseFormat(schemaName string) interface{} {
+	return map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name": schemaName,
+			"schema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"color":  map[string]interface{}{"type": "string"},
+					"animal": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"color", "animal"},
+			},
+		},
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking verifies that when
+// response_format=json_schema is passed to a Vertex-targeted request without thinking,
+// Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to that tool.
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &rf,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A synthetic tool with the bf_so_ prefix must be present.
+	var soTool *AnthropicTool
+	for i := range result.Tools {
+		if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
+			soTool = &result.Tools[i]
+			break
+		}
+	}
+	if soTool == nil {
+		t.Fatal("expected a synthetic bf_so_* tool to be added for Vertex structured output")
+	}
+
+	// ToolChoice must be set and must point at the SO tool.
+	if result.ToolChoice == nil {
+		t.Fatal("expected ToolChoice to be set when thinking is disabled")
+	}
+	if result.ToolChoice.Type != "tool" {
+		t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
+	}
+	if result.ToolChoice.Name != soTool.Name {
+		t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort verifies that when
+// response_format=json_schema + reasoning_effort='medium' is sent to Vertex, Bifrost
+// still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
+// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	effort := "medium"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(16000),
+			ResponseFormat:      &rf,
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Synthetic tool must still be present so the model knows the schema.
+	found := false
+	for _, tool := range result.Tools {
+		if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected synthetic bf_so_* tool to be present even with thinking enabled")
+	}
+
+	// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
+	if result.ToolChoice != nil {
+		t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q), got %+v", effort, result.ToolChoice)
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens is the same as
+// the effort variant but uses explicit budget_tokens reasoning instead.
+func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens(t *testing.T) {
+	rf := makeSOResponseFormat("my_schema")
+	maxTok := 4000
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-opus-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(16000),
+			ResponseFormat:      &rf,
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.ToolChoice != nil {
+		t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled, got %+v", result.ToolChoice)
+	}
+}
+
+// TestToBifrostChatResponse_StructuredOutput_FinishReasonStop verifies that when
+// the model responds with only the synthetic SO tool (no real tool calls), the
+// finish_reason is mapped to "stop", not "tool_calls".
+func TestToBifrostChatResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	soToolName := "bf_so_my_schema"
+	jsonInput, err := json.Marshal(map[string]interface{}{"color": "blue", "animal": "fox"})
+	if err != nil {
+		t.Fatalf("failed to marshal structured output input: %v", err)
+	}
+
+	response := &AnthropicMessageResponse{
+		ID:    "msg_so_test",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-6",
+		Content: []AnthropicContentBlock{
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_001"),
+				Name:  schemas.Ptr(soToolName),
+				Input: json.RawMessage(jsonInput),
+			},
+		},
+		StopReason: AnthropicStopReasonToolUse,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	choice := result.Choices[0]
+
+	// Content must be the JSON from the SO tool, not nil.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.Content.ContentStr == nil {
+		t.Fatal("expected ContentStr to be set from the structured output tool input")
+	}
+
+	// No real tool calls should be surfaced.
+	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+		t.Errorf("expected no tool calls in output, got %d", len(msg.ChatAssistantMessage.ToolCalls))
+	}
+
+	// Finish reason must be "stop", not "tool_calls".
+	if choice.FinishReason == nil {
+		t.Fatal("expected FinishReason to be set")
+	}
+	if *choice.FinishReason != string(schemas.BifrostFinishReasonStop) {
+		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonStop, *choice.FinishReason)
+	}
+}
+
+// TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools verifies that when
+// both the SO tool and a real tool call appear in the response, finish_reason remains
+// "tool_calls" so the caller knows to handle the real tool.
+func TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	soToolName := "bf_so_my_schema"
+	soInput, err := json.Marshal(map[string]interface{}{"color": "blue", "animal": "fox"})
+	if err != nil {
+		t.Fatalf("failed to marshal SO input: %v", err)
+	}
+	realInput, err := json.Marshal(map[string]interface{}{"location": "NYC"})
+	if err != nil {
+		t.Fatalf("failed to marshal real tool input: %v", err)
+	}
+
+	response := &AnthropicMessageResponse{
+		ID:    "msg_so_mixed",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-6",
+		Content: []AnthropicContentBlock{
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_001"),
+				Name:  schemas.Ptr(soToolName),
+				Input: json.RawMessage(soInput),
+			},
+			{
+				Type:  AnthropicContentBlockTypeToolUse,
+				ID:    schemas.Ptr("toolu_real_001"),
+				Name:  schemas.Ptr("get_weather"),
+				Input: json.RawMessage(realInput),
+			},
+		},
+		StopReason: AnthropicStopReasonToolUse,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	choice := result.Choices[0]
+
+	// The real tool call must be surfaced.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.ChatAssistantMessage == nil || len(msg.ChatAssistantMessage.ToolCalls) == 0 {
+		t.Fatal("expected real tool calls to be present")
+	}
+
+	// Finish reason must remain "tool_calls".
+	if choice.FinishReason == nil {
+		t.Fatal("expected FinishReason to be set")
+	}
+	if *choice.FinishReason != string(schemas.BifrostFinishReasonToolCalls) {
+		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonToolCalls, *choice.FinishReason)
+	}
+}

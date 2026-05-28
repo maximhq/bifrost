@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -354,7 +355,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		// and the langchain-aws ChatBedrockConverse implementation at
 		// https://github.com/langchain-ai/langchain-aws/blob/main/libs/aws/langchain_aws/chat_models/bedrock_converse.py
 		// (supports_tool_choice_values), which ships the same model-family gate.
-		if !schemas.IsLlamaModel(bifrostReq.Model) {
+		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -739,25 +743,9 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 		Role: BedrockMessageRole(msg.Role),
 	}
 
-	// Convert content
 	var contentBlocks []BedrockContentBlock
-	if msg.Content != nil {
-		var err error
-		contentBlocks, err = convertContent(ctx, *msg.Content)
-		if err != nil {
-			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
-		}
-	}
 
-	// Add tool calls if present (for assistant messages)
-	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
-		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
-			toolUseBlock := convertToolCallToContentBlock(toolCall)
-			contentBlocks = append(contentBlocks, toolUseBlock)
-		}
-	}
-
-	// Add reasoning content if present (for multi-turn conversations with thinking)
+	// Add reasoning content first
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
@@ -770,6 +758,22 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 					},
 				})
 			}
+		}
+	}
+
+	// Convert text/image content
+	if msg.Content != nil {
+		textBlocks, err := convertContent(ctx, *msg.Content)
+		if err != nil {
+			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
+		}
+		contentBlocks = append(contentBlocks, textBlocks...)
+	}
+
+	// Add tool calls last (for assistant messages)
+	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
+		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
+			contentBlocks = append(contentBlocks, convertToolCallToContentBlock(toolCall))
 		}
 	}
 
@@ -2115,6 +2119,45 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 	}
 }
 
+// bedrockToolResultEnvelopeKey marks a sentinel-wrapped JSON string that carries a full
+// BedrockToolResult.Content array through Bifrost's intermediate format. Used when the
+// content includes blocks (e.g. searchResult) that the intermediate cannot model natively,
+// so they round-trip losslessly on the Bedrock-native passthrough endpoint.
+const bedrockToolResultEnvelopeKey = "__bifrost_bedrock_tool_result_content__"
+
+// encodeBedrockToolResultEnvelope serializes a BedrockToolResult.Content array into a
+// sentinel-wrapped JSON object that decodeBedrockToolResultEnvelope can recover.
+func encodeBedrockToolResultEnvelope(content []BedrockContentBlock) (string, error) {
+	envelope := map[string]any{bedrockToolResultEnvelopeKey: content}
+	b, err := sonic.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// decodeBedrockToolResultEnvelope is the inverse of encodeBedrockToolResultEnvelope.
+// Returns (blocks, true) if s is a sentinel-wrapped tool-result envelope; (nil, false) otherwise.
+// Non-envelope strings are returned untouched so the caller can fall through to tryParseJSONIntoContentBlock.
+func decodeBedrockToolResultEnvelope(s string) ([]BedrockContentBlock, bool) {
+	if len(s) == 0 || s[0] != '{' || !strings.Contains(s, bedrockToolResultEnvelopeKey) {
+		return nil, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := sonic.UnmarshalString(s, &envelope); err != nil {
+		return nil, false
+	}
+	raw, ok := envelope[bedrockToolResultEnvelopeKey]
+	if !ok || len(envelope) != 1 {
+		return nil, false
+	}
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	return blocks, true
+}
+
 // tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
 // BedrockContentBlock based on the result.
 func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
@@ -2143,5 +2186,58 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		wrapped = append(wrapped, compacted...)
 		wrapped = append(wrapped, '}')
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
+	}
+}
+
+// stripCachePointsFromBedrockRequest removes all CachePoint blocks from a
+// BedrockConverseRequest. Called for models that don't support prompt caching
+// (e.g. GLM, Llama) so their requests don't get a 400 from the Converse API.
+func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
+	// Strip cache points from message content blocks (including nested tool results).
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil {
+				continue
+			}
+			if content[j].ToolResult != nil {
+				inner := content[j].ToolResult.Content
+				m := 0
+				for k := range inner {
+					if inner[k].CachePoint == nil {
+						inner[m] = inner[k]
+						m++
+					}
+				}
+				content[j].ToolResult.Content = inner[:m]
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+	// Strip cache points from system messages.
+	// Filter out entries that were cache-point-only (would become empty objects).
+	ns := 0
+	for i := range req.System {
+		req.System[i].CachePoint = nil
+		if req.System[i].Text != nil || req.System[i].GuardContent != nil {
+			req.System[ns] = req.System[i]
+			ns++
+		}
+	}
+	req.System = req.System[:ns]
+	// Strip cache points from tools.
+	if req.ToolConfig != nil {
+		nt := 0
+		for i := range req.ToolConfig.Tools {
+			req.ToolConfig.Tools[i].CachePoint = nil
+			if req.ToolConfig.Tools[i].ToolSpec != nil || req.ToolConfig.Tools[i].SystemTool != nil {
+				req.ToolConfig.Tools[nt] = req.ToolConfig.Tools[i]
+				nt++
+			}
+		}
+		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
 	}
 }

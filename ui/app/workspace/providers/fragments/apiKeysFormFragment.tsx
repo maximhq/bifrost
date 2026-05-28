@@ -457,20 +457,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-					<FormField
-						control={control}
-						name={`key.azure_key_config.api_version`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>API Version (Optional)</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-
 					{azureAuthType === "entra_id" && (
 						<>
 							<FormField

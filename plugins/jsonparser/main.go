@@ -127,6 +127,10 @@ func (p *JsonParserPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
+	if result == nil {
+		return result, err, nil
+	}
+
 	extraFields := result.GetExtraFields()
 
 	// Check if plugin should run based on usage type
@@ -134,8 +138,8 @@ func (p *JsonParserPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
-	// If no chat response, return as is
-	if result == nil || result.ChatResponse == nil {
+	// If no supported response type, return as is
+	if result.ChatResponse == nil && result.ResponsesStreamResponse == nil {
 		return result, err, nil
 	}
 
@@ -148,44 +152,78 @@ func (p *JsonParserPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Create a deep copy of the result to avoid modifying the original pointer
 	// This ensures other plugins using the same pointer don't get corrupted data
 	resultCopy := p.deepCopyBifrostResponse(result)
-	if resultCopy == nil || resultCopy.ChatResponse == nil {
+	if resultCopy == nil {
 		return result, err, nil
 	}
 
-	// Process only streaming choices to accumulate and fix partial JSON
-	if len(resultCopy.ChatResponse.Choices) > 0 {
-		for i := range resultCopy.ChatResponse.Choices {
-			choice := &resultCopy.ChatResponse.Choices[i]
+	if extraFields.RequestType == schemas.ChatCompletionStreamRequest {
+		if resultCopy.ChatResponse == nil {
+			return result, err, nil
+		}
 
-			// Handle only streaming response
-			if choice.ChatStreamResponseChoice != nil {
-				if choice.ChatStreamResponseChoice.Delta.Content != nil {
-					content := *choice.ChatStreamResponseChoice.Delta.Content
-					if content != "" {
-						// Accumulate the content
-						accumulated := p.accumulateContent(requestID, content)
+		// Process only streaming choices to accumulate and fix partial JSON
+		if len(resultCopy.ChatResponse.Choices) > 0 {
+			for i := range resultCopy.ChatResponse.Choices {
+				choice := &resultCopy.ChatResponse.Choices[i]
 
-						// Process the accumulated content to make it valid JSON
-						fixedContent := p.parsePartialJSON(accumulated)
+				// Handle only streaming response
+				if choice.ChatStreamResponseChoice != nil {
+					if choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+						content := *choice.ChatStreamResponseChoice.Delta.Content
+						if content != "" {
+							// Accumulate the content
+							accumulated := p.accumulateContent(requestID, content)
 
-						if !p.isValidJSON(fixedContent) {
-							err = &schemas.BifrostError{
-								Error: &schemas.ErrorField{
-									Message: "Invalid JSON in streaming response",
-								},
-								StreamControl: &schemas.StreamControl{
-									SkipStream: bifrost.Ptr(true),
-								},
+							// Process the accumulated content to make it valid JSON
+							fixedContent := p.parsePartialJSON(accumulated)
+
+							if !p.isValidJSON(fixedContent) {
+								err = &schemas.BifrostError{
+									Error: &schemas.ErrorField{
+										Message: "Invalid JSON in streaming response",
+									},
+									StreamControl: &schemas.StreamControl{
+										SkipStream: bifrost.Ptr(true),
+									},
+								}
+
+								return nil, err, nil
 							}
 
-							return nil, err, nil
+							// Replace the delta content with the complete valid JSON
+							choice.ChatStreamResponseChoice.Delta.Content = &fixedContent
 						}
-
-						// Replace the delta content with the complete valid JSON
-						choice.ChatStreamResponseChoice.Delta.Content = &fixedContent
 					}
 				}
 			}
+		}
+	} else if extraFields.RequestType == schemas.ResponsesStreamRequest {
+		if resultCopy.ResponsesStreamResponse == nil {
+			return result, err, nil
+		}
+
+		resp := resultCopy.ResponsesStreamResponse
+
+		// Only process output text delta events
+		if resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && resp.Delta != nil && *resp.Delta != "" {
+			accumulated := p.accumulateContent(requestID, *resp.Delta)
+
+			fixedContent := p.parsePartialJSON(accumulated)
+
+			if !p.isValidJSON(fixedContent) {
+				err = &schemas.BifrostError{
+					Error: &schemas.ErrorField{
+						Message: "Invalid JSON in streaming response",
+					},
+					StreamControl: &schemas.StreamControl{
+						SkipStream: bifrost.Ptr(true),
+					},
+				}
+
+				return nil, err, nil
+			}
+
+			resp.Delta = &fixedContent
 		}
 	}
 
