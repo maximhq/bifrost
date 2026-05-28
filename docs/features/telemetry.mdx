@@ -59,7 +59,7 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_cost_total`               | Counter   | Total cost in USD for upstream provider requests                  | Base Labels, custom labels                            |
 | `bifrost_active_requests`          | Gauge     | LLM requests currently in-flight                                  | `method`                                              |
 | `bifrost_provider_key_up`          | Gauge     | Per-key health: `1` after a successful attempt, `0` after a failure | `provider`, `key_id`, `key_name`                    |
-| `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by rate-limit failures (one per actual swap) | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
+| `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — one increment per actual swap | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
 | `bifrost_request_retries`          | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). | Base Labels |
 
 Base Labels:

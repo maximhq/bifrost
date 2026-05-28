@@ -351,15 +351,18 @@ const (
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
-// FailReason is populated on every failed attempt (retryable or terminal), and is nil only on a
-// successful attempt. Use it to inspect what went wrong on a given try.
+// FailReason is populated on every failed attempt (retryable or terminal) and is nil only on a
+// successful attempt. Status-derived values are: `rate_limit_error` (429), `authentication_error`
+// (401/403), `billing_error` (402); otherwise the provider's error Type is used, falling back to
+// `unknown`. Use it to inspect what went wrong on a given try.
 //
-// TriggeredRotation is true iff this attempt's failure caused the next attempt to rotate to a
-// different key — i.e. a rate-limit error with retries remaining. It is false on:
+// TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
+// rotate to a *different* key. It is false on:
 //   - the final (terminal) attempt of a request, regardless of outcome,
 //   - any successful attempt,
-//   - network-error retries (same key is reused on transient 5xx),
-//   - non-retryable failures.
+//   - same-key retries (transient 5xx / network errors keep the same key),
+//   - non-retryable failures,
+//   - fixed-key paths and 429 pool-resets that re-pick the same key (no rotation actually happened).
 //
 // Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {

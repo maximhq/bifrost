@@ -462,7 +462,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per rate-limit failure that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -795,8 +795,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (rate-limit failure with retries remaining). Mark the key unhealthy on any
-		// failure, since key health is per-failure not per-rotation.
+		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
+		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
