@@ -75,6 +75,27 @@ export interface MCPSessionRow {
 
 export interface MCPSessionsListResponse {
 	sessions: MCPSessionRow[];
+	// Pagination envelope mirrors the backend in handlers/mcp_sessions.go.
+	// Optional on this interface so older deployments (or future callers
+	// that ignore paging) still type-check.
+	count?: number;
+	total_count?: number;
+	limit?: number;
+	offset?: number;
+}
+
+// MCPSessionsQueryParams maps to the query string accepted by
+// GET /api/mcp/sessions. Array fields are csv-encoded by the API layer.
+// Empty/omitted values are not sent on the wire — the backend treats
+// missing as "no filter" for that field.
+export interface MCPSessionsQueryParams {
+	q?: string;
+	kind?: MCPSessionKind[];
+	status?: MCPSessionStatus[];
+	auth_mode?: AuthMode[];
+	mcp_client_id?: string[];
+	limit?: number;
+	offset?: number;
 }
 
 export interface MCPSessionReauthResponse {
