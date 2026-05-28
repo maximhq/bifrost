@@ -577,6 +577,7 @@ MCPSessionRow:
     - auth_mode
     - status
     - created_at
+    - can_reauth
   properties:
     id:
       type: string
@@ -646,6 +647,15 @@ MCPSessionRow:
       type: string
       nullable: true
       description: OAuth rows only
+    can_reauth:
+      type: boolean
+      description: |
+        Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.
+        Always true for vk- and session-mode rows. For user-mode rows, true only
+        when the calling user matches the row's bound user — admin DAC scope is
+        enough to see the row, but reauthing mints credentials under whoever clicks
+        the URL, so the server returns 403 to non-bound callers. The UI hides the
+        Re-authenticate / Edit values action when this is false.
 
 MCPSessionsListResponse:
   type: object
