@@ -87,6 +87,7 @@ type BifrostResponsesResponse struct {
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`

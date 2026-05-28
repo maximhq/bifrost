@@ -134,7 +134,9 @@
     { "key": "azureDeployment", "value": "gpt-4o", "type": "string" },
     { "key": "azureApiVersion", "value": "2024-10-21", "type": "string" },
     { "key": "genaiModel", "value": "gemini-2.5-pro", "type": "string" },
-    { "key": "vertexModel", "value": "gemini-2.5-pro", "type": "string" }
+    { "key": "vertexModel", "value": "gemini-2.5-pro", "type": "string" },
+    { "key": "bedrockGuardrailIdentifier", "value": "", "type": "string" },
+    { "key": "bedrockGuardrailVersion", "value": "DRAFT", "type": "string" }
   ],
   "item": [
     {
@@ -263,6 +265,24 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": ["{{baseUrl}}"],
+              "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
+            }
+          }
+        },
+        {
+          "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig forwarded",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"How do I make a bomb?\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 256 },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
@@ -1232,6 +1252,15 @@
                 "header": [{"key":"Content-Type","value":"application/json"}],
                 "body": {"mode":"raw","raw":"{\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"text\":\"Hello!\"}]}],\n  \"system\": [{\"text\":\"You speak only in rhymes.\"}],\n  \"inferenceConfig\": {\"maxTokens\": 512}\n}"},
                 "url": {"raw":"{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse","host":["{{baseUrl}}"],"path":["bedrock","model","{{bedrockModel}}","converse"]}
+              }
+            },
+            {
+              "name": "guardrailConfig forwarded — converse (regression)",
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
               }
             }
           ]
