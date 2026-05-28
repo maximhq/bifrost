@@ -819,6 +819,43 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddProviderAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationAddProviderAllowDirectKeysColumn adds the allow_direct_keys column
+// to config_providers. The column gates whether the provider's HTTP requests
+// accept a raw upstream key from Authorization / x-api-key / x-goog-api-key
+// headers and forward it verbatim (the "passthrough" / "direct key" lane).
+// Default false so existing rows preserve post-v1.5 behaviour: header keys are
+// ignored and only Bifrost-managed keys can authenticate.
+func migrationAddProviderAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_provider_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "allow_direct_keys") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "allow_direct_keys"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableProvider{}, "allow_direct_keys"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
 	return nil
 }
 
