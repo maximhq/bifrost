@@ -42,6 +42,17 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	return nil
 }
 
+// IsModelRequiredForRequest checks if the requested model is required for this request
+func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
+	// Here we will have to check for some requests which do not need model
+	// For example, batches, container, files, videos, passthrough requests
+	// For these requests, we will only check for provider filtering
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+		return false
+	}
+	return true
+}
+
 // parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
 // It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
 // Parameters:

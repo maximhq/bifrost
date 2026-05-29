@@ -221,17 +221,6 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 	}
 }
 
-// isModelRequired checks if the requested model is required for this request
-func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
-	// Here we will have to check for some requests which do not need model
-	// For example, batches, container, files, videos, passthrough requests
-	// For these requests, we will only check for provider filtering
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
-		return false
-	}
-	return true
-}
-
 // EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
 // skipRateLimitsAndBudgets evaluates to true when we want to skip rate limits and budgets. This is used when user auth is present (user governance handles limits).
 func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType, skipRateLimitsAndBudgets bool) *EvaluationResult {
@@ -273,7 +262,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		}
 	}
 	// 3. Check model filtering
-	if r.isModelRequired(requestType) && !r.isModelAllowed(vk, provider, model) {
+	if IsModelRequiredForRequest(requestType) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
