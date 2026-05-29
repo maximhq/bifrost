@@ -51,7 +51,7 @@ export interface ListModelDetailsResponse {
 	total: number;
 }
 
-// ModelPricingAttributesEntry is the body element for PUT /api/model-catalog.
+// ModelPricingAttributesEntry is the body element for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing. An empty
 // or omitted additional_attributes clears the column for that row.
 export interface ModelPricingAttributesEntry {
@@ -401,7 +401,7 @@ export const providersApi = baseApi.injectEndpoints({
 		// map clears the column for that row.
 		upsertModelCatalogEntries: builder.mutation<void, ModelPricingAttributesEntry[]>({
 			query: (entries) => ({
-				url: "/model-catalog",
+				url: "/models/catalog",
 				method: "PUT",
 				body: entries,
 			}),
