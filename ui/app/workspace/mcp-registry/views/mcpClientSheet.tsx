@@ -455,7 +455,9 @@ export default function MCPClientSheet({
 								</SheetTitle>
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"
-										? "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
+										? mcpClient.config.auth_type === "per_user_oauth"
+											? "This client was declared in config.json. A one-time admin test login is needed to verify the OAuth setup and discover tools — each user will authenticate individually afterward."
+											: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
 										: "MCP server configuration and available tools"}
 								</SheetDescription>
 							</div>
