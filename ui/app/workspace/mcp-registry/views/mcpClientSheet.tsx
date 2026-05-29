@@ -30,7 +30,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -92,12 +92,13 @@ export default function MCPClientSheet({
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
 
+	const { toast } = useToast();
+
 	const [pendingNavDirection, setPendingNavDirection] = useState<"prev" | "next" | null>(null);
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
-	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -201,16 +202,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		},
 	});
@@ -230,16 +231,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -298,16 +299,16 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-								client_id: oauthClientID,
-								client_secret: oauthClientSecret,
-							}
+							client_id: oauthClientID,
+							client_secret: oauthClientSecret,
+						}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-									ca_cert_pem: data.tls_config.ca_cert_pem,
-								}
+								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+								ca_cert_pem: data.tls_config.ca_cert_pem,
+							}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -452,7 +453,11 @@ export default function MCPClientSheet({
 									{mcpClient.config.name}
 									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
 								</SheetTitle>
-								<SheetDescription>MCP server configuration and available tools</SheetDescription>
+								<SheetDescription>
+									{mcpClient.state === "pending_verification"
+										? "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
+										: "MCP server configuration and available tools"}
+								</SheetDescription>
 							</div>
 							<SheetNavigationButtons
 								hasPrev={hasPrev}
@@ -518,7 +523,7 @@ export default function MCPClientSheet({
 											<span className="font-mono break-all">
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-														"-"
+													"-"
 													: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
@@ -537,7 +542,7 @@ export default function MCPClientSheet({
 															return [name, valueParts.join("=")];
 														}),
 													)}
-													onChange={() => {}}
+													onChange={() => { }}
 													fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 													valuePlaceholder="—"
 													label=""
@@ -935,9 +940,9 @@ export default function MCPClientSheet({
 														onBlur={() => {
 															const parsed = allowedExtraHeadersRaw.trim()
 																? allowedExtraHeadersRaw
-																		.split(",")
-																		.map((h) => h.trim())
-																		.filter(Boolean)
+																	.split(",")
+																	.map((h) => h.trim())
+																	.filter(Boolean)
 																: [];
 															field.onChange(parsed);
 															field.onBlur();
