@@ -220,7 +220,7 @@
         },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
-          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting — they always require SSO login.",
           "default": false
         },
         "routing_chain_max_depth": {

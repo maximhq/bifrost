@@ -142,9 +142,7 @@ The table is **scoped to the caller's identity**:
 - A user authenticated only via a `vk` header sees rows for that VK.
 - A caller asserting only `x-bf-mcp-session-id` sees rows for that session ID.
 
-This is the same identity scoping that gates which auth URL a caller can complete — a teammate cannot finish someone else's flow, and conversely cannot revoke a credential they did not originate.
-
-Flow rows where the identity has not yet been stamped (user-mode OAuth flows whose `user_id` is filled at completion time) are filtered out of the list — they would otherwise show up as "unbound" rows nobody can claim.
+This is the same identity scoping that gates which auth URL a caller can complete: for **user-mode** flows, only the bound SSO user can finish the flow (anyone else gets a `403`). VK-mode and session-mode flows treat the URL itself as the capability — see [Flow mode and access rules](./auth/overview#flow-mode-and-access-rules) for the per-mode behavior.
 
 When a credential and a pending flow exist for the same `(identity, MCP)` binding, only the credential row is shown. The flow row is suppressed to avoid duplicate-looking entries — it stays in the database until the user completes (and the row is consumed) or it expires.
 
@@ -163,9 +161,11 @@ Check the row status on the Sessions page:
 - **Needs update** (header rows) → click **Edit values** and resubmit on the form.
 </Accordion>
 
-<Accordion title="`This authentication flow isn't yours`">
+<Accordion title="`This authentication link is bound to a different user.`">
 
-The link points to a flow row whose identity differs from the caller's. Ask the teammate whose VK / user identity triggered the original request to complete the flow, or trigger a new request yourself.
+You're trying to complete a **user-mode** flow that was minted for another signed-in user. The SSO identity that triggered the original `mcp_auth_required` is the only one Bifrost will accept on the auth page — forwarding the URL to a colleague doesn't work. Ask that user to open the link in their own browser, or trigger a fresh request yourself so a new flow is minted under your identity.
+
+VK-mode and session-mode flows don't surface this error — they treat the URL itself as the capability. See [Flow mode and access rules](./auth/overview#flow-mode-and-access-rules).
 </Accordion>
 
 <Accordion title="`This authentication flow has expired or been completed`">

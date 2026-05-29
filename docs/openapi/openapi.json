@@ -36496,6 +36496,20 @@
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
                           },
+                          "tls_config": {
+                            "type": "object",
+                            "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                            "properties": {
+                              "insecure_skip_verify": {
+                                "type": "boolean",
+                                "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.\nUse only in development or trusted isolated environments. Not recommended for production.\n"
+                              },
+                              "ca_cert_pem": {
+                                "type": "string",
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                              }
+                            }
+                          },
                           "per_user_header_keys": {
                             "type": "array",
                             "items": {
@@ -36642,6 +36656,20 @@
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
                           },
+                          "tls_config": {
+                            "type": "object",
+                            "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                            "properties": {
+                              "insecure_skip_verify": {
+                                "type": "boolean",
+                                "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.\nUse only in development or trusted isolated environments. Not recommended for production.\n"
+                              },
+                              "ca_cert_pem": {
+                                "type": "string",
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                              }
+                            }
+                          },
                           "per_user_header_keys": {
                             "type": "array",
                             "items": {
@@ -36787,6 +36815,20 @@
                             "type": "boolean",
                             "default": false,
                             "description": "When true, this MCP client's tools are available to all virtual keys by default,\nwithout requiring an explicit virtual key assignment.\nAn explicit virtual key config always overrides this setting for that key.\n"
+                          },
+                          "tls_config": {
+                            "type": "object",
+                            "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                            "properties": {
+                              "insecure_skip_verify": {
+                                "type": "boolean",
+                                "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.\nUse only in development or trusted isolated environments. Not recommended for production.\n"
+                              },
+                              "ca_cert_pem": {
+                                "type": "string",
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                              }
+                            }
                           },
                           "per_user_header_keys": {
                             "type": "array",
@@ -37058,6 +37100,20 @@
                     "type": "boolean",
                     "default": false,
                     "description": "When true, the client's connection, health monitor, and tool syncer are shut down.\nThe client entry is preserved so it can be re-enabled later by sending disabled: false.\nDisabled clients do not expose tools to inference requests.\n"
+                  },
+                  "tls_config": {
+                    "type": "object",
+                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                    "properties": {
+                      "insecure_skip_verify": {
+                        "type": "boolean",
+                        "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.\nUse only in development or trusted isolated environments. Not recommended for production.\n"
+                      },
+                      "ca_cert_pem": {
+                        "type": "string",
+                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                      }
+                    }
                   },
                   "vk_configs": {
                     "type": "array",
@@ -66088,6 +66144,20 @@
                   "type": "string"
                 },
                 "description": "Environment variables required"
+              }
+            }
+          },
+          "tls_config": {
+            "type": "object",
+            "description": "TLS configuration for HTTP and SSE connections.",
+            "properties": {
+              "insecure_skip_verify": {
+                "type": "boolean",
+                "description": "Disable TLS certificate verification. Development/testing only."
+              },
+              "ca_cert_pem": {
+                "type": "string",
+                "description": "PEM-encoded CA certificate. Supports env.VAR_NAME syntax for input.\nResponses return a redacted placeholder rather than the raw PEM value.\n"
               }
             }
           },

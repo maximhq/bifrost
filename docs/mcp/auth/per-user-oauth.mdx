@@ -82,8 +82,10 @@ The same lazy-auth pattern is used on both the **MCP Gateway** (`/mcp`) and the 
 **LLM Gateway** — `authorize_url` is on the response's `extra_fields.mcp_auth_required` block, and also embedded in the natural-language message so plain-text clients see it too:
 
 ```text
-Authentication required for Notion. Open this URL to connect your account: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>#t=<temp-token>
+Authentication required for Notion. Open this URL to connect your account: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>
 ```
+
+VK and session-mode URLs may also carry a `#t=<temp-token>` fragment when [`mcp_enable_temp_token_auth`](./overview#the-mcp_enable_temp_token_auth-toggle) is turned on. User-mode URLs never do — they require SSO login regardless.
 
 <Frame>
   <img src="/media/ui-mcp-per-user-oauth-llm-prompt-llm.png" alt="LLM Gateway response with mcp_auth_required and an inline authorize_url" />
@@ -109,7 +111,7 @@ After completing upstream OAuth, the user is redirected back to `/api/oauth/call
   <img src="/media/ui-mcp-per-user-oauth-consent-flow.png" alt="Bifrost consent page at /workspace/mcp-sessions/auth?flow=<id>, showing the MCP server, the identity, and an Authenticate button" />
 </Frame>
 
-The temp token in the URL fragment (`#t=…`) authorizes anonymous browser visitors to complete the flow. It never reaches the server logs (fragments are not sent in the request line).
+When the `#t=<temp-token>` URL fragment is present, it authorizes anonymous browser visitors to complete the flow without a dashboard session. The fragment never reaches server logs (fragments are not sent in the request line). User-mode flow URLs never carry a temp token — visitors must complete SSO login first, and only the bound SSO user can finish the flow. See [Flow mode and access rules](./overview#flow-mode-and-access-rules) for the per-mode behavior and how to enable temp tokens for VK/session flows.
 
 ### Multi-server auth
 

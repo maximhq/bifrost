@@ -81,13 +81,70 @@ Per-user auth keys every credential against an **identity**. The mode is derived
 
 | Mode      | How it's set                                                                                            | Notes                                              |
 | --------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `user`    | Bifrost's auth middleware populates `BifrostContextKeyUserID` (signed-in user via SSO)                 | Enterprise SSO only                                |
-| `vk`      | Caller sends `x-bf-vk` (or `Authorization: Bearer …` / `x-api-key`) and the VK resolves                | Typical non-enterprise pattern                     |
+| `user`    | Bifrost's auth middleware populates `BifrostContextKeyUserID` (signed-in user via SSO), **or** the caller sends a VK that is owned by a user — Bifrost auto-promotes the VK's owner onto the context  | Enterprise SSO and enterprise user-owned VKs only |
+| `vk`      | Caller sends `x-bf-vk` (or `Authorization: Bearer …` / `x-api-key`) and the VK resolves but is **not** owned by a user                | Typical non-enterprise pattern, or enterprise VKs that aren't tied to a person  |
 | `session` | Caller sends `x-bf-mcp-session-id: <any-opaque-value>` and re-sends the same value on later calls      | Useful when there is no VK and no SSO              |
 
-Priority: `user` > `vk` > `session`. If multiple are present, Bifrost picks the highest-priority and ignores the rest for credential lookup.
+Priority: `user` > `vk` > `session`. If multiple are present (e.g., a user-owned VK both resolves a VK ID **and** promotes a user ID), Bifrost picks the highest-priority and ignores the rest for credential lookup. This means a user-owned VK always lands in `user` mode — the credential and any auth flow are bound to the user, not the VK.
 
 A per-user request **without any identity** is rejected — Bifrost returns an `mcp_auth_required` payload explaining that the caller must send a VK, sign in, or set `x-bf-mcp-session-id`.
+
+---
+
+## Flow mode and access rules
+
+When Bifrost mints an auth flow (the URL surfaced in `mcp_auth_required`), the identity mode picked at that moment is **stamped onto the flow row** and frozen for the flow's lifetime. The stamped mode controls who can open the resulting URL, whether the URL can carry a temp token, and whether a dashboard login is required to complete it.
+
+| Flow mode  | Who can open the URL                              | Temp token in URL fragment            | Login required to complete?                |
+| ---------- | ------------------------------------------------- | ------------------------------------- | ------------------------------------------ |
+| `user`     | Only the bound SSO user (others get `403`)        | **Never** — mint is skipped           | Yes, always                                |
+| `vk`       | Anyone holding the URL                            | Iff `mcp_enable_temp_token_auth=true` | No if temp token present; otherwise yes   |
+| `session`  | Anyone holding the URL                            | Iff `mcp_enable_temp_token_auth=true` | No if temp token present; otherwise yes   |
+
+- **User-mode flows** are tied to one signed-in user. This includes the case where the original request used a **user-owned VK** — Bifrost auto-promotes the VK's owner onto the context, so the flow ends up bound to that user rather than the VK. Forwarding the URL to a colleague doesn't help — they'll be redirected through SSO login and then hit a `403` because the flow is bound to a different user. Use user-mode when each end-user must authenticate to the upstream MCP as themselves.
+- **VK-mode and session-mode flows** treat the URL itself as the capability. Whoever holds the URL can complete the flow and the credential is bound to that VK / session ID. This is intentional — those identities are usually scoped to one integration or test harness, and the flow URL is forwarded to whoever will actually click it. A VK only lands in vk-mode when it is **not** owned by a user; user-owned VKs always promote to user-mode.
+
+### The `mcp_enable_temp_token_auth` toggle
+
+By default Bifrost does **not** mint temp tokens for any flow. VK/session flow URLs still work, but completing them requires the visiting browser to already have a dashboard session. Turn the toggle on to let anonymous browsers complete VK/session flows via a short-lived `#t=<temp-token>` URL fragment (15-minute TTL; fragments never reach server logs because they're not sent in the request line).
+
+User-mode flows ignore the toggle — they always require SSO login.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Settings → MCP** in the sidebar
+2. Toggle **Allow Temp Token Auth Links** on
+3. Click **Save**
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_config": {
+      "mcp_enable_temp_token_auth": true
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "client": {
+    "mcp_enable_temp_token_auth": true
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+When the toggle is off (the default), a VK/session flow URL has no `#t=…` fragment and the visitor needs an active Bifrost dashboard session to complete the page.
 
 ---
 
