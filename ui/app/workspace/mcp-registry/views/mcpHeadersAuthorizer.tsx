@@ -10,8 +10,7 @@
 import HeadersForm from "@/components/headersForm";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest } from "@/lib/types/mcp";
+import { getErrorMessage } from "@/lib/store";
 import { Loader2 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 
@@ -21,11 +20,13 @@ interface MCPHeadersAuthorizerProps {
 	onSuccess: () => void;
 	onError: (error: string) => void;
 	onConflict?: (error: string) => void;
-	// Full payload the parent has already assembled. The dialog adds
-	// user_headers (collected inline) and POSTs once.
-	payload: CreateMCPClientRequest;
 	// Required key schema, rendered as the form's input fields.
 	perUserHeaderKeys: string[];
+	// Called with the collected sample values once the admin clicks "Run
+	// Test". The handler decides what endpoint to hit (Create flow's
+	// /api/mcp/client vs bootstrap's /api/mcp/client/{id}/verify-headers).
+	// Throw to surface a failure in the dialog.
+	submitHandler: (values: Record<string, string>) => Promise<void>;
 }
 
 type Status = "confirm" | "input" | "testing" | "success" | "failed";
@@ -36,16 +37,14 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	onSuccess,
 	onError,
 	onConflict,
-	payload,
 	perUserHeaderKeys,
+	submitHandler,
 }) => {
 	const [status, setStatus] = useState<Status>("confirm");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	// Set to true when the user cancels so in-flight async callbacks do not
 	// invoke onSuccess / onError / onClose after the dialog is dismissed.
 	const cancelledRef = useRef(false);
-
-	const [createMCPClient] = useCreateMCPClientMutation();
 
 	// Reset state every time the dialog opens so a retry from a previous
 	// session doesn't carry over.
@@ -65,7 +64,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 		if (cancelledRef.current) return;
 		setStatus("testing");
 		try {
-			await createMCPClient({ ...payload, user_headers: values }).unwrap();
+			await submitHandler(values);
 			if (cancelledRef.current) return;
 			setStatus("success");
 			onSuccess();
