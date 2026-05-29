@@ -379,6 +379,32 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		return nil
 	}
 
+	// Per-user-headers clients whose DiscoveredTools has never been set
+	// have not had the one-time admin verification + discovery run yet.
+	// The UI Create flow runs that synchronously during create, so any
+	// per-user-headers row arriving here with a nil map was either
+	// declared in config.json or had its tools cleared by schema drift /
+	// manual edit. A verified server that legitimately exposes zero tools
+	// persists a non-nil empty map (see BeforeSave/AfterFind in
+	// framework/configstore/tables/mcp.go), so nil-check rather than
+	// len-check to avoid re-parking it in pending_verification on every
+	// reload. Park in pending_verification so the UI surfaces an admin
+	// "Verify" CTA that hits POST /api/mcp/client/{id}/verify-headers; the
+	// normal per-call path takes over once DiscoveredTools is set.
+	if config.AuthType == schemas.MCPAuthTypePerUserHeaders && config.DiscoveredTools == nil {
+		m.mu.Lock()
+		if client, exists := m.clientMap[config.ID]; exists {
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				client.ConnectionInfo.ConnectionURL = &url
+			}
+			client.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s Per-user-headers MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
+		return nil
+	}
+
 	// Per-user auth types: skip persistent connection. Auth is per-request at
 	// runtime. The admin verifies the configuration via a sample login before
 	// this is called, and tools are populated separately via SetClientTools().
