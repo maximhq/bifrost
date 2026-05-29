@@ -1584,6 +1584,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		// Process AWS Event Stream format
 		usage := &schemas.ResponsesResponseUsage{}
+		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions
@@ -1617,7 +1618,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				if err == io.EOF {
 					// End of stream - finalize any open items
-					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage)
+					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
@@ -1698,6 +1699,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 					return
+				}
+
+				if streamEvent.Trace != nil {
+					streamTrace = streamEvent.Trace
 				}
 
 				if streamEvent.Usage != nil {

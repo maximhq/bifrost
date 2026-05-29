@@ -142,6 +142,11 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	return state
 }
 
+// NewBedrockResponsesStreamState returns a freshly initialised stream state for use in tests.
+func NewBedrockResponsesStreamState() *BedrockResponsesStreamState {
+	return acquireBedrockResponsesStreamState()
+}
+
 // releaseBedrockResponsesStreamState returns a Bedrock responses stream state to the pool.
 func releaseBedrockResponsesStreamState(state *BedrockResponsesStreamState) {
 	if state != nil {
@@ -1152,7 +1157,7 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 }
 
 // FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
-func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
+func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage, trace *BedrockConverseTrace) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// Synthesize lifecycle events if Bedrock never sent a messageStart
@@ -1462,6 +1467,12 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		Usage:     usage,
 	}
 
+	if trace != nil {
+		response.ProviderExtraFields = map[string]interface{}{
+			"trace": trace,
+		}
+	}
+
 	if state.Model != nil {
 		response.Model = *state.Model
 	}
@@ -1730,6 +1741,11 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			}
 		}
 
+		// Restore guardrail trace from provider extra fields
+		if bifrostResp.Response != nil && bifrostResp.Response.ProviderExtraFields != nil {
+			event.Trace = extractBedrockTrace(bifrostResp.Response.ProviderExtraFields["trace"])
+		}
+
 	case schemas.ResponsesStreamResponseTypeError:
 		// Error - errors are handled separately by the router via BifrostError in the stream chunk
 		// Return nil to skip this chunk
@@ -1811,7 +1827,7 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 		})
 	}
 
-	if event.Usage != nil || event.Metrics != nil {
+	if event.Usage != nil || event.Metrics != nil || event.Trace != nil {
 		events = append(events, BedrockEncodedEvent{
 			EventType: "metadata",
 			Payload: BedrockMetadataEvent{
@@ -2355,34 +2371,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				delete(bedrockReq.ExtraParams, "stop")
 				inferenceConfig.StopSequences = stop
 			}
-
-			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
-				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
-					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
-						bedrockReq.AdditionalModelRequestFields,
-						orderedFields,
-					)
-				}
-			}
-
-			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
-				if fields, ok := responseFields.([]string); ok {
-					bedrockReq.AdditionalModelResponseFieldPaths = fields
-				} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
-					stringFields := make([]string, 0, len(fieldsInterface))
-					for _, field := range fieldsInterface {
-						if fieldStr, ok := field.(string); ok {
-							stringFields = append(stringFields, fieldStr)
-						}
-					}
-					if len(stringFields) > 0 {
-						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
-					}
-				}
-				if len(bedrockReq.AdditionalModelResponseFieldPaths) > 0 {
-					delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
-				}
+			applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
+			if len(bedrockReq.ExtraParams) == 0 {
+				bedrockReq.ExtraParams = nil
 			}
 		}
 
@@ -2618,6 +2609,12 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 		bifrostResp.StopReason = &stopReason
 	}
 
+	if response.Trace != nil {
+		bifrostResp.ProviderExtraFields = map[string]interface{}{
+			"trace": response.Trace,
+		}
+	}
+
 	return bifrostResp, nil
 }
 
@@ -2713,10 +2710,37 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
 	}
 
+	// Restore guardrail trace from provider extra fields
+	if bifrostResp.ProviderExtraFields != nil {
+		bedrockResp.Trace = extractBedrockTrace(bifrostResp.ProviderExtraFields["trace"])
+	}
+
 	return bedrockResp, nil
 }
 
 // Helper functions
+
+// extractBedrockTrace recovers a *BedrockConverseTrace from ProviderExtraFields["trace"].
+// It handles two cases:
+//   - in-memory pointer (normal non-streaming path): direct type assertion
+//   - map[string]interface{} (JSON-deserialized path, e.g. async job retrieval): marshal→unmarshal fallback
+func extractBedrockTrace(v interface{}) *BedrockConverseTrace {
+	if v == nil {
+		return nil
+	}
+	if t, ok := v.(*BedrockConverseTrace); ok {
+		return t
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var t BedrockConverseTrace
+	if err := sonic.Unmarshal(b, &t); err != nil {
+		return nil
+	}
+	return &t
+}
 
 // ensureResponsesToolConfigForConversation ensures toolConfig is present when tool content exists
 func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
