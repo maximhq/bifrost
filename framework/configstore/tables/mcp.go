@@ -48,6 +48,21 @@ type TableMCPClient struct {
 	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
 
+	// PendingOAuthConfigJSON stashes the inline `oauth_config` block from
+	// config.json for shared-OAuth MCP clients (auth_type='oauth') that have
+	// not yet been authorized by an admin. NULL on UI-created clients and on
+	// rows whose OAuth has already been authorized — cleared by the OAuth
+	// callback once oauth_configs.status='authorized'.
+	//
+	// Deserialised into PendingOAuthConfig by AfterFind; serialised back by
+	// BeforeSave. Wire-side it surfaces as `oauth_config` (UI form parity).
+	//
+	// The column name is pinned explicitly: GORM's naming strategy would
+	// otherwise derive pending_o_auth_config_json from the Go field name,
+	// breaking the add-column migration and every raw map update that
+	// addresses the column as pending_oauth_config_json.
+	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -68,6 +83,7 @@ type TableMCPClient struct {
 	DiscoveredTools           map[string]schemas.ChatTool  `gorm:"-" json:"-"`
 	DiscoveredToolNameMapping map[string]string            `gorm:"-" json:"-"`
 	PerUserHeaderKeys         []string                     `gorm:"-" json:"per_user_header_keys"`
+	PendingOAuthConfig        *schemas.OAuth2Config        `gorm:"-" json:"oauth_config,omitempty"` // Runtime mirror of PendingOAuthConfigJSON
 }
 
 // TableName sets the table name for each model
@@ -192,6 +208,20 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.PerUserHeaderKeysJSON = ""
 	}
 
+	// Persist the inline `oauth_config` block. Rehydrated by AfterFind so
+	// the initiate-verification endpoint can feed it to InitiateOAuthFlow
+	// the same way the UI Create handler does.
+	if c.PendingOAuthConfig != nil {
+		data, err := json.Marshal(c.PendingOAuthConfig)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.PendingOAuthConfigJSON = &s
+	} else {
+		c.PendingOAuthConfigJSON = nil
+	}
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
@@ -212,6 +242,15 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 				return fmt.Errorf("failed to encrypt mcp headers: %w", err)
 			}
 			c.HeadersJSON = enc
+		}
+		// The stash can carry an inline OAuth client_secret — encrypt it at
+		// rest like the other credential-bearing columns.
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			enc, err := encrypt.Encrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &enc
 		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -236,6 +275,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
 			}
 			c.ConnectionString.Val = decrypted
+		}
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &decrypted
 		}
 	}
 	if c.StdioConfigJSON != nil {
@@ -291,6 +337,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
 			return err
 		}
+	}
+	if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+		var cfg schemas.OAuth2Config
+		if err := sonic.Unmarshal([]byte(*c.PendingOAuthConfigJSON), &cfg); err != nil {
+			return err
+		}
+		c.PendingOAuthConfig = &cfg
 	}
 	return nil
 }
