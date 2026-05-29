@@ -931,8 +931,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 						setHeadersFlow(null);
 						setError("name", { message: error });
 					}}
-					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}
+					submitHandler={async (values) => {
+						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
+					}}
 				/>
 			)}
 		</Sheet>
