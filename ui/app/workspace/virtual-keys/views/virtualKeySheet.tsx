@@ -94,6 +94,7 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
+import { format } from "date-fns";
 import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -162,6 +163,7 @@ const formSchema = z
     teamId: z.string().optional(),
     customerId: z.string().optional(),
     isActive: z.boolean(),
+		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
     // Budget
     budgetCalendarAligned: z.boolean(),
     budgets: z
@@ -298,13 +300,13 @@ export default function VirtualKeySheet({
           })),
           rate_limit: config.rate_limit
             ? {
-                token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-                token_reset_duration: config.rate_limit.token_reset_duration,
-                request_max_limit:
+	                token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+	                token_reset_duration: config.rate_limit.token_reset_duration,
+	                request_max_limit:
                   config.rate_limit.request_max_limit ?? undefined,
-                request_reset_duration:
+	                request_reset_duration:
                   config.rate_limit.request_reset_duration,
-              }
+	              }
             : undefined,
         })) || [],
       mcpConfigs:
@@ -323,6 +325,9 @@ export default function VirtualKeySheet({
       teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
       customerId: virtualKey?.customer_id || "",
       isActive: virtualKey?.is_active ?? true,
+      expiresAt: virtualKey?.expires_at
+        ? format(new Date(virtualKey.expires_at), "yyyy-MM-dd'T'HH:mm")
+        : null,
       budgets:
         virtualKey?.budgets && virtualKey.budgets.length > 0
           ? virtualKey.budgets.map((b) => ({
@@ -868,6 +873,7 @@ export default function VirtualKeySheet({
                 ? null
                 : undefined,
           is_active: data.isActive,
+          expires_at: data.expiresAt ? new Date(data.expiresAt).toISOString() : null,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
         };
@@ -931,6 +937,7 @@ export default function VirtualKeySheet({
               ? data.customerId
               : undefined,
           is_active: data.isActive,
+          expires_at: data.expiresAt ? new Date(data.expiresAt).toISOString() : undefined,
           // VK-level setting that governs both budget and rate-limit calendar alignment.
           calendar_aligned: data.budgetCalendarAligned,
         };
@@ -1123,6 +1130,39 @@ export default function VirtualKeySheet({
                       </FormItem>
                     )}
                   />
+									<FormField
+										control={form.control}
+										name="expiresAt"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Expiry date (optional)</FormLabel>
+												<FormControl>
+													<div className="flex items-center gap-2">
+														<Input
+															type="datetime-local"
+															data-testid="vk-expires-at-input"
+															value={field.value ?? ""}
+															onChange={(e) => field.onChange(e.target.value || null)}
+															className="w-auto"
+														/>
+														{field.value && (
+															<Button
+																type="button"
+																variant="ghost"
+																size="icon"
+																onClick={() => field.onChange(null)}
+																data-testid="vk-expires-at-clear"
+																aria-label="Clear expiry date"
+															>
+																<X className="h-4 w-4" />
+															</Button>
+														)}
+													</div>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
                 </div>
                 {/* Provider Configurations */}
                 <div className="space-y-2">

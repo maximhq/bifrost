@@ -5,11 +5,18 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 )
+
+// isVirtualKeyExpired returns true when the key has a set expiry that has passed.
+func isVirtualKeyExpired(vk *configstoreTables.TableVirtualKey) bool {
+	return vk != nil && vk.ExpiresAt != nil && time.Now().UTC().After(vk.ExpiresAt.UTC())
+}
 
 // ParseVirtualKeyFromFastHTTPRequest parses the virtual key from FastHTTP request headers.
 // Parameters:

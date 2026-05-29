@@ -611,6 +611,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339/ISO 8601, e.g. \"2026-06-01T00:00:00Z\"). Key is treated as inactive after this UTC time."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",

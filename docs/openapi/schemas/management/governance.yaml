@@ -259,6 +259,11 @@ VirtualKey:
       type: string
     is_active:
       type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: Optional UTC timestamp after which the virtual key is treated as inactive.
     provider_configs:
       type: array
       items:
@@ -363,6 +368,11 @@ CreateVirtualKeyRequest:
       $ref: '#/CreateRateLimitRequest'
     is_active:
       type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: Optional UTC timestamp after which the virtual key is treated as inactive.
     calendar_aligned:
       type: boolean
       default: false
@@ -432,6 +442,11 @@ UpdateVirtualKeyRequest:
       $ref: '#/UpdateRateLimitRequest'
     is_active:
       type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: Optional UTC timestamp after which the virtual key is treated as inactive. Omit to leave unchanged; send null to clear.
     calendar_aligned:
       type: boolean
     reset_budget_usage:

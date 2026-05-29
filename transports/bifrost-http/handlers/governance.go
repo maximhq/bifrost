@@ -98,6 +98,7 @@ type CreateVirtualKeyRequest struct {
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; key is treated as inactive after this UTC timestamp
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -119,13 +120,14 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID           schemas.OptionalJSON[string] `json:"team_id,omitempty"`
-	CustomerID       schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
-	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
-	IsActive         *bool                        `json:"is_active,omitempty"`
-	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+	TeamID           schemas.OptionalJSON[string]    `json:"team_id,omitempty"`
+	CustomerID       schemas.OptionalJSON[string]    `json:"customer_id,omitempty"`
+	Budgets          []CreateBudgetRequest           `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit        *UpdateRateLimitRequest         `json:"rate_limit,omitempty"`
+	IsActive         *bool                           `json:"is_active,omitempty"`
+	CalendarAligned  *bool                           `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ExpiresAt        schemas.OptionalJSON[time.Time] `json:"expires_at,omitempty"`       // Optional expiry; null clears, omitted leaves unchanged
+	ResetBudgetUsage *bool                           `json:"reset_budget_usage,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -133,6 +135,11 @@ var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to 
 // optionalJSONStringHasValue reports whether a presence-aware string contains a non-empty value.
 func optionalJSONStringHasValue(value schemas.OptionalJSON[string]) bool {
 	return value.Set && !value.Null && value.Value != ""
+}
+
+// optionalJSONTimeHasValue reports whether a presence-aware time contains a concrete value.
+func optionalJSONTimeHasValue(value schemas.OptionalJSON[time.Time]) bool {
+	return value.Set && !value.Null
 }
 
 // applyVirtualKeyOwnershipUpdate applies presence-aware team/customer ownership changes.
@@ -635,6 +642,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	var vk configstoreTables.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		var expiresAt *time.Time
+		if req.ExpiresAt != nil {
+			expiry := req.ExpiresAt.UTC()
+			expiresAt = &expiry
+		}
+
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
@@ -644,6 +657,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+			ExpiresAt:       expiresAt,
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -933,6 +947,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
+		}
+		if optionalJSONTimeHasValue(req.ExpiresAt) {
+			expiresAt := req.ExpiresAt.Value.UTC()
+			vk.ExpiresAt = &expiresAt
+		} else if req.ExpiresAt.Set {
+			vk.ExpiresAt = nil
 		}
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned

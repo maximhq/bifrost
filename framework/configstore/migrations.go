@@ -747,6 +747,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVirtualKeyExpiresAtColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationDropAllowDirectKeysColumnDDL(ctx, db); err != nil {
 		return err
 	}
@@ -7767,6 +7770,48 @@ func migrationUniqueTeamNames(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	})
+}
+
+// migrationAddVirtualKeyExpiresAtColumn adds the expires_at column to the virtual keys table.
+// When set, a virtual key is treated as inactive after this timestamp regardless of is_active.
+func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_virtual_key_expires_at_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := mg.AddColumn(&tables.TableVirtualKey{}, "expires_at"); err != nil {
+					return fmt.Errorf("failed to add expires_at column: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableVirtualKey{}, "ExpiresAt") {
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to create expires_at index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableVirtualKey{}, "ExpiresAt") {
+				if err := mg.DropIndex(&tables.TableVirtualKey{}, "ExpiresAt"); err != nil {
+					return fmt.Errorf("failed to drop expires_at index: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := mg.DropColumn(&tables.TableVirtualKey{}, "expires_at"); err != nil {
+					return fmt.Errorf("failed to drop expires_at column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_virtual_key_expires_at_column migration: %s", err.Error())
+	}
+	return nil
 }
 
 // migrationAddOAuthAuthModeColumns adds the AuthMode/Status/FlowMode discriminator

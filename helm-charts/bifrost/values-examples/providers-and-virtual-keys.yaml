@@ -550,9 +550,11 @@ bifrost:
             weight: 1
 
       # 6. Testing — tight budget, tight rate limit, single model, single key.
+      # expires_at is an example UTC timestamp; set it to a future date for your environment.
       - id: "vk-testing-limited"
         name: "Testing (gpt-4o-mini only)"
         is_active: true
+        expires_at: "2099-01-01T00:00:00Z"  # Example only; replace with your desired UTC expiry
         budget_id: "budget-testing"
         rate_limit_id: "rate-limit-testing"
         provider_configs:

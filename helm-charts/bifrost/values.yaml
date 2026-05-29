@@ -523,6 +523,7 @@ bifrost:
       #   description: "Virtual key description"
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
+      #   expires_at: "2026-06-01T00:00:00Z"  # Optional expiry (RFC3339); key becomes inactive after this UTC time
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"

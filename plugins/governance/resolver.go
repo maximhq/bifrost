@@ -253,6 +253,12 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 			Reason:   "Virtual key is inactive",
 		}
 	}
+	if isVirtualKeyExpired(vk) {
+		return &EvaluationResult{
+			Decision: DecisionVirtualKeyBlocked,
+			Reason:   "Virtual key has expired",
+		}
+	}
 	// 2. Check provider filtering
 	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
 		return &EvaluationResult{

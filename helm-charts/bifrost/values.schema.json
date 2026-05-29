@@ -1211,6 +1211,11 @@
                   "is_active": {
                     "type": "boolean"
                   },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional expiry timestamp (RFC3339/ISO 8601, e.g. \"2026-06-01T00:00:00Z\"). Key is treated as inactive after this UTC time."
+                  },
                   "team_id": {
                     "type": "string"
                   },

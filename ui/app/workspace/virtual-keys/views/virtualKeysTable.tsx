@@ -75,7 +75,8 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 			(vk.rate_limit?.request_current_usage &&
 				vk.rate_limit?.request_max_limit &&
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
-		const status = vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive";
+		const isExpired = !!vk.expires_at && new Date() > new Date(vk.expires_at);
+		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
 		const assignedTo = vk.team
 			? `Team: ${vk.team.name}`
 			: vk.customer
