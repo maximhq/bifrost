@@ -50,7 +50,10 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 
 Per-user auth requires every request to carry an identity. See [Identity modes](#identity-modes) below.
 
-Connection-state semantics (`connected`, `disconnected`, `error`, `needs_reauth`, etc., shown on the MCP client list) describe a persistent upstream connection, so they only apply to server-level clients. Per-user clients are stateless by design: each tool call resolves and uses the caller's credential on its own, with nothing held open between calls, so the dashboard links a per-user client to its [MCP Sessions](../sessions) rows instead of showing a connection state for it.
+Connection-state semantics (`connected`, `disconnected`, `error`, shown on the MCP client list) describe a persistent upstream connection, so they only apply to server-level clients. Per-user clients are stateless by design: each tool call resolves and uses the caller's credential on its own, with nothing held open between calls, so the dashboard links a per-user client to its [MCP Sessions](../sessions) rows instead of showing a connection state for it. Two lifecycle states are the exception and appear for every auth type:
+
+- **`pending_verification`**: all five auth types, including `oauth`, `per_user_oauth`, and `per_user_headers`, can be declared in `config.json`, and the three that need an admin verification step (the two OAuth variants plus `per_user_headers`) land in this state at boot. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row that runs the same verification flow the Web UI Create form uses. See each auth type's page for the `config.json` shape.
+- **`needs_reauth`**: on a server-level client, the connection credential itself died and must be reauthorized. On a per-user client, it means the admin credential Bifrost retains to refresh the server's tool list needs repair; end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it from the client sheet.
 
 ---
 
