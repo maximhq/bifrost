@@ -1514,6 +1514,19 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	}
 	hash.Write([]byte("auth_type:" + authType))
 
+	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
+	// the declared header-name schema in config.json drift the hash.
+	if len(m.PerUserHeaderKeys) > 0 {
+		sortedKeys := make([]string, len(m.PerUserHeaderKeys))
+		copy(sortedKeys, m.PerUserHeaderKeys)
+		sort.Strings(sortedKeys)
+		data, err := sonic.Marshal(sortedKeys)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash PendingOAuthConfig so edits to the inline `oauth_config` block
 	// in config.json drift the hash and trigger reconciliation. Rows built
 	// from config.json carry only the runtime struct (the JSON column is
