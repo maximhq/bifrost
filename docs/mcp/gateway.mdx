@@ -328,7 +328,7 @@ Who can open and complete that URL depends on the flow's identity mode (frozen w
 See [Flow mode and access rules →](./auth/overview#flow-mode-and-access-rules) for the full per-mode behavior.
 
 <Note>
-Claude Code's MCP client may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+Claude Code may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
 </Note>
 
 See [Per-User OAuth →](./auth/per-user-oauth) and [Per-User Headers →](./auth/per-user-headers) for the full flows and identity options, and [MCP Sessions →](./sessions) for managing the resulting credentials.
@@ -337,7 +337,6 @@ See [Per-User OAuth →](./auth/per-user-oauth) and [Per-User Headers →](./aut
 
 The URLs Bifrost surfaces (consent pages, header-submission pages, and the `redirect_uri` it registers with upstream OAuth providers) are derived from the request's `Host` header by default. Behind a reverse proxy, that's the proxy's internal address rather than its public one. Override with:
 
-- `mcp_external_server_url` — what Bifrost uses for the consent / submission URLs surfaced in `mcp_auth_required` payloads
 - `mcp_external_client_url` — what Bifrost registers as the `redirect_uri` with upstream OAuth providers
 
 See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
@@ -446,13 +445,6 @@ Consider network-level restrictions to limit which IPs can access the MCP endpoi
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="Claude Desktop not connecting">
-    1. Verify the URL is correct and Bifrost is running
-    2. Check if Bifrost is accessible from Claude Desktop's network
-    3. Restart Claude Desktop after configuration changes
-    4. Check Bifrost logs for connection attempts
-  </Accordion>
-
   <Accordion title="No tools showing up">
     1. Verify MCP clients are connected in Bifrost
     2. Check that `tools_to_execute` includes the expected tools

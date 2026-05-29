@@ -175,8 +175,7 @@ See [MCP Sessions](../sessions) for the full lifecycle, the difference between `
 
 The consent page URL Bifrost builds (`/workspace/mcp-sessions/auth?flow=…`) and the `redirect_uri` Bifrost registers with upstream OAuth providers are both derived from the request `Host` header by default. Behind a reverse proxy, override them with:
 
-- `mcp_external_server_url` — used for the consent URL and any discovery surface
-- `mcp_external_client_url` — registered as the `redirect_uri` with upstream providers
+- `mcp_external_client_url` — public base URL for both the consent page and the `redirect_uri` Bifrost registers with upstream providers
 
 See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
 

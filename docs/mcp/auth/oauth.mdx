@@ -311,8 +311,7 @@ This revokes the token with the OAuth provider (if a revocation endpoint is conf
 
 The `redirect_uri` Bifrost registers and the consent URLs it builds are derived from the request `Host` header by default. Behind a reverse proxy, override them with:
 
-- `mcp_external_server_url` — what Bifrost uses for any consent URL it surfaces
-- `mcp_external_client_url` — what Bifrost registers as the `redirect_uri` with upstream providers
+- `mcp_external_client_url` — public base URL Bifrost uses both for the consent pages it surfaces and as the `redirect_uri` registered with upstream providers
 
 See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
 
