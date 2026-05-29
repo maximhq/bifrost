@@ -1,0 +1,3 @@
+- feat: support dimension rankings logging for team, customer, BU, and user (#3766)
+- refactor: route Starlark nested tool calls through the canonical plugin pipeline (#3794)
+- chore: upgraded core to v1.5.14 and framework to v1.3.14
