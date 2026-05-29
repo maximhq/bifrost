@@ -167,8 +167,8 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if clientConfig.AuthType != schemas.MCPAuthTypeOauth {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("initiate-verification only applies to auth_type='oauth' clients, got %q", clientConfig.AuthType))
+	if clientConfig.AuthType != schemas.MCPAuthTypeOauth && clientConfig.AuthType != schemas.MCPAuthTypePerUserOauth {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("initiate-verification only applies to OAuth-based clients (oauth, per_user_oauth), got %q", clientConfig.AuthType))
 		return
 	}
 	if clientConfig.PendingOAuthConfig == nil {
@@ -971,6 +971,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
+		// Mirror the server-level OAuth response's next-step hints so API/CLI
+		// users can complete the flow without consulting docs.
+		completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
+		statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
 		SendJSON(ctx, map[string]any{
 			"status":          "pending_oauth",
 			"message":         "Test OAuth configuration: please authorize to verify the setup. This login is only used to verify connectivity and discover available tools — it will not be saved.",
@@ -978,6 +982,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			"authorize_url":   flowInitiation.AuthorizeURL,
 			"expires_at":      flowInitiation.ExpiresAt,
 			"mcp_client_id":   req.ClientID,
+			"complete_url":    completeURL,
+			"status_url":      statusURL,
+			"next_steps": []string{
+				"1. Open authorize_url in a browser to approve access",
+				"2. Poll status_url to check when status becomes 'authorized'",
+				"3. POST complete_url to verify connectivity and activate the MCP client",
+			},
 		})
 		return
 	}
@@ -1915,9 +1926,12 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Gate the fallback to genuine bootstrap completions:
-		// 1. AuthType must be shared OAuth — per_user_oauth completions
-		//    route through a different verification path that treats the
-		//    upstream token as an admin temp credential and revokes it.
+		// 1. AuthType must be one of the OAuth-based types. The downstream
+		//    handler branches on AuthType to take the per-user verification
+		//    path (which treats the upstream token as an admin temp
+		//    credential and revokes it) vs the shared completion path.
+		//    per_user_headers and other non-OAuth types cannot complete
+		//    through this endpoint.
 		// 2. PendingOAuthConfigJSON must still be set — once cleared, the
 		//    client has already completed bootstrap, and any further hit
 		//    on complete-oauth with this oauth_config_id is a replay (the
@@ -1925,8 +1939,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		//    bootstrap stash is gone because ClearMCPClientPendingOAuthConfig
 		//    ran). Reject with 409 so callers don't trigger redundant DB
 		//    writes + reconnects on an already-connected client.
-		if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth config does not match a shared-OAuth MCP client (auth_type=%q)", dbClient.AuthType))
+		if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) && dbClient.AuthType != string(schemas.MCPAuthTypePerUserOauth) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth config does not match an OAuth-based MCP client (auth_type=%q)", dbClient.AuthType))
 			return
 		}
 		if dbClient.PendingOAuthConfigJSON == nil || *dbClient.PendingOAuthConfigJSON == "" {
@@ -2045,6 +2059,18 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 
 		// Set discovered tools on the client
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
+
+		// For clients bootstrapped from config.json, drop the
+		// pending_oauth_config_json stash now that verification succeeded.
+		// This branch returns before the shared completion path below, so
+		// the stash must be cleared here too — otherwise the next boot
+		// rehydrates it and parks the verified client back in
+		// pending_verification.
+		if configBootstrap {
+			if err := h.store.ConfigStore.ClearMCPClientPendingOAuthConfig(ctx, mcpClientConfig.ID); err != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to clear pending oauth bootstrap on MCP client %s: %v", mcpClientConfig.ID, err))
+			}
+		}
 
 		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
 		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools))

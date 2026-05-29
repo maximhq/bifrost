@@ -1701,6 +1701,28 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			// oauth_config_id is server-managed state — a credentials-row
+			// reference produced by admin authorization — not a declarative
+			// input. A file-supplied value is at best redundant (the sync
+			// preserves the server-side link) and at worst repoints the
+			// client at a stale or foreign-deployment row. Ignore it; the
+			// synthesis below then parks unauthorized clients in
+			// pending_verification, where the admin flow can mint a real one.
+			if c.OauthConfigID != nil {
+				logger.Warn("ignoring oauth_config_id on MCP client %q from config file: this field is managed by Bifrost and cannot be set via config.json", c.Name)
+				c.OauthConfigID = nil
+			}
+			// OAuth-based auth types with no inline `oauth_config` still
+			// need the bootstrap-pending marker so the client lands in
+			// pending_verification and the initiate-verification endpoint
+			// can run discovery + dynamic client registration off the
+			// connection_string at admin-click time. Synthesize an empty
+			// OAuth2Config so the runtime gate and the handler see the same
+			// shape they do when the block was provided.
+			if (c.AuthType == schemas.MCPAuthTypeOauth || c.AuthType == schemas.MCPAuthTypePerUserOauth) &&
+				c.PendingOAuthConfig == nil {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+			}
 			valid = append(valid, c)
 		}
 		configData.MCP.ClientConfigs = valid
