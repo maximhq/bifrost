@@ -281,7 +281,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
-		if !IsOpus47(bifrostReq.Model) {
+		if !IsOpus47Plus(bifrostReq.Model) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -295,12 +295,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
 		// Opus 4.7+ rejects top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !IsOpus47(bifrostReq.Model) {
+			if !IsOpus47Plus(bifrostReq.Model) {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !IsOpus47(bifrostReq.Model) {
+			if !IsOpus47Plus(bifrostReq.Model) {
 				anthropicReq.TopK = topK
 			}
 		}
@@ -501,7 +501,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsOpus47(bifrostReq.Model) {
+				if IsOpus47Plus(bifrostReq.Model) {
 					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
@@ -521,7 +521,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-				if SupportsAdaptiveThinking(bifrostReq.Model) || IsOpus47(bifrostReq.Model) {
+				if SupportsAdaptiveThinking(bifrostReq.Model) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
@@ -564,7 +564,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if bifrostReq.Params.Reasoning.Display != nil {
 					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
-				} else if IsOpus47(bifrostReq.Model) {
+				} else if IsOpus47Plus(bifrostReq.Model) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}

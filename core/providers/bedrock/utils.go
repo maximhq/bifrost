@@ -302,7 +302,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsOpus47(bifrostReq.Model) {
+					} else if anthropic.IsOpus47Plus(bifrostReq.Model) {
 						// Opus 4.7+ omits reasoning text by default; default to "summarized"
 						thinkingConfig["display"] = "summarized"
 					}
