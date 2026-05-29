@@ -83,6 +83,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 	r.POST("/api/mcp/client/{id}/initiate-verification", lib.ChainMiddlewares(h.initiateMCPClientVerification, middlewares...))
+	r.POST("/api/mcp/client/{id}/verify-headers", lib.ChainMiddlewares(h.verifyMCPClientHeaders, middlewares...))
 }
 
 // runOAuthBootstrap kicks off the shared-OAuth flow for an MCP client and
@@ -212,6 +213,201 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 			"2. Poll status_url to check when status becomes 'authorized'",
 			"3. POST complete_url to activate the MCP client",
 		},
+	})
+}
+
+// VerifyMCPClientHeadersRequest is the body for
+// POST /api/mcp/client/{id}/verify-headers. user_headers carries the
+// admin's sample header values for the one-time verification; the values
+// are used to open an upstream connection, call tools/list, and are then
+// discarded. Each end-user submits their own values at runtime.
+type VerifyMCPClientHeadersRequest struct {
+	UserHeaders map[string]string `json:"user_headers"`
+}
+
+// verifyMCPClientHeaders handles
+// POST /api/mcp/client/{id}/verify-headers.
+//
+// Surfaced on per-user-headers MCP clients sitting in pending_verification
+// — i.e. clients whose row was declared in config.json (or otherwise
+// persisted) without DiscoveredTools. The admin enters sample header
+// values in the UI form; this handler runs the same VerifyHeadersConnection
+// the UI Create flow runs (admin sample values → upstream connection →
+// tools/list → discovered tools), persists DiscoveredTools on the row,
+// triggers reconnect, and discards the sample values.
+//
+// Synchronous: no callback, no popup. On success the client transitions
+// to connected; on failure the row stays in pending_verification and the
+// admin can retry.
+func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+	defer cancel()
+
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid mcp client id: %v", err))
+		return
+	}
+
+	var req VerifyMCPClientHeadersRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+
+	clientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("MCP client '%s' not found", id))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+		return
+	}
+	if clientConfig.AuthType != schemas.MCPAuthTypePerUserHeaders {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("verify-headers only applies to auth_type='per_user_headers' clients, got %q", clientConfig.AuthType))
+		return
+	}
+	// Replay guard: once admin verification succeeds DiscoveredTools is set
+	// (non-nil, possibly empty for a server that legitimately exposes zero
+	// tools) and the client is usable. A second hit on this endpoint would
+	// re-run discovery and clobber the existing tool set, which is
+	// surprising and wasteful. Force callers to delete + recreate (or use
+	// the future "edit headers schema" path) to re-verify.
+	if clientConfig.DiscoveredTools != nil {
+		SendError(ctx, fasthttp.StatusConflict, "MCP client has already been verified; delete and recreate to re-verify")
+		return
+	}
+	if len(clientConfig.PerUserHeaderKeys) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no per_user_header_keys declared; cannot verify")
+		return
+	}
+
+	// Canonicalize both sides so the missing-keys check matches by
+	// canonical form (lowercase + trim), mirroring the UI Create flow.
+	canonKeys := mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
+	canonUserHeaders := mcputils.CanonicalizeHeaderMap(req.UserHeaders)
+	if missing := missingPerUserHeaderValues(canonKeys, canonUserHeaders); len(missing) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("user_headers missing values for required keys: %s", strings.Join(missing, ", ")))
+		return
+	}
+
+	tools, toolNameMapping, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
+	if verifyErr != nil {
+		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
+		return
+	}
+
+	// Re-load the row before activating and persisting: discovery above
+	// holds an upstream network round-trip, and pushing the pre-discovery
+	// snapshot into the runtime refresh and the full-row write below would
+	// silently restore any fields an admin edited in the meantime (name,
+	// filters, pricing, disabled). A fresh read narrows that window to the
+	// moments between this read and the write. Nothing has been activated
+	// or persisted yet, so a failed reload leaves the retry path open.
+	clientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verification succeeded but reloading the client for activation failed: %v", err))
+		return
+	}
+	// Re-check the replay guard against the freshly reloaded row: a
+	// concurrent verify-headers call (e.g. a double-click) may have
+	// completed its own discovery and persisted DiscoveredTools during the
+	// network round-trip above. The reload already reads the current row,
+	// so this costs nothing extra and closes the double-submit race the
+	// guard at the top of this handler can't see. Treat it as this
+	// request's own success rather than an error: the desired end state
+	// (verified, tools discovered) was already reached by the other
+	// request, so there's nothing left to do here — redoing the
+	// persist/activation below would only risk clobbering its tool set.
+	if clientConfig.DiscoveredTools != nil {
+		SendJSON(ctx, map[string]any{
+			"status":      "success",
+			"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(clientConfig.DiscoveredTools)),
+			"tools_count": len(clientConfig.DiscoveredTools),
+		})
+		return
+	}
+	clientConfig.DiscoveredTools = tools
+	clientConfig.DiscoveredToolNameMapping = toolNameMapping
+
+	// Activate the runtime client BEFORE persisting so a partial failure
+	// can always be retried through this endpoint. The replay guard above
+	// reads DiscoveredTools from the DB, so persisting first would turn an
+	// activation failure into a permanent 409 wedge (runtime still parked,
+	// DB claiming verified). In this order every partial failure leaves the
+	// DB row without tools and the retry path open:
+	//   - activation fails → nothing persisted → retry re-runs verification
+	//   - persistence fails → runtime works now, client re-parks on restart
+	//     and the retry re-runs verification
+	//
+	// Refresh the manager's config with the discovered tools, then set them
+	// on the client — SetClientTools populates the tool map and flips the
+	// state to connected. Per-user auth clients hold no shared upstream
+	// connection, so there is nothing to reconnect; this mirrors the
+	// per-user OAuth completion path.
+	if err := h.updateMCPClientWithRetry(bifrostCtx, clientConfig.ID, clientConfig); err != nil {
+		logger.Error(fmt.Sprintf("Failed to update MCP client after headers verification for client %s: %v", clientConfig.ID, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but failed to activate the client: %v", err))
+		return
+	}
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
+
+	// Persist the discovered tools via UpdateMCPClientConfig. The store
+	// unconditionally writes every editable column from the given struct
+	// (ConfigHash only gates the connection-metadata block), so the update
+	// must carry the full config; a sparse struct would zero name,
+	// headers, pricing, and the other editable fields. clientConfig was
+	// re-loaded after discovery and carries the discovered tools.
+	updateReq := &configstoreTables.TableMCPClient{
+		ClientID:                  clientConfig.ID,
+		Name:                      clientConfig.Name,
+		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ConnectionType:            string(clientConfig.ConnectionType),
+		ConnectionString:          clientConfig.ConnectionString,
+		StdioConfig:               clientConfig.StdioConfig,
+		TLSConfig:                 clientConfig.TLSConfig,
+		AuthType:                  string(clientConfig.AuthType),
+		OauthConfigID:             clientConfig.OauthConfigID,
+		ToolsToExecute:            clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		Headers:                   clientConfig.Headers,
+		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:           clientConfig.IsPingAvailable,
+		ToolPricing:               clientConfig.ToolPricing,
+		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
+		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
+		DiscoveredTools:           clientConfig.DiscoveredTools,
+		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		Disabled:                  clientConfig.Disabled,
+	}
+	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
+		// NOTE: Partial success; the runtime client is connected and serving
+		// but the DB row still has no discovered tools, so runtime and
+		// database state have drifted. The replay guard reads DiscoveredTools
+		// from the DB, so retrying this endpoint re-runs verification and
+		// reconverges the two; a restart re-parks the client in
+		// pending_verification.
+		logger.Error(fmt.Sprintf(
+			"[PARTIAL SUCCESS] MCP client %s was activated after headers verification but persisting discovered tools failed: %v. "+
+				"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. "+
+				"Retry this endpoint to re-verify and persist.",
+			clientConfig.ID, err,
+		))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted, so runtime and database state have drifted until re-verified. Retry this endpoint to re-run verification and persist: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"status":      "success",
+		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(tools)),
+		"tools_count": len(tools),
 	})
 }
 
@@ -2015,6 +2211,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ConnectionType:            string(mcpClientConfig.ConnectionType),
 				ConnectionString:          mcpClientConfig.ConnectionString,
 				StdioConfig:               mcpClientConfig.StdioConfig,
+				TLSConfig:                 mcpClientConfig.TLSConfig,
 				AuthType:                  string(mcpClientConfig.AuthType),
 				OauthConfigID:             mcpClientConfig.OauthConfigID,
 				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
@@ -2024,7 +2221,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 				AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+				PerUserHeaderKeys:         mcpClientConfig.PerUserHeaderKeys,
 				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
 				Disabled:                  mcpClientConfig.Disabled,
