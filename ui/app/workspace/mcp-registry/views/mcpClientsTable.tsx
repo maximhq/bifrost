@@ -24,6 +24,7 @@ import {
 	useInitiateMCPClientVerificationMutation,
 	useReconnectMCPClientMutation,
 	useUpdateMCPClientMutation,
+	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -31,6 +32,7 @@ import { Link } from "@tanstack/react-router";
 import { Box, ChevronLeft, ChevronRight, KeyRound, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
+import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
@@ -109,7 +111,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<KeyRound className="h-4 w-4" />
-						{client.config.auth_type === "per_user_oauth" ? "Verify" : "Authorize"}
+						Authorize
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && (
@@ -196,12 +198,17 @@ export default function MCPClientsTable({
 		popup: Window | null;
 		isPerUserOauth: boolean;
 	} | null>(null);
+	// Drives the MCPHeadersAuthorizer dialog for a config.json-bootstrapped
+	// per_user_headers client sitting in pending_verification, triggered from
+	// the row actions menu.
+	const [bootstrapHeadersClient, setBootstrapHeadersClient] = useState<MCPClient | null>(null);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
 	const [initiateVerification] = useInitiateMCPClientVerificationMutation();
+	const [verifyMCPClientHeaders] = useVerifyMCPClientHeadersMutation();
 
 	const handleCreate = () => {
 		setFormOpen(true);
@@ -223,6 +230,12 @@ export default function MCPClientsTable({
 	};
 
 	const handleStartBootstrap = async (client: MCPClient) => {
+		// per_user_headers takes a synchronous form-based path; OAuth-based
+		// types kick off the existing browser flow below.
+		if (client.config.auth_type === "per_user_headers") {
+			setBootstrapHeadersClient(client);
+			return;
+		}
 		const isPerUserOauth = client.config.auth_type === "per_user_oauth";
 		// Open a blank popup synchronously, before the initiateVerification
 		// await, so the click's transient user-activation is captured here
@@ -449,6 +462,41 @@ export default function MCPClientsTable({
 					mcpClientId={bootstrapAuthorize.mcpClientId}
 					initialPopup={bootstrapAuthorize.popup}
 					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
+				/>
+			)}
+			{bootstrapHeadersClient && (
+				<MCPHeadersAuthorizer
+					open={!!bootstrapHeadersClient}
+					onClose={() => setBootstrapHeadersClient(null)}
+					onSuccess={async () => {
+						toast({
+							title: "Success",
+							description: "Headers verified successfully. Each user will submit their own values when using this MCP server.",
+						});
+						setBootstrapHeadersClient(null);
+						if (refetch) {
+							await refetch();
+						}
+					}}
+					onError={() => {
+						/* error state rendered by the dialog itself */
+					}}
+					onConflict={async (error) => {
+						// 409: tools were already discovered (e.g. double submit or a
+						// concurrent verification) — the client is verified; refresh.
+						toast({ title: "Already verified", description: error });
+						setBootstrapHeadersClient(null);
+						if (refetch) {
+							await refetch();
+						}
+					}}
+					perUserHeaderKeys={bootstrapHeadersClient.config.per_user_header_keys ?? []}
+					submitHandler={async (values) => {
+						await verifyMCPClientHeaders({
+							id: bootstrapHeadersClient.config.client_id,
+							userHeaders: values,
+						}).unwrap();
+					}}
 				/>
 			)}
 
