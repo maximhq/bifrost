@@ -17,7 +17,15 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - bifrost_network
+      bifrost_network:
+        # PINNED IP - harden-runner (egress-policy: block) filters on the
+        # post-NAT destination IP. Host processes dial 127.0.0.1:5432, which
+        # Docker DNATs to this bridge IP, so this exact IP must appear in the
+        # allowed-endpoints of every release-pipeline job that talks to Postgres
+        # over the published port (test-migrations, test-bifrost-http,
+        # test-api-integrations). Keep in sync with the 172.38.0.11:5432 entries
+        # in .github/workflows/release-pipeline.yml.
+        ipv4_address: 172.38.0.11
 
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
