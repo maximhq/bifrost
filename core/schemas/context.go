@@ -14,6 +14,7 @@ var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
 	BifrostContextKeyAPIKeyName,
 	BifrostContextKeyAPIKeyID,
+	BifrostContextKeyDirectKey,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
 	BifrostContextKeySelectedKeyID,

@@ -193,6 +193,7 @@ const (
 	BifrostContextKeyVirtualKey        BifrostContextKey = "x-bf-vk"               // string
 	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
 
