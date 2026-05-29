@@ -751,6 +751,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.5",
               "changelogs/ent-v1.4.4",
               "changelogs/ent-v1.4.3",
               "changelogs/ent-v1.4.2",
@@ -809,6 +810,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",
               "changelogs/helm-v2.1.18",
               "changelogs/helm-v2.1.17",
