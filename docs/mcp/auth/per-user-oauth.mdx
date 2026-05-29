@@ -30,7 +30,9 @@ This is separate from Bifrost acting as an OAuth 2.1 Authorization Server *for i
 
 ## Setup
 
-Per-user OAuth is configured through the **Web UI** only. During setup Bifrost runs a test OAuth flow as the admin and pre-fetches the tool list from the upstream service — that's why file-based config is not supported for this auth type. (Once the MCP client is persisted, the admin's temp token is discarded; per-user tokens are minted lazily by end-users.)
+Per-user OAuth needs a one-time admin test login so Bifrost can verify the OAuth configuration and discover the tool list from the upstream service. The admin's temp token is discarded after verification; per-user tokens are minted lazily by end-users at runtime.
+
+You can run the admin verification either from the **Web UI** during create, or from a `config.json`-declared client by clicking **Verify** in the UI after Bifrost boots.
 
 <Tabs>
 <Tab title="Web UI">
@@ -51,6 +53,40 @@ Per-user OAuth is configured through the **Web UI** only. During setup Bifrost r
 <Frame>
   <img src="/media/ui-mcp-per-user-oauth-setup.png" alt="MCP client form with Auth Type set to Per-User OAuth 2.0 and the OAuth fields ready for setup" />
 </Frame>
+
+</Tab>
+
+<Tab title="config.json">
+
+Declare the client with an inline `oauth_config` block:
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "notion",
+        "connection_type": "http",
+        "connection_string": "https://mcp.notion.so/sse",
+        "auth_type": "per_user_oauth",
+        "oauth_config": {
+          "client_id": "your-client-id",
+          "scopes": ["read_user", "read_database"]
+        },
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+The `oauth_config` block itself is optional, and every inner field is optional. `authorize_url` / `token_url` come from RFC 8414 discovery off `connection_string` when the upstream supports it, and `client_id` / `client_secret` can be obtained via RFC 7591 Dynamic Client Registration. The minimum viable declaration is `{ "auth_type": "per_user_oauth", "connection_string": "..." }`.
+
+At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost runs the same admin test login popup the Web UI flow uses. On success the client transitions to `connected` with the tool list discovered, and the admin's temp token is discarded.
+
+The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (`{id}` = MCP client ID) returns `authorize_url` plus `status_url` / `complete_url` hints — open `authorize_url` in a browser for the one-time admin login, poll `status_url` until `authorized`, then POST `complete_url` to run verification and tool discovery.
+
+**Lifecycle across restarts and config edits:** the verified state (`oauth_config_id` + discovered tools) is server-side and survives restarts and config.json re-syncs. Mutable fields (tool lists, headers, pricing, etc.) can be edited freely in config.json. Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config`, and the `oauth_config` block — cannot be changed after creation: file edits to them are **ignored**, matching the update API, and Bifrost logs a warning naming the ignored fields at the next boot. To change any of them, delete the client, update the block, and restart (the recreated client re-enters `pending_verification`).
 
 </Tab>
 </Tabs>
@@ -139,7 +175,7 @@ Tokens are stored against an **identity**, not against a gateway. As long as the
 
 ## Configuration reference
 
-Once an MCP client is created via the Web UI, its `auth_type` is `per_user_oauth` with an `oauth_config_id` linking to the OAuth credentials Bifrost stored. You'll see this shape in API responses:
+After an MCP client is verified (via Web UI Create or via the `config.json` bootstrap flow), its `auth_type` is `per_user_oauth` with an `oauth_config_id` linking to the OAuth credentials Bifrost stored. You'll see this shape in API responses:
 
 ```json
 {
@@ -152,10 +188,10 @@ Once an MCP client is created via the Web UI, its `auth_type` is `per_user_oauth
 }
 ```
 
-| Field             | Type   | Notes                                                                  |
-| ----------------- | ------ | ---------------------------------------------------------------------- |
-| `auth_type`       | string | `"per_user_oauth"`                                                     |
-| `oauth_config_id` | string | ID of the OAuth credentials row (set automatically by Web UI setup)   |
+| Field             | Type   | Notes                                                                                       |
+| ----------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `auth_type`       | string | `"per_user_oauth"`                                                                          |
+| `oauth_config_id` | string | ID of the OAuth credentials row. Set automatically when admin verification completes; not a `config.json` input. |
 
 <Note>
 MCP client names cannot contain hyphens — Bifrost prefixes tools as `<client>-<tool>` and uses the hyphen to split the two halves at execution time.
