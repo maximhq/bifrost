@@ -343,7 +343,8 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 				attrs[schemas.AttrCompletionTokenDetailsImage] = *resp.Usage.CompletionTokensDetails.ImageTokens
 			}
 			if resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens
+				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = resp.Usage.CompletionTokensDetails.ReasoningTokens
 			}
 			if resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens > 0 {
 				attrs[schemas.AttrCompletionTokenDetailsAccept] = resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens
@@ -899,7 +900,8 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 				attrs[schemas.AttrOutputTokenDetailsImage] = *d.ImageTokens
 			}
 			if d.ReasoningTokens > 0 {
-				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens
+				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = d.ReasoningTokens
 			}
 			if d.AcceptedPredictionTokens > 0 {
 				attrs[schemas.AttrOutputTokenDetailsAccept] = d.AcceptedPredictionTokens
