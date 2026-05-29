@@ -32,7 +32,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
-| `mcp` | object | MCP server and tool configuration | - |
+| `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
@@ -235,6 +235,57 @@ Controls model pricing catalog sync:
 |-------|---------|-------------|
 | `pricing.pricing_url` | LiteLLM catalog | URL of a model pricing JSON file |
 | `pricing.pricing_sync_interval` | `86400` | Sync interval in seconds (minimum: `3600`) |
+
+---
+
+## `mcp`
+
+Declares the catalog of MCP servers Bifrost connects to. Each entry in `client_configs` is one MCP server.
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "weather",
+        "connection_type": "http",
+        "connection_string": "https://mcp.example.com/weather",
+        "auth_type": "none",
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+Common fields on each `client_configs` entry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique display name |
+| `client_id` | string | Optional stable client identifier (defaults to a generated UUID) |
+| `connection_type` | string | `"http"`, `"sse"`, or `"stdio"` |
+| `connection_string` | object/string | HTTP/SSE URL or stdio command spec |
+| `auth_type` | string | `"none"`, `"headers"`, `"oauth"`, `"per_user_oauth"`, or `"per_user_headers"` |
+| `tools_to_execute` | array | Allow-list of tool names; `["*"]` for all |
+| `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
+| `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
+| `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+
+Auth-type-specific fields:
+
+| Field | Auth type | Description |
+|-------|-----------|-------------|
+| `oauth_config` | `oauth`, `per_user_oauth` | Optional inline OAuth provider block. The whole block can be omitted, and any inner field (`client_id`, `client_secret`, `authorize_url`, `token_url`, `registration_url`, `scopes`) can be omitted individually — RFC 8414 metadata discovery + RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. |
+| `per_user_header_keys` | `per_user_headers` | Required, non-empty. Array of header names each end-user must supply. |
+
+The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth types, and `per_user_header_keys` is rejected on any auth type other than `per_user_headers` — a misplaced block fails `$schema` validation instead of being silently ignored.
+
+<Warning>
+**Migration note:** `oauth_config_id` is no longer a valid field on MCP client entries in `config.json`. Older guidance for shared OAuth suggested checking it in after completing an OAuth flow — remove it from existing config files (declare an `oauth_config` block instead, or leave the client to the dashboard). Bifrost now **ignores** the field if present (with a warning at boot): the OAuth link is managed server-side and survives restarts and config re-syncs on its own, and `$schema`-based editor/CI validation rejects the field.
+</Warning>
+
+Clients declared with `auth_type` in `{oauth, per_user_oauth, per_user_headers}` boot into a **`pending_verification`** state. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row; one admin click runs the same verification flow the Web UI Create form uses, after which the client transitions to `connected`. The same steps are scriptable via `POST /api/mcp/client/{id}/initiate-verification` (OAuth types) and `POST /api/mcp/client/{id}/verify-headers` (per-user headers). Verified state is server-side and survives restarts and config re-syncs. Immutable fields (`auth_type`, `connection_type`, `connection_string`, `stdio_config`, `oauth_config`) cannot be changed after creation — file edits to them are ignored with a boot warning naming the fields, matching the update API; delete and re-declare the client to change them. See [MCP Auth](/mcp/auth/overview).
 
 ---
 

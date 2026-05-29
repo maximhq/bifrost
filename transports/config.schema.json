@@ -4687,21 +4687,53 @@
           ],
           "description": "Authentication type for MCP connection"
         },
-        "oauth_config_id": {
-          "type": "string",
-          "description": "OAuth config ID reference (required when auth_type is 'oauth' or 'per_user_oauth')"
+        "oauth_config": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for auth_type 'oauth' or 'per_user_oauth'. All inner fields are optional — missing URLs are resolved via RFC 8414 discovery and a missing client_id triggers RFC 7591 dynamic client registration at admin-click time. The client lands in `pending_verification` state at boot; an admin runs the verification flow once from the MCP Gateway UI.",
+          "properties": {
+            "client_id": {
+              "type": "string",
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted)"
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR)"
+            },
+            "authorize_url": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional — discovered from the MCP server URL when omitted)"
+            },
+            "token_url": {
+              "type": "string",
+              "description": "Provider token endpoint (optional — discovered when omitted)"
+            },
+            "registration_url": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional — discovered when omitted)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request"
+            }
+          },
+          "additionalProperties": false
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Required header names each end-user must supply when auth_type is 'per_user_headers'. Schema only — values are submitted per-user at runtime. The MCP client lands in `pending_verification` state at boot; an admin submits sample values once from the UI to verify the connection and discover tools."
         },
         "headers": {
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "per_user_header_keys": {
-          "type": "array",
-          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
-          "items": {
             "type": "string"
           }
         },
@@ -4817,17 +4849,58 @@
       },
       "required": ["name", "connection_type"],
       "additionalProperties": false,
-      "if": {
-        "properties": {
-          "auth_type": {
-            "enum": ["oauth", "per_user_oauth"]
+      "allOf": [
+        {
+          "$comment": "per_user_headers requires the admin to declare which header names users must submit. OAuth-based types have no required input — the connection_string drives RFC 8414 discovery + RFC 7591 dynamic client registration when oauth_config is omitted or its inner fields are blank.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["per_user_header_keys"]
           }
         },
-        "required": ["auth_type"]
-      },
-      "then": {
-        "required": ["oauth_config_id"]
-      },
+        {
+          "$comment": "oauth_config only applies to OAuth-based auth types; forbid it elsewhere (including entries that omit auth_type, which defaults to headers) so a misplaced block fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "enum": ["oauth", "per_user_oauth"]
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["oauth_config"]
+            }
+          }
+        },
+        {
+          "$comment": "per_user_header_keys only applies to auth_type 'per_user_headers'; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "const": "per_user_headers"
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["per_user_header_keys"]
+            }
+          }
+        }
+      ],
       "oneOf": [
         {
           "properties": {
