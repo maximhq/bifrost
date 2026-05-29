@@ -3,7 +3,7 @@ import { SecretVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
-export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "disabled";
+export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "pending_verification" | "disabled";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers";
 

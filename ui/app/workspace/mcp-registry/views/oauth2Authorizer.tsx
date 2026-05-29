@@ -16,6 +16,12 @@ interface OAuth2AuthorizerProps {
 	oauthConfigId: string;
 	mcpClientId: string;
 	isPerUserOauth?: boolean;
+	// A popup the caller already opened synchronously (before any await), to
+	// preserve the triggering click's transient user-activation. When
+	// present, openPopup navigates this handle instead of calling
+	// window.open itself — a fresh window.open after an awaited network
+	// round-trip risks the browser blocking it outright.
+	initialPopup?: Window | null;
 }
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
@@ -112,6 +118,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	authorizeUrl,
 	oauthConfigId,
 	isPerUserOauth,
+	initialPopup,
 }) => {
 	const [status, setStatus] = useState<Status>(isPerUserOauth ? "confirm" : "polling");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -119,6 +126,10 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const isCompletingRef = useRef(false);
 	const cancelledRef = useRef(false);
+	// initialPopup is only good for one use — a retry must open a fresh
+	// window rather than re-navigating a handle already spent on a prior
+	// (blocked or failed) attempt.
+	const initialPopupConsumedRef = useRef(false);
 
 	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery();
 	const [completeOAuth] = useCompleteOAuthFlowMutation();
@@ -222,11 +233,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const height = 700;
 		const left = window.screen.width / 2 - width / 2;
 		const top = window.screen.height / 2 - height / 2;
-		const popup = window.open(
-			authorizeUrl,
-			"oauth_popup",
-			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
-		);
+
+		let popup: Window | null = null;
+		if (!initialPopupConsumedRef.current && initialPopup && !initialPopup.closed) {
+			initialPopupConsumedRef.current = true;
+			popup = initialPopup;
+			try {
+				popup.location.href = authorizeUrl;
+			} catch {
+				popup = null;
+			}
+		} else {
+			popup = window.open(
+				authorizeUrl,
+				"oauth_popup",
+				`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+			);
+		}
 
 		if (!popup || popup.closed) {
 			popupRef.current = null;
@@ -237,7 +260,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		popupRef.current = popup;
 		setStatus("polling");
 		startPolling();
-	}, [authorizeUrl, startPolling]);
+	}, [authorizeUrl, startPolling, initialPopup]);
 
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
