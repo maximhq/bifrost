@@ -33,9 +33,8 @@ type PostgresConfig struct {
 }
 
 // defaultMatViewRefreshInterval is used when MatViewRefreshInterval is unset
-// or unparseable. Matches the prior hardcoded value so existing deployments
-// see no behavior change.
-const defaultMatViewRefreshInterval = 30 * time.Second
+// or unparseable.
+const defaultMatViewRefreshInterval = time.Minute
 
 // minMatViewRefreshInterval is a floor to prevent pathological configs that
 // would refresh more often than the refresh itself takes — anything below

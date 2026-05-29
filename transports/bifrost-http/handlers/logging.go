@@ -41,8 +41,7 @@ type LoggingHandler struct {
 const sessionLogPageLimit = 500
 
 // filterDataCacheTTL is short enough that newly used models/keys appear in
-// dropdowns within ~half a minute — matview refresh runs every 30s anyway, so a
-// longer TTL would just hide stale results.
+// dropdowns promptly without hiding results beyond the matview refresh cadence.
 const filterDataCacheTTL = 30 * time.Second
 
 const filterDataFanOutLimit = 4

@@ -375,7 +375,8 @@ var matviewRequiredColumns = func() map[string][]string {
 // Postgres-only — runs on a dedicated connection so the advisory lock + the
 // CONCURRENTLY DDL all share one session and live outside any migration
 // transaction. Multi-replica deployments serialize on the advisory lock so
-// only one instance does the work.
+// only one instance does the work. It shares the same advisory lock as
+// refreshMatViews so startup create/repair cannot overlap a periodic refresh.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" {
 		return nil
@@ -589,7 +590,8 @@ var refreshGate matViewRefreshGate
 
 // logsActivityCounter returns the cumulative INSERT+UPDATE+DELETE count for
 // the `logs` table from pg_stat_user_tables. The stat collector is eventually
-// consistent (lags a few seconds under load) which is fine for a 30s tick.
+// consistent (lags a few seconds under load) which is fine for the periodic
+// refresh tick.
 //
 // Returns (0, false) if the row is missing (fresh DB before any writes) or the
 // query fails — callers treat that as "fall back to always-refresh."
@@ -644,7 +646,8 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 
 // refreshMatViews refreshes all materialized views concurrently (non-blocking
 // for readers). Uses a PostgreSQL advisory try-lock so that in multi-replica
-// deployments only one instance refreshes at a time — others skip silently.
+// deployments only one instance refreshes at a time — others skip silently and
+// try again on their next scheduled tick.
 //
 // Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
@@ -748,7 +751,7 @@ func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
 // freshAggregateMatViewMinWindow is the minimum time-range size that justifies
 // serving user-visible aggregates (e.g. /api/logs/stats totals, /api/logs
 // pagination counts) from the materialized view. Below this, the raw `logs`
-// table is fast enough and avoids the up-to-30s freshness lag that would
+// table is fast enough and avoids the refresh-interval freshness lag that would
 // otherwise cause counts to disagree with the row-list view — a visible
 // inconsistency on short, low-traffic windows.
 const freshAggregateMatViewMinWindow = 24 * time.Hour
