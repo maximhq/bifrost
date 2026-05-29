@@ -18,33 +18,44 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutation, useUpdateMCPClientMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	useDeleteMCPClientMutation,
+	useInitiateMCPClientVerificationMutation,
+	useReconnectMCPClientMutation,
+	useUpdateMCPClientMutation,
+} from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, KeyRound, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
+import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 function MCPClientActionsMenu({
 	client,
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
+	isAuthorizing,
 	isPerUserAuth,
 	onEdit,
 	onReconnect,
+	onAuthorize,
 	onDelete,
 }: {
 	client: MCPClient;
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
+	isAuthorizing: boolean;
 	isPerUserAuth: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
+	onAuthorize: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -59,7 +70,7 @@ function MCPClientActionsMenu({
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
 				>
-					{isReconnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+					{isReconnecting || isAuthorizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent
@@ -86,10 +97,25 @@ function MCPClientActionsMenu({
 						Edit
 					</DropdownMenuItem>
 				)}
+				{hasUpdateAccess && client.state === "pending_verification" && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={isAuthorizing}
+						data-testid={`mcp-client-authorize-${client.config.client_id}-menu-item`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onAuthorize(client);
+							setIsOpen(false);
+						}}
+					>
+						<KeyRound className="h-4 w-4" />
+						Authorize
+					</DropdownMenuItem>
+				)}
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={isPerUserAuth || client.config.disabled || isReconnecting}
+						disabled={isPerUserAuth || client.config.disabled || isReconnecting || client.state === "pending_verification"}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -159,12 +185,22 @@ export default function MCPClientsTable({
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
 	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
+	// Drives the OAuth2Authorizer dialog for a config.json-bootstrapped client
+	// sitting in pending_verification, triggered from the row actions menu.
+	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+		popup: Window | null;
+	} | null>(null);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
+	const [initiateVerification] = useInitiateMCPClientVerificationMutation();
 
 	const handleCreate = () => {
 		setFormOpen(true);
@@ -182,6 +218,43 @@ export default function MCPClientsTable({
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		}
+	};
+
+	const handleStartBootstrap = async (client: MCPClient) => {
+		// Open a blank popup synchronously, before the initiateVerification
+		// await, so the click's transient user-activation is captured here
+		// rather than consumed by the network round-trip — otherwise the
+		// browser can block OAuth2Authorizer's later window.open entirely.
+		// OAuth2Authorizer navigates this handle once authorize_url is known.
+		const width = 600;
+		const height = 700;
+		const left = window.screen.width / 2 - width / 2;
+		const top = window.screen.height / 2 - height / 2;
+		const popup = window.open("", "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+		try {
+			setAuthorizingClients((prev) => [...prev, client.config.client_id]);
+			const response = await initiateVerification(client.config.client_id).unwrap();
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setBootstrapAuthorize({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: client.config.client_id,
+					popup,
+				});
+			} else {
+				popup?.close();
+				toast({
+					title: "Authorization failed",
+					description: "Unexpected response from server. Please try again.",
+					variant: "destructive",
+				});
+			}
+		} catch (error) {
+			popup?.close();
+			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
@@ -339,6 +412,30 @@ export default function MCPClientsTable({
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
+			{bootstrapAuthorize && (
+				<OAuth2Authorizer
+					open={!!bootstrapAuthorize}
+					onClose={() => setBootstrapAuthorize(null)}
+					onSuccess={async () => {
+						toast({ title: "Success", description: "MCP client connected successfully" });
+						setBootstrapAuthorize(null);
+						if (refetch) {
+							await refetch();
+						}
+					}}
+					onError={(error) => {
+						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+					}}
+					onConflict={(error) => {
+						setBootstrapAuthorize(null);
+						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+					}}
+					authorizeUrl={bootstrapAuthorize.authorizeUrl}
+					oauthConfigId={bootstrapAuthorize.oauthConfigId}
+					mcpClientId={bootstrapAuthorize.mcpClientId}
+					initialPopup={bootstrapAuthorize.popup}
+				/>
+			)}
 
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
@@ -532,9 +629,11 @@ export default function MCPClientsTable({
 													hasUpdateAccess={hasUpdateMCPClientAccess}
 													hasDeleteAccess={hasDeleteMCPClientAccess}
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
+													isAuthorizing={authorizingClients.includes(c.config.client_id)}
 													isPerUserAuth={isPerUserAuth}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
+													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onDelete={setClientToDelete}
 												/>
 											</TableCell>
