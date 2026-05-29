@@ -16,6 +16,15 @@ import { baseApi } from "./baseApi";
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
+// Response of POST /mcp/client/{id}/initiate-verification — same flow fields as
+// OAuthFlowResponse but without a required message, plus polling/completion hints.
+type InitiateMCPClientVerificationResponse = Omit<OAuthFlowResponse, "message"> & {
+	message?: string;
+	status_url?: string;
+	complete_url?: string;
+	next_steps?: string[];
+};
+
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get MCP clients with pagination
@@ -243,6 +252,16 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["MCPClients"],
 		}),
+
+		// Initiate verification for a pending_verification MCP client (config.json bootstrap).
+		// Returns authorize_url + oauth_config_id; the caller drives the same
+		// OAuth2Authorizer dialog the UI Create flow uses.
+		initiateMCPClientVerification: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/initiate-verification`,
+				method: "POST",
+			}),
+		}),
 	}),
 });
 
@@ -260,4 +279,5 @@ export const {
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
+	useInitiateMCPClientVerificationMutation,
 } = mcpApi;
