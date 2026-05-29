@@ -636,6 +636,18 @@ func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error {
+	return nil
+}
+
+func (m *MockConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error {
+	return nil
+}
+
 func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)

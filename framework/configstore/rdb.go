@@ -1558,6 +1558,12 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
+					// ConfigHash must round-trip so config-file reconciliation
+					// can compare the stored hash against the file hash; an
+					// empty hash reads as "changed" and re-syncs every client
+					// on every boot, clobbering server-side auth state.
+					ConfigHash: dbClient.ConfigHash,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -1601,6 +1607,12 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
+			// ConfigHash must round-trip so config-file reconciliation can
+			// compare the stored hash against the file hash; an empty hash
+			// reads as "changed" and re-syncs every client on every boot,
+			// clobbering server-side auth state.
+			ConfigHash: dbClient.ConfigHash,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -2025,6 +2037,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
 	}, nil
 }
 
@@ -2038,6 +2051,63 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 		return nil, err
 	}
 	return &mcpClient, nil
+}
+
+// GetMCPClientByOauthConfigID retrieves the MCP client row linked to the given
+// oauth_config_id. Used by the OAuth callback to resolve config.json-originated
+// pending clients, where the oauth_configs.mcp_client_config_json blob is nil
+// because the MCP client row is persisted upfront in pending_verification state.
+func (s *RDBConfigStore) GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
+	var mcpClient tables.TableMCPClient
+	if err := s.DB().WithContext(ctx).Where("oauth_config_id = ?", oauthConfigID).First(&mcpClient).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &mcpClient, nil
+}
+
+// UpdateMCPClientOAuthConfigID writes only the oauth_config_id column for the
+// given client. Pass nil to NULL the column. Used by the initiate-verification
+// endpoint to link a freshly-initiated oauth_configs row to the persisted
+// pending_verification MCP client without touching any other fields.
+func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error {
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPClient{}).
+		Where("client_id = ?", clientID).
+		Updates(map[string]interface{}{
+			"oauth_config_id": oauthConfigID,
+			"updated_at":      time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearMCPClientPendingOAuthConfig sets pending_oauth_config_json to NULL for
+// the given client. Called once OAuth authorization succeeds so the runtime no
+// longer sees the bootstrap stash and the next reconnect runs the normal
+// connect path instead of parking the client in pending_verification.
+func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error {
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPClient{}).
+		Where("client_id = ?", clientID).
+		Updates(map[string]interface{}{
+			"pending_oauth_config_json": nil,
+			"updated_at":                time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
@@ -2084,8 +2154,14 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// hook persists an empty column, and on restart AddClient's
 			// validation rejects the row (empty PerUserHeaderKeys is
 			// invalid for per_user_headers), leaving the client orphaned.
-			PerUserHeaderKeys: clientConfigCopy.PerUserHeaderKeys,
-			Disabled:          clientConfigCopy.Disabled,
+			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
+			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
+			Disabled:           clientConfigCopy.Disabled,
+			// ConfigHash has json:"-" so deepCopy loses it; use original
+			// clientConfig. Empty for dashboard-created clients; set for
+			// config-file clients so the next boot's reconciliation sees
+			// the row as in-sync instead of re-writing it.
+			ConfigHash: clientConfig.ConfigHash,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -2277,6 +2353,26 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["auth_type"] = clientConfigCopy.AuthType
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
+			// Mirror BeforeSave: nil → NULL; non-nil → serialised JSON,
+			// encrypted at rest (the stash can carry an inline OAuth
+			// client_secret).
+			var pendingOAuthConfigJSON *string
+			if clientConfigCopy.PendingOAuthConfig != nil {
+				data, marshalErr := json.Marshal(clientConfigCopy.PendingOAuthConfig)
+				if marshalErr != nil {
+					return fmt.Errorf("failed to marshal pending_oauth_config: %w", marshalErr)
+				}
+				s := string(data)
+				if encrypt.IsEnabled() && s != "" {
+					encrypted, encErr := encrypt.Encrypt(s)
+					if encErr != nil {
+						return fmt.Errorf("failed to encrypt mcp pending oauth config: %w", encErr)
+					}
+					s = encrypted
+				}
+				pendingOAuthConfigJSON = &s
+			}
+			updates["pending_oauth_config_json"] = pendingOAuthConfigJSON
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)

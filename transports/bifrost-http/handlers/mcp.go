@@ -82,6 +82,49 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
+	r.POST("/api/mcp/client/{id}/initiate-verification", lib.ChainMiddlewares(h.initiateMCPClientVerification, middlewares...))
+}
+
+// runOAuthBootstrap kicks off the shared-OAuth flow for an MCP client and
+// returns the OAuth provider's authorize URL.
+//
+// Behavior:
+//   - Computes the OAuth callback redirect URI from the request context,
+//     honouring any admin-configured external base URL via
+//     BuildBaseURL → GetMCPExternalClientURL.
+//   - Calls InitiateOAuthFlow, which generates the CSRF state + PKCE
+//     verifier/challenge, runs RFC 8414 metadata discovery on serverURL
+//     when authorize_url/token_url are missing, runs RFC 7591 dynamic
+//     client registration when client_id is missing, and inserts a fresh
+//     oauth_configs row in status='pending' with a 15-minute expiry.
+//
+// Callers (addMCPClient via the UI Create flow, and
+// initiateMCPClientVerification via the config.json bootstrap flow)
+// exercise the exact same OAuth dance and differ only in how they manage
+// the config_mcp_clients row lifecycle. This helper centralises the
+// shared half so the two flows cannot drift (e.g. a discovery fix in one
+// caller missed by the other).
+//
+// Inputs: the resolved OAuth config and the MCP server URL
+// (config.ConnectionString.GetValue()). The returned flowInitiation
+// carries oauth_config_id, authorize_url, state, and expires_at.
+//
+// This helper does NOT touch config_mcp_clients or
+// oauth_configs.mcp_client_config_json — row-lifecycle management is the
+// caller's concern.
+func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuthConfigRequest, serverURL string) (*schemas.OAuth2FlowInitiation, error) {
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	return h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
+		ClientID:        oauthCfg.ClientID,
+		ClientSecret:    oauthCfg.ClientSecret,
+		AuthorizeURL:    oauthCfg.AuthorizeURL,
+		TokenURL:        oauthCfg.TokenURL,
+		RegistrationURL: oauthCfg.RegistrationURL,
+		RedirectURI:     redirectURI,
+		Scopes:          oauthCfg.Scopes,
+		ServerURL:       serverURL,
+		Resource:        oauthCfg.Resource,
+	})
 }
 
 // MCPVKConfigResponse is a VK assignment enriched with the VK's display name.
@@ -89,6 +132,105 @@ type MCPVKConfigResponse struct {
 	VirtualKeyID   string            `json:"virtual_key_id"`
 	VirtualKeyName string            `json:"virtual_key_name"`
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
+}
+
+// initiateMCPClientVerification handles
+// POST /api/mcp/client/{id}/initiate-verification.
+//
+// Surfaced on shared-OAuth MCP clients sitting in pending_verification —
+// i.e. clients whose row was persisted with a PendingOAuthConfig stash but
+// no linked oauth_configs row yet. The admin clicks Authorize in the UI;
+// this handler reads the stash, runs the same OAuth init the UI Create
+// flow runs (via runOAuthBootstrap), links the freshly created
+// oauth_configs row to the MCP client, and returns the authorize URL.
+//
+// Retry semantics: if the admin started a previous attempt that expired
+// or was abandoned, the linked oauth_configs row may still exist with a
+// non-authorized status. We always create a fresh row on every click —
+// once oauth_config_id is repointed the previous row is unreferenced and
+// inert (its status can never become authorized), it is just not cleaned
+// up automatically.
+func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid mcp client id: %v", err))
+		return
+	}
+
+	clientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("MCP client '%s' not found", id))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+		return
+	}
+
+	if clientConfig.AuthType != schemas.MCPAuthTypeOauth {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("initiate-verification only applies to auth_type='oauth' clients, got %q", clientConfig.AuthType))
+		return
+	}
+	if clientConfig.PendingOAuthConfig == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no pending OAuth bootstrap config to initiate from")
+		return
+	}
+	if clientConfig.ConnectionString == nil || clientConfig.ConnectionString.GetValue() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client connection_string is required to initiate OAuth discovery")
+		return
+	}
+
+	oauthCfg := pendingOAuthConfigToRequest(clientConfig.PendingOAuthConfig)
+	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, clientConfig.ConnectionString.GetValue())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+		return
+	}
+
+	if err := h.store.ConfigStore.UpdateMCPClientOAuthConfigID(ctx, clientConfig.ID, &flowInitiation.OauthConfigID); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to link OAuth config to MCP client: %v", err))
+		return
+	}
+
+	completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
+	statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+	SendJSON(ctx, map[string]any{
+		"status":          "pending_oauth",
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"authorize_url":   flowInitiation.AuthorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   clientConfig.ID,
+		"complete_url":    completeURL,
+		"status_url":      statusURL,
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			"3. POST complete_url to activate the MCP client",
+		},
+	})
+}
+
+// pendingOAuthConfigToRequest converts the persisted shared-OAuth bootstrap
+// shape (plain strings on OAuth2Config) into the request shape consumed by
+// runOAuthBootstrap / InitiateOAuthFlow (*EnvVar on credentials). The
+// non-empty Val / empty EnvVar combination is the canonical "plaintext
+// value, not an env reference" form.
+func pendingOAuthConfigToRequest(cfg *schemas.OAuth2Config) *OAuthConfigRequest {
+	req := &OAuthConfigRequest{
+		AuthorizeURL: cfg.AuthorizeURL,
+		TokenURL:     cfg.TokenURL,
+		Scopes:       cfg.Scopes,
+	}
+	if cfg.ClientID != "" {
+		req.ClientID = &schemas.SecretVar{Val: cfg.ClientID}
+	}
+	if cfg.ClientSecret != "" {
+		req.ClientSecret = &schemas.SecretVar{Val: cfg.ClientSecret}
+	}
+	if cfg.RegistrationURL != nil {
+		req.RegistrationURL = *cfg.RegistrationURL
+	}
+	return req
 }
 
 // MCPClientResponse represents the response structure for MCP clients
@@ -859,23 +1001,11 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			// and return a clear error if dynamic registration is not supported
 		}
 
-		// Build redirect URI - use Bifrost's own callback endpoint
-		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
-
-		// Initiate OAuth flow
-		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
-		// ClientID is optional - will be obtained via dynamic registration if not provided
-		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,
-			ClientSecret:    req.OauthConfig.ClientSecret,
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
-			TokenURL:        req.OauthConfig.TokenURL,
-			RegistrationURL: req.OauthConfig.RegistrationURL,
-			RedirectURI:     redirectURI,
-			Scopes:          req.OauthConfig.Scopes,
-			ServerURL:       req.ConnectionString.GetValue(),
-			Resource:        req.OauthConfig.Resource,
-		})
+		// Kick off the shared OAuth flow. See runOAuthBootstrap for the
+		// rationale on the helper split. ServerURL is the MCP server URL
+		// used for RFC 8414 discovery; ClientID is optional and will be
+		// obtained via RFC 7591 dynamic registration when absent.
+		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue())
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
@@ -1767,9 +1897,53 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get pending MCP client: %v", err))
 		return
 	}
+	// Config-bootstrap fallback: the inline mcp_client_config_json blob on
+	// oauth_configs is populated only by the UI Create flow's
+	// StorePendingMCPClient. For clients bootstrapped from config.json the
+	// MCP client row already exists in pending_verification, linked to this
+	// oauth_configs row via oauth_config_id; resolve it that way instead.
+	configBootstrap := false
 	if mcpClientConfig == nil {
-		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found in pending OAuth clients. The OAuth flow may have expired or already been completed.")
-		return
+		dbClient, lookupErr := h.store.ConfigStore.GetMCPClientByOauthConfigID(ctx, oauthConfigID)
+		if lookupErr != nil && !errors.Is(lookupErr, configstore.ErrNotFound) {
+			logger.Error(fmt.Sprintf("[OAuth Complete] Failed to look up MCP client by oauth_config_id: %v", lookupErr))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to look up MCP client: %v", lookupErr))
+			return
+		}
+		if dbClient == nil {
+			SendError(ctx, fasthttp.StatusNotFound, "MCP client not found for this OAuth flow. The flow may have expired or already been completed.")
+			return
+		}
+		// Gate the fallback to genuine bootstrap completions:
+		// 1. AuthType must be shared OAuth — per_user_oauth completions
+		//    route through a different verification path that treats the
+		//    upstream token as an admin temp credential and revokes it.
+		// 2. PendingOAuthConfigJSON must still be set — once cleared, the
+		//    client has already completed bootstrap, and any further hit
+		//    on complete-oauth with this oauth_config_id is a replay (the
+		//    JSON blob is gone because RemovePendingMCPClient ran, and the
+		//    bootstrap stash is gone because ClearMCPClientPendingOAuthConfig
+		//    ran). Reject with 409 so callers don't trigger redundant DB
+		//    writes + reconnects on an already-connected client.
+		if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth config does not match a shared-OAuth MCP client (auth_type=%q)", dbClient.AuthType))
+			return
+		}
+		if dbClient.PendingOAuthConfigJSON == nil || *dbClient.PendingOAuthConfigJSON == "" {
+			SendError(ctx, fasthttp.StatusConflict, "OAuth flow has already been completed for this MCP client")
+			return
+		}
+		mcpClientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
+		if err != nil || mcpClientConfig == nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+			return
+		}
+		mcpClientConfig.OauthConfigID = &oauthConfigID
+		// Drop the bootstrap stash from the in-memory config so the MCP
+		// manager's reconnect path takes the normal connect branch instead
+		// of re-parking the client in pending_verification.
+		mcpClientConfig.PendingOAuthConfig = nil
+		configBootstrap = true
 	}
 
 	// If pending config points to an existing client, this is an OAuth credential update.
@@ -1946,6 +2120,15 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	if err := h.oauthHandler.RemovePendingMCPClient(oauthConfigID); err != nil {
 		logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to clear pending MCP client config: %v", err))
 		// Don't fail the request - the MCP client was successfully created
+	}
+
+	// For clients bootstrapped from config.json, drop the
+	// pending_oauth_config_json stash now that authorization succeeded so
+	// the runtime no longer treats the client as pending_verification.
+	if configBootstrap {
+		if err := h.store.ConfigStore.ClearMCPClientPendingOAuthConfig(ctx, mcpClientConfig.ID); err != nil {
+			logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to clear pending oauth bootstrap on MCP client %s: %v", mcpClientConfig.ID, err))
+		}
 	}
 
 	logger.Debug(fmt.Sprintf("[OAuth Complete] MCP client connected successfully: %s", mcpClientConfig.ID))

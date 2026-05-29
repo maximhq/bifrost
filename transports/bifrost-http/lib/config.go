@@ -1746,6 +1746,193 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP)
 }
 
+// pinMCPClientImmutableFields rewrites a file-declared client so that fields
+// which are immutable after creation keep their stored values, mirroring the
+// update API: MCPClientUpdateRequest accepts none of these fields, so an API
+// caller sending them has them silently dropped, and the file sync applies
+// the same rule. It also carries server-side verification state that
+// config.json cannot express (it is produced by admin verification at
+// runtime):
+//   - OauthConfigID links the oauth_configs row (token / provider config)
+//     created by the admin's browser flow.
+//   - DiscoveredTools / DiscoveredToolNameMapping are populated by the
+//     one-time admin verification for per-user auth types.
+//   - PendingOAuthConfig stays whatever the store holds: the stash declared
+//     at creation while verification is pending, nil once the OAuth callback
+//     has cleared it.
+//
+// The returned list names the immutable fields whose file values differ from
+// the stored ones, for the caller's advisory log. authorizedOauth is the
+// oauth_configs row backing an already-authorized client (nil when the client
+// is unauthorized or the row is unavailable); it is only read, and only to
+// detect oauth_config drift.
+func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig, authorizedOauth *configstoreTables.TableOauthConfig) []string {
+	if fileClient == nil || existing == nil {
+		return nil
+	}
+	var changed []string
+
+	fileAuth := fileClient.AuthType
+	if fileAuth == "" {
+		fileAuth = schemas.MCPAuthTypeHeaders
+	}
+	existingAuth := existing.AuthType
+	if existingAuth == "" {
+		existingAuth = schemas.MCPAuthTypeHeaders
+	}
+	if fileAuth != existingAuth {
+		changed = append(changed, "auth_type")
+	}
+	fileClient.AuthType = existingAuth
+
+	if fileClient.ConnectionType != existing.ConnectionType {
+		changed = append(changed, "connection_type")
+	}
+	fileClient.ConnectionType = existing.ConnectionType
+
+	if !fileClient.ConnectionString.Equals(existing.ConnectionString) {
+		changed = append(changed, "connection_string")
+	}
+	fileClient.ConnectionString = existing.ConnectionString
+
+	if !reflect.DeepEqual(fileClient.StdioConfig, existing.StdioConfig) {
+		changed = append(changed, "stdio_config")
+	}
+	fileClient.StdioConfig = existing.StdioConfig
+
+	if mcpOauthBlockChanged(fileClient.PendingOAuthConfig, existing.PendingOAuthConfig, authorizedOauth) {
+		changed = append(changed, "oauth_config")
+	}
+	fileClient.PendingOAuthConfig = existing.PendingOAuthConfig
+
+	// Not immutable, but a per_user_headers client must keep a non-empty key
+	// schema — the update API rejects emptying it for the same reason.
+	if fileClient.AuthType == schemas.MCPAuthTypePerUserHeaders &&
+		len(fileClient.PerUserHeaderKeys) == 0 && len(existing.PerUserHeaderKeys) > 0 {
+		logger.Warn("per_user_header_keys cannot be emptied for MCP client %q (auth_type 'per_user_headers'); keeping the stored keys", existing.Name)
+		fileClient.PerUserHeaderKeys = existing.PerUserHeaderKeys
+	}
+
+	fileClient.OauthConfigID = existing.OauthConfigID
+	if len(fileClient.DiscoveredTools) == 0 {
+		fileClient.DiscoveredTools = existing.DiscoveredTools
+		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
+	}
+	return changed
+}
+
+// mcpOauthBlockChanged reports whether the file's inline oauth_config block
+// drifts from the OAuth configuration the client actually runs on. Only
+// fields the file explicitly sets are compared: absent fields are filled in
+// by discovery / dynamic client registration at authorization time, so a
+// stored value with no file counterpart is not drift. The reference is the
+// stored pending stash while verification is pending, and the authorized
+// oauth_configs row afterwards; with neither available there is nothing to
+// compare against.
+func mcpOauthBlockChanged(fileBlock, storedStash *schemas.OAuth2Config, authorizedOauth *configstoreTables.TableOauthConfig) bool {
+	if fileBlock == nil {
+		return false
+	}
+	var refClientID, refClientSecret, refAuthorizeURL, refTokenURL string
+	var refScopes []string
+	switch {
+	case storedStash != nil:
+		refClientID = storedStash.ClientID
+		refClientSecret = storedStash.ClientSecret
+		refAuthorizeURL = storedStash.AuthorizeURL
+		refTokenURL = storedStash.TokenURL
+		refScopes = storedStash.Scopes
+	case authorizedOauth != nil:
+		refClientID = authorizedOauth.GetResolvedClientID()
+		refClientSecret = authorizedOauth.GetResolvedClientSecret()
+		refAuthorizeURL = authorizedOauth.AuthorizeURL
+		refTokenURL = authorizedOauth.TokenURL
+		if authorizedOauth.Scopes != "" {
+			_ = json.Unmarshal([]byte(authorizedOauth.Scopes), &refScopes)
+		}
+	default:
+		return false
+	}
+	if fileBlock.ClientID != "" && fileBlock.ClientID != refClientID {
+		return true
+	}
+	if fileBlock.ClientSecret != "" && fileBlock.ClientSecret != refClientSecret {
+		return true
+	}
+	if fileBlock.AuthorizeURL != "" && fileBlock.AuthorizeURL != refAuthorizeURL {
+		return true
+	}
+	if fileBlock.TokenURL != "" && fileBlock.TokenURL != refTokenURL {
+		return true
+	}
+	if len(fileBlock.Scopes) > 0 {
+		fileScopes := slices.Clone(fileBlock.Scopes)
+		storedScopes := slices.Clone(refScopes)
+		slices.Sort(fileScopes)
+		slices.Sort(storedScopes)
+		if !slices.Equal(fileScopes, storedScopes) {
+			return true
+		}
+	}
+	return false
+}
+
+// authorizedOauthRowForComparison loads the oauth_configs row backing an
+// already-authorized client so an edited file oauth_config block can be
+// detected by pinMCPClientImmutableFields. Returns nil whenever there is
+// nothing to compare (no file block, verification still pending, no store)
+// or the lookup fails — pinning still applies either way, only the drift
+// warning loses the oauth_config detail.
+func authorizedOauthRowForComparison(ctx context.Context, store configstore.ConfigStore, fileClient, existing *schemas.MCPClientConfig) *configstoreTables.TableOauthConfig {
+	if store == nil || fileClient == nil || existing == nil {
+		return nil
+	}
+	if fileClient.PendingOAuthConfig == nil || existing.PendingOAuthConfig != nil || existing.OauthConfigID == nil {
+		return nil
+	}
+	row, err := store.GetOauthConfigByID(ctx, *existing.OauthConfigID)
+	if err != nil {
+		logger.Debug("failed to load oauth config %s for MCP client %q immutable-field check: %v", *existing.OauthConfigID, existing.Name, err)
+		return nil
+	}
+	return row
+}
+
+// warnIgnoredImmutableMCPFields emits the advisory line for a config.json
+// edit that touched fields which cannot change after creation. The update
+// API drops the same fields silently (MCPClientUpdateRequest does not accept
+// them); the file path gets this log line because a file editor has no
+// response channel.
+func warnIgnoredImmutableMCPFields(clientName string, fields []string) {
+	if len(fields) == 0 {
+		return
+	}
+	logger.Warn("ignoring changes to immutable fields [%s] on MCP client %q from config file: these cannot be changed after creation; delete and recreate the client to change them", strings.Join(fields, ", "), clientName)
+}
+
+// applyMCPClientPinnedStateToRow mirrors the pinned immutable fields and
+// preserved server-side state onto the table row that will be persisted,
+// keeping the row and the in-memory config consistent (the row was built
+// from the raw file entry before pinning). The row's ConfigHash
+// intentionally stays the raw-file hash: the stored hash always reflects
+// the file entry as last synced, so the immutable-field warning fires once
+// per file edit instead of on every boot.
+func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clientConfig *schemas.MCPClientConfig) {
+	authType := string(clientConfig.AuthType)
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	row.AuthType = authType
+	row.ConnectionType = string(clientConfig.ConnectionType)
+	row.ConnectionString = clientConfig.ConnectionString
+	row.StdioConfig = clientConfig.StdioConfig
+	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
+	row.OauthConfigID = clientConfig.OauthConfigID
+	row.DiscoveredTools = clientConfig.DiscoveredTools
+	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
+	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
+}
+
 // mergeMCPConfig merges MCP config from file with store
 func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData, mcpConfig *schemas.MCPConfig) {
 	logger.Debug("merging MCP config from config file with store")
@@ -1789,6 +1976,13 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
 					newClientConfig.ID = existingClientConfig.ID
 					newClientConfig.ConfigHash = fileHash
+					// Pin immutable fields to their stored values and carry
+					// server-side verification state (authorized OAuth link,
+					// discovered tools) the file cannot express, so a config
+					// edit does not reset a verified client.
+					authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, newClientConfig, existingClientConfig)
+					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig, authorizedOauth))
+					applyMCPClientPinnedStateToRow(&fileClientRow, newClientConfig)
 					fileClientRow.ClientID = existingClientConfig.ID
 					fileClientRow.ConfigHash = fileHash
 					clientConfigsToUpdate = append(clientConfigsToUpdate, fileClientRow)
@@ -1916,6 +2110,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
+		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
 }
@@ -1987,6 +2182,22 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		if existing == nil {
 			adds = append(adds, fileClient)
 		} else {
+			// Pin immutable fields to their stored values and carry
+			// server-side verification state (authorized OAuth link,
+			// discovered tools) the file cannot express, so the every-boot
+			// overwrite does not reset a verified client. The advisory log
+			// is gated on the stored hash so it fires once per file edit,
+			// not on every boot.
+			var authorizedOauth *configstoreTables.TableOauthConfig
+			fileEdited := existing.ConfigHash != fileHash
+			if fileEdited {
+				authorizedOauth = authorizedOauthRowForComparison(ctx, config.ConfigStore, fileClient, existing)
+			}
+			changedImmutable := pinMCPClientImmutableFields(fileClient, existing, authorizedOauth)
+			if fileEdited {
+				warnIgnoredImmutableMCPFields(existing.Name, changedImmutable)
+			}
+			applyMCPClientPinnedStateToRow(&fileRow, fileClient)
 			fileRow.ClientID = existing.ID
 			updates = append(updates, fileRow)
 		}
@@ -6372,6 +6583,22 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 	if config.OauthClientSecret != nil {
 		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
+	// Redact credentials inside the inline `oauth_config` bootstrap block.
+	// Its fields are plain strings, so route them through the SecretVar
+	// redaction to keep the wire format identical to the sibling
+	// oauth_client_id / oauth_client_secret fields. Copy the struct first —
+	// configCopy shares the pointer with the live config.
+	if config.PendingOAuthConfig != nil {
+		pendingCopy := *config.PendingOAuthConfig
+		if pendingCopy.ClientID != "" {
+			pendingCopy.ClientID = (&schemas.SecretVar{Val: pendingCopy.ClientID}).Redacted().Val
+		}
+		if pendingCopy.ClientSecret != "" {
+			pendingCopy.ClientSecret = (&schemas.SecretVar{Val: pendingCopy.ClientSecret}).Redacted().Val
+		}
+		configCopy.PendingOAuthConfig = &pendingCopy
 	}
 
 	// Redact TLS CA cert PEM if present

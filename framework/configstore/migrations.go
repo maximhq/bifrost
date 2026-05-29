@@ -453,6 +453,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
+	{IDs: []string{"add_mcp_client_pending_oauth_config_json_column"}, run: migrationAddMCPClientPendingOAuthConfigJSONColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -9866,6 +9867,45 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientPendingOAuthConfigJSONColumn adds the
+// pending_oauth_config_json column to config_mcp_clients. It stashes the
+// inline `oauth_config` block declared in config.json for shared-OAuth MCP
+// clients (auth_type='oauth') that have not yet been authorized by an admin.
+// The column is read at admin-click time by the initiate-verification
+// endpoint and cleared by the OAuth callback on status='authorized'.
+func migrationAddMCPClientPendingOAuthConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_pending_oauth_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableMCPClient{}, "pending_oauth_config_json") {
+				if err := mig.AddColumn(&tables.TableMCPClient{}, "pending_oauth_config_json"); err != nil {
+					return fmt.Errorf("failed to add pending_oauth_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableMCPClient{}, "pending_oauth_config_json") {
+				if err := mig.DropColumn(&tables.TableMCPClient{}, "pending_oauth_config_json"); err != nil {
+					return fmt.Errorf("failed to drop pending_oauth_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_pending_oauth_config_json_column migration: %s", err.Error())
 	}
 	return nil
 }

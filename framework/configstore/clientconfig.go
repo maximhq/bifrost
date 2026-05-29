@@ -1504,6 +1504,32 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Hash AuthType so switching a client's auth scheme in config.json
+	// drifts the hash and triggers reconciliation. Normalize the empty
+	// value to the column default so a row hashed before save matches the
+	// same row hashed after load.
+	authType := m.AuthType
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	hash.Write([]byte("auth_type:" + authType))
+
+	// Hash PendingOAuthConfig so edits to the inline `oauth_config` block
+	// in config.json drift the hash and trigger reconciliation. Rows built
+	// from config.json carry only the runtime struct (the JSON column is
+	// populated later, by BeforeSave), so fall back to marshaling it with
+	// encoding/json — the same encoder BeforeSave uses to write the column
+	// — keeping both forms byte-identical.
+	if m.PendingOAuthConfigJSON != nil && *m.PendingOAuthConfigJSON != "" {
+		hash.Write([]byte(*m.PendingOAuthConfigJSON))
+	} else if m.PendingOAuthConfig != nil {
+		data, err := json.Marshal(m.PendingOAuthConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
