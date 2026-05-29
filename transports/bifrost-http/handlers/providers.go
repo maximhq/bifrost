@@ -33,7 +33,7 @@ type ModelsManager interface {
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
 }
 
-// ModelPricingAttributesEntry is the wire shape for PUT /api/model-catalog.
+// ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.
 type ModelPricingAttributesEntry struct {
 	Model                string            `json:"model"`
@@ -137,7 +137,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
-	r.PUT("/api/model-catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
+	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -1222,7 +1222,7 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 	return nil
 }
 
-// upsertModelCatalogEntries handles PUT /api/model-catalog — batch-upserts
+// upsertModelCatalogEntries handles PUT /api/models/catalog — batch-upserts
 // the additional_attributes JSON on the pricing rows keyed by
 // (model, provider). Every requested (model, provider) must already exist in
 // governance_model_pricing; the whole batch is rejected atomically if any
