@@ -115,9 +115,46 @@ If the verify fails, the call returns `422 Unprocessable Entity` with the upstre
 </Tab>
 <Tab title="config.json">
 
-File-based config is **not supported** for `per_user_headers`. Bifrost needs to run the one-time upstream verify with the admin's sample values during create, which can only happen via an interactive admin step (Web UI or API).
+Declare the client with `auth_type: "per_user_headers"` and the required header-name schema. The admin's sample values aren't included in config.json — they're collected by the UI when verification runs.
 
-If you want a declarative-ish setup, run the API create once with your sample values, then check the resulting `mcp_client_id` into your config to reference it from other parts of the system. The MCP client itself stays in Bifrost's database.
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "acme_api",
+        "connection_type": "http",
+        "connection_string": "https://api.acme.example.com/mcp",
+        "auth_type": "per_user_headers",
+        "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
+        "headers": {
+          "X-Region": "us-east-1"
+        },
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost opens the same sample-values dialog the Web UI Create flow uses. Submit values, the upstream verify runs, tools are discovered, the credentials are discarded, and the client transitions to `connected`.
+
+The same step is scriptable — no browser involved:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/verify-headers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_headers": {
+      "X-API-Key": "sample-admin-key",
+      "X-Tenant-ID": "verification-tenant"
+    }
+  }'
+```
+
+`user_headers` must cover every declared key. On success the response carries `tools_count` and the client transitions to `connected`; a `422` means the upstream verify failed (retry with different values); a `409` means the client was already verified — delete and recreate it to re-verify.
+
+**Lifecycle across restarts and config edits:** the verified state (discovered tools) is server-side and survives restarts and config.json re-syncs, including edits to `per_user_header_keys` — new keys apply to end-user submissions without re-verification. The key list cannot be *emptied*, though: an edit that removes all keys is ignored and the stored keys kept (with a warning at boot). Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config` — cannot be changed after creation: file edits to them are ignored with a boot warning, matching the update API. Delete the client and re-declare it to change them.
 
 </Tab>
 </Tabs>
@@ -229,7 +266,7 @@ From the sessions table the user can **Edit values** (mints a fresh submission f
   "auth_type": "per_user_headers",
   "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
   "headers": {
-    "X-Region": { "value": "us-east-1" }
+    "X-Region": "us-east-1"
   },
   "tools_to_execute": ["*"]
 }

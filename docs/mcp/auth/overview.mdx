@@ -50,6 +50,10 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 
 Per-user auth requires every request to carry an identity. See [Identity modes](#identity-modes) below.
 
+<Info>
+**Declaring auth-aware clients in `config.json`.** All five auth types — including `oauth`, `per_user_oauth`, and `per_user_headers` — can be declared in `config.json`. The three that need an admin verification step (the two OAuth variants, plus `per_user_headers`) land in **`pending_verification`** state at boot. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row that runs the same verification flow the Web UI Create form uses. See each auth type's page for the `config.json` shape.
+</Info>
+
 ---
 
 ## Pick your auth type
