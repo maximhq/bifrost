@@ -1,0 +1,2 @@
+- feat: add MCP per-user headers auth type support (#3703)
+- chore: upgraded core to v1.5.14 and framework to v1.3.14
