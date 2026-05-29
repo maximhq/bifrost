@@ -109,7 +109,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<KeyRound className="h-4 w-4" />
-						Authorize
+						{client.config.auth_type === "per_user_oauth" ? "Verify" : "Authorize"}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && (
@@ -194,6 +194,7 @@ export default function MCPClientsTable({
 		oauthConfigId: string;
 		mcpClientId: string;
 		popup: Window | null;
+		isPerUserOauth: boolean;
 	} | null>(null);
 
 	// RTK Query mutations
@@ -222,16 +223,23 @@ export default function MCPClientsTable({
 	};
 
 	const handleStartBootstrap = async (client: MCPClient) => {
+		const isPerUserOauth = client.config.auth_type === "per_user_oauth";
 		// Open a blank popup synchronously, before the initiateVerification
 		// await, so the click's transient user-activation is captured here
 		// rather than consumed by the network round-trip — otherwise the
 		// browser can block OAuth2Authorizer's later window.open entirely.
 		// OAuth2Authorizer navigates this handle once authorize_url is known.
-		const width = 600;
-		const height = 700;
-		const left = window.screen.width / 2 - width / 2;
-		const top = window.screen.height / 2 - height / 2;
-		const popup = window.open("", "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+		// Not needed for per_user_oauth: that flow shows a confirm step first
+		// and opens its own popup synchronously from that step's own button
+		// click, so pre-opening one here would just leak an unused window.
+		let popup: Window | null = null;
+		if (!isPerUserOauth) {
+			const width = 600;
+			const height = 700;
+			const left = window.screen.width / 2 - width / 2;
+			const top = window.screen.height / 2 - height / 2;
+			popup = window.open("", "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+		}
 		try {
 			setAuthorizingClients((prev) => [...prev, client.config.client_id]);
 			const response = await initiateVerification(client.config.client_id).unwrap();
@@ -241,6 +249,7 @@ export default function MCPClientsTable({
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: client.config.client_id,
 					popup,
+					isPerUserOauth,
 				});
 			} else {
 				popup?.close();
@@ -417,7 +426,12 @@ export default function MCPClientsTable({
 					open={!!bootstrapAuthorize}
 					onClose={() => setBootstrapAuthorize(null)}
 					onSuccess={async () => {
-						toast({ title: "Success", description: "MCP client connected successfully" });
+						toast({
+							title: "Success",
+							description: bootstrapAuthorize.isPerUserOauth
+								? "OAuth setup verified successfully. Each user will authenticate individually."
+								: "MCP client connected successfully",
+						});
 						setBootstrapAuthorize(null);
 						if (refetch) {
 							await refetch();
@@ -434,6 +448,7 @@ export default function MCPClientsTable({
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
 					initialPopup={bootstrapAuthorize.popup}
+					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
 				/>
 			)}
 
