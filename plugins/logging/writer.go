@@ -406,6 +406,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
+		MetadataParsed:              pending.InitialData.Metadata,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {

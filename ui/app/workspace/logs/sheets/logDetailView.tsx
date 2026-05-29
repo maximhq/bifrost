@@ -1855,61 +1855,63 @@ export function LogDetailView({
                   </div>
                 </>
               )}
-              {log.metadata &&
-                Object.keys(log.metadata).filter((k) => {
-                  if (k === "isAsyncRequest") return false;
-                  if (
-                    isRealtimeTurn &&
-                    [
-                      "realtime_session_id",
-                      "provider_session_id",
-                      "realtime_source",
-                      "realtime_event_type",
-                      "realtime_transport",
-                      "realtime_voice",
-                      "realtime",
-                    ].includes(k)
-                  )
-                    return false;
-                  return true;
-                }).length > 0 && (
-                  <>
-                    <DottedSeparator />
-                    <div className="space-y-4">
-                      <BlockHeader title="Metadata" />
-                      <div className="grid w-full grid-cols-3 items-start justify-between gap-4">
-                        {Object.entries(log.metadata)
-                          .filter(([key]) => {
-                            if (key === "isAsyncRequest") return false;
-                            if (
-                              isRealtimeTurn &&
-                              [
-                                "realtime_session_id",
-                                "provider_session_id",
-                                "realtime_source",
-                                "realtime_event_type",
-                                "realtime_transport",
-                                "realtime_voice",
-                                "realtime",
-                              ].includes(key)
-                            )
-                              return false;
-                            return true;
-                          })
-                          .map(([key, value]) => (
-                            <LogEntryDetailsView
-                              key={key}
-                              className="w-full"
-                              label={key}
-                              value={String(value)}
-                            />
-                          ))}
-                      </div>
-                    </div>
-                  </>
-                )}
             </>
           )}
+          {!isContainer &&
+            !isPassthrough &&
+            log.metadata &&
+            Object.keys(log.metadata).filter((k) => {
+              if (k === "isAsyncRequest") return false;
+              if (
+                isRealtimeTurn &&
+                [
+                  "realtime_session_id",
+                  "provider_session_id",
+                  "realtime_source",
+                  "realtime_event_type",
+                  "realtime_transport",
+                  "realtime_voice",
+                  "realtime",
+                ].includes(k)
+              )
+                return false;
+              return true;
+            }).length > 0 && (
+              <>
+                <DottedSeparator />
+                <div className="space-y-4">
+                  <BlockHeader title="Metadata" />
+                  <div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+                    {Object.entries(log.metadata)
+                      .filter(([key]) => {
+                        if (key === "isAsyncRequest") return false;
+                        if (
+                          isRealtimeTurn &&
+                          [
+                            "realtime_session_id",
+                            "provider_session_id",
+                            "realtime_source",
+                            "realtime_event_type",
+                            "realtime_transport",
+                            "realtime_voice",
+                            "realtime",
+                          ].includes(key)
+                        )
+                          return false;
+                        return true;
+                      })
+                      .map(([key, value]) => (
+                        <LogEntryDetailsView
+                          key={key}
+                          className="w-full"
+                          label={key}
+                          value={String(value)}
+                        />
+                      ))}
+                  </div>
+                </div>
+              </>
+            )}
         </div>
       </details>
       <Tabs
