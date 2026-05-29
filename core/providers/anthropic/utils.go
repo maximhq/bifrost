@@ -706,6 +706,46 @@ func SupportsEffortParameter(model string) bool {
 	return false
 }
 
+// appendToSystemContent merges newContent into existing.
+// If existing is nil the new content is returned as-is (preserving ContentStr
+// vs ContentBlocks wire format). When both sides are non-empty both are
+// normalised to ContentBlocks and concatenated.
+func appendToSystemContent(existing *AnthropicContent, newContent AnthropicContent) *AnthropicContent {
+	newEmpty := (newContent.ContentStr == nil || *newContent.ContentStr == "") && len(newContent.ContentBlocks) == 0
+	if newEmpty {
+		return existing
+	}
+	if existing == nil {
+		return &AnthropicContent{ContentStr: newContent.ContentStr, ContentBlocks: newContent.ContentBlocks}
+	}
+	toBlocks := func(c AnthropicContent) []AnthropicContentBlock {
+		if c.ContentStr != nil && *c.ContentStr != "" {
+			return []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: c.ContentStr}}
+		}
+		return c.ContentBlocks
+	}
+	merged := append(toBlocks(*existing), toBlocks(newContent)...)
+	if len(merged) == 0 {
+		return existing
+	}
+	return &AnthropicContent{ContentBlocks: merged}
+}
+
+// SupportsMidConversationSystem returns true if the provider+model combination
+// supports role:"system" entries inside the messages array (mid-conversation
+// system messages). Available on the Anthropic API only — not on Bedrock or
+// Vertex — and only for Claude Opus 4.8+. No beta header is required.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Anthropic {
+		return false
+	}
+	m := strings.ToLower(model)
+	return strings.Contains(m, "opus") &&
+		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
 // SupportsFastMode returns true if the model supports speed:"fast" (research
 // preview). Supported on Opus 4.6, Opus 4.7, and Opus 4.8; requests carrying
 // speed:"fast" to any other model are rejected with 400.

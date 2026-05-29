@@ -802,11 +802,12 @@ type AnthropicMessageRole string
 const (
 	AnthropicMessageRoleUser      AnthropicMessageRole = "user"
 	AnthropicMessageRoleAssistant AnthropicMessageRole = "assistant"
+	AnthropicMessageRoleSystem    AnthropicMessageRole = "system"
 )
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant"
+	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
 	Content AnthropicContent     `json:"content"` // Array of content blocks
 }
 

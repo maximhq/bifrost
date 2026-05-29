@@ -2219,6 +2219,43 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 }
 
 // TestSupportsFastMode pins the helper against Anthropic's fast-mode docs.
+// TestSupportsMidConversationSystem pins the helper against Anthropic docs:
+// available on the Anthropic API only, Opus 4.8+ only, no beta header required.
+func TestSupportsMidConversationSystem(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		model    string
+		expected bool
+	}{
+		// Supported: Anthropic provider + Opus 4.8.
+		{schemas.Anthropic, "claude-opus-4-8", true},
+		{schemas.Anthropic, "claude-opus-4.8-20260601", true},
+		{schemas.Anthropic, "claude-opus-4-8-20260601", true},
+		// Not supported: Bedrock and Vertex even with Opus 4.8.
+		{schemas.Bedrock, "global.anthropic.claude-opus-4-8", false},
+		{schemas.Vertex, "claude-opus-4-8", false},
+		// Not supported: Anthropic but Opus 4.7 (feature is 4.8+ only).
+		{schemas.Anthropic, "claude-opus-4-7", false},
+		{schemas.Anthropic, "claude-opus-4.7-20260401", false},
+		// Not supported: other model families.
+		{schemas.Anthropic, "claude-sonnet-4-8", false},
+		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Defensive cases.
+		{schemas.Anthropic, "", false},
+		{"", "claude-opus-4-8", false},
+	}
+
+	for _, tt := range tests {
+		name := string(tt.provider) + "/" + tt.model
+		t.Run(name, func(t *testing.T) {
+			got := SupportsMidConversationSystem(tt.provider, tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsMidConversationSystem(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // Supported: Opus 4.6, Opus 4.7, Opus 4.8. All other models return false.
 func TestSupportsFastMode(t *testing.T) {
 	tests := []struct {
