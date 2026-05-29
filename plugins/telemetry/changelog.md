@@ -1,3 +1,0 @@
-- feat: tighten bifrost_key_rotation_events_total semantics with triggered_rotation (#3430, #3491)
-- feat: add provider cache and semantic cache attributes in metrics export (#3816)
-- chore: upgraded core to v1.5.14 and framework to v1.3.14
