@@ -116,6 +116,7 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	error: "bg-red-100 text-red-800",
 	disconnected: "bg-gray-100 text-gray-800",
 	pending_tools: "bg-yellow-100 text-yellow-800",
+	pending_verification: "bg-yellow-100 text-yellow-800",
 	disabled: "bg-orange-100 text-orange-800",
 };
 

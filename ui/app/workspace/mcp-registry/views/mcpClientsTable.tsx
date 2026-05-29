@@ -89,7 +89,7 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={isPerUserAuth || client.config.disabled || isReconnecting}
+						disabled={isPerUserAuth || client.config.disabled || isReconnecting || client.state === "pending_verification"}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
