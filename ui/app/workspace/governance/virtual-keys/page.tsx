@@ -1,6 +1,7 @@
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import {
   getErrorMessage,
   useGetCustomersQuery,
@@ -8,7 +9,6 @@ import {
   useGetVirtualKeysQuery,
 } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
@@ -164,7 +164,7 @@ export default function GovernanceVirtualKeysPage() {
   };
 
   return (
-    <div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden p-4">
+    <div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
       <VirtualKeysTable
         virtualKeys={virtualKeysData?.virtual_keys || []}
         totalCount={virtualKeysData?.total_count || 0}

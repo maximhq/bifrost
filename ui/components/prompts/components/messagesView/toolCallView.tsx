@@ -4,9 +4,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Message, MessageRole, SerializedMessage, type ToolCall } from "@/lib/message";
 import { cn } from "@/lib/utils";
 import { isJson } from "@/lib/utils/validation";
-import { MCPAuthRequiredError } from "../../utils/executor";
 import { Check, ExternalLink, Loader2, PencilLine, Play, RefreshCw, Send, ShieldAlert, Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
+import { MCPAuthRequiredError } from "../../utils/executor";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 export default function ToolCallMessageView({
@@ -316,7 +316,7 @@ export default function ToolCallMessageView({
 							style={{ animationDelay: `${i * 75}ms` }}
 						>
 							{/* Header */}
-							<div className="flex items-start gap-2 border-b bg-muted/40 px-3 py-2">
+							<div className="flex items-start gap-2 bg-muted/40 px-3 py-2">
 								<div className="min-w-0 flex-1 items-center flex justify-between">
 									<div className="flex min-w-0 items-center gap-2">
 										<div className={cn(
@@ -353,7 +353,7 @@ export default function ToolCallMessageView({
 
 							{/* Arguments */}
 							{formattedArgs && (
-								<div className="px-3 py-2">
+								<div className="px-3 py-2 border-t">
 									<div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 										Arguments
 									</div>
