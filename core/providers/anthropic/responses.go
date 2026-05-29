@@ -4406,6 +4406,10 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 				}
 			}
 			toolUseBlock.Input = parseJSONInput(argumentsJSON)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
@@ -4574,6 +4578,10 @@ func convertBifrostMCPCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *Ant
 		// Parse arguments as JSON input
 		if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
 			toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
@@ -4620,6 +4628,10 @@ func convertBifrostMCPApprovalToAnthropicToolUse(msg *schemas.ResponsesMessage) 
 		// Parse arguments as JSON input
 		if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
 			toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
