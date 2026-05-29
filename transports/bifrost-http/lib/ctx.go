@@ -243,6 +243,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
+		"x-bf-direct-key": true,
 	}
 
 	// Debug: Log header matcher state
@@ -636,6 +637,44 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
+
+	// Direct key bypass: requires both the server-side AllowDirectKeys setting and the
+	// per-request x-bf-direct-key: true header. The server setting is the admin opt-in;
+	// the header is the per-request opt-in from the caller.
+	if store != nil && store.ShouldAllowDirectKeys() && string(ctx.Request.Header.Peek("x-bf-direct-key")) == "true" {
+		var apiKey string
+		authHeader := string(ctx.Request.Header.Peek("Authorization"))
+		if authHeader != "" {
+			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+				authHeaderValue := strings.TrimSpace(authHeader[7:])
+				if authHeaderValue != "" && !strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
+					apiKey = authHeaderValue
+				}
+			}
+		}
+		if apiKey == "" {
+			xAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key")))
+			if xAPIKey != "" && !strings.HasPrefix(strings.ToLower(xAPIKey), governance.VirtualKeyPrefix) {
+				apiKey = xAPIKey
+			} else {
+				xGoogleAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key")))
+				if xGoogleAPIKey != "" && !strings.HasPrefix(strings.ToLower(xGoogleAPIKey), governance.VirtualKeyPrefix) {
+					apiKey = xGoogleAPIKey
+				}
+			}
+		}
+		if apiKey != "" {
+			key := schemas.Key{
+				ID:     "header-provided",
+				Name:   "header-provided",
+				Value:  schemas.EnvVar{Val: apiKey},
+				Models: []string{},
+				Weight: 1.0,
+			}
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
+		}
+	}
+
 	return bifrostCtx, cancel
 }
 
