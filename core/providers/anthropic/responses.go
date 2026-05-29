@@ -2596,7 +2596,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	if bifrostReq.Input != nil {
-		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true)
+		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true, bifrostReq.Provider, bifrostReq.Model)
 
 		// Set system message if present
 		if systemContent != nil {
@@ -2810,7 +2810,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false)
+		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false, "", "")
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -2889,8 +2889,9 @@ func ConvertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 }
 
 // ConvertBifrostMessagesToAnthropicMessages converts an array of Bifrost ResponsesMessage to Anthropic message format
-// This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content
-func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool) ([]AnthropicMessage, *AnthropicContent) {
+// This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
+// provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
+func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, provider schemas.ModelProvider, model string) ([]AnthropicMessage, *AnthropicContent) {
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		if systemContent := convertBifrostMessageToAnthropicSystemContent(&bifrostMessages[0]); systemContent != nil {
@@ -2900,6 +2901,12 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}}, nil
 		}
 	}
+
+	// seenConversation tracks whether any user/assistant message has been appended.
+	// A system message encountered after the conversation starts is emitted as
+	// role:"system" in the messages array when the provider+model supports it.
+	seenConversation := false
+	midConvSystemSupported := isRequestMessage && SupportsMidConversationSystem(provider, model)
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -3036,9 +3043,37 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			// Flush any pending tool calls first (with tracking for tool call groups)
 			flushPendingToolCallsWithTracking()
 
-			// Handle system messages separately
+			// Handle system messages
 			if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
-				systemContent = convertBifrostMessageToAnthropicSystemContent(&msg)
+				// Flush any pending reasoning blocks into an assistant message first so
+				// they are not reordered or lost when a system message interrupts the
+				// reasoning → system → user sequence.
+				if len(pendingReasoningContentBlocks) > 0 {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleAssistant,
+						Content: AnthropicContent{ContentBlocks: copied},
+					})
+					pendingReasoningContentBlocks = nil
+				}
+				if !seenConversation && (len(anthropicMessages) > 0 ||
+					len(pendingToolCalls) > 0 ||
+					len(pendingToolResultBlocks) > 0 ||
+					currentAssistantMessage != nil) {
+					seenConversation = true
+				}
+				if content := convertBifrostMessageToAnthropicSystemContent(&msg); content != nil {
+					if seenConversation && midConvSystemSupported {
+						// Mid-conversation system message — emit as role:"system" in messages array.
+						anthropicMessages = append(anthropicMessages, AnthropicMessage{
+							Role:    AnthropicMessageRoleSystem,
+							Content: *content,
+						})
+					} else {
+						systemContent = appendToSystemContent(systemContent, *content)
+					}
+				}
 				continue
 			}
 
@@ -3063,6 +3098,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			anthropicMsg := convertBifrostMessageToAnthropicMessage(&msg, &pendingReasoningContentBlocks)
 			if anthropicMsg != nil {
 				anthropicMessages = append(anthropicMessages, *anthropicMsg)
+				seenConversation = true
 			}
 
 		case schemas.ResponsesMessageTypeReasoning:
@@ -5084,8 +5120,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
-			if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") ||
-				(strings.Contains(model, "opus") && (strings.Contains(model, "4.5") || strings.Contains(model, "4-5"))) {
+			if ComputerUseGeneration(model) == ComputerUseGen20251124 {
 				computerToolType = AnthropicToolTypeComputer20251124
 			}
 			return &AnthropicTool{
@@ -5101,10 +5136,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	case schemas.ResponsesToolTypeWebSearch:
 		webSearchType := AnthropicToolTypeWebSearch20250305
-		// Dynamic filtering (web_search_20260209) only available on Anthropic + Azure
+		// Dynamic filtering (web_search_20260209) available on Anthropic + Azure for Opus 4.6+.
 		features, ok := ProviderFeatures[provider]
 		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || strings.Contains(model, "4.7") || strings.Contains(model, "4-7")) {
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model)) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{

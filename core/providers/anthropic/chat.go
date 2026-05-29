@@ -580,6 +580,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Convert messages - group consecutive tool messages into single user messages
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
+	// seenConversation tracks whether any user/assistant message has been processed.
+	// A system message after the first user/assistant turn is a mid-conversation
+	// system message and is emitted as role:"system" in the messages array
+	// (Anthropic API + Opus 4.8+ only).
+	seenConversation := false
+	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, bifrostReq.Model)
 
 	i := 0
 	for i < len(messages) {
@@ -587,35 +593,71 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Handle system message separately
-			if msg.Content != nil {
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					systemContent = &AnthropicContent{ContentStr: msg.Content.ContentStr}
-				} else if msg.Content.ContentBlocks != nil {
-					blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
-					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							blocks = append(blocks, AnthropicContentBlock{
-								Type:         AnthropicContentBlockTypeText,
-								Text:         block.Text,
-								CacheControl: block.CacheControl,
-							})
+			// Anthropic placement rule: a mid-conv system message must end the array
+			// or be immediately followed by an assistant turn. Anything else (e.g.
+			// [user, system, user]) returns a 400, so fall through to top-level system.
+			midConvPlacementOK := i == len(messages)-1 ||
+				messages[i+1].Role == schemas.ChatMessageRoleAssistant
+			if seenConversation && midConvSystemSupported && midConvPlacementOK {
+				// Mid-conversation system message — emit directly as role:"system".
+				var content AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						content = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							content = AnthropicContent{ContentBlocks: blocks}
 						}
 					}
-					if len(blocks) > 0 {
-						systemContent = &AnthropicContent{ContentBlocks: blocks}
+				}
+				if content.ContentStr != nil || len(content.ContentBlocks) > 0 {
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleSystem,
+						Content: content,
+					})
+				}
+			} else {
+				var newContent AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						newContent = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							newContent = AnthropicContent{ContentBlocks: blocks}
+						}
 					}
 				}
-			}
-			// If only a single system message is present, convert it user message (since openai allows it)
-			if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
-				if systemContent != nil {
-					content := systemContent
-					systemContent = nil
-					anthropicMessages = append(anthropicMessages, AnthropicMessage{
-						Role:    AnthropicMessageRoleUser,
-						Content: *content,
-					})
+				systemContent = appendToSystemContent(systemContent, newContent)
+				// If the entire transcript consists only of system/developer messages
+				if i == len(messages)-1 && len(anthropicMessages) == 0 {
+					if systemContent != nil {
+						content := systemContent
+						systemContent = nil
+						anthropicMessages = append(anthropicMessages, AnthropicMessage{
+							Role:    AnthropicMessageRoleUser,
+							Content: *content,
+						})
+					}
 				}
 			}
 			i++
@@ -667,6 +709,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					Role:    "user", // Tool results are sent as user messages in Anthropic
 					Content: AnthropicContent{ContentBlocks: toolResults},
 				})
+				seenConversation = true
 			}
 
 		default:
@@ -747,6 +790,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 
 			anthropicMessages = append(anthropicMessages, anthropicMsg)
+			seenConversation = true
 			i++
 		}
 	}
