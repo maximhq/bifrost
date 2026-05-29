@@ -241,36 +241,36 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				connectionType === "stdio"
 					? {
-							command: data.stdio_config?.command || "",
-							args: parseArrayFromText(argsText),
-							// Each row becomes KEY=value, or a bare KEY when no value is given
-							// (read from Bifrost's host environment). Rows without a name are skipped.
-							envs: Object.entries(envVars)
-								.filter(([name]) => name.trim() !== "")
-								.map(([name, value]) => {
-									const v = value.trim();
-									return v ? `${name}=${v}` : name;
-								}),
-						}
+						command: data.stdio_config?.command || "",
+						args: parseArrayFromText(argsText),
+						// Each row becomes KEY=value, or a bare KEY when no value is given
+						// (read from Bifrost's host environment). Rows without a name are skipped.
+						envs: Object.entries(envVars)
+							.filter(([name]) => name.trim() !== "")
+							.map(([name, value]) => {
+								const v = value.trim();
+								return v ? `${name}=${v}` : name;
+							}),
+					}
 					: undefined,
 			tls_config: connectionType === "http" || connectionType === "sse" ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-							client_id: data.oauth_config?.client_id ?? emptySecretVar,
-							client_secret:
-								data.oauth_config?.client_secret?.value ||
+						client_id: data.oauth_config?.client_id ?? emptySecretVar,
+						client_secret:
+							data.oauth_config?.client_secret?.value ||
 								data.oauth_config?.client_secret?.type === "env" ||
 								data.oauth_config?.client_secret?.type === "vault"
-									? data.oauth_config.client_secret
-									: undefined,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-							server_url: data.connection_string?.value || undefined,
-							resource: resourceText.trim() || undefined,
-						}
+								? data.oauth_config.client_secret
+								: undefined,
+						authorize_url: data.oauth_config?.authorize_url || undefined,
+						token_url: data.oauth_config?.token_url || undefined,
+						registration_url: data.oauth_config?.registration_url || undefined,
+						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+						server_url: data.connection_string?.value || undefined,
+						resource: resourceText.trim() || undefined,
+					}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
 			// headers on data.headers (per-user values are submitted
@@ -998,8 +998,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						setHeadersFlow(null);
 						setError("name", { message: error });
 					}}
-					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}
+					submitHandler={async (values) => {
+						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
+					}}
 				/>
 			)}
 		</Sheet>
