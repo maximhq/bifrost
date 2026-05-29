@@ -652,15 +652,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	return jsonBody, nil
 }
 
-// IsOpus47 returns true if the model is Claude Opus 4.7 or a later generation where:
+// IsOpus47Plus returns true if the model is Claude Opus 4.7 or later (currently 4.7 and 4.8) where:
 //   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
 //   - temperature, top_p, and top_k are not supported (setting them returns a 400).
-func IsOpus47(model string) bool {
+func IsOpus47Plus(model string) bool {
 	model = strings.ToLower(model)
 	if !strings.Contains(model, "opus") {
 		return false
 	}
-	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7")
+	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7") ||
+		strings.Contains(model, "4-8") || strings.Contains(model, "4.8")
 }
 
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
@@ -675,9 +676,8 @@ func SupportsNativeEffort(model string) bool {
 }
 
 // SupportsEffortParameter returns true if the model accepts the
-// output_config.effort parameter. Per
-// https://platform.claude.com/docs/en/build-with-claude/effort the supported
-// set is: Claude Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.
+// output_config.effort parameter. Supported models: Claude Mythos Preview,
+// Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.
 // All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
@@ -697,7 +697,8 @@ func SupportsEffortParameter(model string) bool {
 	if strings.Contains(m, "opus") {
 		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
 			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
-			strings.Contains(m, "4-7") || strings.Contains(m, "4.7")
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
+			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
 	}
 	if strings.Contains(m, "sonnet") {
 		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
@@ -706,17 +707,18 @@ func SupportsEffortParameter(model string) bool {
 }
 
 // SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Per Anthropic's fast-mode docs, only Opus 4.6 supports it;
-// requests carrying speed:"fast" to any other model are rejected with 400.
+// preview). Supported on Opus 4.6, Opus 4.7, and Opus 4.8; requests carrying
+// speed:"fast" to any other model are rejected with 400.
 // Beta header: fast-mode-2026-02-01.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
 func SupportsFastMode(model string) bool {
-	model = strings.ToLower(model)
-	if !strings.Contains(model, "opus") {
-		return false
+	if IsOpus47Plus(model) {
+		return true
 	}
-	return strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+	m := strings.ToLower(model)
+	return strings.Contains(m, "opus") &&
+		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
@@ -724,7 +726,7 @@ func SupportsFastMode(model string) bool {
 // On Opus 4.7+ adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
 // coexists with the deprecated budget_tokens-based extended thinking.
 func SupportsAdaptiveThinking(model string) bool {
-	if IsOpus47(model) {
+	if IsOpus47Plus(model) {
 		return true
 	}
 	model = strings.ToLower(model)
@@ -735,7 +737,7 @@ func SupportsAdaptiveThinking(model string) bool {
 }
 
 // Computer-use tool generations.
-//   - "20251124" — Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5
+//   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5
 //   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
 //
 // The bash tool is generation-invariant (always bash_20250124).
@@ -752,7 +754,7 @@ const (
 func ComputerUseGeneration(model string) string {
 	m := strings.ToLower(model)
 	// Opus 4.7+ falls into the new generation.
-	if IsOpus47(m) {
+	if IsOpus47Plus(m) {
 		return ComputerUseGen20251124
 	}
 	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
@@ -776,12 +778,12 @@ func ComputerUseGeneration(model string) string {
 // requires new-gen text_editor_20250728+.
 //
 // Models requiring new-gen text_editor:
-//   - Opus 4.7+ (matches IsOpus47)
+//   - Opus 4.7+ (matches IsOpus47Plus)
 //   - Opus 4.5 / 4.6
 //   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
 func TextEditorGeneration(model string) string {
 	m := strings.ToLower(model)
-	if IsOpus47(m) {
+	if IsOpus47Plus(m) {
 		return ComputerUseGen20251124
 	}
 	if strings.Contains(m, "opus") {
