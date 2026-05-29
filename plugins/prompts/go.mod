@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/prompts
 go 1.26.3
 
 require (
-	github.com/maximhq/bifrost/core v1.5.13
-	github.com/maximhq/bifrost/framework v1.3.13
+	github.com/maximhq/bifrost/core v1.5.14
+	github.com/maximhq/bifrost/framework v1.3.14
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -40,6 +40,7 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
