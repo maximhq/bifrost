@@ -30,6 +30,7 @@ type BedrockResponsesStreamState struct {
 	NovaGroundingCitations    map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource // Collected citation sources per nova_grounding output index
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
+	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
 	CurrentOutputIndex        int                                                            // Current output index counter
 	MessageID                 *string                                                        // Message ID (generated)
 	Model                     *string                                                        // Model name
@@ -55,6 +56,7 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			NovaGroundingCitations:    make(map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource),
 			CompletedOutputIndices:    make(map[int]bool),
 			AnnotationIndices:         make(map[int]int),
+			TextBuffers:               make(map[int]*strings.Builder),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -122,6 +124,11 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 		state.AnnotationIndices = make(map[int]int)
 	} else {
 		clear(state.AnnotationIndices)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
 	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
@@ -199,6 +206,11 @@ func (state *BedrockResponsesStreamState) flush() {
 		state.AnnotationIndices = make(map[int]int)
 	} else {
 		clear(state.AnnotationIndices)
+	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
 	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -377,22 +389,27 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					continue
 				}
 
-				// Emit output_text.done
-				emptyText := ""
+				prevAccText := ""
+				if buf := state.TextBuffers[prevOutputIndex]; buf != nil {
+					prevAccText = buf.String()
+				}
+
+				// Emit output_text.done with accumulated text
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(prevOutputIndex),
 					ContentIndex:   &prevContentIndex,
 					ItemID:         &prevItemID,
-					Text:           &emptyText,
+					Text:           &prevAccText,
 					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				})
 
-				// Emit content_part.done for text
+				// Emit content_part.done for text with accumulated text
+				prevPartText := prevAccText
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
+					Text: &prevPartText,
 					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -407,8 +424,22 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					Part:           part,
 				})
 
-				// Emit output_item.done for text
+				// Emit output_item.done for text with content blocks
 				statusCompleted := "completed"
+				var prevContentBlocks []schemas.ResponsesMessageContentBlock
+				if prevAccText != "" {
+					prevItemText := prevAccText
+					prevContentBlocks = []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &prevItemText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					}
+				}
 				messageType := schemas.ResponsesMessageTypeMessage
 				role := schemas.ResponsesInputMessageRoleAssistant
 				doneItem := &schemas.ResponsesMessage{
@@ -416,7 +447,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					Role:   &role,
 					Status: &statusCompleted,
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+						ContentBlocks: prevContentBlocks,
 					},
 				}
 				if prevItemID != "" {
@@ -429,6 +460,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					ContentIndex:   &prevContentIndex,
 					Item:           doneItem,
 				})
+				delete(state.TextBuffers, prevOutputIndex)
 
 				// Mark this output index as completed
 				state.CompletedOutputIndices[prevOutputIndex] = true
@@ -784,6 +816,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// If this is a text delta for a new content block, also emit the text delta in the same batch
 			if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 				text := *chunk.Delta.Text
+				// Accumulate text for done events
+				if state.TextBuffers[outputIndex] == nil {
+					state.TextBuffers[outputIndex] = &strings.Builder{}
+				}
+				state.TextBuffers[outputIndex].WriteString(text)
 				itemID := state.ItemIDs[outputIndex]
 				textDeltaResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -810,6 +847,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
+				// Accumulate text for done events
+				if state.TextBuffers[outputIndex] == nil {
+					state.TextBuffers[outputIndex] = &strings.Builder{}
+				}
+				state.TextBuffers[outputIndex].WriteString(text)
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -1253,23 +1295,27 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 			} // end else (regular function call)
 		} else {
 			// This is likely a text item that needs to be closed
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			// Emit output_text.done with accumulated text
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &accText,
 				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
-			// Emit content_part.done for text
+			// Emit content_part.done for text with accumulated text
+			partText := accText
 			part := &schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &partText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1284,8 +1330,22 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Part:           part,
 			})
 
-			// Emit output_item.done for text
+			// Emit output_item.done for text with content blocks
 			statusCompleted := "completed"
+			contentBlocks := []schemas.ResponsesMessageContentBlock{}
+			if accText != "" {
+				itemText := accText
+				contentBlocks = []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &itemText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
+				}
+			}
 			messageType := schemas.ResponsesMessageTypeMessage
 			role := schemas.ResponsesInputMessageRoleAssistant
 			doneItem := &schemas.ResponsesMessage{
@@ -1293,7 +1353,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					ContentBlocks: contentBlocks,
 				},
 			}
 			if itemID != "" {
@@ -1306,6 +1366,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				ContentIndex:   &contentIndex,
 				Item:           doneItem,
 			})
+			delete(state.TextBuffers, outputIndex)
 		}
 
 		// Mark this output index as completed
