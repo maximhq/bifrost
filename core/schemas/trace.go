@@ -247,7 +247,8 @@ const (
 	AttrServiceTier      = "gen_ai.response.service_tier"
 	AttrCreated          = "gen_ai.response.created"
 	AttrObject           = "gen_ai.response.object"
-	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token"
+	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token" // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk (seconds)
+	AttrTimeToFirstChunk = "gen_ai.response.time_to_first_chunk"
 	AttrTotalChunks      = "gen_ai.response.total_chunks"
 
 	// Plugin Attributes (for aggregated streaming post-hook spans)
@@ -268,6 +269,8 @@ const (
 	// OTel GenAI spec keys for cache tokens (flat namespace).
 	AttrUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
 	AttrUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
+	// OTel GenAI spec key for reasoning tokens (flat namespace).
+	AttrUsageReasoningOutputTokens = "gen_ai.usage.reasoning.output_tokens"
 	// Chat completion usage detail attributes
 	// legacy: nested namespace; OTel spec uses flat gen_ai.usage.cache_read.input_tokens
 	// and gen_ai.usage.cache_creation.input_tokens for the cached_* entries. The
