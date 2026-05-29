@@ -518,6 +518,24 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		properties = schemas.NewOrderedMap()
 	}
 
+	// Preserve JSON Schema definitions ($defs). The MCP SDK already folds legacy
+	// "definitions" into Defs on unmarshal, so we only need to handle Defs here.
+	// Without this, any $ref pointing at #/$defs/... rides along inside Properties
+	// while the definitions it targets are dropped, leaving a dangling $ref that
+	// providers reject (e.g. Vertex Gemini returns INVALID_ARGUMENT).
+	var defs *schemas.OrderedMap
+	if len(mcpTool.InputSchema.Defs) > 0 {
+		// Normalize array schemas inside each definition, mirroring the fix applied
+		// to Properties above.
+		FixArraySchemas(mcpTool.InputSchema.Defs, logger)
+
+		orderedDefs := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Defs))
+		for k, v := range mcpTool.InputSchema.Defs {
+			orderedDefs.Set(k, v)
+		}
+		defs = orderedDefs
+	}
+
 	// Preserve MCP tool annotations if any are set.
 	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
 	var annotations *schemas.MCPToolAnnotations
@@ -548,6 +566,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Type:       mcpTool.InputSchema.Type,
 				Properties: properties,
 				Required:   mcpTool.InputSchema.Required,
+				Defs:       defs,
 			},
 		},
 		Annotations: annotations,
