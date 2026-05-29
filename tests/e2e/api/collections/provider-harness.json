@@ -881,6 +881,61 @@
           }
         },
         {
+          "name": "POST /azure_passthrough/openai/deployments/{deployment}/chat/completions (no api-version — default injected)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Azure passthrough without api-version.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/{{azureDeployment}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["azure_passthrough", "openai", "deployments", "{{azureDeployment}}", "chat", "completions"]
+            }
+          }
+        },
+        {
+          "name": "POST /azure_passthrough/openai/v1/responses (no api-version — preview injected)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{azureDeployment}}\",\n  \"input\": \"Hello via Azure v1 responses passthrough without api-version.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure_passthrough/openai/v1/responses",
+              "host": ["{{baseUrl}}"],
+              "path": ["azure_passthrough", "openai", "v1", "responses"]
+            }
+          }
+        },
+        {
+          "name": "POST /azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions (no api-version — default injected)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "model", "value": "gpt-4o-transcribe", "type": "text" },
+                { "key": "file", "src": "tests/e2e/api/fixtures/sample.mp3", "type": "file" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["azure_passthrough", "openai", "deployments", "gpt-4o-transcribe", "audio", "transcriptions"]
+            }
+          }
+        },
+        {
           "name": "POST /genai_passthrough/v1beta/models/{model}:generateContent",
           "request": {
             "method": "POST",

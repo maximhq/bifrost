@@ -47,7 +47,9 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 ### Azure Passthrough
 
 - Uses `azure` as the default provider.
-- Requires an Azure key with `endpoint` configured. Query parameters (including any `api-version`) are forwarded as-is from the caller — Bifrost does not inject any version.
+- Requires an Azure key with `endpoint` configured.
+- **`api-version` handling varies by route:**
+  - `/openai/deployments/` routes: if the caller omits `api-version`, Bifrost injects a default (`2025-04-01-preview`). Pass your own `api-version` to override — for example, to pin to a GA version or use a specific preview version.
 
 ### GenAI Passthrough
 
@@ -203,7 +205,7 @@ print(response.content[0].text)
 <Tab title="cURL">
 
 ```bash
-curl -X POST "http://localhost:8080/azure_passthrough/openai/deployments/gpt-4o/chat/completions" \
+curl -X POST "http://localhost:8080/azure_passthrough/openai/deployments/gpt-4o/chat/completions?api-version=2025-04-01-preview" \
   -H "content-type: application/json" \
   -d '{
     "messages": [{"role": "user", "content": "hello from azure passthrough"}]
@@ -294,3 +296,4 @@ curl -X POST "http://localhost:8080/genai_passthrough/v1/projects/my-project/loc
 
 - Use passthrough when you need a provider endpoint that is not directly supported by Bifrost integration routes yet.
 - For Azure passthrough, auth headers (`api-key`, `x-api-key`, OAuth token) are always sourced from the Bifrost key config and never forwarded from the client request.
+- For Azure `/openai/deployments/` routes, Bifrost injects `api-version=2025-04-01-preview` when the caller does not supply one. Supply your own `api-version` query parameter to use a different version (e.g. `2024-10-21` for the latest GA, or a newer preview).
