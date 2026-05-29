@@ -1222,7 +1222,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		var structuredOutputBuilder strings.Builder
 		var isAccumulatingStructuredOutput bool
 
-		streamState := NewBedrockStreamState()
+		streamState := NewBedrockStreamStateWithContext(ctx)
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1590,6 +1590,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		// Create stream state for stateful conversions
 		streamState := acquireBedrockResponsesStreamState()
 		streamState.Model = &request.Model
+		streamState.Ctx = ctx
 		defer releaseBedrockResponsesStreamState(streamState)
 
 		// Check for structured output mode - if set, we need to intercept tool calls
