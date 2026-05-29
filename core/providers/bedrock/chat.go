@@ -62,7 +62,7 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	}
 
 	// Ensure tool config is present when needed
-	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
 	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
@@ -117,7 +117,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				}
 
 				toolUseID := contentBlock.ToolUse.ToolUseID
-				toolUseName := contentBlock.ToolUse.Name
+				toolUseName := bedrockRestoreToolName(ctx, contentBlock.ToolUse.Name)
 
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
 					Index: uint16(len(toolCalls)),
@@ -310,6 +310,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 type BedrockStreamState struct {
 	nextToolCallIndex         int
 	contentBlockToToolCallIdx map[int]int
+	ctx                       context.Context
 }
 
 // NewBedrockStreamState returns initialised stream state for one streaming response.
@@ -317,6 +318,13 @@ func NewBedrockStreamState() *BedrockStreamState {
 	return &BedrockStreamState{
 		contentBlockToToolCallIdx: make(map[int]int),
 	}
+}
+
+// NewBedrockStreamStateWithContext returns stream state that can restore aliased tool names.
+func NewBedrockStreamStateWithContext(ctx context.Context) *BedrockStreamState {
+	state := NewBedrockStreamState()
+	state.ctx = ctx
+	return state
 }
 
 func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
@@ -361,7 +369,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 		toolCall.Index = uint16(toolCallIdx)
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
-		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Function.Name = schemas.Ptr(bedrockRestoreToolName(state.ctx, toolUseStart.Name))
 		toolCall.Function.Arguments = "" // Start with empty arguments
 
 		streamResponse := &schemas.BifrostChatResponse{
