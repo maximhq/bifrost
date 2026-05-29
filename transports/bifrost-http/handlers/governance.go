@@ -119,13 +119,42 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID           *string                 `json:"team_id,omitempty"`
-	CustomerID       *string                 `json:"customer_id,omitempty"`
-	Budgets          []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive         *bool                   `json:"is_active,omitempty"`
-	CalendarAligned  *bool                   `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ResetBudgetUsage *bool                   `json:"reset_budget_usage,omitempty"`
+	TeamID           schemas.OptionalJSON[string] `json:"team_id,omitempty"`
+	CustomerID       schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	IsActive         *bool                        `json:"is_active,omitempty"`
+	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+}
+
+var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
+
+// optionalJSONStringHasValue reports whether a presence-aware string contains a non-empty value.
+func optionalJSONStringHasValue(value schemas.OptionalJSON[string]) bool {
+	return value.Set && !value.Null && value.Value != ""
+}
+
+// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer ownership changes.
+func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
+	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
+		return errVirtualKeyDualAssociation
+	}
+	if optionalJSONStringHasValue(req.TeamID) {
+		vk.TeamID = new(req.TeamID.Value)
+		vk.CustomerID = nil
+		return nil
+	}
+	if optionalJSONStringHasValue(req.CustomerID) {
+		vk.CustomerID = new(req.CustomerID.Value)
+		vk.TeamID = nil
+		return nil
+	}
+	if req.TeamID.Set || req.CustomerID.Set {
+		vk.TeamID = nil
+		vk.CustomerID = nil
+	}
+	return nil
 }
 
 type BulkRotateVirtualKeysRequest struct {
@@ -845,7 +874,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Validate mutually exclusive TeamID and CustomerID
-	if req.TeamID != nil && req.CustomerID != nil {
+	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
 		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
@@ -896,18 +925,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.Description != nil {
 			vk.Description = *req.Description
 		}
-		if req.TeamID != nil {
-			vk.TeamID = req.TeamID
-			vk.CustomerID = nil // Clear CustomerID if setting TeamID
-		}
-		if req.CustomerID != nil {
-			vk.CustomerID = req.CustomerID
-			vk.TeamID = nil // Clear TeamID if setting CustomerID
-		}
-		// When both TeamID and CustomerID are nil
-		if req.TeamID == nil && req.CustomerID == nil {
-			vk.TeamID = nil
-			vk.CustomerID = nil
+		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+			if errors.Is(err, errVirtualKeyDualAssociation) {
+				return &badRequestError{err: err}
+			}
+			return err
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
@@ -1478,6 +1500,21 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
 		return
 	}
+
+	// Per-user credential reconciliation when the VK's MCP allowlist
+	// changed. Mirrors the AP-propagation path: enterprise orphans /
+	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
+	// VK's owner (user-keyed creds) against the new effective allowlist
+	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	if req.MCPConfigs != nil && h.configStore != nil {
+		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
+			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
+		}
+		if err := h.configStore.ReconcileMCPHeadersAfterVKChange(ctx, vk.ID); err != nil {
+			logger.Error("reconcile per-user-headers credentials after VK %s update failed: %v", vk.ID, err)
+		}
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key updated successfully",
 		"virtual_key": preloadedVk,

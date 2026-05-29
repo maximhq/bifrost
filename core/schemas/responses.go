@@ -51,41 +51,43 @@ type BifrostResponsesResponse struct {
 	ID     *string `json:"id,omitempty"` // used for internal conversions
 	Object string  `json:"object"`       // "response"
 
-	Background         *bool                               `json:"background,omitempty"`
-	Conversation       *ResponsesResponseConversation      `json:"conversation,omitempty"`
-	CreatedAt          int                                 `json:"created_at"`   // Unix timestamp when Response was created
-	CompletedAt        *int                                `json:"completed_at"` // Unix timestamp when Response was completed
-	Error              *ResponsesResponseError             `json:"error"`
-	Include            []string                            `json:"include,omitempty"`  // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	IncompleteDetails  *ResponsesResponseIncompleteDetails `json:"incomplete_details"` // Details about why the response is incomplete
-	Instructions       *ResponsesResponseInstructions      `json:"instructions"`
-	MaxOutputTokens    *int                                `json:"max_output_tokens"`
-	MaxToolCalls       *int                                `json:"max_tool_calls"`
-	Metadata           *map[string]any                     `json:"metadata,omitempty"`
-	Model              string                              `json:"model"`
-	Output             []ResponsesMessage                  `json:"output"`
-	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                             `json:"previous_response_id"`
-	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
-	PromptCacheKey     *string                             `json:"prompt_cache_key"` // Prompt cache key
-	PresencePenalty    *float64                            `json:"presence_penalty,omitempty"`
-	FrequencyPenalty   *float64                            `json:"frequency_penalty,omitempty"`
-	Reasoning          *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                             `json:"safety_identifier"` // Safety identifier
-	ServiceTier        *BifrostServiceTier                 `json:"service_tier"`
-	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
-	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
-	Store              *bool                               `json:"store,omitempty"`
-	Temperature        *float64                            `json:"temperature,omitempty"`
-	Text               *ResponsesTextConfig                `json:"text,omitempty"`
-	TopLogProbs        *int                                `json:"top_logprobs,omitempty"`
-	TopP               *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice         *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool                     `json:"tools"`                 // Tools to use
-	Truncation         *string                             `json:"truncation,omitempty"`
-	Usage              *ResponsesResponseUsage             `json:"usage"`
-	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
+	Background           *bool                               `json:"background,omitempty"`
+	Conversation         *ResponsesResponseConversation      `json:"conversation,omitempty"`
+	CreatedAt            int                                 `json:"created_at"`   // Unix timestamp when Response was created
+	CompletedAt          *int                                `json:"completed_at"` // Unix timestamp when Response was completed
+	Error                *ResponsesResponseError             `json:"error"`
+	Include              []string                            `json:"include,omitempty"`  // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	IncompleteDetails    *ResponsesResponseIncompleteDetails `json:"incomplete_details"` // Details about why the response is incomplete
+	Instructions         *ResponsesResponseInstructions      `json:"instructions"`
+	MaxOutputTokens      *int                                `json:"max_output_tokens"`
+	MaxToolCalls         *int                                `json:"max_tool_calls"`
+	Metadata             *map[string]any                     `json:"metadata,omitempty"`
+	Model                string                              `json:"model"`
+	Output               []ResponsesMessage                  `json:"output"`
+	ParallelToolCalls    *bool                               `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                             `json:"previous_response_id"`
+	Prompt               *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
+	PromptCacheKey       *string                             `json:"prompt_cache_key"` // Prompt cache key
+	PromptCacheRetention *string                             `json:"prompt_cache_retention,omitempty"`
+	PresencePenalty      *float64                            `json:"presence_penalty,omitempty"`
+	FrequencyPenalty     *float64                            `json:"frequency_penalty,omitempty"`
+	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
+	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
+	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
+	Status               *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
+	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
+	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	Store                *bool                               `json:"store,omitempty"`
+	Temperature          *float64                            `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
+	TopLogProbs          *int                                `json:"top_logprobs,omitempty"`
+	TopP                 *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
+	Truncation           *string                             `json:"truncation,omitempty"`
+	Usage                *ResponsesResponseUsage             `json:"usage"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -161,6 +163,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	result.IncompleteDetails = resp.IncompleteDetails
 	result.PreviousResponseID = resp.PreviousResponseID
 	result.PromptCacheKey = resp.PromptCacheKey
+	result.PromptCacheRetention = resp.PromptCacheRetention
 	result.SafetyIdentifier = resp.SafetyIdentifier
 	result.MaxToolCalls = resp.MaxToolCalls
 	result.Instructions = resp.Instructions
@@ -275,29 +278,30 @@ func orDefault[T any](src *T, defaultVal T) *T {
 }
 
 type ResponsesParameters struct {
-	Background         *bool                         `json:"background,omitempty"`
-	Conversation       *string                       `json:"conversation,omitempty"`
-	Include            []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	Instructions       *string                       `json:"instructions,omitempty"`
-	MaxOutputTokens    *int                          `json:"max_output_tokens,omitempty"`
-	MaxToolCalls       *int                          `json:"max_tool_calls,omitempty"`
-	Metadata           *map[string]any               `json:"metadata,omitempty"`
-	ParallelToolCalls  *bool                         `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                       `json:"previous_response_id,omitempty"`
-	PromptCacheKey     *string                       `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning          *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                       `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *BifrostServiceTier           `json:"service_tier,omitempty"`
-	StreamOptions      *ResponsesStreamOptions       `json:"stream_options,omitempty"`
-	Store              *bool                         `json:"store,omitempty"`
-	Temperature        *float64                      `json:"temperature,omitempty"`
-	Text               *ResponsesTextConfig          `json:"text,omitempty"`
-	TopLogProbs        *int                          `json:"top_logprobs,omitempty"`
-	TopP               *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice         *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
-	Truncation         *string                       `json:"truncation,omitempty"`
-	User               *string                       `json:"user,omitempty"`
+	Background           *bool                         `json:"background,omitempty"`
+	Conversation         *string                       `json:"conversation,omitempty"`
+	Include              []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Instructions         *string                       `json:"instructions,omitempty"`
+	MaxOutputTokens      *int                          `json:"max_output_tokens,omitempty"`
+	MaxToolCalls         *int                          `json:"max_tool_calls,omitempty"`
+	Metadata             *map[string]any               `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                         `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
+	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
+	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
+	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"` // Safety identifier
+	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
+	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
+	Store                *bool                         `json:"store,omitempty"`
+	Temperature          *float64                      `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig          `json:"text,omitempty"`
+	TopLogProbs          *int                          `json:"top_logprobs,omitempty"`
+	TopP                 *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
+	Truncation           *string                       `json:"truncation,omitempty"`
+	User                 *string                       `json:"user,omitempty"`
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`

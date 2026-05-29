@@ -486,6 +486,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle allowing per-request override for raw request/response exposure
 	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
 
+	// Toggle allowing direct key bypass via x-bf-direct-key header
+	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth

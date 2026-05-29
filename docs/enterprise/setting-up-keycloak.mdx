@@ -139,7 +139,7 @@ Create the roles and groups you plan to map into Bifrost.
 ### Using the Bifrost dashboard
 
 1. In Bifrost, go to **Governance → User Provisioning**.
-2. Select **Keycloak** as the SCIM Provider.
+2. Select **Keycloak** as the OIDC Provider.
 3. Fill in the fields:
 
 | Field | Value |
@@ -190,6 +190,18 @@ Create the roles and groups you plan to map into Bifrost.
 | `attributeRoleMappings` | No | Ordered list of attribute→role mappings. |
 | `attributeTeamMappings` | No | Attribute→team mappings (all matches apply). |
 | `attributeBusinessUnitMappings` | No | Attribute→business-unit mappings (all matches apply). |
+
+---
+
+## Background user sync
+
+Bifrost does not currently support Keycloak SCIM management APIs or inbound Keycloak SCIM provisioning. Do not configure a Keycloak SCIM connector, plugin, or automation layer to call Bifrost `/scim/v2` yet.
+
+For Keycloak, Bifrost uses the Admin REST API setup above to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Keycloak.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Keycloak whether the user is still active; if Keycloak reports the user is inactive, Bifrost decommissions that user locally.
+
+Support for Keycloak SCIM management APIs is coming soon.
 
 ---
 

@@ -1109,3 +1109,198 @@ func TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T)
 		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonToolCalls, *choice.FinishReason)
 	}
 }
+
+// TestToAnthropicChatRequest_MidConversationSystem_Opus48 verifies that a
+// role:"system" message in a valid placement (followed by an assistant turn)
+// is emitted as role:"system" in the Anthropic messages array when the
+// provider is Anthropic and the model is Opus 4.8+.
+// Valid placement per Anthropic: system must immediately follow a user turn
+// and must precede an assistant turn or end the array.
+func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are a helpful assistant.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("From now on, respond only in French.")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi there!")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("How are you?")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Top-level system field must hold only the initial system message.
+	if result.System == nil {
+		t.Fatal("expected top-level System to be set")
+	}
+	if result.System.ContentStr == nil || *result.System.ContentStr != "You are a helpful assistant." {
+		t.Errorf("unexpected top-level System content: %v", result.System)
+	}
+
+	// Messages array: user, system(mid), assistant, user — 4 entries.
+	if len(result.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Role != AnthropicMessageRoleUser {
+		t.Errorf("msg[0] role = %q, want user", result.Messages[0].Role)
+	}
+	if result.Messages[1].Role != AnthropicMessageRoleSystem {
+		t.Errorf("msg[1] role = %q, want system (mid-conversation)", result.Messages[1].Role)
+	}
+	if result.Messages[2].Role != AnthropicMessageRoleAssistant {
+		t.Errorf("msg[2] role = %q, want assistant", result.Messages[2].Role)
+	}
+	if result.Messages[3].Role != AnthropicMessageRoleUser {
+		t.Errorf("msg[3] role = %q, want user", result.Messages[3].Role)
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies
+// that a mid-conv system message with invalid placement (followed by user, not
+// assistant) falls back to top-level system accumulation rather than emitting
+// a role:"system" that would 400 on the Anthropic API.
+func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			// system followed by user — invalid placement, Anthropic returns 400
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Bad placement.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invalid placement: falls back to top-level system accumulation.
+	if result.System == nil {
+		t.Fatal("expected top-level System to contain both initial and fallback content")
+	}
+	blocks := result.System.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 system blocks (initial + fallback), got %d", len(blocks))
+	}
+	if blocks[0].Text == nil || *blocks[0].Text != "Initial." {
+		t.Errorf("block[0] = %v, want \"Initial.\"", blocks[0].Text)
+	}
+	if blocks[1].Text == nil || *blocks[1].Text != "Bad placement." {
+		t.Errorf("block[1] = %v, want \"Bad placement.\"", blocks[1].Text)
+	}
+	// No role:"system" in messages array.
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role:system — invalid placement should have been caught", i)
+		}
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends verifies that
+// for a non-supporting model/provider the mid-conversation system content is
+// appended to (not overwrites) the top-level system field.
+func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-opus-4-8",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial system.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Mid-conv instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Top-level system field must exist and contain BOTH the initial and mid-conv content.
+	if result.System == nil {
+		t.Fatal("expected top-level System to be set")
+	}
+	if len(result.System.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 system content blocks (initial + mid-conv appended), got %d", len(result.System.ContentBlocks))
+	}
+	if result.System.ContentBlocks[0].Text == nil || *result.System.ContentBlocks[0].Text != "Initial system." {
+		t.Errorf("block[0] = %v, want 'Initial system.'", result.System.ContentBlocks[0].Text)
+	}
+	if result.System.ContentBlocks[1].Text == nil || *result.System.ContentBlocks[1].Text != "Mid-conv instruction." {
+		t.Errorf("block[1] = %v, want 'Mid-conv instruction.'", result.System.ContentBlocks[1].Text)
+	}
+
+	// No role:"system" entry should appear in the messages array.
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role system — should not appear for Bedrock", i)
+		}
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that
+// mid-conversation system messages are NOT emitted for Opus 4.7 (feature is
+// Opus 4.8+ only).
+func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("New instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Mid-conv instruction must be preserved in the top-level System field.
+	if result.System == nil {
+		t.Fatal("expected top-level System to contain fallback mid-conversation instruction")
+	}
+	foundFallback := false
+	if result.System.ContentStr != nil && *result.System.ContentStr == "New instruction." {
+		foundFallback = true
+	}
+	for _, block := range result.System.ContentBlocks {
+		if block.Text != nil && *block.Text == "New instruction." {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Fatal("expected mid-conversation system content to be preserved in top-level System")
+	}
+
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role system — should not appear for Opus 4.7", i)
+		}
+	}
+}

@@ -921,7 +921,6 @@ func generateSecureRandomString(length int) (string, error) {
 // The function errors out cleanly on any misconfig (missing identity, unknown
 // mode, missing template config) — no fallbacks, no generated identities.
 func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
-
 	// 1. Load template OAuth config.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil {
@@ -941,14 +940,10 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	case schemas.MCPAuthModeUser:
 		v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 		if v == "" {
-			// Deferred-fill: external MCP client OAuth init where the user
-			// identity is stamped at completion time. No identity → no
-			// existing-row lookup; we always insert a fresh row.
-			uid = nil
-		} else {
-			uid = &v
-			lookupID = v
+			return nil, "", fmt.Errorf("user-mode flow requires a user identity in context")
 		}
+		uid = &v
+		lookupID = v
 	case schemas.MCPAuthModeVK:
 		v, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 		if v == "" {
@@ -979,7 +974,6 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	expiresAt := time.Now().Add(15 * time.Minute)
 
 	// 4. Single canonical lookup: one flow row per (mode, identity, mcp_client).
-	//    Deferred-fill user-mode (lookupID empty) always inserts a fresh row.
 	//
 	//    Only treat a 'pending' hit as reusable. A 'claiming' row means an
 	//    upstream callback is mid-flight for this binding — rotating its
@@ -987,14 +981,12 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	//    leave the user with an "OAuth flow not found" error. Falling through
 	//    to insert a fresh row lets both flows complete independently.
 	var existing *tables.TableOauthUserSession
-	if lookupID != "" {
-		found, lookupErr := p.configStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, flowMode, lookupID, mcpClientID)
-		if lookupErr != nil {
-			return nil, "", fmt.Errorf("failed to look up existing flow row: %w", lookupErr)
-		}
-		if found != nil && found.Status == "pending" {
-			existing = found
-		}
+	found, lookupErr := p.configStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, flowMode, lookupID, mcpClientID)
+	if lookupErr != nil {
+		return nil, "", fmt.Errorf("failed to look up existing flow row: %w", lookupErr)
+	}
+	if found != nil && found.Status == "pending" {
+		existing = found
 	}
 
 	var rowID string
@@ -1012,10 +1004,10 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		}
 		rowID = existing.ID
 	} else {
-		// First-time auth (or deferred-fill user): insert a new row. SessionID
-		// is populated only for session-mode (the caller's x-bf-mcp-session-id);
-		// vk/user-mode rows have an empty SessionID — their identity lives in
-		// virtual_key_id / user_id.
+		// First-time auth: insert a new row. SessionID is populated only for
+		// session-mode (the caller's x-bf-mcp-session-id); vk/user-mode rows
+		// have an empty SessionID — their identity lives in virtual_key_id /
+		// user_id.
 		row := &tables.TableOauthUserSession{
 			ID:            uuid.New().String(),
 			MCPClientID:   mcpClientID,
@@ -1053,7 +1045,15 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// dashboard session can still call the per-user flow endpoints. The
 	// fragment never leaves the browser (not in server logs, not in the
 	// upstream-OAuth Referer), unlike a query param.
-	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) {
+	//
+	// User-mode flows skip the mint: the handler-side identity gate requires
+	// caller's user_id to match flow.UserID, which is only populated by normal
+	// SCIM enforcement on the auth-page route. Minting a temp token would
+	// route the request through the temp-token middleware branch that
+	// bypasses cookie resolution, leaving caller user_id empty and the gate
+	// would 403 even legitimate users. VK and session-mode flows are
+	// intentionally shareable and continue to mint.
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && flowMode != schemas.MCPAuthModeUser {
 		ttl := time.Until(expiresAt)
 		if ttl > 0 {
 			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
@@ -1145,9 +1145,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 
 	// Resolve identity columns from the flow row, honoring its flow_mode. Only
 	// the column that matches the mode is populated on the token row; the others
-	// stay nil to maintain the single-identity invariant. For user-mode flows
-	// where the row's UserID was deferred at init time, stamp from completer
-	// context here.
+	// stay nil to maintain the single-identity invariant.
 	flowMode := schemas.MCPAuthMode(session.FlowMode)
 	var (
 		tokenVKID   *string
@@ -1157,17 +1155,9 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	case schemas.MCPAuthModeUser:
 		tokenUserID = session.UserID
 		if tokenUserID == nil || *tokenUserID == "" {
-			// Deferred fill: pull from completer context.
-			if v, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); v != "" {
-				tokenUserID = &v
-			}
-		}
-		if tokenUserID == nil || *tokenUserID == "" {
 			p.cleanupFlow(ctx, session.ID)
-			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion (neither flow nor completer context)")
+			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion")
 		}
-		// Stamp the resolved user_id back on the flow for audit.
-		session.UserID = tokenUserID
 	case schemas.MCPAuthModeVK:
 		tokenVKID = session.VirtualKeyID
 		if tokenVKID == nil || *tokenVKID == "" {

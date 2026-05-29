@@ -17,7 +17,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
   
   # --- Go Build Stage: Compile the Go binary ---
-  FROM golang:1.26.2-alpine3.23@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
+  FROM golang:1.26.3-alpine3.23@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
   WORKDIR /app
   
   # Install dependencies including gcc for CGO and sqlite (with latest security patches)
@@ -51,7 +51,7 @@
   RUN test -f /app/main || (echo "Build failed" && exit 1)
   
   # --- Runtime Stage: Minimal runtime image ---
-  FROM alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+  FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
   WORKDIR /app
   
   # Install runtime dependencies for CGO-enabled binary

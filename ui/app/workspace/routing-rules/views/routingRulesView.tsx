@@ -10,7 +10,7 @@ import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { GitBranch, Plus } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
@@ -76,6 +76,23 @@ export function RoutingRulesView() {
 		setInfoSheetOpen(true);
 	};
 
+	const sortedRules = useMemo(() => [...rules].sort((a, b) => a.priority - b.priority), [rules]);
+
+	const selectedRuleIndex = useMemo(
+		() => (selectedRule ? sortedRules.findIndex((r) => r.id === selectedRule.id) : -1),
+		[selectedRule, sortedRules],
+	);
+
+	const handleRuleNavigate = useCallback(
+		(direction: "prev" | "next") => {
+			const newIndex = direction === "prev" ? selectedRuleIndex - 1 : selectedRuleIndex + 1;
+			if (newIndex >= 0 && newIndex < sortedRules.length) {
+				setSelectedRule(sortedRules[newIndex]);
+			}
+		},
+		[selectedRuleIndex, sortedRules],
+	);
+
 	const handleDialogOpenChange = (open: boolean) => {
 		setDialogOpen(open);
 		if (!open) {
@@ -135,7 +152,14 @@ export function RoutingRulesView() {
 			/>
 
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
-			<RoutingRuleInfoSheet rule={selectedRule} open={infoSheetOpen} onOpenChange={setInfoSheetOpen} />
+			<RoutingRuleInfoSheet
+				rule={selectedRule}
+				open={infoSheetOpen}
+				onOpenChange={setInfoSheetOpen}
+				onNavigate={handleRuleNavigate}
+				hasPrev={selectedRuleIndex > 0}
+				hasNext={selectedRuleIndex >= 0 && selectedRuleIndex < sortedRules.length - 1}
+			/>
 		</div>
 	);
 }

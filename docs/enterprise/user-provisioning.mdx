@@ -1,19 +1,21 @@
 ---
-title: "User Provisioning (SCIM)"
-description: "Authenticate users, sync teams, and provision roles and business units from your identity provider using SCIM-backed OAuth 2.0 / OIDC flows."
+title: "User Provisioning (OIDC)"
+description: "Authenticate users, sync teams, and provision roles and business units from your identity provider using OAuth 2.0 / OIDC and background directory sync."
 icon: "users-gear"
 ---
 
 ## Overview
 
-Bifrost Enterprise uses **SCIM-backed identity provisioning** to connect your organization's identity provider to Bifrost. A single configuration gives you:
+Bifrost Enterprise connects your organization's identity provider to Bifrost through OAuth 2.0 / OIDC login plus provider-backed directory sync. A single configuration gives you:
 
 - **Single sign-on (SSO)** via OAuth 2.0 / OIDC with JWKS-based JWT validation
 - **Automatic role assignment** using custom claims, app roles, or group-to-role mappings
 - **Team synchronization** from IdP groups into Bifrost teams
 - **Business unit mapping** from IdP attributes to Bifrost business units
 - **Bulk user provisioning** with filter-preview before import
-- **Silent token refresh** using server-stored refresh tokens
+- **Background lifecycle reconciliation** every **24 hours** for imported users
+- **OIDC session refresh checks** every **15 minutes** to confirm users are still active with the IdP
+- **Silent token refresh** using server-stored refresh tokens when the user remains active
 
 Once configured, users sign in to Bifrost with their corporate credentials and inherit the right [role and permissions](./rbac) immediately - no manual account creation.
 
@@ -29,10 +31,13 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 
 <CardGroup cols={3}>
   <Card title="Okta" icon="o" href="/enterprise/setting-up-okta">
-    OIDC with Org or Custom Authorization Servers, plus group-to-role mapping and API tokens for bulk user sync.
+    OIDC with Org or Custom Authorization Servers, plus group-to-role mapping and API tokens for bulk user sync and 24-hour background reconciliation.
   </Card>
   <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
     Entra ID (Azure AD) with app roles, group claims, and v1.0 / v2.0 token support.
+  </Card>
+  <Card title="Keycloak" icon="lock" href="/enterprise/setting-up-keycloak">
+    Self-hosted or managed Keycloak with OIDC login and Admin REST API based user provisioning.
   </Card>
   <Card title="Zitadel" icon="cloud" href="/enterprise/setting-up-zitadel">
     Cloud or self-hosted Zitadel with project-scoped role claims and service-account-based provisioning.
@@ -47,15 +52,18 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 ## How it works
 
 <Frame>
-  <img src="/media/user-provisioning/scim-flow.png" alt="SCIM authentication and provisioning flow" />
+  <img src="/media/user-provisioning/scim-flow.png" alt="OIDC authentication and provisioning flow" />
 </Frame>
 
 1. **Login** - Bifrost redirects unauthenticated users to the provider's authorization endpoint (Authorization Code flow).
 2. **Token exchange** - on callback, Bifrost exchanges the code for an access token and refresh token, stores them in an `HttpOnly` cookie / server session, and validates the JWT against the provider's JWKS.
 3. **Identity extraction** - configurable JWT claims (`userIdField`, `rolesField`, `teamIdsField`) are mapped to a Bifrost user, role, and teams. Provider-specific app roles or custom attributes override claim lookup.
 4. **Attribute mapping** - optional `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` translate arbitrary claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, or business units.
-5. **Bulk import** - admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
-6. **Silent refresh** - when the access token expires, Bifrost uses the stored refresh token to mint a new one without requiring re-login.
+5. **Session refresh checks** - every 15 minutes, Bifrost refreshes the OIDC session. If the session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active.
+6. **Background reconciliation** - Bifrost periodically calls the configured provider's directory APIs to reconcile imported users and mapped roles, teams, and business units.
+7. **Bulk import** - admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
+8. **Daily sync** - Bifrost reconciles imported users every 24 hours.
+9. **Decommissioning** - if the OIDC server reports that a user is no longer active, or the 24-hour reconciliation no longer finds them in the active source set, Bifrost decommissions that user locally.
 
 ---
 
@@ -72,8 +80,20 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 | **Bulk import** | Import matched users into Bifrost with role + team + BU assignments applied. |
 | **Team sync** | Sync IdP groups as Bifrost teams with a single action. |
 | **Business unit sync** | Sync IdP organizational units as Bifrost business units. |
-| **Deprovisioning** | Re-running import reconciles removed users and updates role / team assignments. |
-| **API key pass-through** | Requests using Bifrost API keys (`bfst-*`) bypass SCIM middleware so inference traffic is not affected. |
+| **Deprovisioning** | Bifrost checks user status during each 15-minute OIDC session refresh and reconciles imported users against the provider directory every 24 hours. Users that are inactive, disabled, unassigned, or missing from the source set are decommissioned locally. |
+| **API key pass-through** | Requests using Bifrost API keys (`bfst-*`) bypass OIDC user-provisioning middleware so inference traffic is not affected. |
+
+---
+
+## Background lifecycle reconciliation
+
+<Note>
+  Bifrost does not currently support inbound SCIM management APIs from IdPs. Do not configure an IdP SCIM app or point an IdP provisioning connector at Bifrost `/scim/v2` yet. SCIM management API support is coming soon.
+</Note>
+
+Bifrost's supported lifecycle model is source-side reconciliation plus OIDC session validation. Every **15 minutes**, Bifrost refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active; if the provider reports the user is inactive, Bifrost decommissions that user locally.
+
+After users are imported, Bifrost also uses the configured provider credentials to sync with the IdP in the background every **24 hours**. That sync updates mapped roles, teams, and business units, and decommissions imported users that are disabled, unassigned, or no longer present in the provider source set.
 
 ---
 
@@ -85,7 +105,7 @@ All providers share the same outer config shape in `config.json`:
 {
   "scim_config": {
     "enabled": true,
-    "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
+    "provider": "okta | entra | zitadel | keycloak | google",
     "config": {
       "...": "provider-specific fields - see each IdP guide"
     }
@@ -123,7 +143,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Issuer URL | `issuerUrl` | Yes | Yes | Org server: `https://domain.okta.com`; Custom: `…/oauth2/default` |
 | Client ID | `clientId` | Yes | Yes | Application Client ID |
 | Client Secret | `clientSecret` | No | Yes | Required for token revocation |
-| API Token | `apiToken` | No | Yes | Required for bulk user / team sync |
+| API Token | `apiToken` | No | Yes | Required for bulk user sync, team sync, and 24-hour Okta background reconciliation |
 | Audience | `audience` | No | Yes | Only applies to Custom Authorization Server |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
@@ -194,34 +214,14 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
 | Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
 
-### SailPoint
-
-SailPoint fields are **plain values only** - `env.*` references are not supported for any SailPoint config field.
-
-| Field | JSON key | Required | Notes |
-| --- | --- | --- | --- |
-| Product | `product` | Yes | `"isc"` (SailPoint Identity Security Cloud) \| `"iiq"` (IdentityIQ) |
-| Tenant | `tenant` | Conditional | ISC only: tenant name (e.g. `"acme"`) |
-| Client ID | `clientId` | Conditional | Required for ISC; optional for IIQ OAuth |
-| Client Secret | `clientSecret` | Conditional | Required for ISC; optional for IIQ OAuth |
-| Base URL | `baseUrl` | Conditional | IIQ only: SCIM base URL |
-| Username | `username` | Conditional | IIQ basic auth username |
-| Password | `password` | Conditional | IIQ basic auth password |
-| Team IDs field | `teamIdsField` | No | JWT claim for group IDs |
-| Role mappings | `attributeRoleMappings` | No | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | Array of `{ attribute, value, businessUnit }` objects |
-
----
-
 ## Configuring from the dashboard
 
 1. Navigate to **Governance → User Provisioning** in the Bifrost dashboard.
-2. Select your identity provider from the **SCIM Provider** dropdown.
+2. Select your identity provider from the **OIDC Provider** dropdown.
 3. Fill in the provider-specific fields. Required fields are marked and validated on **Verify**.
 
 <Frame>
-  <img src="/media/user-provisioning/scim-provider-select.png" alt="Selecting a SCIM provider in the Bifrost dashboard" />
+  <img src="/media/user-provisioning/scim-provider-select.png" alt="Selecting an OIDC provider in the Bifrost dashboard" />
 </Frame>
 
 4. Click **Verify** to test credentials end-to-end. Bifrost will reach the provider's JWKS / directory endpoint and report any failures.
@@ -262,7 +262,7 @@ Claim values can be strings, arrays, or nested objects - Bifrost resolves dotted
 
 ## Bulk user provisioning
 
-Once SCIM is enabled, import users in bulk from your IdP:
+Once OIDC user provisioning is enabled, import users in bulk from your IdP:
 
 1. Go to **Governance → User Provisioning → Import Users**.
 2. Select a filter - groups, roles, departments, or a custom query depending on provider support.
@@ -282,7 +282,7 @@ Re-running an import reconciles existing users - role and team changes in the Id
 | Symptom | Likely cause |
 | --- | --- |
 | Access denied: no application role or group mapping is assigned to this user. | Make sure you have assigned user to the Bifrost IdP application and they have a valid group/attribute mapping to role in Bifrost  |
-| Redirect loop on login | Make sure you have restarted pods/Bifrost instance after changing SCIM configuration, or check for a redirect URI mismatch. Exact string match required - check trailing slashes and `http` vs `https`. |
+| Redirect loop on login | Make sure you have restarted pods/Bifrost instance after changing OIDC configuration, or check for a redirect URI mismatch. Exact string match required - check trailing slashes and `http` vs `https`. |
 | `invalid audience` | `audience` field does not match the access token's `aud` claim. Use the same value your IdP issues. |
 | Empty roles / teams | Claim mapping is off. Verify the JWT at [jwt.io](https://jwt.io) and check `rolesField` / `teamIdsField`. |
 | Token refresh failing | `offline_access` scope missing or refresh token revoked. Re-enable the scope and re-authenticate. |

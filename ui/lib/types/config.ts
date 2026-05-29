@@ -481,6 +481,7 @@ export interface CoreConfig {
 	disable_content_logging: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
+	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
@@ -512,6 +513,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_content_logging: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
+	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,

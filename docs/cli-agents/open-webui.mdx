@@ -54,6 +54,28 @@ When Bifrost has [virtual key authentication](/features/governance/virtual-keys)
 
 For team deployments, create separate Open WebUI connections (or use different API keys per connection) - each virtual key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
 
+## Per-User Attribution with OAuth/SSO
+
+If Open WebUI uses OAuth/SSO and you want Bifrost to attribute requests to the signed-in user, configure Open WebUI to request an access token with the audience that Bifrost trusts. This usually means adding a delegated scope for that audience to Open WebUI's OAuth scopes.
+
+The bearer token forwarded by Open WebUI should be issued for the audience configured in Bifrost. Some identity providers issue tokens for a default service unless you explicitly request the delegated scope for the audience Bifrost expects.
+
+### Configure the OAuth Scope
+
+1. In your OAuth/OIDC provider, create or configure the audience for the Open WebUI-to-Bifrost integration.
+2. Define or identify the delegated user scope for that audience in your identity provider.
+3. Add that audience scope to Open WebUI's `OAUTH_SCOPES` environment variable alongside the normal identity scopes, such as `openid`, `profile`, `email`, and `offline_access` when supported.
+4. Ensure Bifrost's [enterprise OIDC/SSO](/enterprise/user-provisioning) configuration trusts the same issuer and audience.
+5. Restart Open WebUI and sign in again so Open WebUI obtains a fresh token.
+
+Example:
+
+```bash
+OAUTH_SCOPES="openid profile email offline_access <your-audience-scope>"
+```
+
+After this, the bearer token that Open WebUI forwards to Bifrost should contain the expected issuer, audience, and user claims for attribution. The exact audience scope format depends on your identity provider.
+
 ## Model Selection
 
 Open WebUI displays models fetched from Bifrost or those you add to the Model IDs allowlist. Use Bifrost model IDs in `provider/model` format to access any configured provider:

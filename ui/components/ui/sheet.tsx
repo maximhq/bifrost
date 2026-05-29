@@ -56,6 +56,7 @@ function SheetContent({
 	expandable = false,
 	onPointerDownOutside,
 	onInteractOutside,
+	onOpenAutoFocus,
 	...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
 	side?: "top" | "right" | "bottom" | "left";
@@ -66,13 +67,14 @@ function SheetContent({
 	// Check if the target is a portaled element (like react-select menu)
 	const isPortaledElement = (target: HTMLElement | null): boolean => {
 		if (!target) return false;
-		// Check for react-select menu portal elements
 		return !!(
 			target.closest('[class*="-menu"]') ||
 			target.closest('[class*="MenuPortal"]') ||
 			target.closest('[role="listbox"]') ||
 			target.closest('[role="option"]') ||
-			target.closest("[data-radix-popper-content-wrapper]")
+			target.closest("[data-radix-popper-content-wrapper]") ||
+			target.closest("[data-sonner-toast]") ||
+			target.closest("[data-sonner-toaster]")
 		);
 	};
 
@@ -102,6 +104,10 @@ function SheetContent({
 					data-slot="sheet-content"
 					onPointerDownOutside={handlePointerDownOutside}
 					onInteractOutside={handleInteractOutside}
+					onOpenAutoFocus={(e) => {
+						e.preventDefault();
+						onOpenAutoFocus?.(e);
+					}}
 					className={cn(
 						"bg-card data-[state=open]:animate-in data-[state=closed]:animate-out custom-scrollbar fixed z-50 flex flex-col shadow-lg transition-all ease-in-out overscroll-none data-[state=closed]:duration-100 data-[state=open]:duration-100",
 						side === "right" &&

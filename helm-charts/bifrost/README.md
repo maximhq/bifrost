@@ -4,9 +4,18 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.19
+**Latest Version:** 2.1.20
 
 ## Changelog
+
+### 2.1.20
+
+- Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:
+  - `insecureSkipVerify` — disable TLS certificate verification (development/testing only; takes priority over `caCertPem`).
+  - `caCertPem` — PEM-encoded CA certificate for MCP servers that use a self-signed or private CA. Accepts a literal PEM string or an `env.VAR_NAME` reference (e.g. `"env.MY_MCP_CA_CERT"`).
+  - Chart maps `tlsConfig.insecureSkipVerify` → `tls_config.insecure_skip_verify` and `tlsConfig.caCertPem` → `tls_config.ca_cert_pem` in the generated config JSON.
+- Added `authServerType` to the Okta SCIM config in `values.schema.json` and `config.schema.json`. Accepts `"org"` (Org Authorization Server) or `"custom"` (Custom Authorization Server); auto-detected from the issuer URL when omitted. Previously the field was documented but rejected by `additionalProperties: false` in both schemas.
+- Added `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` to the Okta provider branch in `config.schema.json`, aligning the transport runtime schema with the Helm chart schema which already included them.
 
 ### 2.1.19
 
@@ -644,6 +653,8 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`  | Code mode binding level (`server` or `tool`)                                                                                                                                                  | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection                                                                                                                                                          | `false`  |
 | `bifrost.mcp.toolSyncInterval`                        | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m`    |
+| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production. | `false`  |
+| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`    | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
 #### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
 

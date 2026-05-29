@@ -347,3 +347,23 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertBifrostToolsToGemini_WirePayloadPreservesDefs(t *testing.T) {
+	toolJSON := `{"type":"function","function":{"name":"suggest_time","parameters":{"type":"object","properties":{"attendeeEmails":{"type":"array","items":{"type":"string"},"description":"The attendee emails to find free time for."},"preferences":{"$ref":"#/$defs/Preferences"}},"required":["attendeeEmails"],"$defs":{"Preferences":{"type":"object","properties":{"startHour":{"type":"string"}}}}}}}`
+
+	var chatTool schemas.ChatTool
+	require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
+
+	copied := schemas.DeepCopyChatTool(chatTool)
+	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{copied})
+	require.NoError(t, err)
+	require.Len(t, geminiTools, 1)
+
+	wire, err := providerUtils.MarshalSorted(geminiTools[0])
+	require.NoError(t, err)
+	wireStr := string(wire)
+
+	assert.Contains(t, wireStr, `"$defs"`)
+	assert.Contains(t, wireStr, `"Preferences"`)
+	assert.Contains(t, wireStr, `"$ref":"#/$defs/Preferences"`)
+}

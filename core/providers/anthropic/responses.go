@@ -43,6 +43,7 @@ type AnthropicResponsesStreamState struct {
 	ReasoningSignatures       map[int]string                    // Maps output_index to reasoning signature
 	TextContentIndices        map[int]bool                      // Tracks which content indices are text blocks
 	ReasoningContentIndices   map[int]bool                      // Tracks which content indices are reasoning blocks
+	TextBuffers               map[int]*strings.Builder          // Maps output_index to accumulated text content for done events
 	CompactionContentIndices  map[int]*schemas.CacheControl     // Tracks pending compaction blocks with their cache control
 	CurrentOutputIndex        int                               // Current output index counter
 	MessageID                 *string                           // Message ID from message_start
@@ -71,6 +72,7 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			ReasoningContentIndices:   make(map[int]bool),
 			CompactionContentIndices:  make(map[int]*schemas.CacheControl),
 			OutputItems:               make(map[int]*schemas.ResponsesMessage),
+			TextBuffers:               make(map[int]*strings.Builder),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -147,6 +149,11 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.ReasoningContentIndices)
 	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
+	}
 	if state.CompactionContentIndices == nil {
 		state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
 	} else {
@@ -207,6 +214,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.ReasoningSignatures = nil
 	state.TextContentIndices = nil
 	state.ReasoningContentIndices = nil
+	state.TextBuffers = nil
 	state.CompactionContentIndices = nil
 	state.OutputItems = nil
 	state.CurrentOutputIndex = 0
@@ -837,6 +845,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+					// Accumulate text for done events
+					if state.TextBuffers[outputIndex] == nil {
+						state.TextBuffers[outputIndex] = &strings.Builder{}
+					}
+					state.TextBuffers[outputIndex].WriteString(*chunk.Delta.Text)
+
 					// Text content delta - emit output_text.delta with item ID
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
@@ -1124,29 +1138,44 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			var responses []*schemas.BifrostResponsesStreamResponse
 			itemID := state.ItemIDs[outputIndex]
 
+			// Capture accumulated text once — shared by output_text.done and output_item.done
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
+
 			// Check if this content index is a text block
 			if chunk.Index != nil {
 				if state.TextContentIndices[*chunk.Index] {
-					// Emit output_text.done (without accumulated text, just the event)
-					emptyText := ""
+					// Emit output_text.done with full accumulated text
 					textDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
-						Text:           &emptyText,
+						Text:           &accText,
 					}
 					if itemID != "" {
 						textDoneResponse.ItemID = &itemID
 					}
 					responses = append(responses, textDoneResponse)
 
-					// Emit content_part.done
+					// Emit content_part.done with full accumulated text in Part
+					partText := accText
+					part := &schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &partText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					}
 					partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						Part:           part,
 					}
 					if itemID != "" {
 						partDoneResponse.ItemID = &itemID
@@ -1292,16 +1321,41 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 				doneItem = &copied
 			} else {
+				// Build content blocks from accumulated text (captured above)
+				contentBlocks := []schemas.ResponsesMessageContentBlock{}
+				if accText != "" {
+					textCopy := accText
+					contentBlocks = []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &textCopy,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					}
+				}
+				delete(state.TextBuffers, outputIndex)
 				doneItem = &schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: &statusCompleted,
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+						ContentBlocks: contentBlocks,
 					},
 				}
 				if doneItemID != "" {
 					doneItem.ID = &doneItemID
+				}
+				// Only persist synthesized items that actually have text content — reasoning
+				// and MCP blocks fall through here without storedItems but must not pollute
+				// response.completed with empty assistant message shells.
+				if len(contentBlocks) > 0 {
+					cloned := *doneItem
+					clonedContent := *doneItem.Content
+					cloned.Content = &clonedContent
+					state.OutputItems[outputIndex] = &cloned
 				}
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -2340,7 +2394,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
 		}
 		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
-		if !IsOpus47(bifrostReq.Model) {
+		if !IsOpus47Plus(bifrostReq.Model) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -2411,7 +2465,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsOpus47(bifrostReq.Model) {
+				if IsOpus47Plus(bifrostReq.Model) {
 					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
@@ -2434,7 +2488,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					if *bifrostReq.Params.Reasoning.Effort != "none" {
 						effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 
-						if SupportsAdaptiveThinking(bifrostReq.Model) || IsOpus47(bifrostReq.Model) {
+						if SupportsAdaptiveThinking(bifrostReq.Model) {
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
@@ -2475,7 +2529,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					} else {
 						anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 					}
-				} else if IsOpus47(bifrostReq.Model) {
+				} else if IsOpus47Plus(bifrostReq.Model) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -2516,7 +2570,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
-				if !IsOpus47(bifrostReq.Model) {
+				if !IsOpus47Plus(bifrostReq.Model) {
 					anthropicReq.TopK = topK
 				}
 			}
@@ -2596,7 +2650,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	if bifrostReq.Input != nil {
-		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true)
+		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true, bifrostReq.Provider, bifrostReq.Model)
 
 		// Set system message if present
 		if systemContent != nil {
@@ -2810,7 +2864,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false)
+		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false, "", "")
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -2889,8 +2943,9 @@ func ConvertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 }
 
 // ConvertBifrostMessagesToAnthropicMessages converts an array of Bifrost ResponsesMessage to Anthropic message format
-// This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content
-func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool) ([]AnthropicMessage, *AnthropicContent) {
+// This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
+// provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
+func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, provider schemas.ModelProvider, model string) ([]AnthropicMessage, *AnthropicContent) {
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		if systemContent := convertBifrostMessageToAnthropicSystemContent(&bifrostMessages[0]); systemContent != nil {
@@ -2900,6 +2955,12 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}}, nil
 		}
 	}
+
+	// seenConversation tracks whether any user/assistant message has been appended.
+	// A system message encountered after the conversation starts is emitted as
+	// role:"system" in the messages array when the provider+model supports it.
+	seenConversation := false
+	midConvSystemSupported := isRequestMessage && SupportsMidConversationSystem(provider, model)
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -3036,9 +3097,37 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			// Flush any pending tool calls first (with tracking for tool call groups)
 			flushPendingToolCallsWithTracking()
 
-			// Handle system messages separately
+			// Handle system messages
 			if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
-				systemContent = convertBifrostMessageToAnthropicSystemContent(&msg)
+				// Flush any pending reasoning blocks into an assistant message first so
+				// they are not reordered or lost when a system message interrupts the
+				// reasoning → system → user sequence.
+				if len(pendingReasoningContentBlocks) > 0 {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleAssistant,
+						Content: AnthropicContent{ContentBlocks: copied},
+					})
+					pendingReasoningContentBlocks = nil
+				}
+				if !seenConversation && (len(anthropicMessages) > 0 ||
+					len(pendingToolCalls) > 0 ||
+					len(pendingToolResultBlocks) > 0 ||
+					currentAssistantMessage != nil) {
+					seenConversation = true
+				}
+				if content := convertBifrostMessageToAnthropicSystemContent(&msg); content != nil {
+					if seenConversation && midConvSystemSupported {
+						// Mid-conversation system message — emit as role:"system" in messages array.
+						anthropicMessages = append(anthropicMessages, AnthropicMessage{
+							Role:    AnthropicMessageRoleSystem,
+							Content: *content,
+						})
+					} else {
+						systemContent = appendToSystemContent(systemContent, *content)
+					}
+				}
 				continue
 			}
 
@@ -3063,6 +3152,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			anthropicMsg := convertBifrostMessageToAnthropicMessage(&msg, &pendingReasoningContentBlocks)
 			if anthropicMsg != nil {
 				anthropicMessages = append(anthropicMessages, *anthropicMsg)
+				seenConversation = true
 			}
 
 		case schemas.ResponsesMessageTypeReasoning:
@@ -4352,6 +4442,10 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 				}
 			}
 			toolUseBlock.Input = parseJSONInput(argumentsJSON)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
@@ -4520,6 +4614,10 @@ func convertBifrostMCPCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *Ant
 		// Parse arguments as JSON input
 		if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
 			toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
@@ -4566,6 +4664,10 @@ func convertBifrostMCPApprovalToAnthropicToolUse(msg *schemas.ResponsesMessage) 
 		// Parse arguments as JSON input
 		if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
 			toolUseBlock.Input = parseJSONInput(*msg.ResponsesToolMessage.Arguments)
+		} else {
+			// Anthropic requires input to always be present on tool_use blocks;
+			// default to an empty object for tools that take no arguments.
+			toolUseBlock.Input = json.RawMessage("{}")
 		}
 
 		return &toolUseBlock
@@ -5084,8 +5186,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
-			if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") ||
-				(strings.Contains(model, "opus") && (strings.Contains(model, "4.5") || strings.Contains(model, "4-5"))) {
+			if ComputerUseGeneration(model) == ComputerUseGen20251124 {
 				computerToolType = AnthropicToolTypeComputer20251124
 			}
 			return &AnthropicTool{
@@ -5101,10 +5202,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	case schemas.ResponsesToolTypeWebSearch:
 		webSearchType := AnthropicToolTypeWebSearch20250305
-		// Dynamic filtering (web_search_20260209) only available on Anthropic + Azure
+		// Dynamic filtering (web_search_20260209) available on Anthropic + Azure for Opus 4.6+.
 		features, ok := ProviderFeatures[provider]
 		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || strings.Contains(model, "4.7") || strings.Contains(model, "4-7")) {
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model)) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{
@@ -5192,11 +5293,13 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	}
 
-	anthropicTool := &AnthropicTool{}
-
-	if tool.Name != nil {
-		anthropicTool.Name = *tool.Name
+	// Skip tools with no name — Anthropic rejects them
+	if tool.Name == nil || *tool.Name == "" {
+		return nil
 	}
+
+	anthropicTool := &AnthropicTool{}
+	anthropicTool.Name = *tool.Name
 
 	if tool.Description != nil {
 		anthropicTool.Description = tool.Description

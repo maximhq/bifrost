@@ -1,0 +1,18 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "description": "Repository architecture, coding conventions, testing commands, and review gotchas for Bifrost."
+    },
+    {
+      "path": "transports/config.schema.json",
+      "description": "Source of truth for config.json fields.",
+      "scope": ["transports/**", "docs/**", "ui/**"]
+    },
+    {
+      "path": "go.work",
+      "description": "Go workspace module layout.",
+      "scope": ["core/**", "framework/**", "plugins/**", "transports/**", "go.work", "go.work.sum"]
+    }
+  ]
+}

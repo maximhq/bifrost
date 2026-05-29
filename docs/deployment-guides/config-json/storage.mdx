@@ -210,7 +210,7 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 
 ### Materialized View Refresh Interval (PostgreSQL only)
 
-The PostgreSQL logs store backs the dashboard's stats and histograms with materialized views, refreshed in the background. The default cadence is **30 seconds**, which keeps dashboard data near real-time but issues a `REFRESH MATERIALIZED VIEW CONCURRENTLY` every 30s — an expensive operation that can be too aggressive on smaller or CPU-constrained database instances.
+The PostgreSQL logs store backs the dashboard's stats and histograms with materialized views, refreshed in the background. The default cadence is **1 minute**, which keeps dashboard data near real-time but issues a `REFRESH MATERIALIZED VIEW CONCURRENTLY` every minute — an expensive operation that can be too aggressive on smaller or CPU-constrained database instances.
 
 Set `matview_refresh_interval` (Go duration string) to slow down refreshes when near-real-time accuracy isn't critical:
 
@@ -234,7 +234,7 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `matview_refresh_interval` | `"30s"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"30s"`, `"5m"`, `"1h"`). Minimum `5s`. |
+| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. |
 
 **Notes**
 
