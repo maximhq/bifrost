@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import {
@@ -119,6 +120,39 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 				</div>
 			))}
 		</div>
+	);
+}
+
+function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
+	const { assignedUsers } = useVirtualKeyUsage(vk);
+	const assignedUser = assignedUsers[0];
+
+	let label: string | null = null;
+	if (vk.team) {
+		label = `Team: ${vk.team.name}`;
+	} else if (vk.customer) {
+		label = `Customer: ${vk.customer.name}`;
+	} else if (assignedUser) {
+		label = `User: ${assignedUser.name || assignedUser.email}`;
+	}
+
+	if (!label) {
+		return <span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>;
+	}
+
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<Badge
+					variant="outline"
+					className="block max-w-full truncate text-left"
+					data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}
+				>
+					{label}
+				</Badge>
+			</TooltipTrigger>
+			<TooltipContent data-testid={`vk-assigned-to-tooltip-content-${vk.name}`}>{label}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -843,17 +877,7 @@ export default function VirtualKeysTable({
 												<div className="truncate font-medium">{vk.name}</div>
 											</TableCell>
 											<TableCell>
-												{vk.team ? (
-													<Badge variant="outline" className="block max-w-full truncate text-left">
-														Team: {vk.team.name}
-													</Badge>
-												) : vk.customer ? (
-													<Badge variant="outline" className="block max-w-full truncate text-left">
-														Customer: {vk.customer.name}
-													</Badge>
-												) : (
-													<span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>
-												)}
+												<VKAssignedToCell vk={vk} />
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
