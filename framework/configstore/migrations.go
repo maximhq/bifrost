@@ -801,6 +801,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
 		return err
 	}
+	// Must run before migrationRefreshConfigHashAfterMCPExternalServerURLRemoval:
+	// that migration SELECTs config_client using the column list derived from
+	// the TableClientConfig struct, which still declares allow_direct_keys.
+	// Without re-adding the column first, the SELECT fails with
+	// "no such column: allow_direct_keys" on any DB where the earlier
+	// drop_allow_direct_keys_column_ddl migration has run.
+	if err := migrationReAddAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
 		return err
 	}
@@ -811,9 +820,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationReAddAllowDirectKeysColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddMCPClientTLSConfigColumn(ctx, db); err != nil {

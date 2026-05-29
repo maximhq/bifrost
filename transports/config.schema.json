@@ -190,6 +190,11 @@
           },
           "description": "Additional allowed headers for CORS and WebSocket"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and an Authorization header carrying the provider's raw API key.",
+          "default": false
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
@@ -484,6 +489,10 @@
               "name": {
                 "type": "string",
                 "description": "Team name"
+              },
+              "source_id": {
+                "type": "string",
+                "description": "Optional external source identifier (e.g. SCIM group ID) used to map this team to an upstream system. Unique when set."
               },
               "customer_id": {
                 "type": "string",
@@ -1908,6 +1917,13 @@
             "type": "string"
           }
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
@@ -2816,7 +2832,7 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2827,6 +2843,13 @@
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
+          "items": {
             "type": "string"
           }
         },
