@@ -5340,6 +5340,236 @@ func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolC
 	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
 }
 
+func TestToBedrockChatCompletionRequest_AliasesLongMCPToolNames(t *testing.T) {
+	toolName := "mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests"
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("use devtools")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        toolName,
+					Description: schemas.Ptr("List network requests"),
+				},
+			}},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: toolName},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	require.LessOrEqual(t, len(alias), 64)
+	assert.NotEqual(t, toolName, alias)
+	assert.Contains(t, alias, "_list_network_requests")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestToBedrockChatCompletionRequest_AliasesToolNamesWithInvalidChars(t *testing.T) {
+	// Short name (<=64 chars) but with characters disallowed by Bedrock's
+	// `[a-zA-Z0-9_-]{1,64}` tool-name pattern. It must still be aliased into a
+	// Bedrock-valid name rather than passed through unchanged.
+	toolName := "search files/in dir:now.fast"
+	require.LessOrEqual(t, len(toolName), 64)
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("search")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        toolName,
+					Description: schemas.Ptr("Search files"),
+				},
+			}},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: toolName},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	assert.NotEqual(t, toolName, alias, "name with disallowed chars must be aliased")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestBedrockToBifrostChatResponse_RestoresAliasedToolName(t *testing.T) {
+	toolName := "mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests"
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("use devtools")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: toolName},
+			}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{
+					ToolUse: &bedrock.BedrockToolUse{
+						ToolUseID: "tooluse_123",
+						Name:      alias,
+						Input:     json.RawMessage(`{"limit":10}`),
+					},
+				}},
+			},
+		},
+	}
+
+	converted, err := response.ToBifrostChatResponse(ctx, req.Model)
+	require.NoError(t, err)
+	require.Len(t, converted.Choices, 1)
+	toolCalls := converted.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
+	require.Len(t, toolCalls, 1)
+	require.NotNil(t, toolCalls[0].Function.Name)
+	assert.Equal(t, toolName, *toolCalls[0].Function.Name)
+}
+
+func TestToBedrockResponsesRequest_AliasesLongMCPToolNames(t *testing.T) {
+	toolName := "mcp__bifrost-this-is-imp-nasdkjadk-kanbsdjkabdkjbaskjdbasdaskjdbajksdkas__notion-notion-search"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-opus-4-7",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("search docs for openai"),
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:        schemas.ResponsesToolTypeFunction,
+				Name:        &toolName,
+				Description: schemas.Ptr("Search Notion"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: schemas.NewOrderedMap(),
+					},
+				},
+			}},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	require.LessOrEqual(t, len(alias), 64)
+	assert.NotEqual(t, toolName, alias)
+	assert.Contains(t, alias, "_notion-notion-search")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestBedrockToBifrostResponsesResponse_RestoresAliasedToolName(t *testing.T) {
+	toolName := "mcp__bifrost-this-is-imp-nasdkjadk-kanbsdjkabdkjbaskjdbasdaskjdbajksdkas__notion-notion-search"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-opus-4-7",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("search docs for openai"),
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  &toolName,
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{
+					ToolUse: &bedrock.BedrockToolUse{
+						ToolUseID: "tooluse_456",
+						Name:      alias,
+						Input:     json.RawMessage(`{"query":"openai"}`),
+					},
+				}},
+			},
+		},
+	}
+
+	converted, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.Len(t, converted.Output, 1)
+	require.NotNil(t, converted.Output[0].ResponsesToolMessage)
+	require.NotNil(t, converted.Output[0].ResponsesToolMessage.Name)
+	assert.Equal(t, toolName, *converted.Output[0].ResponsesToolMessage.Name)
+}
+
 // ---------------------------------------------------------------------------
 // Structured output (response_format: json_schema) round-trip tests – Bedrock
 // ---------------------------------------------------------------------------

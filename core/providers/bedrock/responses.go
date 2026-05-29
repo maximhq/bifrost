@@ -39,6 +39,7 @@ type BedrockResponsesStreamState struct {
 	HasEmittedCreated         bool                                                           // Whether we've emitted response.created
 	HasEmittedInProgress      bool                                                           // Whether we've emitted response.in_progress
 	UsedStructuredOutputTool  bool                                                           // True when the SO tool block was intercepted and converted to text content
+	Ctx                       context.Context                                                // Request context for restoring aliased tool names
 }
 
 // bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
@@ -139,6 +140,7 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.UsedStructuredOutputTool = false
+	state.Ctx = nil
 	return state
 }
 
@@ -579,7 +581,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			state.CurrentOutputIndex++
 
 			toolUseID := chunk.Start.ToolUse.ToolUseID
-			toolName := chunk.Start.ToolUse.Name
+			toolName := bedrockRestoreToolName(state.Ctx, chunk.Start.ToolUse.Name)
 			state.ItemIDs[outputIndex] = toolUseID
 			state.ToolCallIDs[outputIndex] = toolUseID
 			state.ToolCallNames[outputIndex] = toolName
@@ -2424,6 +2426,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					return nil, fmt.Errorf("responses tool is missing required name for Bedrock function conversion")
 				}
 				name := *tool.Name
+				toolSpecName := bedrockAliasToolName(ctx, name)
 
 				// Use the tool description if available, otherwise use a generic description
 				description := "Function tool"
@@ -2437,7 +2440,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				bedrockTool := BedrockTool{
 					ToolSpec: &BedrockToolSpec{
-						Name:        name,
+						Name:        toolSpecName,
 						Description: &description,
 						InputSchema: BedrockToolInputSchema{
 							JSON: json.RawMessage(schemaObjectBytes),
@@ -2466,6 +2469,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && bedrockToolChoice.Tool.Name != "" {
+			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, bedrockToolChoice.Tool.Name)
+		}
 		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
 		// on Meta Llama variants ("This model doesn't support the
 		// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
@@ -2514,7 +2520,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	}
 
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
-	ensureResponsesToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
 	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
@@ -2743,19 +2749,19 @@ func extractBedrockTrace(v interface{}) *BedrockConverseTrace {
 }
 
 // ensureResponsesToolConfigForConversation ensures toolConfig is present when tool content exists
-func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
+func ensureResponsesToolConfigForConversation(ctx context.Context, bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
 	if bedrockReq.ToolConfig != nil {
 		return // Already has tool config
 	}
 
-	hasToolContent, tools := extractToolsFromResponsesConversationHistory(bifrostReq.Input, bifrostReq.Model)
+	hasToolContent, tools := extractToolsFromResponsesConversationHistory(ctx, bifrostReq.Input, bifrostReq.Model)
 	if hasToolContent && len(tools) > 0 {
 		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: tools}
 	}
 }
 
 // extractToolsFromResponsesConversationHistory extracts tools from Responses conversation history
-func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
+func extractToolsFromResponsesConversationHistory(ctx context.Context, messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
 	var hasToolContent bool
 	toolMap := make(map[string]*schemas.ResponsesTool) // Use map to deduplicate by name
 	var hasNovaGrounding, hasNovaCodeInterpreter bool
@@ -2813,7 +2819,7 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 			schemaObjectBytes2, _ := providerUtils.MarshalSorted(schemaObject)
 			bedrockTool := BedrockTool{
 				ToolSpec: &BedrockToolSpec{
-					Name:        *tool.Name,
+					Name:        bedrockAliasToolName(ctx, *tool.Name),
 					Description: &description,
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes2),
@@ -3212,7 +3218,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
 				toolName := ""
 				if msg.ResponsesToolMessage.Name != nil {
-					toolName = *msg.ResponsesToolMessage.Name
+					toolName = bedrockAliasToolName(ctx, *msg.ResponsesToolMessage.Name)
 				}
 				arguments := ""
 				if msg.ResponsesToolMessage.Arguments != nil {
@@ -3997,12 +4003,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				if block.ToolUse.Input != nil {
 					arguments = string(block.ToolUse.Input)
 				}
+				restoredToolUseName := bedrockRestoreToolName(ctx, toolUseName)
 				toolMsg := schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status: schemas.Ptr("completed"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:    &toolUseID,
-						Name:      &toolUseName,
+						Name:      &restoredToolUseName,
 						Arguments: schemas.Ptr(arguments),
 					},
 				}
