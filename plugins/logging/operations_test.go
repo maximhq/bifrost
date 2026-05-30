@@ -614,9 +614,14 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 		t.Fatalf("entries not in expected order: %v, %v, %v", pending.entries[0].ID, pending.entries[1].ID, pending.entries[2].ID)
 	}
 
-	// Now test Inject flushes all entries with plugin logs attached
+	// Now test Inject flushes all entries with plugin logs attached.
+	// Inject() looks up pendingLogsToInject by trace.InternalID (the in-process
+	// storage handle used by storeOrEnqueueEntry via BifrostContextKeyTraceID),
+	// not by the W3C trace.TraceID. The tracing middleware sets these equal at
+	// CreateTrace time; in this test we mimic that explicitly.
 	trace := &schemas.Trace{
-		TraceID: traceID,
+		InternalID: traceID,
+		TraceID:    traceID,
 		PluginLogs: []schemas.PluginLogEntry{
 			{PluginName: "hello-world", Level: schemas.LogLevelInfo, Message: "test log"},
 		},
