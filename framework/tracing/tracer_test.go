@@ -61,8 +61,13 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 
 	select {
 	case trace := <-plugin.injected:
-		if trace == nil || trace.TraceID != traceID {
-			t.Fatalf("injected trace = %+v, want trace %q", trace, traceID)
+		// trace.InternalID is the opaque storage handle returned from
+		// CreateTrace; trace.TraceID is the (here auto-generated) W3C trace ID.
+		if trace == nil || trace.InternalID != traceID {
+			t.Fatalf("injected trace = %+v, want trace with InternalID %q", trace, traceID)
+		}
+		if trace.TraceID == "" {
+			t.Error("injected trace has empty W3C TraceID")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for observability inject")
@@ -171,10 +176,16 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 	inheritedTraceID := "69538b980000000079943934f90c1d40"
 	externalParentSpanID := "aad09d1659b4c7e3"
 
-	// Create trace with inherited trace ID
+	// Create trace with inherited trace ID. The returned handle is opaque —
+	// the W3C trace ID is preserved on trace.TraceID for export but is *not*
+	// reused as the storage key (see TestCreateTrace_ConcurrentSameW3CTraceID
+	// in store_test.go for the rationale).
 	traceID := tracer.CreateTrace(inheritedTraceID)
-	if traceID != inheritedTraceID {
-		t.Errorf("CreateTrace() = %q, want inherited trace ID %q", traceID, inheritedTraceID)
+	if traceID == inheritedTraceID {
+		t.Errorf("CreateTrace() returned the W3C inherited trace ID %q as the storage handle; handle must be opaque", traceID)
+	}
+	if traceID == "" {
+		t.Fatal("CreateTrace() returned empty handle")
 	}
 
 	// Set up context with trace ID and parent span ID (as middleware would do)
