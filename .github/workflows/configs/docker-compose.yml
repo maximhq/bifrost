@@ -51,11 +51,6 @@ services:
         - "9000:8080"
     volumes:
         - weaviate_data:/var/lib/weaviate
-    healthcheck:
-        test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/.well-known/ready"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
     networks:
         bifrost_network:
             ipv4_address: 172.38.0.12

@@ -21,23 +21,29 @@ import (
 // Only GetGovernanceData is needed for the getVirtualKeys handler path.
 type mockGovernanceManagerForVK struct {
 	GovernanceManager
+	getGovernanceDataCalls int
 }
 
 func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
+	m.getGovernanceDataCalls++
 	return nil
 }
 
 // mockConfigStoreForVK embeds the interface so unimplemented methods panic.
-// Only GetVirtualKeysPaginated is called in the non-from_memory path.
+// Only GetVirtualKeysPaginated is called in the paginated path.
 type mockConfigStoreForVK struct {
 	configstore.ConfigStore
+	getVirtualKeysCalls          int
+	getVirtualKeysPaginatedCalls int
 }
 
 func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
+	m.getVirtualKeysPaginatedCalls++
 	return nil, 0, nil
 }
 
 func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreTables.TableVirtualKey, error) {
+	m.getVirtualKeysCalls++
 	return nil, nil
 }
 
@@ -1288,6 +1294,70 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 				t.Errorf("offset: got %v, want %v", got, tt.wantOffset)
 			}
 		})
+	}
+}
+
+// TestGetVirtualKeys_FromMemoryUsesConfigStore verifies the legacy
+// from_memory flag no longer bypasses the DB-backed ConfigStore path.
+func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.getGovernanceDataCalls != 0 {
+		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	}
+	if store.getVirtualKeysCalls != 1 {
+		t.Fatalf("expected GetVirtualKeys to be called once, got %d", store.getVirtualKeysCalls)
+	}
+	if store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("unexpected paginated call count %d", store.getVirtualKeysPaginatedCalls)
+	}
+}
+
+// TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore verifies
+// limit=0 plus from_memory still follows the DB-backed paginated path.
+func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?limit=0&from_memory=true")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.getGovernanceDataCalls != 0 {
+		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	}
+	if store.getVirtualKeysPaginatedCalls != 1 {
+		t.Fatalf("expected GetVirtualKeysPaginated to be called once, got %d", store.getVirtualKeysPaginatedCalls)
+	}
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("unexpected non-paginated call count %d", store.getVirtualKeysCalls)
 	}
 }
 
