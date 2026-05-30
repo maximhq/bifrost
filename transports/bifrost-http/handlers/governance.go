@@ -473,31 +473,6 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		// Convert map to slice to match the non-memory response format (array)
-		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
-		for _, vk := range data.VirtualKeys {
-			virtualKeys = append(virtualKeys, vk)
-		}
-		sort.Slice(virtualKeys, func(i, j int) bool {
-			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
-		})
-		SendJSON(ctx, map[string]interface{}{
-			"virtual_keys": virtualKeys,
-			"count":        len(virtualKeys),
-			"total_count":  len(virtualKeys),
-			"limit":        len(virtualKeys),
-			"offset":       0,
-		})
-		return
-	}
 	// Check for pagination/filter parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
@@ -831,25 +806,6 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 // getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
 func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		for _, vk := range data.VirtualKeys {
-			if vk.ID == vkID {
-				SendJSON(ctx, map[string]interface{}{
-					"virtual_key": vk,
-				})
-				return
-			}
-		}
-		SendError(ctx, 404, "Virtual key not found")
-		return
-	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1657,39 +1613,6 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 // getTeams handles GET /api/governance/teams - Get all teams
 func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		if customerID != "" {
-			teams := make(map[string]*configstoreTables.TableTeam)
-			for _, team := range data.Teams {
-				if team.CustomerID != nil && *team.CustomerID == customerID {
-					teams[team.ID] = team
-				}
-			}
-			SendJSON(ctx, map[string]interface{}{
-				"teams":       teams,
-				"count":       len(teams),
-				"total_count": len(teams),
-				"limit":       len(teams),
-				"offset":      0,
-			})
-		} else {
-			SendJSON(ctx, map[string]interface{}{
-				"teams":       data.Teams,
-				"count":       len(data.Teams),
-				"total_count": len(data.Teams),
-				"limit":       len(data.Teams),
-				"offset":      0,
-			})
-		}
-		return
-	}
 
 	// Check for pagination parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
@@ -1845,24 +1768,6 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		team, ok := data.Teams[teamID]
-		if !ok {
-			SendError(ctx, 404, "Team not found")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"team": team,
-		})
-		return
-	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2150,23 +2055,6 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 
 // getCustomers handles GET /api/governance/customers - Get all customers
 func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"customers":   data.Customers,
-			"count":       len(data.Customers),
-			"total_count": len(data.Customers),
-			"limit":       len(data.Customers),
-			"offset":      0,
-		})
-		return
-	}
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
@@ -2295,24 +2183,6 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 // getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
 func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		customer, ok := data.Customers[customerID]
-		if !ok {
-			SendError(ctx, 404, "Customer not found")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"customer": customer,
-		})
-		return
-	}
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2530,20 +2400,6 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 
 // getBudgets handles GET /api/governance/budgets - Get all budgets
 func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"budgets": data.Budgets,
-			"count":   len(data.Budgets),
-		})
-		return
-	}
 	budgets, err := h.configStore.GetBudgets(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve budgets: %v", err)
@@ -2558,20 +2414,6 @@ func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
 
 // getRateLimits handles GET /api/governance/rate-limits - Get all rate limits
 func (h *GovernanceHandler) getRateLimits(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"rate_limits": data.RateLimits,
-			"count":       len(data.RateLimits),
-		})
-		return
-	}
 	rateLimits, err := h.configStore.GetRateLimits(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve rate limits: %v", err)
@@ -2647,23 +2489,6 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]any{
-			"model_configs": data.ModelConfigs,
-			"count":         len(data.ModelConfigs),
-			"total_count":   len(data.ModelConfigs),
-			"limit":         len(data.ModelConfigs),
-			"offset":        0,
-		})
-		return
-	}
-
 	// Check for pagination parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
@@ -3071,29 +2896,6 @@ type ProviderGovernanceResponse struct {
 
 // getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		var result []ProviderGovernanceResponse
-		for _, p := range data.Providers {
-			if p.Budget != nil || p.RateLimit != nil {
-				result = append(result, ProviderGovernanceResponse{
-					Provider:  p.Name,
-					Budget:    p.Budget,
-					RateLimit: p.RateLimit,
-				})
-			}
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"providers": result,
-			"count":     len(result),
-		})
-		return
-	}
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve providers: %v", err)
@@ -3365,44 +3167,6 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 	scope := string(ctx.QueryArgs().Peek("scope"))
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData(ctx)
-		if gd == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		inMemoryRules := gd.RoutingRules
-
-		// Filter rules by scope and scopeID
-		var rules []configstoreTables.TableRoutingRule
-		for _, rule := range inMemoryRules {
-			if scope != "" && rule.Scope != scope {
-				continue
-			}
-			if scopeID != "" {
-				ruleScope := ""
-				if rule.ScopeID != nil {
-					ruleScope = *rule.ScopeID
-				}
-				if ruleScope != scopeID {
-					continue
-				}
-			}
-			rules = append(rules, *rule)
-		}
-
-		SendJSON(ctx, map[string]interface{}{
-			"rules":       rules,
-			"count":       len(rules),
-			"total_count": len(rules),
-			"limit":       len(rules),
-			"offset":      0,
-		})
-		return
-	}
-
 	// If scope/scopeID filters are specified, use the existing non-paginated path
 	if scope != "" || scopeID != "" {
 		rules, err := h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
@@ -3496,41 +3260,15 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
 
-	var rule *configstoreTables.TableRoutingRule
-	var err error
-
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData(ctx)
-		if gd == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		inMemoryRules := gd.RoutingRules
-
-		// Find rule by ID in memory
-		for _, r := range inMemoryRules {
-			if r.ID == ruleID {
-				rule = r
-				break
-			}
-		}
-		if rule == nil {
+	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Routing rule not found")
 			return
 		}
-	} else {
-		rule, err = h.configStore.GetRoutingRule(ctx, ruleID)
-		if err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				SendError(ctx, 404, "Routing rule not found")
-				return
-			}
-			logger.Error("failed to get routing rule: %v", err)
-			SendError(ctx, 500, "Failed to retrieve routing rule")
-			return
-		}
+		logger.Error("failed to get routing rule: %v", err)
+		SendError(ctx, 500, "Failed to retrieve routing rule")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
