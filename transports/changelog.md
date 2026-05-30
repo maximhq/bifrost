@@ -1,30 +1,14 @@
-## ✨ Features
+## 🔒 Security
 
-- **Direct API Key Header** - Pass a provider API key directly via request header (#3817)
-- **MCP Per-User Authentication** - New per-user header auth type with credential storage and lazy-auth submission flow (#3703, #3704, #3705)
-- **MCP TLS Configuration** - Configurable TLS (insecureSkipVerify, caCertPem) for HTTP/SSE MCP client connections (#3779, #3783)
-- **MCP Sessions Management** - Filter, search, and pagination on the MCP sessions list API and table, plus a can_reauth identity gate (#3823, #3824, #3825)
-- **Tool Call Execution UI** - Inline tool-call execution, stop streaming, bulk execute/submit, and a redesigned tool-call UI (#3837, #3843)
-- **Dimension Rankings Dashboard** - New dashboard tabs for team, customer, BU, and user rankings, backed by a GetDimensionRankings API (#3766)
-- **Model Pricing Attributes** - additional_attributes on model pricing rows with management API and UI editor (#3829)
-- **Prompt Cache Retention** - Prompt cache retention parameter on responses requests (#3810)
-- **Opus 4.8 Support** - System message handling and compatibility for Opus 4.8 (#3878, #3868)
-- **Key Rotation** - Rotate keys on 401/402/403 and return 502 upstream_credentials_exhausted when all keys are permanently dead (#3491)
-- **OTel Metrics** - OTel spec compatible metrics plus provider and semantic cache attributes in metrics export (#3865, #3816)
-- **Sheet Navigation** - Prev/next keyboard navigation and URL state across virtual key, MCP client, and routing rule sheets (#3739, #3740, #3744, #3745)
-- **Go 1.26.3** - Upgraded toolchain to Go 1.26.3 (#3782)
+- **Go Dependency CVE Remediation** — Updated `golang.org/x` dependencies flagged by Docker Scout across all modules, clearing 20 advisories (severity up to 10.0). Verified with `govulncheck` against the live Go vulnerability database: zero vulnerabilities remain in any module (#3900).
+  - `golang.org/x/crypto` v0.49.0 → v0.52.0, `golang.org/x/net` v0.52.0 → v0.55.0, `golang.org/x/sys` v0.42.0 → v0.45.0, `golang.org/x/text` v0.35.0 → v0.37.0, `golang.org/x/term` v0.41.0 → v0.43.0 (cli)
+  - **Critical:** CVE-2026-46595 (10.0), CVE-2026-39821 (9.6), CVE-2026-39830, CVE-2026-39831, CVE-2026-39832, CVE-2026-39833, CVE-2026-39834, CVE-2026-42508 (9.1)
+  - **High:** CVE-2026-39829, CVE-2026-33814 (7.5)
+  - **Medium/Low:** CVE-2026-39827, CVE-2026-25680 (6.5), CVE-2026-39828 (6.3), CVE-2026-42506, CVE-2026-42502, CVE-2026-27136, CVE-2026-25681 (6.1), CVE-2026-46598, CVE-2026-39835 (5.3), CVE-2026-39824 (3.3)
+- **Removed standalone `wget` from container image** — The Alpine runtime image no longer installs the GNU `wget` package (carrier of CVE-2025-69194, 8.8); the `HEALTHCHECK` now uses the built-in busybox `wget` applet instead, eliminating the vulnerability with no functional change
 
 ## 🐞 Fixed
 
-- **Bedrock Tool Names** - Truncate Bedrock function/tool names to the provider length limit
-- **Bedrock Guardrails** - Set guardrail config in Bedrock request built from responses (#3862)
-- **Anthropic Tool Use** - Default Anthropic tool_use input to {} when arguments are absent (#3880)
-- **Responses Streaming** - Fixed responses stream events (#3838)
-- **Compat Flow** - Fixed missing parameter parsing on the compat flow (#3881)
-- **Passthrough API Version** - Set a default API version in passthrough requests as a fallback (#3853)
-- **Virtual Key Updates** - Avoid overriding optional fields during virtual key update (#3855)
-- **User-Mode Flows** - Gate user-mode flows on caller user_id, skip temp token mint, and unify flow/credential kind filtering for pending flows (#3841, #3859)
-- **Partial Tool Calls** - Handle partial tool call execution failures and return successful results (#3849)
-- **URL Query Escaping** - Support escaped characters in URL query parameters (#3826)
-- **MCP Auth Errors** - Inline banner and retry support for MCP auth-required errors (#3856)
-- **JSON Editor Height** - Cap JSON editor max height at 400px in message views (#3842)
+- **Ollama Streaming Auth** — Ollama streaming text and chat requests now forward the configured API key as an `Authorization: Bearer` header (#3906)
+- **SGL Streaming Auth** — SGL provider now sends the `Authorization` header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
+- **Governance & Logging APIs** — Removed the `from_memory` query parameter; virtual key and config list APIs now return consistent DB-backed results, with VK names batch-fetched in a single query (#3903)
