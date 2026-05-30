@@ -1,0 +1,2 @@
+- fix: send Authorization Bearer header on Ollama streaming text and chat completion requests (#3906)
+- fix: SGL provider now sends Authorization header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
