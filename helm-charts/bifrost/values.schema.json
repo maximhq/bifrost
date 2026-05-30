@@ -1227,6 +1227,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "encryption_status": {
+                    "type": "string",
+                    "enum": ["plain_text", "encrypted"]
+                  },
                   "provider_configs": {
                     "type": "array",
                     "items": {
