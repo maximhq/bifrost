@@ -572,7 +572,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.models = msg.models
 			if len(m.models) == 0 {
-				m.loadErr = "no models found \u2014 type a model name manually"
+				m.loadErr = m.emptyModelsMessage()
 				m.notify(m.loadErr, false)
 			}
 		}
@@ -949,6 +949,15 @@ func (m chooserModel) currentHarness() HarnessOption {
 		return m.cfg.Harnesses[len(m.cfg.Harnesses)-1]
 	}
 	return m.cfg.Harnesses[m.harnessIdx]
+}
+
+func (m chooserModel) emptyModelsMessage() string {
+	harness := strings.ToLower(strings.TrimSpace(m.currentHarness().ID))
+	if harness == "codex" {
+		return "no models found — Codex may still be using native auth/config; run /logout, point ~/.codex/config.toml to Bifrost, and relaunch Codex in the same shell"
+	}
+
+	return "no models found — type a model name manually"
 }
 
 // currentModel returns the currently selected model name from the visible
