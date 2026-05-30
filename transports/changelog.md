@@ -1,4 +1,4 @@
-## ✨ Features
+## 🔒 Security
 
 - **OpenAI Compaction** — Added OpenAI conversation compaction support across core, framework, logging, and the API surface (#4053)
 - **Multi-Customer & Org Hierarchy** — Logs and usage tracking now support multiple customers, teams, and business units, including business unit CRUD, team assignment, and governance endpoints in the OpenAPI spec (#4066, #4041, #4082)
