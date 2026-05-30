@@ -161,17 +161,8 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		connectedClientsMap[client.Config.ID] = client
 	}
 
-	// Build VK id→name lookup from in-memory governance data (no extra DB queries)
-	vkNameByID := make(map[string]string)
-	if h.governanceManager != nil {
-		if gd := h.governanceManager.GetGovernanceData(ctx); gd != nil {
-			for _, vk := range gd.VirtualKeys {
-				vkNameByID[vk.ID] = vk.Name
-			}
-		}
-	}
-
 	// Batch-fetch all VK assignments for this page in a single query, then group by client ID.
+	vkNameByID := make(map[string]string)
 	assignmentsByClientID := make(map[uint][]configstoreTables.TableVirtualKeyMCPConfig)
 	if h.store.ConfigStore != nil {
 		dbClientIDs := make([]uint, 0, len(dbClients))
@@ -181,6 +172,28 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		if allAssignments, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientIDs(ctx, dbClientIDs); err == nil {
 			for _, a := range allAssignments {
 				assignmentsByClientID[a.MCPClientID] = append(assignmentsByClientID[a.MCPClientID], a)
+			}
+		}
+		// Collect unique VK IDs across all assignments, then batch-fetch their names
+		// in a single query (avoids one GetVirtualKey round trip per unique VK ID).
+		uniqueVKIDs := make([]string, 0)
+		seenVirtualKeyIDs := make(map[string]struct{})
+		for _, assignments := range assignmentsByClientID {
+			for _, assignment := range assignments {
+				if _, ok := seenVirtualKeyIDs[assignment.VirtualKeyID]; ok {
+					continue
+				}
+				seenVirtualKeyIDs[assignment.VirtualKeyID] = struct{}{}
+				uniqueVKIDs = append(uniqueVKIDs, assignment.VirtualKeyID)
+			}
+		}
+		if len(uniqueVKIDs) > 0 {
+			if virtualKeys, err := h.store.ConfigStore.GetRedactedVirtualKeys(ctx, uniqueVKIDs); err == nil {
+				for _, virtualKey := range virtualKeys {
+					vkNameByID[virtualKey.ID] = virtualKey.Name
+				}
+			} else {
+				logger.Error("failed to batch-retrieve virtual keys for MCP client assignments: %v", err)
 			}
 		}
 	}
@@ -239,7 +252,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
 			}
 		}
-		// Enrich VK assignments using the pre-fetched batch result (no extra DB call per client)
+		// Enrich VK assignments using the pre-fetched batch result.
 		vkConfigs := []MCPVKConfigResponse{}
 		for _, a := range assignmentsByClientID[dbClient.ID] {
 			vkConfigs = append(vkConfigs, MCPVKConfigResponse{
@@ -1377,7 +1390,6 @@ func validateAllowedExtraHeaders(allowedExtraHeaders schemas.WhiteList) error {
 	}
 	return nil
 }
-
 
 func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExecute schemas.WhiteList) error {
 	if err := toolsToAutoExecute.Validate(); err != nil {

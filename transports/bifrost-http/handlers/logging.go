@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -47,6 +48,12 @@ const filterDataCacheTTL = 30 * time.Second
 const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
+
+// shouldUseFilterDataCache reports whether a filterdata response can be shared
+// across callers without bypassing DAC-scoped query constraints.
+func shouldUseFilterDataCache(ctx context.Context, query string) bool {
+	return strings.TrimSpace(query) == "" && queryscope.FromContext(ctx) == nil
+}
 
 // Filter dimension names accepted by the ?dimensions= query param on
 // /api/logs/filterdata. Each maps to one DB call and one response field.
@@ -1110,7 +1117,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
@@ -1919,7 +1926,7 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
