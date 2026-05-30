@@ -563,19 +563,14 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: block
-          # Migration test binary runs on the host (not in a container) and
-          # connects to Postgres via the published port mapping (5432:5432) at
-          # 127.0.0.1 (see run-migration-tests.sh:46, POSTGRES_HOST defaults to
-          # localhost). harden-runner filters on the post-NAT destination IP, so
-          # the published port DNATs to Postgres's pinned bridge IP 172.38.0.11 -
-          # that IP:port must be allowed. Keep in sync with the pinned IP in
-          # .github/workflows/configs/docker-compose.yml. (The 172.38.0.12
-          # weaviate entries are vestigial here - this job only starts postgres.)
+          # Migration test binaries run on the host (not in a container). In CI
+          # the job sets POSTGRES_HOST to Postgres's pinned bridge IP
+          # 172.38.0.11 so pgx does not expand localhost to ::1 and so
+          # harden-runner does not need to allow Docker DNAT'd localhost traffic.
+          # Keep in sync with the pinned IP in
+          # .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
-            127.0.0.1:5432
             172.38.0.11:5432
-            172.38.0.12:8080
-            172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -623,6 +618,11 @@ jobs:
           fi
 
       - name: Run migration tests
+        env:
+          # Use the pinned container IP in CI. The script keeps localhost as its
+          # default for local runs, but harden-runner can reset blocked localhost
+          # / IPv6-expanded Postgres connections on GitHub-hosted runners.
+          POSTGRES_HOST: 172.38.0.11
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres
