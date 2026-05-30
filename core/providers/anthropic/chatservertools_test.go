@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -213,8 +214,11 @@ func TestToAnthropicChatRequest_ServerTools(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
 			req := mk(tc.raw)
-			out, err := ToAnthropicChatRequest(nil, req)
+			out, err := ToAnthropicChatRequest(ctx, req)
 			if err != nil {
 				t.Fatalf("conversion failed: %v", err)
 			}
@@ -348,7 +352,9 @@ func TestToAnthropicChatRequest_ServerTools_ReproUserBug(t *testing.T) {
 		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
 		Params:   &schemas.ChatParameters{Tools: inner.Tools},
 	}
-	out, err := ToAnthropicChatRequest(nil, req)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	out, err := ToAnthropicChatRequest(ctx, req)
 	if err != nil {
 		t.Fatalf("conversion failed: %v", err)
 	}

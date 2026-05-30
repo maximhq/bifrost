@@ -1,0 +1,201 @@
+realtime:
+  get:
+    operationId: connectRealtime
+    summary: Realtime API WebSocket
+    description: |
+      Opens a bidirectional WebSocket session to a realtime-capable provider
+      (e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream
+      socket and applies governance, observability, and key selection on connect.
+
+      The target model is provided via the `model` query parameter (or `deployment`
+      for Azure-style routes). The OpenAI SDK sends the API key over the
+      `openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and
+      treats it the same as a Bearer header.
+
+      Inference auth applies — Bearer/Basic/Virtual Key/API Key headers are all
+      accepted, plus the subprotocol form above.
+    tags:
+    - Realtime
+    parameters:
+      - name: model
+        in: query
+        required: false
+        description: |
+          Provider model identifier in `provider/model` form (e.g. `openai/gpt-4o-realtime-preview`).
+          Either `model` or `deployment` must be supplied; requests with neither (or both) are rejected with HTTP 400 before the WebSocket upgrade completes.
+        schema:
+          type: string
+      - name: deployment
+        in: query
+        required: false
+        description: Azure deployment name (for Azure-style routes).
+        schema:
+          type: string
+      - name: Upgrade
+        in: header
+        required: true
+        description: Must be `websocket`
+        schema:
+          type: string
+          enum: [websocket]
+      - name: Sec-WebSocket-Protocol
+        in: header
+        required: false
+        description: |
+          Optional WebSocket subprotocol. Use `openai-insecure-api-key.<key>` to
+          authenticate when headers cannot be supplied by the client.
+        schema:
+          type: string
+    responses:
+      '101':
+        description: Switching Protocols — WebSocket upgrade succeeded
+      '400':
+        description: Invalid model/provider or unsupported realtime configuration
+      '401':
+        description: Authentication failed
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-calls:
+  post:
+    operationId: createRealtimeCall
+    summary: Realtime WebRTC SDP exchange
+    description: |
+      Negotiates a WebRTC peer connection with the realtime provider on behalf of
+      the client. Implements the OpenAI GA `/realtime/calls` contract: the request
+      body is `multipart/form-data` with `sdp` (client SDP offer) and `session`
+      (JSON session description containing `model`).
+
+      Bifrost forwards the offer to the upstream provider, returns the upstream
+      SDP answer to the client, and pipes RTP media between the two peers for the
+      lifetime of the session.
+
+      Inference auth applies (Bearer/Basic/Virtual Key/API Key).
+    tags:
+    - Realtime
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+              - sdp
+              - session
+            properties:
+              sdp:
+                type: string
+                description: Client-generated SDP offer
+              session:
+                type: string
+                description: |
+                  JSON-encoded session descriptor. `session.model` is required and
+                  must be in `provider/model` form.
+        application/sdp:
+          schema:
+            type: string
+            description: |
+              Legacy raw-SDP format (beta). When using this content type, supply
+              the model via the `?model=` query parameter instead of the session
+              JSON. Used by older OpenAI SDKs.
+    responses:
+      '200':
+        description: SDP answer from the upstream realtime provider
+        content:
+          application/sdp:
+            schema:
+              type: string
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Authentication failed
+      '502':
+        description: Upstream provider rejected the SDP exchange
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-client-secrets:
+  post:
+    operationId: createRealtimeClientSecret
+    summary: Mint a realtime ephemeral client secret
+    description: |
+      Calls the upstream realtime provider's `client_secrets` endpoint to mint a
+      short-lived ephemeral token (e.g. for browser-based WebRTC clients).
+      Bifrost selects a provider key, evaluates governance, and proxies the
+      response. The returned token is cached and mapped to the originating
+      virtual key for downstream attribution.
+
+      Request body must be JSON. `session.model` (or top-level `model`) must use
+      `provider/model` form.
+    tags:
+    - Realtime
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            description: Provider-specific realtime client-secret payload (passthrough).
+    responses:
+      '200':
+        description: Upstream client-secret response (provider passthrough)
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific response body
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Authentication failed
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-sessions:
+  post:
+    operationId: createRealtimeSession
+    summary: Mint a realtime session (legacy alias)
+    description: |
+      Legacy alias for the realtime client-secret minting endpoint. Behaves
+      identically to `createRealtimeClientSecret` but uses the `sessions` route
+      shape; provided for compatibility with older OpenAI Realtime client
+      libraries.
+    tags:
+    - Realtime
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            description: Provider-specific realtime session payload (passthrough).
+    responses:
+      '200':
+        description: Upstream session response (provider passthrough)
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific response body
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Authentication failed
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

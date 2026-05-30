@@ -9,7 +9,7 @@ export const toEnvVarFormValue = (field?: EnvVar | string): EnvVar => {
 		if (!value) return emptyEnvVar();
 		const isEnvRef = value.startsWith("env.");
 		return {
-			value,
+			value: isEnvRef ? "" : value,
 			env_var: isEnvRef ? value : "",
 			from_env: isEnvRef,
 		};
@@ -19,6 +19,11 @@ export const toEnvVarFormValue = (field?: EnvVar | string): EnvVar => {
 		env_var: field.env_var || "",
 		from_env: field.from_env ?? false,
 	};
+};
+
+export const toEnvVarMapFormValue = (map?: Record<string, string | EnvVar>): Record<string, EnvVar> => {
+	if (!map) return {};
+	return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, toEnvVarFormValue(v)]));
 };
 
 export const toOptionalEnvVarPayload = (field?: { value?: string; env_var?: string; from_env?: boolean }) => {

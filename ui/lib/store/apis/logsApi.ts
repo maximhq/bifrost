@@ -1,6 +1,7 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
@@ -14,6 +15,7 @@ import {
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
 	ProviderTokenHistogramResponse,
+	RankingDimension,
 	RecalculateCostResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
@@ -68,6 +70,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.cache_hit_types && filters.cache_hit_types.length > 0) {
+		params.cache_hit_types = filters.cache_hit_types.join(",");
+	}
 	if (filters.content_search) params.content_search = filters.content_search;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");
@@ -283,27 +288,60 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		getDimensionRankings: builder.query<
+			DimensionRankingsResponse,
+			{
+				filters: LogFilters;
+				dimension: RankingDimension;
+			}
+		>({
+			query: ({ filters, dimension }) => ({
+				url: "/logs/rankings/by-dimension",
+				params: { ...buildFilterParams(filters), dimension },
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
 			providesTags: ["Logs"],
 		}),
 
-		// Get available models
+		// Get available filter data. Pass `dimensions` to fetch only a subset of
+		// dropdowns — the backend runs only those SELECT DISTINCTs and caches the
+		// subset independently. Omitting `dimensions` returns everything (used by
+		// any caller that needs the full bundle).
 		getAvailableFilterData: builder.query<
 			{
-				models: string[];
-				aliases: string[];
-				selected_keys: RedactedDBKey[];
-				virtual_keys: VirtualKey[];
-				routing_rules: RoutingRule[];
-				routing_engines: string[];
-				stop_reasons: string[];
-				metadata_keys: Record<string, string[]>;
+				models?: string[];
+				aliases?: string[];
+				selected_keys?: RedactedDBKey[];
+				virtual_keys?: VirtualKey[];
+				routing_rules?: RoutingRule[];
+				routing_engines?: string[];
+				stop_reasons?: string[];
+				teams?: { id: string; name: string }[];
+				customers?: { id: string; name: string }[];
+				users?: { id: string; name: string }[];
+				business_units?: { id: string; name: string }[];
+				metadata_keys?: Record<string, string[]>;
 			},
-			void
+			{ dimensions?: string[]; q?: string } | void
 		>({
-			query: () => "/logs/filterdata",
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
+			},
 			providesTags: ["Logs"],
 		}),
 
@@ -359,7 +397,10 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useGetModelRankingsQuery,
+	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,
+	useLazyGetDimensionRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,

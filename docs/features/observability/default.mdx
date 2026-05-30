@@ -33,31 +33,48 @@ Bifrost traces comprehensive information for every request, without any changes 
 
 ### **Retry & Key Selection** <sup>v1.5.0-prerelease4+</sup>
 
-When Bifrost retries a request (rate-limit or network error) the following fields are recorded:
+When Bifrost retries a request (per-key failure or transient network/5xx error) the following fields are recorded:
 
 | Field | Meaning |
 |-------|---------|
 | `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed - use `attempt_trail` to see which keys were tried. |
 | `number_of_retries` | Total number of attempts minus one. **Does not indicate which key was used on each attempt.** |
-| `attempt_trail` | Ordered array of every attempt, with key used and failure reason. `fail_reason` is `null` on the final attempt. |
+| `attempt_trail` | Ordered array of every attempt. Each entry contains `attempt`, `key_id`, `key_name`, `fail_reason` (set on every failed attempt — including the terminal one — and omitted from the JSON on a successful attempt), and `triggered_rotation` (always present; `true` only when this attempt's per-key failure — rate-limit (429), auth (401/403), or billing (402) — caused the next retry to switch to a different key, `false` otherwise). |
 
-**Example `attempt_trail`** - two rate-limit rotations then success on a third key:
+**Example `attempt_trail`** — two rate-limit rotations then success on a third key:
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
-  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error" },
-  { "attempt": 2, "key_id": "key-c", "key_name": "Key C", "fail_reason": null }
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "triggered_rotation": true },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error", "triggered_rotation": true },
+  { "attempt": 2, "key_id": "key-c", "key_name": "Key C", "triggered_rotation": false }
 ]
 ```
 
-Network-error retries reuse the same key; only rate-limit errors rotate to a different key:
+Auth and billing failures (401/402/403) also rotate to a different key, since the failure is bound to the credential. `fail_reason` is `authentication_error` (401/403) or `billing_error` (402):
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "network_error" },
-  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error" },
-  { "attempt": 2, "key_id": "key-b", "key_name": "Key B", "fail_reason": null }
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "authentication_error", "triggered_rotation": true },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "triggered_rotation": false }
+]
+```
+
+Network/5xx retries reuse the same key — they are transient server issues, not per-key problems. `triggered_rotation` is therefore `false` on network-error attempts even when a retry follows:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "network_error", "triggered_rotation": false },
+  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "triggered_rotation": true },
+  { "attempt": 2, "key_id": "key-b", "key_name": "Key B", "triggered_rotation": false }
+]
+```
+
+For terminal failures (no retry happens, including `max_retries = 0` and non-retryable errors), the trail has a single entry with `fail_reason` set and `triggered_rotation` `false`:
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "invalid_request_error", "triggered_rotation": false }
 ]
 ```
 

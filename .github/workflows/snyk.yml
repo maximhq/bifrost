@@ -3,8 +3,6 @@ name: Snyk checks
 on:
   push:
     branches: [main, master, "**/*"]
-  pull_request:
-    branches: ["**/*"]
   workflow_dispatch:
 
 permissions:
@@ -61,7 +59,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -134,7 +132,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Setup Go workspace
         run: make setup-workspace

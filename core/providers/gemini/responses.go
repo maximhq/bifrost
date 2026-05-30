@@ -22,8 +22,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	params := request.convertGenerationConfigToResponsesParameters()
@@ -61,6 +62,11 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.ExtraParams["safety_settings"] = request.SafetySettings
 	}
 
+	if request.ServiceTier != "" {
+		mapped := mapGeminiServiceTierToBifrost(request.ServiceTier)
+		params.ServiceTier = &mapped
+	}
+
 	if request.CachedContent != "" {
 		params.ExtraParams["cached_content"] = request.CachedContent
 	}
@@ -68,7 +74,6 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	bifrostReq.Params = params
 
 	return bifrostReq
-
 }
 
 func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
@@ -93,12 +98,19 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
 
 			// Convert tool choice if present
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
 	}
 
@@ -159,6 +171,15 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
+	}
 
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
@@ -466,6 +487,16 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	if bifrostResp.Usage != nil {
 		geminiResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Usage)
 	}
+	if bifrostResp.ServiceTier != nil {
+		if geminiResp.UsageMetadata == nil {
+			geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+		}
+		if bifrostResp.ExtraFields.Provider == schemas.Vertex {
+			geminiResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.ServiceTier)
+		} else {
+			geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+		}
+	}
 
 	return geminiResp
 }
@@ -718,6 +749,16 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			// Convert usage metadata if available
 			if bifrostResp.Response.Usage != nil {
 				streamResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Response.Usage)
+			}
+			if bifrostResp.Response.ServiceTier != nil {
+				if streamResp.UsageMetadata == nil {
+					streamResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+				}
+				if bifrostResp.Response.ExtraFields.Provider == schemas.Vertex {
+					streamResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.Response.ServiceTier)
+				} else {
+					streamResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.Response.ServiceTier)
+				}
 			}
 
 			// Derive finish reason from StopReason when present
@@ -1610,10 +1651,11 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 	})
 
-	// Emit content_part.done
+	// Emit content_part.done with accumulated text
+	partText := fullText
 	part := &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesOutputMessageContentTypeText,
-		Text: schemas.Ptr(""),
+		Text: &partText,
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1628,13 +1670,23 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		Part:           part,
 	})
 
-	// Emit output_item.done
+	// Emit output_item.done with content blocks
+	itemText := fullText
 	doneItem := &schemas.ResponsesMessage{
 		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Status: schemas.Ptr("completed"),
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &itemText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					},
+				},
+			},
 		},
 	}
 	if itemID != "" {
@@ -1807,6 +1859,14 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
+	}
+	if usage != nil {
+		if t := mapGeminiTrafficTypeToBifrost(usage.TrafficType); t != nil {
+			completedResp.ServiceTier = t
+		} else if usage.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(usage.ServiceTier)
+			completedResp.ServiceTier = &tier
+		}
 	}
 	if state.Model != nil {
 		completedResp.Model = *state.Model
@@ -2191,6 +2251,16 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 				if fn.Parameters != nil {
 					params := convertSchemaToFunctionParameters(fn.Parameters)
 					responsesTool.ResponsesToolFunction.Parameters = &params
+				} else if fn.ParametersJSONSchema != nil {
+					raw, err := providerUtils.MarshalSorted(fn.ParametersJSONSchema)
+					if err != nil {
+						continue
+					}
+					var params schemas.ToolFunctionParameters
+					if err := json.Unmarshal(raw, &params); err != nil {
+						continue
+					}
+					responsesTool.ResponsesToolFunction.Parameters = &params
 				}
 				responsesTools = append(responsesTools, responsesTool)
 			}
@@ -2212,6 +2282,8 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	switch toolConfig.FunctionCallingConfig.Mode {
 	case FunctionCallingConfigModeAuto:
 		toolChoice.Mode = schemas.Ptr("auto")
+	case FunctionCallingConfigModeAny:
+		toolChoice.Mode = schemas.Ptr("required")
 	case FunctionCallingConfigModeNone:
 		toolChoice.Mode = schemas.Ptr("none")
 	default:
@@ -2493,8 +2565,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				},
 			}
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
-				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query =
-					schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
@@ -2778,7 +2849,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 }
 
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error) {
 	geminiTool := Tool{}
 
 	hasWebSearchTool := false
@@ -2804,12 +2875,13 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 							}
 							return ""
 						}(),
-						Parameters: func() *Schema {
-							if tool.ResponsesToolFunction.Parameters != nil {
-								return convertFunctionParametersToSchema(*tool.ResponsesToolFunction.Parameters)
-							}
-							return nil
-						}(),
+					}
+					if tool.ResponsesToolFunction.Parameters != nil {
+						raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
+						if err != nil {
+							return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+						}
+						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
 					}
 					geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, funcDecl)
 				}
@@ -2832,9 +2904,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 	}
 
 	if len(geminiTool.FunctionDeclarations) > 0 || geminiTool.GoogleSearch != nil {
-		return []Tool{geminiTool}
+		return []Tool{geminiTool}, nil
 	}
-	return []Tool{}
+	return []Tool{}, nil
 }
 
 // convertResponsesToolChoiceToGemini converts Responses tool choice to Gemini tool config
@@ -2857,8 +2929,21 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 		}
 
 		if ext.Name != nil {
-			funcConfig.Mode = FunctionCallingConfigModeAny
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
 			funcConfig.AllowedFunctionNames = []string{*ext.Name}
+		}
+
+		if len(ext.Tools) > 0 {
+			if ext.Mode == nil {
+				funcConfig.Mode = FunctionCallingConfigModeAny
+			}
+			for _, tool := range ext.Tools {
+				if tool.Name != nil {
+					funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, *tool.Name)
+				}
+			}
 		}
 
 		config.FunctionCallingConfig = funcConfig
@@ -2884,6 +2969,32 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		content := Content{Role: "user"}
+		if messages[0].Content != nil {
+			if messages[0].Content.ContentStr != nil && *messages[0].Content.ContentStr != "" {
+				content.Parts = append(content.Parts, &Part{
+					Text: *messages[0].Content.ContentStr,
+				})
+			}
+			if messages[0].Content.ContentBlocks != nil {
+				for _, block := range messages[0].Content.ContentBlocks {
+					part, err := convertContentBlockToGeminiPart(block)
+					if err != nil {
+						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
+					}
+					if part != nil {
+						content.Parts = append(content.Parts, part)
+					}
+				}
+			}
+		}
+		if len(content.Parts) > 0 {
+			return []Content{content}, nil, nil
+		}
+	}
+
 	var contents []Content
 	var systemInstruction *Content
 
@@ -2912,7 +3023,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		}
 
 		// Handle system messages separately
-		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -2948,7 +3059,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
 			contents = append(contents, Content{
 				Parts: pendingFunctionResponseParts,
-				Role:  "model", // Function responses use "model" role in Gemini
+				Role:  "user", // Function responses use "user" role in Gemini
 			})
 			pendingFunctionResponseParts = nil
 		}
@@ -3106,7 +3217,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
 						contents = append(contents, Content{
 							Parts: pendingFunctionResponseParts,
-							Role:  "model",
+							Role:  "user",
 						})
 						pendingFunctionResponseParts = nil
 					}

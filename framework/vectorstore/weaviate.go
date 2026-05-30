@@ -476,6 +476,12 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 }
 
 func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, dimension int, properties map[string]VectorStoreProperties) error {
+	// Reject names Weaviate would silently auto-capitalize: writes via REST
+	// route fine, but the GraphQL read path is case-strict and breaks.
+	if err := validateClassName(className); err != nil {
+		return err
+	}
+
 	// Check if class exists
 	exists, err := s.client.Schema().ClassExistenceChecker().
 		WithClassName(className).
@@ -485,7 +491,7 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 	}
 
 	if exists {
-		return nil // Schema already exists
+		return nil
 	}
 
 	// Create properties
@@ -636,4 +642,21 @@ func convertOperator(op QueryOperator) filters.WhereOperator {
 		// Default to Equal if unknown
 		return filters.Equal
 	}
+}
+
+// validateClassName enforces Weaviate's class-name rule that the first
+// character must be an uppercase ASCII letter. Weaviate's REST endpoints
+// silently auto-capitalize a lowercase first character on class creation,
+// which means writes appear to succeed under the user-supplied name but
+// GraphQL reads (which are case-strict) then fail with "Did you mean
+// <Capitalized>?". Surface this at config-save time instead.
+func validateClassName(name string) error {
+	if name == "" {
+		return nil
+	}
+	first := name[0]
+	if first < 'A' || first > 'Z' {
+		return fmt.Errorf("Weaviate requires class names to start with an uppercase letter (A-Z); got %q. Try %q", name, strings.ToUpper(name[:1])+name[1:])
+	}
+	return nil
 }

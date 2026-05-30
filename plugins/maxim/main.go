@@ -569,7 +569,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 			// Use central tracer's accumulator
 			tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
 			if err == nil && tracer != nil && bifrostTraceID != "" {
-				accResult := tracer.ProcessStreamingChunk(bifrostTraceID, isFinalChunk, result, bifrostErr)
+				accResult := tracer.ProcessStreamingChunk(ctx, bifrostTraceID, isFinalChunk, result, bifrostErr)
 				if accResult != nil {
 					streamResponse = convertAccResultToProcessedStreamResponse(accResult)
 				}

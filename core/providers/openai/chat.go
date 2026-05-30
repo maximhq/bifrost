@@ -56,6 +56,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
+		openaiReq.normalizeReasoningEffort()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters()
@@ -103,34 +104,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	if req.ChatParameters.Reasoning != nil {
-		reasoningCopy := *req.ChatParameters.Reasoning
-		req.ChatParameters.Reasoning = &reasoningCopy
-		if req.ChatParameters.Reasoning.Effort != nil {
-			// Native field is provided, use it (and clear max_tokens)
-			effort := *req.ChatParameters.Reasoning.Effort
-			// Convert "minimal" to "low"; cap "xhigh"/"max" to "high" — OpenAI tops out at high.
-			switch effort {
-			case "minimal":
-				req.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
-			case "xhigh", "max":
-				req.ChatParameters.Reasoning.Effort = schemas.Ptr("high")
-			}
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
-		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
-			// Estimate effort from max_tokens
-			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
-			if req.ChatParameters.MaxCompletionTokens != nil {
-				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
-			}
-			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
-		}
-	}
+	req.normalizeReasoningEffort()
 
 	if req.ChatParameters.Prediction != nil {
 		req.ChatParameters.Prediction = nil
@@ -152,6 +126,31 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	}
 }
 
+func (req *OpenAIChatRequest) normalizeReasoningEffort() {
+	if req.ChatParameters.Reasoning != nil {
+		reasoningCopy := *req.ChatParameters.Reasoning
+		req.ChatParameters.Reasoning = &reasoningCopy
+		if req.ChatParameters.Reasoning.Effort != nil {
+			// Native field is provided, use it (and clear max_tokens)
+			effort := *req.ChatParameters.Reasoning.Effort
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(req.Model, effort))
+			// Clear max_tokens since OpenAI doesn't use it
+			req.ChatParameters.Reasoning.MaxTokens = nil
+		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
+			// Estimate effort from max_tokens
+			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
+			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
+			if req.ChatParameters.MaxCompletionTokens != nil {
+				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
+			}
+			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+			// Clear max_tokens since OpenAI doesn't use it
+			req.ChatParameters.Reasoning.MaxTokens = nil
+		}
+	}
+}
+
 // applyMistralCompatibility applies Mistral-specific transformations to the request
 func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	// Mistral uses max_tokens instead of max_completion_tokens
@@ -164,6 +163,13 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	if req.ToolChoice != nil && req.ToolChoice.ChatToolChoiceStruct != nil {
 		req.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
 		req.ToolChoice.ChatToolChoiceStruct = nil
+	}
+
+	// Mistral only support reasoning effort "none" and "high"
+	if req.Reasoning != nil && req.Reasoning.Effort != nil {
+		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
+			req.Reasoning.Effort = schemas.Ptr("high")
+		}
 	}
 }
 

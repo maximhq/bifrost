@@ -2,22 +2,23 @@
 package schemas
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
-	RequestID  string         // Request ID for the trace
-	TraceID    string         // Unique identifier for this trace
-	ParentID   string         // Parent trace ID from incoming W3C traceparent header
-	RootSpan   *Span          // The root span of this trace
-	Spans      []*Span        // All spans in this trace
-	StartTime  time.Time      // When the trace started
-	EndTime    time.Time      // When the trace completed
-	Attributes map[string]any // Additional attributes for the trace
+	RequestID  string           // Request ID for the trace
+	TraceID    string           // Unique identifier for this trace
+	ParentID   string           // Parent trace ID from incoming W3C traceparent header
+	RootSpan   *Span            // The root span of this trace
+	Spans      []*Span          // All spans in this trace
+	StartTime  time.Time        // When the trace started
+	EndTime    time.Time        // When the trace completed
+	Attributes map[string]any   // Additional attributes for the trace
 	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
-	mu         sync.Mutex     // Mutex for thread-safe span operations
+	mu         sync.Mutex       // Mutex for thread-safe span operations
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -164,6 +165,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
+	// These run in the background per-client and are not part of an LLM request flow.
+	SpanKindMCPClient SpanKind = "mcp.client"
 	// SpanKindRetry represents a retry attempt
 	SpanKindRetry SpanKind = "retry"
 	// SpanKindFallback represents a fallback to another provider
@@ -197,8 +201,9 @@ const (
 // and are compatible with both OTEL and Datadog backends.
 const (
 	// Provider and Model Attributes
-	AttrProviderName = "gen_ai.provider.name"
-	AttrRequestModel = "gen_ai.request.model"
+	AttrProviderName  = "gen_ai.provider.name"
+	AttrRequestModel  = "gen_ai.request.model"
+	AttrOperationName = "gen_ai.operation.name"
 
 	// Request Parameter Attributes
 	AttrMaxTokens        = "gen_ai.request.max_tokens"
@@ -213,11 +218,16 @@ const (
 	AttrEcho             = "gen_ai.request.echo"
 	AttrLogitBias        = "gen_ai.request.logit_bias"
 	AttrLogProbs         = "gen_ai.request.logprobs"
-	AttrN                = "gen_ai.request.n"
+	AttrN                = "gen_ai.request.n" // legacy: replaced by AttrChoiceCount
+	AttrChoiceCount      = "gen_ai.request.choice.count"
+	// AttrEmbeddingsDimensionCount is the OTel spec key for embedding dimensions
+	// (Bifrost historically emitted AttrDimensions = gen_ai.request.dimensions).
+	AttrEmbeddingsDimensionCount = "gen_ai.embeddings.dimension.count"
 	AttrSeed             = "gen_ai.request.seed"
 	AttrSuffix           = "gen_ai.request.suffix"
-	AttrDimensions       = "gen_ai.request.dimensions"
-	AttrEncodingFormat   = "gen_ai.request.encoding_format"
+	AttrDimensions       = "gen_ai.request.dimensions"      // legacy: replaced by AttrEmbeddingsDimensionCount
+	AttrEncodingFormat   = "gen_ai.request.encoding_format" // legacy: singular form; replaced by AttrEncodingFormats (string[])
+	AttrEncodingFormats  = "gen_ai.request.encoding_formats"
 	AttrLanguage         = "gen_ai.request.language"
 	AttrPrompt           = "gen_ai.request.prompt"
 	AttrResponseFormat   = "gen_ai.request.response_format"
@@ -237,7 +247,8 @@ const (
 	AttrServiceTier      = "gen_ai.response.service_tier"
 	AttrCreated          = "gen_ai.response.created"
 	AttrObject           = "gen_ai.response.object"
-	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token"
+	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token" // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk (seconds)
+	AttrTimeToFirstChunk = "gen_ai.response.time_to_first_chunk"
 	AttrTotalChunks      = "gen_ai.response.total_chunks"
 
 	// Plugin Attributes (for aggregated streaming post-hook spans)
@@ -247,29 +258,43 @@ const (
 	AttrPluginErrorCount      = "plugin.error_count"
 
 	// Usage Attributes
+	// legacy: AttrPromptTokens / AttrCompletionTokens are the deprecated OTel names;
+	// new code should use AttrInputTokens / AttrOutputTokens. Kept for dashboards.
 	AttrPromptTokens     = "gen_ai.usage.prompt_tokens"
 	AttrCompletionTokens = "gen_ai.usage.completion_tokens"
 	AttrTotalTokens      = "gen_ai.usage.total_tokens"
 	AttrInputTokens      = "gen_ai.usage.input_tokens"
 	AttrOutputTokens     = "gen_ai.usage.output_tokens"
 	AttrUsageCost        = "gen_ai.usage.cost"
+	// OTel GenAI spec keys for cache tokens (flat namespace).
+	AttrUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
+	AttrUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
+	// OTel GenAI spec key for reasoning tokens (flat namespace).
+	AttrUsageReasoningOutputTokens = "gen_ai.usage.reasoning.output_tokens"
 	// Chat completion usage detail attributes
-	AttrPromptTokenDetailsText        = "gen_ai.usage.prompt_token_details.text_tokens"
-	AttrPromptTokenDetailsAudio       = "gen_ai.usage.prompt_token_details.audio_tokens"
-	AttrPromptTokenDetailsImage       = "gen_ai.usage.prompt_token_details.image_tokens"
-	AttrPromptTokenDetailsCachedRead  = "gen_ai.usage.prompt_token_details.cached_read_tokens"
-	AttrPromptTokenDetailsCachedWrite = "gen_ai.usage.prompt_token_details.cached_write_tokens"
-	AttrCompletionTokenDetailsText    = "gen_ai.usage.completion_token_details.text_tokens"
-	AttrCompletionTokenDetailsAudio   = "gen_ai.usage.completion_token_details.audio_tokens"
-	AttrCompletionTokenDetailsImage   = "gen_ai.usage.completion_token_details.image_tokens"
-	AttrCompletionTokenDetailsReason  = "gen_ai.usage.completion_token_details.reasoning_tokens"
-	AttrCompletionTokenDetailsAccept  = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
-	AttrCompletionTokenDetailsReject  = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
-	AttrCompletionTokenDetailsCite    = "gen_ai.usage.completion_token_details.citation_tokens"
-	AttrCompletionTokenDetailsSearch  = "gen_ai.usage.completion_token_details.num_search_queries"
+	// legacy: nested namespace; OTel spec uses flat gen_ai.usage.cache_read.input_tokens
+	// and gen_ai.usage.cache_creation.input_tokens for the cached_* entries. The
+	// non-cached fields below have no spec equivalent and stay as-is.
+	AttrPromptTokenDetailsText          = "gen_ai.usage.prompt_token_details.text_tokens"
+	AttrPromptTokenDetailsAudio         = "gen_ai.usage.prompt_token_details.audio_tokens"
+	AttrPromptTokenDetailsImage         = "gen_ai.usage.prompt_token_details.image_tokens"
+	AttrPromptTokenDetailsCachedRead    = "gen_ai.usage.prompt_token_details.cached_read_tokens"  // legacy: see AttrUsageCacheReadInputTokens
+	AttrPromptTokenDetailsCachedWrite   = "gen_ai.usage.prompt_token_details.cached_write_tokens" // legacy: see AttrUsageCacheCreationInputTokens
+	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
+	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
+	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
+	AttrCompletionTokenDetailsAudio     = "gen_ai.usage.completion_token_details.audio_tokens"
+	AttrCompletionTokenDetailsImage     = "gen_ai.usage.completion_token_details.image_tokens"
+	AttrCompletionTokenDetailsReason    = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	AttrCompletionTokenDetailsAccept    = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
+	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
+	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
+	AttrCompletionTokenDetailsSearch    = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
-	AttrError     = "gen_ai.error"
+	AttrError = "gen_ai.error"
+	// legacy: AttrErrorType is the gen_ai.* placement; OTel general semconv uses the
+	// unprefixed "error.type". Emitted in parallel from PopulateErrorAttributes.
 	AttrErrorType = "gen_ai.error.type"
 	AttrErrorCode = "gen_ai.error.code"
 
@@ -281,6 +306,10 @@ const (
 	AttrOutputMessages = "gen_ai.output.messages"
 
 	// Bifrost Context Attributes
+	// legacy: every key below sits under gen_ai.* but represents a Bifrost-internal
+	// concept (governance / routing). The bifrost.* mirrors are the canonical home
+	// going forward; these will be dropped once dashboards migrate.
+	AttrRequestID       = "gen_ai.request_id"
 	AttrVirtualKeyID    = "gen_ai.virtual_key_id"
 	AttrVirtualKeyName  = "gen_ai.virtual_key_name"
 	AttrSelectedKeyID   = "gen_ai.selected_key_id"
@@ -293,6 +322,9 @@ const (
 	AttrCustomerName    = "gen_ai.customer_name"
 	AttrNumberOfRetries = "gen_ai.number_of_retries"
 	AttrFallbackIndex   = "gen_ai.fallback_index"
+
+	// Extra Header Attributes
+	AttrExtraHeaderPrefix = "gen_ai.request.extra_header."
 
 	// Responses API Request Attributes
 	AttrPromptCacheKey      = "gen_ai.request.prompt_cache_key"
@@ -371,6 +403,65 @@ const (
 	AttrInputTokenDetailsText  = "gen_ai.usage.input_token_details.text_tokens"
 	AttrInputTokenDetailsAudio = "gen_ai.usage.input_token_details.audio_tokens"
 
+	// Responses API usage detail attributes
+	AttrInputTokenDetailsImage         = "gen_ai.usage.input_token_details.image_tokens"
+	AttrInputTokenDetailsCachedRead    = "gen_ai.usage.input_token_details.cached_read_tokens"
+	AttrInputTokenDetailsCachedWrite   = "gen_ai.usage.input_token_details.cached_write_tokens"
+	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
+	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
+	AttrOutputTokenDetailsText         = "gen_ai.usage.output_token_details.text_tokens"
+	AttrOutputTokenDetailsAudio        = "gen_ai.usage.output_token_details.audio_tokens"
+	AttrOutputTokenDetailsImage        = "gen_ai.usage.output_token_details.image_tokens"
+	AttrOutputTokenDetailsReason       = "gen_ai.usage.output_token_details.reasoning_tokens"
+	AttrOutputTokenDetailsAccept       = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
+	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
+	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
+	AttrOutputTokenDetailsSearch       = "gen_ai.usage.output_token_details.num_search_queries"
+
+	// Tool execution attributes (OTel GenAI spec) used on MCP tool spans.
+	AttrToolName            = "gen_ai.tool.name"
+	AttrToolCallID          = "gen_ai.tool.call.id"
+	AttrToolCallArguments   = "gen_ai.tool.call.arguments"
+	AttrToolCallResult      = "gen_ai.tool.call.result"
+	AttrToolType            = "gen_ai.tool.type"
+
+	// =====================================================================
+	// Bifrost-namespaced attributes (bifrost.*)
+	//
+	// Canonical home for everything that is NOT part of the OTel GenAI spec:
+	//   - Bifrost-internal concepts (routing/governance, request id, retry counters)
+	//   - Raw Bifrost short names that mirror canonicalized gen_ai.* values
+	//   - Back-compat fallbacks for shape changes (e.g. comma-joined stop_sequences)
+	//
+	// The corresponding legacy gen_ai.* emissions are tagged "// legacy:" at their
+	// call sites and will be removed once dashboards migrate over.
+	// =====================================================================
+	AttrBifrostProviderName       = "bifrost.provider.name"
+	AttrBifrostRequestID          = "bifrost.request.id"
+	AttrBifrostVirtualKeyID       = "bifrost.virtual_key.id"
+	AttrBifrostVirtualKeyName     = "bifrost.virtual_key.name"
+	AttrBifrostSelectedKeyID      = "bifrost.selected_key.id"
+	AttrBifrostSelectedKeyName    = "bifrost.selected_key.name"
+	AttrBifrostRoutingRuleID      = "bifrost.routing_rule.id"
+	AttrBifrostRoutingRuleName    = "bifrost.routing_rule.name"
+	AttrBifrostTeamID             = "bifrost.team.id"
+	AttrBifrostTeamName           = "bifrost.team.name"
+	AttrBifrostCustomerID         = "bifrost.customer.id"
+	AttrBifrostCustomerName       = "bifrost.customer.name"
+	AttrBifrostRetries            = "bifrost.retries"
+	AttrBifrostFallbackIndex      = "bifrost.fallback_index"
+	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
+
+	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy
+	// gen_ai.error.type from PopulateErrorAttributes.
+	AttrErrorTypeSpec = "error.type"
+
+	// legacy: bare unprefixed keys retained for back-compat with existing dashboards.
+	// "request.type" is superseded by AttrOperationName; "retry.count" has no spec
+	// equivalent but stays under bifrost.retries going forward.
+	AttrLegacyRequestType = "request.type"
+	AttrLegacyRetryCount  = "retry.count"
+
 	// File Operation Attributes
 	AttrFileID             = "gen_ai.file.id"
 	AttrFileObject         = "gen_ai.file.object"
@@ -389,3 +480,30 @@ const (
 	AttrFileAfter          = "gen_ai.file.after"
 	AttrFileOrder          = "gen_ai.file.order"
 )
+
+// RedactedAttrValue is the placeholder recorded in place of a sensitive header
+// value, following the OpenTelemetry HTTP semantic-convention guidance for
+// redacting credentials.
+const RedactedAttrValue = "REDACTED"
+
+// IsSensitiveHeader reports whether a header name carries credentials that must
+// not be exported verbatim into span attributes. The match is case-insensitive
+// and trims surrounding whitespace so callers using the core SDK directly (which
+// bypass the transport-layer security denylist) are still protected. Beyond the
+// well-known exact names, substring/suffix patterns catch credential-bearing
+// variants like x-auth-token, x-amz-security-token, and provider-specific
+// *-api-key headers.
+func IsSensitiveHeader(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+		return true
+	}
+
+	return strings.Contains(normalized, "api-key") ||
+		strings.Contains(normalized, "authorization") ||
+		strings.Contains(normalized, "secret") ||
+		strings.HasSuffix(normalized, "-token") ||
+		strings.HasSuffix(normalized, "_token")
+}

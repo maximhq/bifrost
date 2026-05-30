@@ -355,8 +355,15 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		return nil, nil
 	}
 
-	// If no body, check if large payload mode is active for read-only governance
+	// If no body, check if the request carries a model via query params (e.g. realtime
+	// WebSocket upgrades: GET /v1/realtime?model=... or Azure preview ?deployment=...)
+	// or if large payload mode is active.
+	// For query-param-based models we build a synthetic payload so routing rules and VK
+	// load-balancing can rewrite provider/model, then propagate changes back to the query.
 	if len(req.Body) == 0 {
+		if modelParam := realtimeModelQueryParam(req); modelParam != "" {
+			return p.governRealtimeQueryParam(ctx, req, virtualKeyValue, hasRoutingRules)
+		}
 		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 		if !isLargePayload {
 			return nil, nil
@@ -572,6 +579,93 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	return nil, nil
 }
 
+// realtimeModelQueryParam returns the query parameter used as the realtime model selector.
+// Azure preview realtime uses `deployment`, while GA/OpenAI-compatible paths use `model`.
+func realtimeModelQueryParam(req *schemas.HTTPRequest) string {
+	if req == nil || req.Query == nil {
+		return ""
+	}
+	if modelParam := req.Query["model"]; modelParam != "" {
+		return modelParam
+	}
+	return req.Query["deployment"]
+}
+
+// governRealtimeQueryParam handles governance for bodyless realtime requests
+// (e.g. WebSocket upgrade GET /v1/realtime?model=... or Azure preview
+// /realtime?deployment=...) where the model lives in a query parameter instead
+// of the JSON body. We build a synthetic payload so routing rules and VK
+// load-balancing can evaluate normally, then propagate any model rewrite back
+// to the original query param for the downstream handler to pick up.
+func (p *GovernancePlugin) governRealtimeQueryParam(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
+	modelQueryKey := "model"
+	modelParam := req.Query[modelQueryKey]
+	if modelParam == "" {
+		modelQueryKey = "deployment"
+		modelParam = req.Query[modelQueryKey]
+	}
+	if modelParam == "" {
+		return nil, nil
+	}
+
+	payload := map[string]any{
+		"model": modelParam,
+	}
+	originalModel := modelParam
+
+	// Process virtual key if provided
+	var virtualKey *configstoreTables.TableVirtualKey
+	if virtualKeyValue != nil {
+		vk, ok := p.store.GetVirtualKey(ctx, *virtualKeyValue)
+		if !ok || vk == nil || !vk.IsActiveValue() {
+			return nil, nil
+		}
+		virtualKey = vk
+	}
+
+	// Attaching team and customer based on the virtual key
+	if virtualKey != nil {
+		if virtualKey.TeamID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
+		}
+		if virtualKey.Team != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		}
+		if virtualKey.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
+		}
+		if virtualKey.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+		}
+	}
+
+	// Apply routing rules
+	if hasRoutingRules {
+		var err error
+		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Process virtual key: load balance provider
+	if virtualKey != nil {
+		var err error
+		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Propagate model changes back to the original query param so the downstream
+	// realtime handler sees the routed/load-balanced model.
+	if newModel, ok := payload["model"].(string); ok && newModel != originalModel {
+		req.Query[modelQueryKey] = newModel
+	}
+
+	return nil, nil
+}
+
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
 // It modifies the response in-place and returns nil to continue
 func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
@@ -673,8 +767,22 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	p.logger.Debug("[Governance] Virtual key has %d provider configs: %v", len(providerConfigs), configuredProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing model %s across %d configured providers: %v", modelStr, len(providerConfigs), configuredProviders))
 
+	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
+	blacklistedProviders := make(map[string]bool)
+	for _, config := range providerConfigs {
+		if isModelBlockedByList(config.BlacklistedModels, modelStr) {
+			blacklistedProviders[config.Provider] = true
+		}
+	}
+
 	allowedProviderConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0)
 	for _, config := range providerConfigs {
+		// Blacklist check wins over allowlist (same as provider-key enforcement)
+		if blacklistedProviders[config.Provider] {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is blacklisted", config.Provider, modelStr))
+			continue
+		}
+
 		// Delegate model allowance check to model catalog
 		// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 		// and provider-prefixed allowed_models entries
@@ -1100,8 +1208,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 		p.cfgMutex.RUnlock()
 		return nil, &schemas.BifrostError{
-			Type:       bifrost.Ptr("virtual_key_required"),
-			StatusCode: bifrost.Ptr(401),
+			Type:       new("virtual_key_required"),
+			StatusCode: new(401),
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
@@ -1128,18 +1236,22 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 
+	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
+	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
+	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
+
 	// Step 1: Evaluate virtual key (identity + VK-level budget/rate-limit hierarchy).
 	// Short-circuits with VirtualKeyBlocked / ProviderBlocked / ModelBlocked before
 	// we touch Customer / Team / User.
 	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-		skipVKBudgetLimit := evaluationRequest.UserID != ""
+		skipVKBudgetLimit := evaluationRequest.UserID != "" || skipBudgetsAndRateLimits
 		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, skipVKBudgetLimit)
 	}
 
 	// Step 2: Customer-level budget (customer attached directly to VK, or via the VK's team).
 	// Fall back to the loaded relation IDs so VKs populated via joins without FK
 	// pointer columns still participate in customer-level enforcement.
-	if result.Decision == DecisionAllow && hierarchyVK != nil {
+	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
 		var customerID string
 		switch {
 		case hierarchyVK.CustomerID != nil:
@@ -1158,7 +1270,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	// Step 3: Team-level budget. Fall back to vk.Team.ID when the FK pointer is nil
 	// but the relation is populated.
-	if result.Decision == DecisionAllow && hierarchyVK != nil {
+	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
 		var teamID string
 		switch {
 		case hierarchyVK.TeamID != nil:
@@ -1172,7 +1284,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 
 	// Step 4: User-level governance (enterprise-only).
-	if result.Decision == DecisionAllow {
+	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow {
 		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
 	}
 
@@ -1215,12 +1327,19 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// Handle decision
 	switch result.Decision {
 	case DecisionAllow:
+		// Clear any prior rejection flag (e.g. from a failed primary attempt
+		// before a fallback retry). Without this, PostLLMHook would see the
+		// stale flag and skip budget/rate-limit ID collection for the
+		// successful fallback attempt.
+		if ctx != nil {
+			ctx.ClearValue(governanceRejectedContextKey)
+		}
 		return result, nil
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(403),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(403),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1228,8 +1347,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(429),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(429),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1237,8 +1356,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionBudgetExceeded:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(402),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(402),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1246,8 +1365,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionMCPToolBlocked:
 		return result, &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(result.Decision)),
-			StatusCode: bifrost.Ptr(403),
+			Type:       new(string(result.Decision)),
+			StatusCode: new(403),
 			Error: &schemas.ErrorField{
 				Message: result.Reason,
 			},
@@ -1256,7 +1375,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	default:
 		// Fallback to deny for unknown decisions
 		return result, &schemas.BifrostError{
-			Type: bifrost.Ptr(string(result.Decision)),
+			Type: new(string(result.Decision)),
 			Error: &schemas.ErrorField{
 				Message: "Governance decision error",
 			},
@@ -1397,6 +1516,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
 	if requestedModel != "" {
+		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
+		// lookups) and attach them to the context. The logging plugin reads these keys
+		// when building the log entry, enabling ghost-node usage reconciliation to
+		// attribute cost/tokens to the correct governance entities.
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, provider, requestedModel)
+		if len(budgetIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+		}
+		if len(rateLimitIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+		}
+
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
@@ -1419,6 +1550,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
+
+	// Skip for non tool execution requests
+	if !req.RequestType.IsExecuteTool() {
+		return req, nil, nil
+	}
 
 	// Skip governance for codemode tools
 	if bifrost.IsCodemodeTool(toolName) {
@@ -1497,6 +1633,19 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		return resp, bifrostErr, nil
 	}
 
+	// Skip non tool-execute envelopes. The MCP gate stamps MCPRequestType on both
+	// the success response (BifrostMCPResponse.ExtraFields) and the error
+	// (BifrostError.ExtraFields), so a single check covers both paths.
+	mcpReqType := schemas.MCPRequestType("")
+	if resp != nil {
+		mcpReqType = resp.ExtraFields.MCPRequestType
+	} else if bifrostErr != nil {
+		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
+	}
+	if !mcpReqType.IsExecuteTool() {
+		return resp, bifrostErr, nil
+	}
+
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
@@ -1548,6 +1697,60 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		p.tracker.UpdateUsage(p.ctx, usageUpdate)
 	}()
 
+	return resp, bifrostErr, nil
+}
+
+// PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
+// before the connect-plugin gate releases control to the credential-store
+// resolver. This is the only point in the MCP connect lifecycle where we can
+// turn the raw x-bf-vk header into the resolved VK row ID — anything later
+// (PreMCPHook / PostMCPHook) runs after the resolver has already needed that
+// row ID, and per-user auth types (per_user_oauth, per_user_headers) key
+// their stored credentials by it.
+//
+// The hook is intentionally narrow: it ONLY populates the identity context
+// keys (VK row ID, name, team / customer fan-out). Policy checks (budget,
+// rate limit, tool allow-list) stay on PreMCPHook for the actual CallTool —
+// Connect is transport setup, not the gated operation.
+//
+// No short-circuit returned even when the VK isn't recognized: bad-VK
+// rejection belongs on the tool-call path so the caller gets a stable
+// error format. An unknown VK here simply leaves the row ID empty, and the
+// resolver will surface the "requires an identity" error itself.
+func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if virtualKeyValue == "" {
+		return req, nil, nil
+	}
+	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || vk == nil {
+		// Unknown VK — leave identity unset; the resolver will surface the
+		// appropriate error on the per-user auth path. For shared-connection
+		// auth types this is a no-op (they don't read these keys).
+		return req, nil, nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+		}
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	}
+	return req, nil, nil
+}
+
+// PostMCPConnectionHook is a pass-through; the identity resolution that
+// PreMCPConnectionHook performs is observation-only and has no post-connect
+// cleanup. Implementing this satisfies MCPConnectionPlugin so the typed
+// PreMCPConnectionHook is dispatched by the plugin pipeline.
+func (p *GovernancePlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
 

@@ -66,9 +66,6 @@ func TestAgent_MixedPermissions_ThreeClients(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -144,9 +141,6 @@ func TestAgent_MixedPermissions_AllBlocked(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -203,9 +197,6 @@ func TestAgent_MixedPermissions_WildcardAutoExecute(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -270,9 +261,6 @@ func TestAgent_MixedPermissions_PartialExecution(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -366,9 +354,6 @@ func TestAgent_MixedPermissions_MultipleSTDIOSamePermissions(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -427,9 +412,6 @@ func TestAgent_MixedPermissions_ContextFilteringOverride(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -497,9 +479,6 @@ func TestAgent_MixedPermissions_SpecificToolNames(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -576,9 +555,6 @@ func TestAgent_MixedPermissions_AllAutoExecute(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions

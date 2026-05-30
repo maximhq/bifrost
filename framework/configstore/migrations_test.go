@@ -2336,15 +2336,25 @@ func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfil
 	assertNoCorruptedFKReferences(t, db)
 }
 
-// migration is part of the startup chain so a fresh DB emerges with the column
-// present on both governance_budgets and governance_rate_limits.
+// migration is part of the startup chain so a fresh DB emerges with
+// calendar_aligned on its current owners — the virtual key and the team —
+// and the legacy per-budget / per-rate-limit columns cleaned up.
 func TestMigrationCalendarAligned_WiredIntoTriggerMigrations(t *testing.T) {
 	_, db := setupFullMigrationDB(t)
 	mig := db.Migrator()
-	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "calendar_aligned"),
-		"triggerMigrations should add calendar_aligned to governance_budgets")
-	assert.True(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
-		"triggerMigrations should add calendar_aligned to governance_rate_limits")
+	// Calendar alignment is now a VK-level (and team-level) setting; budget and
+	// rate-limit reset logic derives the value from the owning VK/team. The
+	// legacy governance_budgets and governance_rate_limits columns are added by
+	// migrate_calendar_aligned and then intentionally removed by
+	// migrationDropLegacyCalendarAlignedColumns later in the same chain.
+	assert.True(t, mig.HasColumn(&tables.TableVirtualKey{}, "calendar_aligned"),
+		"triggerMigrations should add calendar_aligned to governance_virtual_keys")
+	assert.True(t, mig.HasColumn(&tables.TableTeam{}, "calendar_aligned"),
+		"triggerMigrations should add calendar_aligned to governance_teams")
+	assert.False(t, mig.HasColumn(&tables.TableBudget{}, "calendar_aligned"),
+		"triggerMigrations should drop legacy calendar_aligned from governance_budgets")
+	assert.False(t, mig.HasColumn(&tables.TableRateLimit{}, "calendar_aligned"),
+		"triggerMigrations should drop legacy calendar_aligned from governance_rate_limits")
 }
 
 // assertNoCorruptedFKReferences checks that no table in the database has FK

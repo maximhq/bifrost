@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -75,6 +76,19 @@ func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClien
 
 func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
+}
+
+func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline)  {}
+func (m *MockClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	return nil, func() {}, nil
+}
+func (m *MockClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
 }
 
 func TestHasToolCallsForChatResponse(t *testing.T) {
@@ -554,6 +568,19 @@ func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPC
 
 func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
+}
+
+func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             { return nil }
+func (m *MockAutoClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
+func (m *MockAutoClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	return nil, func() {}, nil
+}
+func (m *MockAutoClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	resp, err := op(req)
+	if err != nil {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
+	}
+	return resp, nil
 }
 
 // TestParallelToolCallsHaveUniqueMCPLogIDs verifies that parallel tool calls within a

@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/hello-world-wasm
 
-go 1.26.2
+go 1.26.3
 
 require github.com/maximhq/bifrost/core v1.4.17
 

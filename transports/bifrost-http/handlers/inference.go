@@ -21,6 +21,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -136,62 +137,64 @@ var textParamsKnownFields = map[string]bool{
 
 // Known fields for CompletionRequest
 var chatParamsKnownFields = map[string]bool{
-	"model":                 true,
-	"messages":              true,
-	"fallbacks":             true,
-	"stream":                true,
-	"frequency_penalty":     true,
-	"logit_bias":            true,
-	"logprobs":              true,
-	"max_completion_tokens": true,
-	"metadata":              true,
-	"modalities":            true,
-	"parallel_tool_calls":   true,
-	"presence_penalty":      true,
-	"prompt_cache_key":      true,
-	"reasoning":             true,
-	"reasoning_effort":      true,
-	"reasoning_max_tokens":  true,
-	"response_format":       true,
-	"safety_identifier":     true,
-	"service_tier":          true,
-	"stream_options":        true,
-	"store":                 true,
-	"temperature":           true,
-	"tool_choice":           true,
-	"tools":                 true,
-	"truncation":            true,
-	"user":                  true,
-	"verbosity":             true,
+	"model":                  true,
+	"messages":               true,
+	"fallbacks":              true,
+	"stream":                 true,
+	"frequency_penalty":      true,
+	"logit_bias":             true,
+	"logprobs":               true,
+	"max_completion_tokens":  true,
+	"metadata":               true,
+	"modalities":             true,
+	"parallel_tool_calls":    true,
+	"presence_penalty":       true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"reasoning":              true,
+	"reasoning_effort":       true,
+	"reasoning_max_tokens":   true,
+	"response_format":        true,
+	"safety_identifier":      true,
+	"service_tier":           true,
+	"stream_options":         true,
+	"store":                  true,
+	"temperature":            true,
+	"tool_choice":            true,
+	"tools":                  true,
+	"truncation":             true,
+	"user":                   true,
+	"verbosity":              true,
 }
 
 var responsesParamsKnownFields = map[string]bool{
-	"model":                true,
-	"input":                true,
-	"fallbacks":            true,
-	"stream":               true,
-	"background":           true,
-	"conversation":         true,
-	"include":              true,
-	"instructions":         true,
-	"max_output_tokens":    true,
-	"max_tool_calls":       true,
-	"metadata":             true,
-	"parallel_tool_calls":  true,
-	"previous_response_id": true,
-	"prompt_cache_key":     true,
-	"reasoning":            true,
-	"safety_identifier":    true,
-	"service_tier":         true,
-	"stream_options":       true,
-	"store":                true,
-	"temperature":          true,
-	"text":                 true,
-	"top_logprobs":         true,
-	"top_p":                true,
-	"tool_choice":          true,
-	"tools":                true,
-	"truncation":           true,
+	"model":                  true,
+	"input":                  true,
+	"fallbacks":              true,
+	"stream":                 true,
+	"background":             true,
+	"conversation":           true,
+	"include":                true,
+	"instructions":           true,
+	"max_output_tokens":      true,
+	"max_tool_calls":         true,
+	"metadata":               true,
+	"parallel_tool_calls":    true,
+	"previous_response_id":   true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"reasoning":              true,
+	"safety_identifier":      true,
+	"service_tier":           true,
+	"stream_options":         true,
+	"store":                  true,
+	"temperature":            true,
+	"text":                   true,
+	"top_logprobs":           true,
+	"top_p":                  true,
+	"tool_choice":            true,
+	"tools":                  true,
+	"truncation":             true,
 }
 
 var embeddingParamsKnownFields = map[string]bool{
@@ -339,6 +342,8 @@ var transcriptionParamsKnownFields = map[string]bool{
 var batchCreateParamsKnownFields = map[string]bool{
 	"model":             true,
 	"input_file_id":     true,
+	"input_blob":        true,
+	"output_folder":     true,
 	"requests":          true,
 	"endpoint":          true,
 	"completion_window": true,
@@ -560,6 +565,8 @@ type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
 	InputFileID      string                     `json:"input_file_id,omitempty"`     // OpenAI-style file ID
 	Requests         []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
+	InputBlob        *string                    `json:"input_blob,omitempty"`        // Azure-style blob storage input
+	OutputFolder     *schemas.BatchOutputFolder `json:"output_folder,omitempty"`     // Azure-style output destination
 	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
 	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
 	Metadata         map[string]string          `json:"metadata,omitempty"`
@@ -848,24 +855,32 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				// Retry with alias
 				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 			}
-			if pricingEntry != nil && modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{}
-				if pricingEntry.InputCostPerToken != nil {
-					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+			if pricingEntry != nil {
+				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
+					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 				}
-				if pricingEntry.OutputCostPerToken != nil {
-					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
+				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
+					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
 				}
-				if pricingEntry.InputCostPerImage != nil {
-					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
+				if modelEntry.Pricing == nil {
+					pricing := &schemas.Pricing{}
+					if pricingEntry.InputCostPerToken != nil {
+						pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+					}
+					if pricingEntry.OutputCostPerToken != nil {
+						pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
+					}
+					if pricingEntry.InputCostPerImage != nil {
+						pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
+					}
+					if pricingEntry.CacheReadInputTokenCost != nil {
+						pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
+					}
+					if pricingEntry.CacheCreationInputTokenCost != nil {
+						pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
+					}
+					resp.Data[i].Pricing = pricing
 				}
-				if pricingEntry.CacheReadInputTokenCost != nil {
-					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-				}
-				if pricingEntry.CacheCreationInputTokenCost != nil {
-					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-				}
-				resp.Data[i].Pricing = pricing
 			}
 		}
 	}
@@ -1877,6 +1892,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
@@ -2629,9 +2645,10 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate that at least one of InputFileID or Requests is provided
-	if req.InputFileID == "" && len(req.Requests) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id or requests is required")
+	// Validate that at least one of InputFileID or InputBlob or Requests is provided
+	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
+	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
+		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id, input_blob, or requests is required")
 		return
 	}
 
@@ -2651,6 +2668,8 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		Provider:         schemas.ModelProvider(provider),
 		Model:            model,
 		InputFileID:      req.InputFileID,
+		InputBlob:        req.InputBlob,
+		OutputFolder:     req.OutputFolder,
 		Requests:         req.Requests,
 		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
 		CompletionWindow: req.CompletionWindow,

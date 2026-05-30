@@ -26,6 +26,89 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Video Generation | ✅ | - | `/v1/videos` |
 | List Models | ✅ | - | `/v1/models` |
 
+## Setup & Configuration
+
+Configure OpenAI as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![OpenAI provider dashboard](../../media/provider-dashboard-openai.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **OpenAI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **OpenAI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.OPENAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "openai_config": {
+        "disable_store": false
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+  "provider": "openai",
+  "keys": [
+    {
+      "name": "openai-key-1",
+      "value": "env.OPENAI_API_KEY",
+      "models": [
+        "*"
+      ],
+      "weight": 1.0
+    }
+  ],
+  "openai_config": {
+    "disable_store": false
+  }
+}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.OpenAI:
+    return []schemas.Key{{
+        Name:   "openai-key-1",
+        Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Optional provider settings include `network_config` for timeouts, retries, proxy/TLS settings, and `openai_config.disable_store` to force `store=false` on outgoing OpenAI requests.
+
 ---
 
 # 1. Chat Completions

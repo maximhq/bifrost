@@ -74,6 +74,10 @@ type BifrostBatchCreateRequest struct {
 	// Anthropic-style: inline requests
 	Requests []BatchRequestItem `json:"requests,omitempty"` // Inline request items
 
+	// Azure-style: Blob storage input and output folder
+	InputBlob    *string            `json:"input_blob,omitempty"`
+	OutputFolder *BatchOutputFolder `json:"output_folder,omitempty"`
+
 	// Common fields
 	Endpoint           BatchEndpoint      `json:"endpoint,omitempty"`             // Target endpoint for batch requests
 	CompletionWindow   string             `json:"completion_window,omitempty"`    // Time window (e.g., "24h")
@@ -82,6 +86,10 @@ type BifrostBatchCreateRequest struct {
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+type BatchOutputFolder struct {
+	URL string `json:"url"`
 }
 
 // BatchExpiresAfter represents an expiration configuration for batch output.
@@ -118,6 +126,11 @@ type BifrostBatchCreateResponse struct {
 
 	// Gemini-specific (operation response)
 	OperationName *string `json:"operation_name,omitempty"`
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
@@ -205,6 +218,11 @@ type BifrostBatchRetrieveResponse struct {
 	OperationName *string `json:"operation_name,omitempty"`
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

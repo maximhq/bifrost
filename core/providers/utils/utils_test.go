@@ -1439,3 +1439,106 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestGetBudgetTokensFromReasoningEffort(t *testing.T) {
+	const min = 1024
+	const max = 16000
+
+	tests := []struct {
+		effort  string
+		wantErr bool
+		check   func(t *testing.T, budget int)
+	}{
+		{
+			effort: "none",
+			check:  func(t *testing.T, budget int) { assertEqual(t, 0, budget, "none effort") },
+		},
+		{
+			effort: "minimal",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "minimal")
+			},
+		},
+		{
+			effort: "low",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "low")
+			},
+		},
+		{
+			effort: "medium",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "medium")
+			},
+		},
+		{
+			effort: "high",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "high")
+			},
+		},
+		{
+			effort: "xhigh",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "xhigh")
+			},
+		},
+		{
+			// "max" with ratio=1.0 would produce budget==maxTokens without the cap.
+			// Bedrock and Anthropic both require budget_tokens < max_tokens (strict).
+			effort: "max",
+			check: func(t *testing.T, budget int) {
+				if budget >= max {
+					t.Errorf("max effort: budget %d must be < maxTokens %d", budget, max)
+				}
+				assertEqual(t, max-1, budget, "max effort caps at maxTokens-1")
+			},
+		},
+		{
+			effort: "unknown",
+			check: func(t *testing.T, budget int) {
+				assertRange(t, min, max-1, budget, "unknown effort uses safe default")
+			},
+		},
+		{
+			// minBudgetTokens > maxTokens — always an error
+			effort:  "high",
+			wantErr: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(fmt.Sprintf("%d_%s", i, tt.effort), func(t *testing.T) {
+			maxTokens := max
+			minTokens := min
+			if tt.wantErr {
+				minTokens = max + 1
+			}
+			budget, err := GetBudgetTokensFromReasoningEffort(tt.effort, minTokens, maxTokens)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error when minBudgetTokens > maxTokens, got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tt.check(t, budget)
+		})
+	}
+}
+
+func assertEqual(t *testing.T, want, got int, label string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: got %d, want %d", label, got, want)
+	}
+}
+
+func assertRange(t *testing.T, low, high, got int, label string) {
+	t.Helper()
+	if got < low || got > high {
+		t.Errorf("%s: got %d, want in [%d, %d]", label, got, low, high)
+	}
+}

@@ -46,6 +46,13 @@ func (s *RDBConfigStore) EncryptPlaintextRows(ctx context.Context) error {
 	}
 	totalEncrypted += count
 
+	// temp_tokens
+	count, err = s.encryptPlaintextTempTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt temp_tokens: %w", err)
+	}
+	totalEncrypted += count
+
 	// oauth_tokens
 	count, err = s.encryptPlaintextOAuthTokens(ctx)
 	if err != nil {
@@ -181,6 +188,36 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 			return count, err
 		}
 		count += len(sessions)
+	}
+	return count, nil
+}
+
+// encryptPlaintextTempTokens finds all temp_tokens rows with plaintext encryption status
+// and re-saves them in batches. The TempToken.BeforeSave hook handles encryption.
+func (s *RDBConfigStore) encryptPlaintextTempTokens(ctx context.Context) (int, error) {
+	var count int
+	for {
+		var tokens []tables.TempToken
+		if err := s.DB().WithContext(ctx).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != ''", encryptionStatusPlainText).
+			Limit(encryptionBatchSize).
+			Find(&tokens).Error; err != nil {
+			return count, err
+		}
+		if len(tokens) == 0 {
+			break
+		}
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for i := range tokens {
+				if err := tx.Save(&tokens[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return count, err
+		}
+		count += len(tokens)
 	}
 	return count, nil
 }

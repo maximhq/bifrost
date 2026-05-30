@@ -3,6 +3,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
@@ -18,7 +19,7 @@ export function TeamsView() {
 
 	const [urlState, setUrlState] = useQueryStates(
 		{
-			search: parseAsString.withDefault(""),
+			search: parseAsSafeString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 			selected_team: parseAsString.withDefault(""),
 		},
@@ -47,6 +48,7 @@ export function TeamsView() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
+		isFetching,
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
@@ -91,7 +93,7 @@ export function TeamsView() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col overflow-y-auto">
 			<TeamsTable
 				teams={teamsData?.teams || []}
 				totalCount={teamsData?.total_count || 0}
@@ -105,8 +107,11 @@ export function TeamsView() {
 				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
 				selectedTeamId={urlState.selected_team || null}
 				onTeamAdd={() => setUrlState({ selected_team: "new" })}
-				onTeamSelect={(team) => { setUrlState({ selected_team: team?.id ?? null }) }}
+				onTeamSelect={(team) => {
+					setUrlState({ selected_team: team?.id ?? null });
+				}}
 				onDialogClose={() => setUrlState({ selected_team: null })}
+				isLoading={isFetching}
 			/>
 		</div>
 	);

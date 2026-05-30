@@ -2,10 +2,154 @@ apiVersion: v1
 entries:
   bifrost:
     - apiVersion: v2
+      appVersion: 1.5.3
+      created: "2026-05-28T22:00:26.010588+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: 7213e43fd8370d6b97a16b50ee8d2fa2089579ede9b6056a1041e0f11ce4316f
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.20.tgz
+      version: 2.1.20
+    - apiVersion: v2
+      appVersion: 1.5.3
+      created: "2026-05-26T14:33:57.417916+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: 8e0d91b5fd3a095abfa2c5034149709cbd0c3ea62f3fcf3ca6ca46b223175c42
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.19.tgz
+      version: 2.1.19
+    - apiVersion: v2
+      appVersion: 1.5.3
+      created: "2026-05-22T17:10:47.506843+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: 8c4063c1297f451e147b0696aa51fe6830896b63e725f24ace86c39f108ea03c
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.18.tgz
+      version: 2.1.18
+    - apiVersion: v2
+      appVersion: 1.5.0
+      created: "2026-05-17T14:30:00+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: 8e887afbbc89f079595200570b40267c18dcc50f0ac188cff2116358555a8c15
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.17.tgz
+      version: 2.1.17
+    - apiVersion: v2
+      appVersion: 1.5.0
+      created: "2026-05-12T19:31:15.185424+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: 5bca59decc109f5a57d8a6c739bacd2108a8dc7ce70d66721c9f734fa8ac8645
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.16.tgz
+      version: 2.1.16
+    - apiVersion: v2
+      appVersion: 1.5.0
+      created: "2026-05-11T19:50:28.71576+05:30"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
+      digest: bfd0e62ef9c284678739c514668fac900257c736336afe677d5e797e08839416
+      home: https://www.getmaxim.ai/bifrost
+      icon: https://www.getbifrost.ai/favicon.png
+      keywords:
+        - ai
+        - gateway
+        - llm
+        - openai
+        - anthropic
+      maintainers:
+        - email: support@getbifrost.ai
+          name: Bifrost Team
+      name: bifrost
+      sources:
+        - https://github.com/maximhq/bifrost
+      type: application
+      urls:
+        - https://maximhq.github.io/bifrost/helm-charts/bifrost-2.1.15.tgz
+      version: 2.1.15
+    - apiVersion: v2
       appVersion: 1.5.0-prerelease7
-      created: "2026-05-07T00:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-05-07T00:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -24,9 +168,9 @@ entries:
       version: 2.1.14
     - apiVersion: v2
       appVersion: 1.5.0-prerelease7
-      created: "2026-05-02T00:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-05-02T00:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -45,9 +189,9 @@ entries:
       version: 2.1.13
     - apiVersion: v2
       appVersion: 1.5.0-prerelease7
-      created: "2026-04-30T12:30:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-30T12:30:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -66,9 +210,9 @@ entries:
       version: 2.1.12
     - apiVersion: v2
       appVersion: 1.5.0-prerelease7
-      created: "2026-04-29T18:30:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-29T18:30:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -87,9 +231,9 @@ entries:
       version: 2.1.11
     - apiVersion: v2
       appVersion: 1.5.0-prerelease4
-      created: "2026-04-29T18:30:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-29T18:30:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -108,9 +252,9 @@ entries:
       version: 2.1.10
     - apiVersion: v2
       appVersion: 1.5.0-prerelease4
-      created: "2026-04-28T18:30:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-28T18:30:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -129,9 +273,9 @@ entries:
       version: 2.1.9
     - apiVersion: v2
       appVersion: 1.5.0-prerelease5
-      created: "2026-04-26T12:40:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-26T12:40:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -150,9 +294,9 @@ entries:
       version: 2.1.8
     - apiVersion: v2
       appVersion: 1.5.0-prerelease4
-      created: "2026-04-24T15:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-24T15:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -171,9 +315,9 @@ entries:
       version: 2.1.7
     - apiVersion: v2
       appVersion: 1.5.0-prerelease4
-      created: "2026-04-24T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-24T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -192,9 +336,9 @@ entries:
       version: 2.1.6
     - apiVersion: v2
       appVersion: 1.5.0-prerelease4
-      created: "2026-04-21T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-21T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getbifrost.ai/favicon.png
       keywords:
@@ -213,9 +357,9 @@ entries:
       version: 2.1.2
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-04-15T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-15T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -234,9 +378,9 @@ entries:
       version: 2.1.0-prerelease1
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-04-13T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-13T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -255,9 +399,9 @@ entries:
       version: 2.0.18-rc.1
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-04-08T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-08T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -276,9 +420,9 @@ entries:
       version: 2.0.17
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-04-08T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-08T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -297,9 +441,9 @@ entries:
       version: 2.0.16
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-04-07T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-04-07T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -318,9 +462,9 @@ entries:
       version: 2.0.15
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-03-20T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-03-20T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -339,9 +483,9 @@ entries:
       version: 2.0.14
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-03-11T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-03-11T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -360,9 +504,9 @@ entries:
       version: 2.0.13
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-03-06T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-03-06T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -381,9 +525,9 @@ entries:
       version: 2.0.12
     - apiVersion: v2
       appVersion: 1.4.11
-      created: "2026-03-05T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-03-05T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -402,9 +546,9 @@ entries:
       version: 2.0.11
     - apiVersion: v2
       appVersion: 1.4.8
-      created: "2026-03-03T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-03-03T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -423,9 +567,9 @@ entries:
       version: 2.0.10
     - apiVersion: v2
       appVersion: 1.4.8
-      created: "2026-02-26T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-02-26T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -444,9 +588,9 @@ entries:
       version: 2.0.9
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-19T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-02-19T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -465,9 +609,9 @@ entries:
       version: 2.0.8
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-17T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-02-17T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -486,9 +630,9 @@ entries:
       version: 2.0.7
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-17T12:00:00.000000+00:00"
-      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
-      digest: ""
+      created: "2026-02-17T12:00:00Z"
+      description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+        for multiple providers
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -507,10 +651,9 @@ entries:
       version: 2.0.6
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-13T12:00:00.000000+00:00"
+      created: "2026-02-13T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -529,10 +672,9 @@ entries:
       version: 2.0.5
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-10T12:00:00.000000+00:00"
+      created: "2026-02-10T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -551,10 +693,9 @@ entries:
       version: 2.0.4
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-02-05T12:00:00.000000+00:00"
+      created: "2026-02-05T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -573,10 +714,9 @@ entries:
       version: 2.0.3
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-01-31T21:00:00.000000+00:00"
+      created: "2026-01-31T21:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -595,10 +735,9 @@ entries:
       version: 2.0.2
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-01-31T20:00:00.000000+00:00"
+      created: "2026-01-31T20:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -617,10 +756,9 @@ entries:
       version: 2.0.1
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2026-01-31T12:00:00.000000+00:00"
+      created: "2026-01-31T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -639,10 +777,9 @@ entries:
       version: 2.0.0
     - apiVersion: v2
       appVersion: 1.5.2
-      created: "2026-01-28T12:00:00.000000+00:00"
+      created: "2026-01-28T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -661,10 +798,9 @@ entries:
       version: 1.7.0
     - apiVersion: v2
       appVersion: 1.4.2
-      created: "2026-01-23T12:00:00.000000+00:00"
+      created: "2026-01-23T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -683,10 +819,9 @@ entries:
       version: 1.6.0
     - apiVersion: v2
       appVersion: 1.5.3
-      created: "2026-01-16T12:00:00.000000+00:00"
+      created: "2026-01-16T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -705,10 +840,9 @@ entries:
       version: 1.5.3
     - apiVersion: v2
       appVersion: 1.5.2
-      created: "2026-01-05T12:00:00.000000+00:00"
+      created: "2026-01-05T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -727,10 +861,9 @@ entries:
       version: 1.5.2
     - apiVersion: v2
       appVersion: 1.5.1
-      created: "2025-12-12T12:00:00.000000+00:00"
+      created: "2025-12-12T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -749,10 +882,9 @@ entries:
       version: 1.5.1
     - apiVersion: v2
       appVersion: 1.5.0
-      created: "2025-12-11T12:00:00.000000+00:00"
+      created: "2025-12-11T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -771,10 +903,9 @@ entries:
       version: 1.5.0
     - apiVersion: v2
       appVersion: 1.4.3
-      created: "2025-12-10T12:00:00.000000+00:00"
+      created: "2025-12-10T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -793,10 +924,9 @@ entries:
       version: 1.4.3
     - apiVersion: v2
       appVersion: 1.4.2
-      created: "2025-12-08T12:00:00.000000+00:00"
+      created: "2025-12-08T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -815,10 +945,9 @@ entries:
       version: 1.4.2
     - apiVersion: v2
       appVersion: 1.4.1
-      created: "2025-11-28T12:00:00.000000+00:00"
+      created: "2025-11-28T12:00:00Z"
       description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
         for multiple providers
-      digest: ""
       home: https://www.getmaxim.ai/bifrost
       icon: https://www.getmaxim.ai/bifrost/bifrost-logo-only.png
       keywords:
@@ -859,4 +988,4 @@ entries:
       urls:
         - https://maximhq.github.io/bifrost/helm-charts/bifrost-1.3.36.tgz
       version: 1.3.36
-generated: "2026-04-30T12:30:00.000000+00:00"
+generated: "2026-05-28T22:00:26.010588+05:30"

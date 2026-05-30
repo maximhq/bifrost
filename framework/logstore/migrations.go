@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
@@ -29,9 +31,21 @@ const (
 	// does not block other pods from running their (fast) migrations on startup.
 	indexAdvisoryLockKey = 1000002
 
-	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
-	// refreshes across cluster nodes so only one replica refreshes at a time.
+	// matviewRefreshAdvisoryLockKey serializes materialized view maintenance
+	// across cluster nodes. Startup create/repair and periodic refresh both use
+	// this key so they never overlap.
 	matviewRefreshAdvisoryLockKey = 1000005
+
+	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
+	advisoryLockRetryInterval = 5 * time.Second
+
+	// advisoryLockTimeout is the maximum time to wait for an advisory lock
+	// before giving up with actionable operator guidance.
+	advisoryLockTimeout = 5 * time.Minute
+
+	// maintenanceUpdateBatchSize bounds background data cleanups so they don't
+	// lock or rewrite very large log tables in one transaction.
+	maintenanceUpdateBatchSize = 10_000
 )
 
 // advisoryLock holds a dedicated connection and the advisory lock key.
@@ -43,7 +57,10 @@ type advisoryLock struct {
 }
 
 // acquireAdvisoryLock gets a dedicated connection and acquires a PostgreSQL advisory lock
-// for the given key. For non-PostgreSQL databases, returns a no-op lock.
+// using pg_try_advisory_lock with retry + timeout. This prevents pods from
+// blocking indefinitely if a previous pod crashed without releasing the lock
+// (e.g., behind a connection proxy or with slow TCP keepalive detection).
+// For non-PostgreSQL databases, returns a no-op lock.
 func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, lockKey int64, label string) (*advisoryLock, error) {
 	if db.Dialector.Name() != "postgres" {
 		return &advisoryLock{}, nil
@@ -60,14 +77,70 @@ func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, lockKey int64, label 
 		return nil, fmt.Errorf("failed to get dedicated connection for %s lock: %w", label, err)
 	}
 
-	// Acquire advisory lock on this dedicated connection.
-	// This will BLOCK if another node holds the lock.
-	if _, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to acquire %s advisory lock: %w", label, err)
-	}
+	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
+	// pg_try_advisory_lock returns true if acquired, false if held by another session.
+	deadline := time.Now().Add(advisoryLockTimeout)
+	maxAttempts := int(advisoryLockTimeout / advisoryLockRetryInterval)
+	attempt := 0
 
-	return &advisoryLock{conn: conn, lockKey: lockKey}, nil
+	for {
+		attempt++
+		// Derive a per-attempt context with the remaining lock budget as timeout,
+		// so a stalled DB round-trip can't block beyond the overall deadline.
+		attemptTimeout := time.Until(deadline)
+		if attemptTimeout <= 0 {
+			attemptTimeout = advisoryLockRetryInterval
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
+		var acquired bool
+		err = conn.QueryRowContext(attemptCtx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&acquired)
+		attemptCancel()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to attempt %s advisory lock: %w", label, err)
+		}
+
+		if acquired {
+			if attempt > 1 {
+				log.Printf("[logstore] %s lock acquired after %d attempts", label, attempt)
+			}
+			return &advisoryLock{conn: conn, lockKey: lockKey}, nil
+		}
+
+		// Lock not acquired -- check if we've exceeded the timeout
+		if time.Now().After(deadline) {
+			conn.Close()
+			return nil, fmt.Errorf(
+				"failed to acquire logstore %s lock (key=%d) after %d attempts over %s\n\n"+
+					"This usually means another Bifrost pod (or a previous crashed pod's lingering\n"+
+					"database session) is still holding the lock. To diagnose and resolve:\n\n"+
+					"1. Find who holds the lock:\n"+
+					"   SELECT pid, usename, application_name, client_addr, backend_start, state, query\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = true);\n\n"+
+					"2. If the session belongs to a dead/crashed pod, terminate it:\n"+
+					"   SELECT pg_terminate_backend(<pid_from_step_1>);\n\n"+
+					"3. List all sessions waiting for this lock:\n"+
+					"   SELECT pid, usename, client_addr, state, wait_event\n"+
+					"   FROM pg_stat_activity\n"+
+					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = false);\n\n"+
+					"After terminating the stale session, restart this pod and it should proceed normally.",
+				label, lockKey, attempt, advisoryLockTimeout,
+				lockKey, lockKey,
+			)
+		}
+
+		log.Printf("[logstore] waiting for %s lock (attempt %d/%d) \u2014 another node is running %s operations, retrying in %s...",
+			label, attempt, maxAttempts, label, advisoryLockRetryInterval)
+
+		// Wait before retrying, but respect context cancellation
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			return nil, fmt.Errorf("context cancelled while waiting for %s lock: %w", label, ctx.Err())
+		case <-time.After(advisoryLockRetryInterval):
+		}
+	}
 }
 
 // release unlocks and closes the dedicated connection.
@@ -230,6 +303,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHasObjectColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddAttemptTrailColumn(ctx, db); err != nil {
 		return err
 	}
@@ -245,6 +321,26 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddStopReasonColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSafeJsonbFunction(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddDACColumnsToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddClusterGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddLogIncNumberColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterUsersMatView(ctx, db); err != nil {
+		return err
+	}
+	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
+	// release. Dropping mv_logs_filterdata while old replicas are still
+	// serving /api/logs/filterdata from it would surface "relation does not
+	// exist" during rolling deploys. A follow-up release wires it in once
+	// this one is fully rolled out. See the function's docstring.
 	return nil
 }
 
@@ -283,37 +379,73 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 // migrationUpdateObjectColumnValues normalizes legacy object_type string values on the logs table.
 func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
+	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_init_update_object_column_values",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
-			updateSQL := `
-				UPDATE logs
-				SET object_type = CASE object_type
-					WHEN 'chat.completion' THEN 'chat_completion'
-					WHEN 'text.completion' THEN 'text_completion'
-					WHEN 'list' THEN 'embedding'
-					WHEN 'audio.speech' THEN 'speech'
-					WHEN 'audio.transcription' THEN 'transcription'
-					WHEN 'chat.completion.chunk' THEN 'chat_completion_stream'
-					WHEN 'audio.speech.chunk' THEN 'speech_stream'
-					WHEN 'audio.transcription.chunk' THEN 'transcription_stream'
-					WHEN 'response' THEN 'responses'
-					WHEN 'response.completion.chunk' THEN 'responses_stream'
-					ELSE object_type
-				END
-				WHERE object_type IN (
-					'chat.completion', 'text.completion', 'list',
-					'audio.speech', 'audio.transcription', 'chat.completion.chunk',
-					'audio.speech.chunk', 'audio.transcription.chunk',
-					'response', 'response.completion.chunk'
-				)`
+			if tx.Dialector.Name() != "postgres" {
+				result := tx.Exec(`
+						UPDATE logs
+						SET object_type = CASE object_type
+							WHEN 'chat.completion' THEN 'chat_completion'
+							WHEN 'text.completion' THEN 'text_completion'
+							WHEN 'list' THEN 'embedding'
+							WHEN 'audio.speech' THEN 'speech'
+							WHEN 'audio.transcription' THEN 'transcription'
+							WHEN 'chat.completion.chunk' THEN 'chat_completion_stream'
+							WHEN 'audio.speech.chunk' THEN 'speech_stream'
+							WHEN 'audio.transcription.chunk' THEN 'transcription_stream'
+							WHEN 'response' THEN 'responses'
+							WHEN 'response.completion.chunk' THEN 'responses_stream'
+							ELSE object_type
+						END
+						WHERE object_type IN (
+							'chat.completion', 'text.completion', 'list',
+							'audio.speech', 'audio.transcription', 'chat.completion.chunk',
+							'audio.speech.chunk', 'audio.transcription.chunk',
+							'response', 'response.completion.chunk'
+						)`)
+				if result.Error != nil {
+					return fmt.Errorf("failed to update object_type values: %w", result.Error)
+				}
+				return nil
+			}
 
-			result := tx.Exec(updateSQL)
-			if result.Error != nil {
-				return fmt.Errorf("failed to update object_type values: %w", result.Error)
+			updateSQL := `
+				WITH batch AS (
+					SELECT ctid,
+						CASE object_type
+							WHEN 'chat.completion' THEN 'chat_completion'
+							WHEN 'text.completion' THEN 'text_completion'
+							WHEN 'list' THEN 'embedding'
+							WHEN 'audio.speech' THEN 'speech'
+							WHEN 'audio.transcription' THEN 'transcription'
+							WHEN 'chat.completion.chunk' THEN 'chat_completion_stream'
+							WHEN 'audio.speech.chunk' THEN 'speech_stream'
+							WHEN 'audio.transcription.chunk' THEN 'transcription_stream'
+							WHEN 'response' THEN 'responses'
+							WHEN 'response.completion.chunk' THEN 'responses_stream'
+							ELSE object_type
+						END AS normalized_object_type
+					FROM logs
+					WHERE object_type IN (
+						'chat.completion', 'text.completion', 'list',
+						'audio.speech', 'audio.transcription', 'chat.completion.chunk',
+						'audio.speech.chunk', 'audio.transcription.chunk',
+						'response', 'response.completion.chunk'
+					)
+					LIMIT ?
+					FOR UPDATE SKIP LOCKED
+				)
+				UPDATE logs
+				SET object_type = batch.normalized_object_type
+				FROM batch
+				WHERE logs.ctid = batch.ctid`
+
+			if err := execBatchedGormMaintenanceUpdate(tx, "object_type normalization", updateSQL); err != nil {
+				return err
 			}
 
 			return nil
@@ -608,6 +740,9 @@ func migrationAddPerformanceIndexes(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_add_performance_indexes",
 		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
@@ -684,6 +819,9 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_add_performance_indexes_v2",
 		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
@@ -892,10 +1030,14 @@ func migrationCreateMCPToolLogsTable(ctx context.Context, db *gorm.DB) error {
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-			if !migrator.HasTable(&MCPToolLog{}) {
+			tableExists := migrator.HasTable(&MCPToolLog{})
+			if !tableExists {
 				if err := migrator.CreateTable(&MCPToolLog{}); err != nil {
 					return err
 				}
+			}
+			if tx.Dialector.Name() == "postgres" && tableExists {
+				return nil
 			}
 
 			// Explicitly create indexes as declared in struct tags
@@ -965,7 +1107,7 @@ func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error
 			}
 
 			// Create index on cost column
-			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
+			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
 				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_cost"); err != nil {
 					return fmt.Errorf("failed to create index on cost: %w", err)
 				}
@@ -1138,7 +1280,7 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 			}
 
 			// Create index on virtual_key_id column
-			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
 				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
 					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
 				}
@@ -1532,7 +1674,7 @@ func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) e
 // enabling correct logging of parallel tool calls that share the same request ID.
 func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
+	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "mcp_tool_logs_add_request_id_column",
 		Migrate: func(tx *gorm.DB) error {
@@ -1543,12 +1685,30 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) 
 					return err
 				}
 			}
-			if err := tx.Exec(
-				"UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''",
-			).Error; err != nil {
-				return fmt.Errorf("failed to backfill request_id: %w", err)
+
+			if tx.Dialector.Name() == "postgres" {
+				if err := execBatchedGormMaintenanceUpdate(tx, "mcp request_id backfill", `
+          WITH batch AS (
+            SELECT ctid
+            FROM mcp_tool_logs
+            WHERE request_id IS NULL OR request_id = ''
+            LIMIT ?
+            FOR UPDATE SKIP LOCKED
+          )
+          UPDATE mcp_tool_logs
+          SET request_id = id
+          FROM batch
+          WHERE mcp_tool_logs.ctid = batch.ctid
+        `); err != nil {
+					return err
+				}
+			} else {
+				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")
+				if result.Error != nil {
+					return fmt.Errorf("failed to backfill mcp request_id values: %w", result.Error)
+				}
 			}
-			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_request_id") {
+			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_request_id") {
 				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_request_id"); err != nil {
 					return err
 				}
@@ -1590,6 +1750,9 @@ func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB) err
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_add_histogram_composite_indexes",
 		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
@@ -1866,16 +2029,8 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	}
 
 	if indexValid {
-		// Defensively clean up any invalid metadata values written after index creation.
-		// Use EXISTS + LIMIT 1 to avoid a full sequential scan when (the common case) no invalid rows exist.
-		var hasInvalid bool
-		if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM logs WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT LIMIT 1)").Scan(&hasInvalid); err != nil {
-			return fmt.Errorf("failed to query invalid metadata values: %w", err)
-		}
-		if hasInvalid {
-			if _, err := conn.ExecContext(ctx, "UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT"); err != nil {
-				return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-			}
+		if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -1893,16 +2048,10 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// Non-fatal: falls back to a single worker on older versions.
 	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
 
-	// Defensively clean up any invalid metadata values before building the index.
-	// Use EXISTS + LIMIT 1 to short-circuit when no invalid rows exist.
-	var hasInvalid bool
-	if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM logs WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT LIMIT 1)").Scan(&hasInvalid); err != nil {
-		return fmt.Errorf("failed to query invalid metadata values: %w", err)
-	}
-	if hasInvalid {
-		if _, err := conn.ExecContext(ctx, "UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT"); err != nil {
-			return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-		}
+	// Defensively clean up invalid metadata values before building the index.
+	// This runs in small autocommitted batches to avoid one massive row-lock/WAL event.
+	if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
+		return err
 	}
 
 	// CONCURRENTLY takes only a ShareUpdateExclusiveLock, which is compatible with
@@ -1920,6 +2069,23 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
 	}
 	return nil
+}
+
+func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
+	return execBatchedMaintenanceUpdate(ctx, conn, "invalid metadata cleanup", `
+		WITH batch AS (
+			SELECT ctid
+			FROM logs
+			WHERE metadata IS NOT NULL
+			  AND metadata IS NOT JSON OBJECT
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE logs
+		SET metadata = NULL
+		FROM batch
+		WHERE logs.ctid = batch.ctid
+	`)
 }
 
 // migrationAddDashboardEnhancements adds cached_read_tokens column to logs table.
@@ -1971,14 +2137,8 @@ func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 	// The extra `AND cached_read_tokens = 0` plus `AND COALESCE(...) > 0` makes
 	// re-runs cheap: rows already backfilled have non-zero values (skipped),
 	// and rows with genuinely zero cached tokens are also skipped (correct as-is).
-	backfillSQL := `UPDATE logs SET
-		cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
-		WHERE cached_read_tokens = 0
-		AND token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
-		AND token_usage ~ '^\s*\{.*\}\s*$'
-		AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0`
-	if _, err := conn.ExecContext(ctx, backfillSQL); err != nil {
-		return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
+	if err := backfillCachedReadTokens(ctx, conn); err != nil {
+		return err
 	}
 
 	// Rebuild histogram covering index with cached_read_tokens included,
@@ -2035,6 +2195,55 @@ func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+func backfillCachedReadTokens(ctx context.Context, conn *sql.Conn) error {
+	return execBatchedMaintenanceUpdate(ctx, conn, "cached_read_tokens backfill", `
+		WITH batch AS (
+			SELECT ctid
+			FROM logs
+			WHERE cached_read_tokens = 0
+			  AND token_usage IS NOT NULL
+			  AND token_usage != ''
+			  AND token_usage != 'null'
+			  AND token_usage ~ '^\s*\{.*\}\s*$'
+			  AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE logs
+		SET cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
+		FROM batch
+		WHERE logs.ctid = batch.ctid
+	`)
+}
+
+func execBatchedMaintenanceUpdate(ctx context.Context, conn *sql.Conn, label string, query string) error {
+	for {
+		result, err := conn.ExecContext(ctx, query, maintenanceUpdateBatchSize)
+		if err != nil {
+			return fmt.Errorf("failed to run %s batch: %w", label, err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to read %s batch rows affected: %w", label, err)
+		}
+		if rowsAffected == 0 {
+			return nil
+		}
+	}
+}
+
+func execBatchedGormMaintenanceUpdate(tx *gorm.DB, label string, query string) error {
+	for {
+		result := tx.Exec(query, maintenanceUpdateBatchSize)
+		if result.Error != nil {
+			return fmt.Errorf("failed to run %s batch: %w", label, result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+	}
+}
+
 // migrationAddLogsAndDashboardPerformanceIndexes records the migration version for the performance
 // indexes. Actual index creation is deferred to ensurePerformanceIndexes (called
 // post-startup in a background goroutine) because CREATE INDEX CONCURRENTLY cannot
@@ -2084,6 +2293,111 @@ type performanceIndexDef struct {
 // performanceIndexes is the set of full-text and GIN indexes built by ensurePerformanceIndexes.
 // Each statement uses CREATE INDEX CONCURRENTLY to avoid blocking writes.
 var performanceIndexes = []performanceIndexDef{
+	{
+		table: "logs",
+		name:  "idx_logs_latency",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_latency ON logs(latency)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_total_tokens",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_total_tokens ON logs(total_tokens)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_selected_key_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_selected_key_id ON logs(selected_key_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_virtual_key_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_virtual_key_id ON logs(virtual_key_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_timestamp",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_status",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status ON logs(status)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_created_at",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_created_at ON logs(created_at)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_provider",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_provider ON logs(provider)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_model",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_model ON logs(model)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_object_type",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_object_type ON logs(object_type)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cost",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cost ON logs(cost)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_status_timestamp",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status_timestamp ON logs(status, timestamp)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_status_created_at",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status_created_at ON logs(status, created_at)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_llm_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_llm_request_id ON mcp_tool_logs(llm_request_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_tool_name",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_tool_name ON mcp_tool_logs(tool_name)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_server_label",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_server_label ON mcp_tool_logs(server_label)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_latency",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_latency ON mcp_tool_logs(latency)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_status",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_status ON mcp_tool_logs(status)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_cost",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_cost ON mcp_tool_logs(cost)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_virtual_key_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_virtual_key_id ON mcp_tool_logs(virtual_key_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_request_id ON mcp_tool_logs(request_id)",
+	},
 	{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
@@ -2154,6 +2468,41 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_stop_reason",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_user_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_id ON mcp_tool_logs(user_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_team_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_team_id ON mcp_tool_logs(team_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_customer_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_customer_id ON mcp_tool_logs(customer_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_business_unit_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_business_unit_id ON mcp_tool_logs(business_unit_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_usage ON logs(cluster_node_id, status, timestamp, id) WHERE cluster_node_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_inc_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
 	},
 }
 
@@ -2343,6 +2692,41 @@ func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddHasObjectColumnToMCPToolLogs adds the has_object boolean column to the mcp_tool_logs table.
+// Used by the hybrid log store to track whether an MCP tool log's payload is stored in object storage.
+func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&MCPToolLog{}, "has_object") {
+				if err := mgr.AddColumn(&MCPToolLog{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&MCPToolLog{}, "has_object") {
+				if err := mgr.DropColumn(&MCPToolLog{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding has_object column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
 func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
@@ -2455,7 +2839,9 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB) erro
 
 // migrationRecreateMatViewsWithGovernanceColumns drops and recreates materialized views
 // so they include the new governance context columns (user_id, team_id, customer_id, business_unit_id).
-// The views are recreated by ensureMatViews on startup, so we just need to drop the old ones.
+// The actual rebuild is deferred to ensureMatViews, which runs after startup on
+// a dedicated connection. Dropping materialized views inline in this migration
+// can queue heavy locks during rolling deploys on large log tables.
 func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gorm.DB) error {
 	// Materialized views are PostgreSQL-only; skip on other dialects
 	if db.Dialector.Name() != "postgres" {
@@ -2466,12 +2852,6 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_recreate_matviews_with_governance_columns",
 		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			for _, view := range []string{"mv_logs_hourly", "mv_logs_filterdata"} {
-				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
-					return fmt.Errorf("failed to drop %s: %w", view, err)
-				}
-			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -2482,6 +2862,48 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while recreating matviews with governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationSplitFilterDataMatView drops the legacy mv_logs_filterdata view so
+// ensureMatViews recreates it as per-dimension matviews (mv_filter_models,
+// mv_filter_selected_keys, ...). The old view DISTINCTed across 16 columns and
+// could grow nearly as large as the source `logs` table on multi-tenant
+// deployments, making REFRESH ... CONCURRENTLY memory-intensive. Splitting per
+// dimension keeps each view bounded by a single column's cardinality.
+//
+// NOT CALLED YET. Multi-replica deployments do rolling restarts, so dropping
+// mv_logs_filterdata in this release would make every filterdata request on
+// not-yet-upgraded replicas return "relation does not exist" until they
+// restart. The per-dimension views ship in this release and the legacy view
+// is intentionally left in place. A follow-up release — after this one has
+// fully rolled out everywhere — will wire this migration into RunMigrations
+// (or add "mv_logs_filterdata" to legacyMatViewNames in matviews.go) to
+// actually perform the drop.
+func migrationSplitFilterDataMatView(ctx context.Context, db *gorm.DB) error {
+	// Materialized views are PostgreSQL-only; skip on other dialects.
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_split_filter_data_matview",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop legacy mv_logs_filterdata: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback — ensureMatViews recreates the per-dim views on next startup.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while splitting filter-data matview: %s", err.Error())
 	}
 	return nil
 }
@@ -2664,3 +3086,250 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddSafeJsonbFunction installs a PL/pgSQL helper that the
+// /api/logs list query uses to extract the last element of input_history /
+// responses_input_history without aborting the whole query on a single bad row.
+//
+// The previous inline guard (`left(btrim(x),1)='['`) only checked the first
+// character before casting to jsonb. Any row that looked array-shaped but
+// contained malformed JSON (unterminated structures, trailing commas, unpaired
+// UTF-16 surrogates, etc.) would fail the cast with 22P02 / 22P05 and abort the
+// entire list response. The helper wraps the cast in an EXCEPTION block and
+// returns the raw TEXT on any parse failure.
+//
+// Postgres-only; SQLite is guarded inline in listSelectColumns via json_valid().
+func migrationAddSafeJsonbFunction(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_safe_jsonb_function",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			const stmt = `
+CREATE OR REPLACE FUNCTION bifrost_safe_jsonb(t text) RETURNS text
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    j jsonb;
+BEGIN
+    IF t IS NULL OR t = '' OR t = '[]' THEN
+        RETURN t;
+    END IF;
+    IF left(btrim(t), 1) <> '[' THEN
+        RETURN t;
+    END IF;
+    BEGIN
+        j := t::jsonb;
+    EXCEPTION WHEN invalid_text_representation OR untranslatable_character THEN
+        RETURN t;
+    END;
+    IF jsonb_typeof(j) <> 'array' OR jsonb_array_length(j) = 0 THEN
+        RETURN t;
+    END IF;
+    RETURN jsonb_build_array(j->-1)::text;
+END;
+$$;`
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to create bifrost_safe_jsonb: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP FUNCTION IF EXISTS bifrost_safe_jsonb(text)").Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding bifrost_safe_jsonb function: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddDACColumnsToMCPToolLogs adds user_id, team_id, customer_id,
+// and business_unit_id columns to mcp_tool_logs so DAC scope can apply the
+// same ownership predicates it does on the logs table. The columns are
+// nullable; pre-existing rows stay NULL and the DAC resolver fails closed
+// for non-admin principals against them.
+//
+// Indexes are built CONCURRENTLY by ensurePerformanceIndexes (entries appended
+// to performanceIndexes) so adding them does not block writes on a populated
+// table.
+func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_dac_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			for _, col := range []string{"user_id", "team_id", "customer_id", "business_unit_id"} {
+				if !mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.AddColumn(&MCPToolLog{}, col); err != nil {
+						return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, col := range []string{"business_unit_id", "customer_id", "team_id", "user_id"} {
+				if mg.HasColumn(&MCPToolLog{}, col) {
+					if err := mg.DropColumn(&MCPToolLog{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding DAC columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddClusterGovernanceColumns adds cluster_node_id, budget_ids, and rate_limit_ids
+// columns to the logs table for node usage recovery in clustered deployments.
+func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_cluster_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "cluster_node_id") {
+				if err := migrator.AddColumn(&Log{}, "cluster_node_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "budget_ids") {
+				if err := migrator.AddColumn(&Log{}, "budget_ids"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "rate_limit_ids") {
+				if err := migrator.AddColumn(&Log{}, "rate_limit_ids"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "cluster_node_id") {
+				if err := migrator.DropColumn(&Log{}, "cluster_node_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "budget_ids") {
+				if err := migrator.DropColumn(&Log{}, "budget_ids"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "rate_limit_ids") {
+				if err := migrator.DropColumn(&Log{}, "rate_limit_ids"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding cluster governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLogIncNumberColumn adds a database-assigned monotonic cursor to
+// logs. Existing rows remain NULL; new rows receive values from a PostgreSQL
+// sequence at insert time. Ghost reconciliation uses this column after its
+// initial timestamp query to avoid missing rows flushed late by the async log
+// writer.
+func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_inc_number_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.AddColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("CREATE SEQUENCE IF NOT EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to create logs_inc_number_seq: %w", err)
+				}
+				if err := tx.Exec("ALTER SEQUENCE logs_inc_number_seq OWNED BY logs.inc_number").Error; err != nil {
+					return fmt.Errorf("failed to set logs_inc_number_seq ownership: %w", err)
+				}
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number SET DEFAULT nextval('logs_inc_number_seq')").Error; err != nil {
+					return fmt.Errorf("failed to set inc_number default: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number DROP DEFAULT").Error; err != nil {
+					return fmt.Errorf("failed to drop inc_number default: %w", err)
+				}
+				if err := tx.Exec("DROP SEQUENCE IF EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to drop logs_inc_number_seq: %w", err)
+				}
+			}
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.DropColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding log inc_number column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterUsersMatView drops mv_filter_users so ensureMatViews
+// recreates it with the corrected WHERE clause that excludes rows without a
+// user_name, preventing duplicate entries where name falls back to user_id.
+func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_users_matview",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop mv_filter_users: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter users matview: %s", err.Error())
+	}
+	return nil
+}

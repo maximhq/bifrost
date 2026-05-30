@@ -3,6 +3,13 @@ import { baseApi } from "./baseApi";
 
 export const pluginsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
+		// Get builtin plugin names
+		getBuiltinPlugins: builder.query<string[], void>({
+			query: () => "/plugins/builtins",
+			providesTags: ["Plugins"],
+			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
+		}),
+
 		// Get all plugins
 		getPlugins: builder.query<Plugin[], void>({
 			query: () => "/plugins",
@@ -54,6 +61,8 @@ export const pluginsApi = baseApi.injectEndpoints({
 							const index = draft.findIndex((p) => p.name === arg.name);
 							if (index !== -1) {
 								draft[index] = updatedPlugin;
+							} else {
+								draft.push(updatedPlugin);
 							}
 						}),
 					);
@@ -87,6 +96,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 });
 
 export const {
+	useGetBuiltinPluginsQuery,
 	useGetPluginsQuery,
 	useGetPluginQuery,
 	useCreatePluginMutation,

@@ -23,7 +23,6 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
-	api_version?: EnvVar;
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
@@ -32,7 +31,6 @@ export interface AzureKeyConfig {
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	endpoint: { value: "", env_var: "", from_env: false },
-	api_version: { value: "2024-02-01", env_var: "", from_env: false },
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
@@ -382,6 +380,7 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
 }
 
 // Auth config
@@ -446,6 +445,13 @@ export interface RestartRequiredConfig {
 }
 
 // Bifrost Config
+export type PluginSpanFilterMode = "include" | "exclude";
+
+export interface PluginSpanFilter {
+	mode: PluginSpanFilterMode;
+	plugins: string[];
+}
+
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
@@ -456,6 +462,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CompatConfig {
@@ -474,6 +481,7 @@ export interface CoreConfig {
 	disable_content_logging: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
+	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
@@ -486,6 +494,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -493,7 +502,6 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_server_url?: EnvVar;
 	mcp_external_client_url?: EnvVar;
 }
 
@@ -505,6 +513,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_content_logging: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
+	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
@@ -516,6 +525,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
 	mcp_disable_auto_tool_inject: false,
+	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
@@ -527,12 +537,14 @@ export const DefaultCoreConfig: CoreConfig = {
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
-	ttl_seconds: number;
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
 }

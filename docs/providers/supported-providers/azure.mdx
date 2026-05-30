@@ -12,7 +12,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 - **Authentication modes** - API key, Entra ID (Service Principal), or Managed Identity (DefaultAzureCredential) with
   automatic environment detection
 - **Model routing** - Automatic provider detection (OpenAI vs Anthropic) based on deployment
-- **API versioning** - Configurable API versions with preview support for Responses API
+- **v1 API** - Uses `/openai/v1/` endpoints for all operations except transcription, which uses the classic `/openai/deployments/{model}/audio/transcriptions?api-version=...` path as the v1 equivalent is not yet available
 - **Custom endpoints** - Full control over Azure endpoint configuration
 - **Multi-model support** - Unified interface for OpenAI, Anthropic (via Azure), and Gemini models
 - **Request/response pass-through** - Support for raw request/response bodies for advanced use cases
@@ -36,8 +36,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 
 <Note>
   **Azure-specific**: Batch operations and Text Completions are not supported by
-  Azure OpenAI Service. Responses API uses preview API version and is available
-  for both OpenAI and Anthropic models.
+  Azure OpenAI Service. Responses API is available for both OpenAI and Anthropic models.
 </Note>
 
 ---
@@ -81,9 +80,8 @@ This covers managed identity on Azure infrastructure, workload identity in AKS, 
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"Default Credential"**
 4. Set **Endpoint**: Your Azure OpenAI resource URL (e.g., `https://your-org.openai.azure.com`)
-5. Set **API Version** (Optional): e.g., `2024-10-21`
-6. Configure **Aliases**: Map model names to deployment IDs (e.g., `gpt-4o` → `my-gpt4o-deployment`)
-7. Save
+5. Configure **Aliases**: Map model names to deployment IDs (e.g., `gpt-4o` → `my-gpt4o-deployment`)
+6. Save
 
 Ensure the appropriate credential source is available - a managed identity attached to the Azure resource, `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_TENANT_ID` env vars, or `az login` for local development.
 
@@ -110,8 +108,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
       "gpt-4o-mini": "my-mini-deployment"
     },
     "azure_key_config": {
-      "endpoint": "env.AZURE_ENDPOINT",
-      "api_version": "2024-10-21"
+      "endpoint": "env.AZURE_ENDPOINT"
     }
   }'
 ```
@@ -123,7 +120,6 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```json
 "azure_key_config": {
   "endpoint": "env.AZURE_ENDPOINT",
-  "api_version": "2024-10-21",
   "deployments": {
     "gpt-4o": "my-gpt4o-deployment"
   }
@@ -150,8 +146,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
             "gpt-4o-mini": "my-mini-deployment"
           },
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "2024-10-21"
+            "endpoint": "env.AZURE_ENDPOINT"
           }
         }
       ]
@@ -183,8 +178,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "gpt-4o-mini": "my-mini-deployment",
                 },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
-                    APIVersion: schemas.NewEnvVar("2024-10-21"),
+                    Endpoint: *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
                 },
             },
         }, nil
@@ -219,8 +213,7 @@ Set `client_id`, `client_secret`, and `tenant_id` to authenticate with a Service
 5. Set **Client Secret**: Your Azure Entra ID client secret
 6. Set **Tenant ID**: Your Azure Entra ID tenant ID
 7. Set **Endpoint**: Your Azure OpenAI resource URL
-8. Set **API Version** (Optional): e.g., `2024-08-01-preview`
-9. Set **Scopes** (Optional): Override the default OAuth scope (`https://cognitiveservices.azure.com/.default`). Any configured scopes **replace** the default entirely - if you customize this field, you must include all required scopes (the default is not automatically added)
+8. Set **Scopes** (Optional): Override the default OAuth scope (`https://cognitiveservices.azure.com/.default`). Any configured scopes **replace** the default entirely - if you customize this field, you must include all required scopes (the default is not automatically added)
 10. Configure **Aliases**: Map model names to deployment IDs
 11. Save
 
@@ -252,8 +245,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
       "client_id": "env.AZURE_CLIENT_ID",
       "client_secret": "env.AZURE_CLIENT_SECRET",
       "tenant_id": "env.AZURE_TENANT_ID",
-      "scopes": ["https://cognitiveservices.azure.com/.default"],
-      "api_version": "2024-08-01-preview"
+      "scopes": ["https://cognitiveservices.azure.com/.default"]
     }
   }'
 ```
@@ -289,8 +281,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
             "client_id": "env.AZURE_CLIENT_ID",
             "client_secret": "env.AZURE_CLIENT_SECRET",
             "tenant_id": "env.AZURE_TENANT_ID",
-            "scopes": ["https://cognitiveservices.azure.com/.default"],
-            "api_version": "2024-08-01-preview"
+            "scopes": ["https://cognitiveservices.azure.com/.default"]
           }
         }
       ]
@@ -328,7 +319,6 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     ClientSecret: schemas.NewEnvVar(os.Getenv("AZURE_CLIENT_SECRET")),
                     TenantID:     schemas.NewEnvVar(os.Getenv("AZURE_TENANT_ID")),
                     Scopes:       []string{"https://cognitiveservices.azure.com/.default"},
-                    APIVersion:   schemas.NewEnvVar("2024-08-01-preview"),
                 },
             },
         }, nil
@@ -366,9 +356,8 @@ Provide the Azure API key in the `value` field. Use this for simple setups witho
 3. Under **Authentication Method**, select **"API Key"**
 4. Set **API Key**: Your Azure API key
 5. Set **Endpoint**: Your Azure OpenAI resource URL
-6. Set **API Version** (Optional): e.g., `2024-10-21`
-7. Configure **Aliases**: Map model names to deployment IDs
-8. Save
+6. Configure **Aliases**: Map model names to deployment IDs
+7. Save
 
 </Tab>
 
@@ -393,8 +382,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
       "gpt-4o-mini": "my-mini-deployment"
     },
     "azure_key_config": {
-      "endpoint": "env.AZURE_ENDPOINT",
-      "api_version": "2024-10-21"
+      "endpoint": "env.AZURE_ENDPOINT"
     }
   }'
 ```
@@ -425,8 +413,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
             "gpt-4o-mini": "my-mini-deployment"
           },
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "2024-10-21"
+            "endpoint": "env.AZURE_ENDPOINT"
           }
         }
       ]
@@ -458,8 +445,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "gpt-4o-mini": "my-mini-deployment",
                 },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
-                    APIVersion: schemas.NewEnvVar("2024-10-21"),
+                    Endpoint: *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
                 },
             },
         }, nil
@@ -483,7 +469,6 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | Field           | Required | Default                                            | Description                                     |
 | --------------- | -------- | -------------------------------------------------- | ----------------------------------------------- |
 | `endpoint`      | Yes      | -                                                  | Azure OpenAI resource endpoint URL              |
-| `api_version`   | No       | `2024-10-21`                                       | Azure API version                               |
 | `client_id`     | No       | -                                                  | Entra ID client ID (Service Principal auth)     |
 | `client_secret` | No       | -                                                  | Entra ID client secret (Service Principal auth) |
 | `tenant_id`     | No       | -                                                  | Entra ID tenant ID (Service Principal auth)     |
@@ -585,8 +570,7 @@ detects the auth environment.
     "gpt-4": "my-gpt4-deployment"
   },
   "azure_key_config": {
-    "endpoint": "https://your-org.openai.azure.com",
-    "api_version": "2024-10-21"
+    "endpoint": "https://your-org.openai.azure.com"
   }
 }
 ```
@@ -607,8 +591,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
     "client_id": "your-client-id",
     "client_secret": "your-client-secret",
     "tenant_id": "your-tenant-id",
-    "scopes": ["https://cognitiveservices.azure.com/.default"],
-    "api_version": "2024-10-21"
+    "scopes": ["https://cognitiveservices.azure.com/.default"]
   }
 }
 ```
@@ -629,8 +612,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
     "claude-3": "my-claude-deployment"
   },
   "azure_key_config": {
-    "endpoint": "https://your-org.openai.azure.com",
-    "api_version": "2024-10-21"
+    "endpoint": "https://your-org.openai.azure.com"
   }
 }
 ```
@@ -642,7 +624,6 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `client_secret` - Azure Entra ID client secret (optional, for Service Principal auth)
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
 - `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
-- `api_version` - API version to use (default: `2024-10-21`)
 - `aliases` - Map of model names to Azure deployment IDs (optional, set at key level)
 - `allowed_models` - List of allowed models to use from this key (optional)
 
@@ -694,14 +675,6 @@ Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for
 - Authentication uses `x-api-key` header for Anthropic models
 - Minimum reasoning budget: 1024 tokens
 
-## API Versioning
-
-- **Default version**: `2024-10-21` (supports latest OpenAI features)
-- **Preview version**: `preview` (used for Responses API)
-- **Custom version**: Set via `api_version` in key config
-
-Different API versions may have different feature support. Bifrost automatically adjusts endpoint paths and parameters based on the configured version.
-
 ## Streaming
 
 Streaming uses OpenAI or Anthropic format depending on model type:
@@ -713,7 +686,7 @@ Streaming uses OpenAI or Anthropic format depending on model type:
 
 # 2. Responses API
 
-The Responses API is available for both OpenAI and Anthropic models on Azure and uses the preview API version.
+The Responses API is available for both OpenAI and Anthropic models on Azure using the `/openai/v1/responses` endpoint.
 
 ## Request Parameters
 
@@ -774,7 +747,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 
 ### Special Handling
 
-- Uses `/openai/v1/responses` endpoint with `preview` API version
+- Uses `/openai/v1/responses` endpoint
 - All request body conversions handled automatically
 - Supports raw request body passthrough for advanced cases
 
@@ -946,13 +919,11 @@ Image Edit is supported for OpenAI models on Azure and uses the OpenAI-compatibl
 Azure uses the same conversion as OpenAI (see [OpenAI Image Edit](/providers/supported-providers/openai#8-image-edit)):
 
 - **Request Conversion**: Uses `openai.HandleOpenAIImageEditRequest` with Azure-specific URL construction
-- **URL Format**: `{endpoint}/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
+- **URL Format**: `{endpoint}/openai/v1/images/edits`
 - **Authentication**: Azure API key or OAuth bearer token (via `getAzureAuthHeaders`)
 - **Deployment Mapping**: Model identifier mapped to Azure deployment ID
 - **Response Conversion**: Same as OpenAI - responses unmarshaled directly into `BifrostImageGenerationResponse`
 - **Streaming**: Supported via `openai.HandleOpenAIImageEditStreamRequest` with Azure-specific URL and authentication
-
-**Endpoint**: `/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
 
 ---
 
@@ -1000,15 +971,6 @@ Lists available models/deployments configured in the Azure key. Response include
   transparently **Code**: `azure.go:92-114`
 </Accordion>
 
-<Accordion title="Responses API Preview Version (including Anthropic)">
-  **Severity**: Medium **Behavior**: Responses API automatically uses preview
-  API version, which differs from Chat Completions API version. For Anthropic
-  models, Responses API specifically uses `preview` API version. **Impact**:
-  Different API version for Responses vs Chat Completions. Automatic version
-  override for Responses requests. **Code**: `azure.go:92-114`,
-  `azure.go:109-113`, `azure.go:694`
-</Accordion>
-
 <Accordion title="Version Matching for Deployments">
   **Severity**: Low **Behavior**: Model version differences ignored when
   matching to deployments **Impact**: `gpt-4` and `gpt-4-turbo` can map to same
@@ -1036,11 +998,11 @@ Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compa
 
 ## Configuration
 
-**HTTP Settings**: API Version `2024-10-21` (configurable) | Max Connections 5000 | Max Idle 60 seconds
+**HTTP Settings**: Max Connections 5000 | Max Idle 60 seconds
 
-**Endpoint Format**: `https://{resource-name}.openai.azure.com/openai/v1/{path}?api-version={version}`
+**Endpoint Format**: `https://{resource-name}.openai.azure.com/openai/v1/{path}`
 
-**Note**: Bifrost automatically constructs URLs using the endpoint from key configuration and the configured API version.
+**Note**: Bifrost uses the Azure OpenAI v1 API. No `api-version` query parameter is needed.
 
 ## Setup & Configuration
 

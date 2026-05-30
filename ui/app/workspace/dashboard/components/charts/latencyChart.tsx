@@ -1,5 +1,5 @@
 import type { LatencyHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatFullTimestamp, formatLatency, formatTimestamp, LATENCY_COLORS } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -59,7 +59,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function LatencyChart({ data, chartType, startTime, endTime }: LatencyChartProps) {
+function LatencyChartImpl({ data, chartType, startTime, endTime }: LatencyChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -202,3 +202,4 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 		</ChartErrorBoundary>
 	);
 }
+export const LatencyChart = memo(LatencyChartImpl);

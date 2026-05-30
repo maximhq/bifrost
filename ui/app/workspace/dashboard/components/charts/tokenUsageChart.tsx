@@ -1,7 +1,8 @@
 import type { TokenHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../../utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -54,7 +55,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUsageChartProps) {
+function TokenUsageChartImpl({ data, chartType, startTime, endTime }: TokenUsageChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -98,7 +99,7 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -149,7 +150,7 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							tickLine={false}
 							axisLine={false}
 							width={50}
-							tickFormatter={formatTokens}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -187,3 +188,4 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 		</ChartErrorBoundary>
 	);
 }
+export const TokenUsageChart = memo(TokenUsageChartImpl);

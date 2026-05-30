@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -165,6 +167,71 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
+func TestSchemaSCIMConfigValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "disabled okta with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"okta","config":{}}}`,
+		},
+		{
+			name:   "disabled entra with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"entra","config":{}}}`,
+		},
+		{
+			name:   "disabled keycloak with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"keycloak","config":{}}}`,
+		},
+		{
+			name:      "enabled okta with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"okta","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled entra with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"entra","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled keycloak with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"keycloak","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled keycloak with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "keycloak",
+					"config": {
+						"serverUrl": "https://keycloak.company.com",
+						"realm": "bifrost-prod",
+						"clientId": "bifrost",
+						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaKeyAliases(t *testing.T) {
 	schema := loadSchema(t)
 
@@ -295,6 +362,7 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_code_mode_binding_level",
 		"mcp_tool_sync_interval",
 		"mcp_disable_auto_tool_inject",
+		"mcp_enable_temp_token_auth",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -314,7 +382,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_tool_execution_timeout": 60,
 				"mcp_code_mode_binding_level": "server",
 				"mcp_tool_sync_interval": 10,
-				"mcp_disable_auto_tool_inject": false
+				"mcp_disable_auto_tool_inject": false,
+				"mcp_enable_temp_token_auth": true
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
@@ -453,6 +522,18 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("tool_manager_config with code_mode_binding_level should be valid, got: %v", err)
+		}
+		var root struct {
+			MCP schemas.MCPConfig `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(config), &root); err != nil {
+			t.Errorf("failed to unmarshal mcp config: %v", err)
+		}
+		if root.MCP.ToolManagerConfig == nil {
+			t.Fatal("tool_manager_config missing after unmarshal")
+		}
+		if root.MCP.ToolManagerConfig.ToolExecutionTimeout.D() != 30*time.Second {
+			t.Errorf("tool_execution_timeout should be 30 seconds, got: %v", root.MCP.ToolManagerConfig.ToolExecutionTimeout.D())
 		}
 	})
 }

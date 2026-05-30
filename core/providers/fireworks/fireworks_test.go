@@ -28,21 +28,19 @@ func TestFireworks(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
-	chatModel, textModel, embeddingModel := resolveFireworksModels(t, client, ctx)
-
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:                schemas.Fireworks,
-		ChatModel:               chatModel,
+		ChatModel:               "accounts/fireworks/models/deepseek-v4-pro",
 		Fallbacks:               []schemas.Fallback{},
-		TextModel:               textModel,
+		TextModel:               "accounts/fireworks/models/deepseek-v4-pro",
 		TextCompletionFallbacks: []schemas.Fallback{},
-		EmbeddingModel:          embeddingModel,
+		EmbeddingModel:          "fireworks/qwen3-embedding-8b",
 		ReasoningModel:          "",
 		TranscriptionModel:      "",
 		SpeechSynthesisModel:    "",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        textModel != "",
-			TextCompletionStream:  textModel != "",
+			TextCompletion:        true,
+			TextCompletionStream:  true,
 			SimpleChat:            true,
 			CompletionStream:      true,
 			MultiTurnConversation: true,
@@ -57,7 +55,7 @@ func TestFireworks(t *testing.T) {
 			FileBase64:            false,
 			FileURL:               false,
 			CompleteEnd2End:       true,
-			Embedding:             embeddingModel != "",
+			Embedding:             true,
 			ListModels:            true,
 			Reasoning:             false,
 			Transcription:         false,

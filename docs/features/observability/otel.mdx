@@ -35,18 +35,19 @@ The plugin supports multiple trace formats to match your observability platform:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `service_name` | `string` | ❌ No | Service name to be used for tracing, defaults to `bifrost` |
-| `collector_url` | `string` | ✅ Yes | OTLP collector endpoint URL |
+| `collector_url` | `string \| EnvVar` | ✅ Yes | OTLP collector endpoint URL — supports `env.VAR_NAME` |
 | `trace_type` | `string` | ✅ Yes | One of: `genai_extension`, `vercel`, `open_inference` |
 | `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
-| `headers` | `object` | ❌ No | Custom headers for authentication (supports `env.VAR_NAME`) |
+| `headers` | `object` | ❌ No | Custom headers for authentication — values support `env.VAR_NAME` |
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 
 ### Environment Variable Substitution
 
-Headers support environment variable substitution using the `env.` prefix:
+`collector_url`, `metrics_endpoint`, and individual header values all support the `env.` prefix to read from environment variables at runtime. This keeps sensitive URLs and credentials out of stored configuration.
 
 ```json
 {
+  "collector_url": "env.OTEL_COLLECTOR_URL",
   "headers": {
     "Authorization": "env.OTEL_API_KEY",
     "X-Custom-Header": "env.CUSTOM_VALUE"
@@ -558,7 +559,7 @@ Configure the OTel plugin with the following settings:
 
 | Field | Value |
 |-------|-------|
-| **Collector URL** | `https://cloud.langfuse.com/api/public/otel` (EU) or `https://us.cloud.langfuse.com/api/public/otel` (US) |
+| **Collector URL** | `https://cloud.langfuse.com/api/public/otel/v1/traces` (EU) or `https://us.cloud.langfuse.com/api/public/otel/v1/traces` (US) |
 | **Trace Type** | `genai_extension` |
 | **Protocol** | `http` (required - Langfuse does not support gRPC) |
 | **Headers** | `Authorization`: `env.LANGFUSE_AUTH` |
@@ -664,6 +665,12 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - Latency and timing (start/end timestamps)
 - Error details with status codes
 
+### Caller-Supplied Headers
+
+Headers Bifrost forwards to the upstream provider — both `x-bf-eh-*` prefixed headers and headers matched by the [direct allowlist](/deployment-guides/config-json/client#header-filtering) — are also surfaced on the `llm.call` span as `gen_ai.request.extra_header.<name>` attributes. This makes it easy to filter or correlate traces by caller context (session ID, tenant ID, correlation IDs) without standing up extra plumbing.
+
+For example, sending `x-bf-eh-session-id: sess-abc-123` produces the span attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"`. See [Extra Headers](/providers/request-options#extra-headers-x-bf-eh) for the full request format.
+
 ### Example Span
 
 ```json
@@ -744,7 +751,7 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `metrics_enabled` | `boolean` | ❌ No | Enable push-based metrics export (default: `false`) |
-| `metrics_endpoint` | `string` | ✅ Yes (if enabled) | OTLP metrics endpoint URL |
+| `metrics_endpoint` | `string \| EnvVar` | ✅ Yes (if enabled) | OTLP metrics endpoint URL — supports `env.VAR_NAME` |
 | `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
 
 ### Example Configuration
@@ -891,17 +898,62 @@ The plugin accumulates streaming chunks and emits a single complete span when th
 
 ### Environment Variable Security
 
-Sensitive credentials never appear in config files:
+Sensitive URLs and credentials never need to appear in stored configuration. The `collector_url`, `metrics_endpoint`, and header values all accept the `env.VAR_NAME` format:
 
 ```json
 {
+  "collector_url": "env.OTEL_COLLECTOR_URL",
+  "metrics_endpoint": "env.OTEL_METRICS_ENDPOINT",
   "headers": {
     "Authorization": "env.OTEL_API_KEY"
   }
 }
 ```
 
-The plugin reads `OTEL_API_KEY` from the environment at runtime.
+The plugin resolves each `env.VAR_NAME` reference from the process environment at runtime. Stored configuration (database or config file) retains the `env.VAR_NAME` string — the resolved value is never persisted. API responses return `EnvVar` objects with sensitive resolved values redacted.
+
+### Filtering Plugin Spans
+
+By default every plugin's pre- and post-hook execution generates a span, which can bloat traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the OTEL plugin config to control which plugin spans are exported.
+
+**Via config.json** (inside the OTEL plugin config):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "...",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "plugin_span_filter": {
+          "mode": "exclude",
+          "plugins": ["logging", "compat", "telemetry", "otel"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**Via the UI**: Open the Plugins page and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+
+**Filter modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `exclude` | Export spans for all plugins **except** those listed |
+| `include` | Export spans **only** for the listed plugins |
+
+**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+
+When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
+
+<Note>
+  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set a higher `version` on the OTEL plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+</Note>
 
 ---
 

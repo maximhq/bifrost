@@ -100,7 +100,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
+				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+				if soToolName == "" && isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -128,7 +129,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
 						// Passing through here would produce a duplicate content_block_start that causes
@@ -215,6 +217,18 @@ func hasFastModeBetaHeader(headers map[string][]string) bool {
 		}
 	}
 	return false
+}
+
+// hasOutputConfigFormat reports whether the parsed request contains output_config.format
+func hasOutputConfigFormat(req any) bool {
+	r, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false
+	}
+	if r.OutputConfig != nil && len(r.OutputConfig.Format) > 0 {
+		return true
+	}
+	return len(r.OutputFormat) > 0
 }
 
 // extractPassthroughHeaders filters headers to only include those in the safe whitelist.
@@ -346,7 +360,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers) || hasOutputConfigFormat(req)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}

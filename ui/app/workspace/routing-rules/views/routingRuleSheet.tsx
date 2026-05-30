@@ -3,7 +3,6 @@
  * Create/Edit form for routing rules
  */
 
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
@@ -30,7 +29,8 @@ import {
 } from "@/lib/types/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
-import { Plus, Save, Trash2, X } from "lucide-react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
@@ -235,9 +235,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-					id: editingRule.id,
-					data: payload,
-				}).unwrap()
+						id: editingRule.id,
+						data: payload,
+					}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -273,8 +273,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					</SheetDescription>
 				</SheetHeader>
 
-				<form onSubmit={handleSubmit(onSubmit)}>
-					<div className="flex flex-col gap-6 px-8 pb-6">
+				<form onSubmit={handleSubmit(onSubmit)} className="flex flex-col grow">
+					<div className="flex flex-col gap-6 px-8 pb-6 grow">
 						{/* Rule Name */}
 						<div className="space-y-3">
 							<Label htmlFor="name">
@@ -401,10 +401,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								{((scope === "team" && teamsData.teams.length === 0) ||
 									(scope === "customer" && customersData.customers.length === 0) ||
 									(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-										<p className="text-muted-foreground text-sm">
-											No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-										</p>
-									)}
+									<p className="text-muted-foreground text-sm">
+										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+									</p>
+								)}
 								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
@@ -486,7 +486,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Fallbacks</Label>								<p className="text-muted-foreground text-xs mt-0.5">
+									<Label>Fallbacks</Label>{" "}
+									<p className="text-muted-foreground mt-0.5 text-xs">
 										Provider is required, but model is optional. Leave model empty to use the incoming request value.
 									</p>
 								</div>
@@ -579,16 +580,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							</div>
 							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
 						</div>
-
 					</div>
 					{/* Action Buttons */}
 					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
-							<X className="h-4 w-4" />
 							Cancel
 						</Button>
 						<Button type="submit" disabled={isLoading || !hasRequiredAccess}>
-							<Save className="h-4 w-4" />
 							{isEditing ? "Update Rule" : "Save Rule"}
 						</Button>
 					</div>

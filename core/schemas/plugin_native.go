@@ -31,6 +31,14 @@ type MCPPluginShortCircuit struct {
 	Error    *BifrostError       // If set, short-circuit with this error (can set AllowFallbacks field)
 }
 
+// MCPConnectionShortCircuit is the typed short-circuit for MCPConnectionPlugin.
+// It carries a typed Connect response (instead of the generic envelope) so plugin
+// authors don't have to wrap responses in BifrostMCPResponse.
+type MCPConnectionShortCircuit struct {
+	Response *BifrostMCPConnectResponse // If set, short-circuit with this synthetic Connect outcome
+	Error    *BifrostError              // If set, short-circuit with this error
+}
+
 // PluginShortCircuit is the legacy name for LLMPluginShortCircuit (v1.3.x compatibility).
 // Deprecated: Use LLMPluginShortCircuit instead.
 type PluginShortCircuit = LLMPluginShortCircuit

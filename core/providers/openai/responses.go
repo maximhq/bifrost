@@ -201,13 +201,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				// Convert "minimal" to "low"; cap "xhigh"/"max" to "high" — OpenAI tops out at high.
-				switch effort {
-				case "minimal":
-					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
-				case "xhigh", "max":
-					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("high")
-				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(req.Model, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {

@@ -235,6 +235,180 @@ func TestOpencodeTUIConfigPathPrefersXDG(t *testing.T) {
 	}
 }
 
+func TestCodexWriteNativeConfigMergesAuthAndTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir codex dir: %v", err)
+	}
+
+	authPath := filepath.Join(dir, "auth.json")
+	initialAuth := `{"auth_mode":"apikey","OPENAI_API_KEY":"stale-key","tokens":{"id_token":"keep-me"}}`
+	if err := os.WriteFile(authPath, []byte(initialAuth), 0o600); err != nil {
+		t.Fatalf("write initial auth: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "config.toml")
+	initialTOML := `openai_base_url="http://old.example/openai/v1"
+env_key="stale-literal-key"
+model = "gpt-old"
+model_reasoning_effort = "medium"
+
+[projects."/Users/me/proj"]
+trust_level = "trusted"
+`
+	if err := os.WriteFile(configPath, []byte(initialTOML), 0o600); err != nil {
+		t.Fatalf("write initial config.toml: %v", err)
+	}
+
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-new", "gpt-5.5"); err != nil {
+		t.Fatalf("codexWriteNativeConfig() error = %v", err)
+	}
+
+	// auth.json should keep tokens.id_token but flip OPENAI_API_KEY.
+	authBytes, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	var auth map[string]any
+	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
+		t.Fatalf("unmarshal auth.json: %v", err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-new" {
+		t.Fatalf("auth.OPENAI_API_KEY = %q, want %q", got, "sk-bf-new")
+	}
+	if got, _ := auth["auth_mode"].(string); got != "apikey" {
+		t.Fatalf("auth.auth_mode = %q, want %q", got, "apikey")
+	}
+	tokens, ok := auth["tokens"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tokens map preserved, got %#v", auth["tokens"])
+	}
+	if got, _ := tokens["id_token"].(string); got != "keep-me" {
+		t.Fatalf("tokens.id_token = %q, want %q", got, "keep-me")
+	}
+
+	// config.toml should have new values for top-level keys, preserve
+	// model_reasoning_effort and the [projects.*] table.
+	tomlBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	got := string(tomlBytes)
+	for _, want := range []string{
+		`openai_base_url = "http://localhost:8080/openai/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`model = "gpt-5.5"`,
+		`model_reasoning_effort = "medium"`,
+		`[projects."/Users/me/proj"]`,
+		`trust_level = "trusted"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		`"http://old.example/openai/v1"`,
+		`"stale-literal-key"`,
+		`"gpt-old"`,
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("expected config.toml to no longer contain %q, got:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-fresh", ""); err != nil {
+		t.Fatalf("codexWriteNativeConfig() error = %v", err)
+	}
+
+	authBytes, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	var auth map[string]any
+	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
+		t.Fatalf("unmarshal auth.json: %v", err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-fresh" {
+		t.Fatalf("auth.OPENAI_API_KEY = %q", got)
+	}
+
+	tomlBytes, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	got := string(tomlBytes)
+	for _, want := range []string{
+		`openai_base_url = "http://localhost:8080/openai/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `model =`) {
+		t.Fatalf("did not expect model line when model is empty, got:\n%s", got)
+	}
+}
+
+func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "dummy-key", ""); err != nil {
+		t.Fatalf("codexWriteNativeConfig() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no auth.json for dummy key, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); err != nil {
+		t.Fatalf("expected config.toml to still be written, stat err=%v", err)
+	}
+}
+
+func TestSetTopLevelTOMLKeysAppendsBeforeFirstTable(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`# header comment
+model_reasoning_effort = "medium"
+
+[projects."x"]
+trust_level = "trusted"
+`)
+	out := string(setTopLevelTOMLKeys(input, map[string]string{
+		"openai_base_url": "http://localhost:8080/openai/v1",
+		"env_key":         "OPENAI_API_KEY",
+		"model":           "gpt-5.5",
+	}))
+
+	preTable, _, ok := strings.Cut(out, `[projects."x"]`)
+	if !ok {
+		t.Fatalf("expected [projects.\"x\"] header preserved, got:\n%s", out)
+	}
+	for _, want := range []string{
+		`# header comment`,
+		`model_reasoning_effort = "medium"`,
+		`openai_base_url = "http://localhost:8080/openai/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`model = "gpt-5.5"`,
+	} {
+		if !strings.Contains(preTable, want) {
+			t.Fatalf("expected pre-table section to contain %q, got:\n%s", want, preTable)
+		}
+	}
+	if !strings.Contains(out, `trust_level = "trusted"`) {
+		t.Fatalf("expected table body preserved, got:\n%s", out)
+	}
+}
+
 func envValue(env []string, key string) string {
 	prefix := key + "="
 	for _, entry := range env {

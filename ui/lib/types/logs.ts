@@ -85,6 +85,7 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
+	normalized_name?: string;
 	alias?: string;
 	created?: number;
 	context_length?: number;
@@ -584,6 +585,7 @@ export interface LogFilters {
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
+	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 	user_ids?: string[];
@@ -1075,8 +1077,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 
@@ -1170,6 +1171,29 @@ export interface UserRankingEntry {
 
 export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
+}
+
+export type RankingDimension = "team" | "customer" | "business_unit" | "user";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
 }
 
 // Date utility functions for URL state management

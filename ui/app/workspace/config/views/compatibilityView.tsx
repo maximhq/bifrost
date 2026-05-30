@@ -130,7 +130,7 @@ export default function CompatibilityView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="compat-should-convert-params" className="text-sm font-medium">
-							Convert Unsupported Parameter Values
+							Convert Unsupported Param Values
 						</label>
 						<p className="text-muted-foreground text-sm">Converts model parameter values that are not supported by the model.</p>
 					</div>

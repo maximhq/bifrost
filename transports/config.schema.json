@@ -190,6 +190,11 @@
           },
           "description": "Additional allowed headers for CORS and WebSocket"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and an Authorization header carrying the provider's raw API key.",
+          "default": false
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
@@ -218,28 +223,16 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_enable_temp_token_auth": {
+          "type": "boolean",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting — they always require SSO login.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
-        },
-        "mcp_external_server_url": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "object",
-              "properties": {
-                "value": { "type": "string" },
-                "env_var": { "type": "string" },
-                "from_env": { "type": "boolean" }
-              },
-              "additionalProperties": false
-            }
-          ],
-          "description": "Public base URL Bifrost advertises when acting as an OAuth server/resource (well-known metadata, WWW-Authenticate). Set when Bifrost runs behind a reverse proxy. Supports env var syntax: \"env.MY_VAR\"."
         },
         "mcp_external_client_url": {
           "anyOf": [
@@ -392,7 +385,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -448,7 +441,7 @@
               },
               "calendar_aligned": {
                 "type": "boolean",
-                "description": "Snap reset windows to clean calendar boundaries (day, week, month, year)",
+                "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
               }
             },
@@ -497,6 +490,10 @@
                 "type": "string",
                 "description": "Team name"
               },
+              "source_id": {
+                "type": "string",
+                "description": "Optional external source identifier (e.g. SCIM group ID) used to map this team to an upstream system. Unique when set."
+              },
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID"
@@ -524,6 +521,11 @@
               "claims": {
                 "type": "object",
                 "description": "Team claims data"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               },
               "virtual_key_count": {
                 "type": "integer",
@@ -621,6 +623,11 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
+              },
+              "access_profile_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
               "rate_limit_id": {
                 "type": "string",
@@ -1036,6 +1043,12 @@
                     "description": "Maximum number of open connections to the database (default: 50)",
                     "minimum": 2,
                     "default": 50
+                  },
+                  "matview_refresh_interval": {
+                    "type": "string",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
+                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "default": "1m"
                   }
                 },
                 "required": [
@@ -1053,7 +1066,7 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
@@ -1151,7 +1164,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "Payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
@@ -1434,10 +1447,6 @@
                       "type": "string",
                       "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
-                    "cleanup_on_shutdown": {
-                      "type": "boolean",
-                      "description": "Clean up cache on shutdown (default: false)"
-                    },
                     "ttl": {
                       "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
                       "oneOf": [
@@ -1549,7 +1558,7 @@
                     "collector_url": {
                       "type": "string",
                       "description": "URL of the OpenTelemetry collector",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },
@@ -1576,7 +1585,7 @@
                     "metrics_endpoint": {
                       "type": "string",
                       "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)",
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "format": "uri"
                         },
@@ -1606,6 +1615,22 @@
                     "insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
+                    },
+                    "plugin_span_filter": {
+                      "type": "object",
+                      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": ["include", "exclude"]
+                        },
+                        "plugins": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      },
+                      "required": ["mode", "plugins"],
+                      "additionalProperties": false
                     }
                   },
                   "required": ["collector_url", "trace_type", "protocol"],
@@ -1692,10 +1717,40 @@
     },
     "access_profiles": {
       "$ref": "#/$defs/access_profiles"
+    },
+    "feature_flags": {
+      "$ref": "#/$defs/feature_flags_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "feature_flags_config": {
+      "type": "object",
+      "description": "Boot-time overrides for feature flags. Flags themselves are declared in code via featureflags.Register; this block only sets initial values. Anything set here is rendered as locked in the UI - operators must edit the config (or Helm values) to change it.",
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "description": "Boolean value or a string: either 'env.NAME' for env-var indirection, or a literal boolean (true / false / 1 / 0 / yes / no / on / off, case-insensitive).",
+                "oneOf": [
+                  { "type": "boolean" },
+                  {
+                    "type": "string",
+                    "pattern": "^(env\\.[A-Za-z_][A-Za-z0-9_]*|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[01]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])$"
+                  }
+                ]
+              }
+            },
+            "required": ["enabled"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "routing_target": {
       "type": "object",
       "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
@@ -1862,6 +1917,13 @@
             "type": "string"
           }
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
@@ -1945,6 +2007,12 @@
           "default": 86400,
           "optional": true,
           "minimum": 3600
+        },
+        "model_parameters_url": {
+          "type": "string",
+          "description": "Model parameters URL",
+          "optional": true,
+          "format": "uri"
         }
       },
       "additionalProperties": false
@@ -2357,10 +2425,6 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
-                "api_version": {
-                  "type": "string",
-                  "description": "Azure API version"
-                },
                 "client_id": {
                   "type": "string",
                   "description": "Azure client ID for Entra authentication (can use env. prefix)"
@@ -2377,6 +2441,10 @@
                   "type": "array",
                   "items": { "type": "string" },
                   "description": "OAuth2 scopes for Entra authentication"
+                },
+                "api_version": {
+                  "type": "string",
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
                 }
               },
               "required": ["endpoint"],
@@ -2764,7 +2832,7 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2775,6 +2843,13 @@
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
+          "items": {
             "type": "string"
           }
         },
@@ -2858,6 +2933,21 @@
           "type": "boolean",
           "description": "When true, this MCP client is disabled (connection and workers are stopped while preserving configuration).",
           "default": false
+        },
+        "tls_config": {
+          "type": "object",
+          "description": "TLS configuration for HTTP and SSE connections. Not applicable to stdio or inprocess connection types.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean",
+              "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set. Use only in development or trusted isolated environments. Not recommended for production."
+            },
+            "ca_cert_pem": {
+              "type": "string",
+              "description": "PEM-encoded CA certificate to trust for MCP server connections. Use when the MCP server uses a self-signed or private CA certificate. Supports env.VAR_NAME syntax to read the certificate from an environment variable."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["name", "connection_type"],
@@ -2919,8 +3009,8 @@
       "type": "object",
       "properties": {
         "tool_execution_timeout": {
-          "type": "integer",
-          "description": "Tool execution timeout in seconds",
+          "type": ["integer", "string"],
+          "description": "Tool execution timeout. Accepts a duration string (e.g. \"30s\", \"2m\") or an integer number of seconds (e.g. 30 means 30 seconds).",
           "minimum": 1,
           "default": 30
         },
@@ -3196,6 +3286,12 @@
           "type": "boolean",
           "description": "Use TLS for connection (optional)",
           "default": false
+        },
+        "max_recv_msg_size_mb": {
+          "type": "integer",
+          "description": "gRPC max receive message size in MB (default: 64). Increase when caching large payloads such as base64-encoded image generation responses.",
+          "minimum": 1,
+          "default": 64
         }
       },
       "required": ["host"],
@@ -3262,6 +3358,12 @@
         "enabled": {
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["mesh", "broker"],
+          "default": "mesh",
+          "description": "Clustering mode. 'mesh' (default) is peer-to-peer via memberlist gossip. 'broker' routes all cluster traffic through a central broker process, for platforms without peer-to-peer connectivity (e.g. Cloud Run)."
         },
         "region": {
           "type": "string",
@@ -3409,6 +3511,32 @@
           },
           "required": ["type"],
           "additionalProperties": false
+        },
+        "broker": {
+          "type": "object",
+          "description": "Broker settings, used when type is 'broker'",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "host:port of the broker that nodes dial"
+            },
+            "tls": {
+              "type": "boolean",
+              "description": "Whether to dial the broker over TLS"
+            },
+            "auth_token": {
+              "type": "string",
+              "description": "Optional shared secret sent on connect"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the broker process serves on (default: 50051)"
+            }
+          },
+          "required": ["address"],
+          "additionalProperties": false
         }
       },
       "required": ["enabled"],
@@ -3424,7 +3552,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra"],
+          "enum": ["okta", "entra", "keycloak"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -3438,10 +3566,14 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "okta"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
@@ -3454,15 +3586,39 @@
         {
           "if": {
             "properties": {
+              "enabled": {
+                "const": true
+              },
               "provider": {
                 "const": "entra"
               }
-            }
+            },
+            "required": ["enabled", "provider"]
           },
           "then": {
             "properties": {
               "config": {
                 "$ref": "#/$defs/entra_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "keycloak"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/keycloak_config"
               }
             }
           }
@@ -3477,6 +3633,11 @@
           "type": "string",
           "format": "uri",
           "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
+        },
+        "authServerType": {
+          "type": "string",
+          "enum": ["org", "custom"],
+          "description": "'org' for Org Authorization Server or 'custom' for Custom Authorization Server. Auto-detected from issuer URL when omitted."
         },
         "clientId": {
           "type": "string",
@@ -3508,6 +3669,48 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins). Requires an Okta Custom Authorization Server.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
+              "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
+              "role": { "type": "string", "description": "Bifrost role to assign on match" }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string" },
+              "value": { "type": "string" },
+              "team": { "type": "string" }
+            },
+            "required": ["attribute", "value", "team"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string" },
+              "value": { "type": "string" },
+              "business_unit": { "type": "string" }
+            },
+            "required": ["attribute", "value", "business_unit"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
@@ -3561,6 +3764,71 @@
         }
       },
       "required": ["tenantId", "clientId"],
+      "additionalProperties": false
+    },
+    "keycloak_config": {
+      "type": "object",
+      "description": "Keycloak OIDC/SCIM authentication configuration",
+      "properties": {
+        "serverUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of the Keycloak server (e.g., https://keycloak.company.com). Must NOT include the /realms/{realm} suffix."
+        },
+        "realm": {
+          "type": "string",
+          "description": "Keycloak realm name (e.g., 'bifrost-prod')"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Keycloak client ID for the confidential client used by Bifrost"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Keycloak client secret. Supports env. prefix for environment variable references (e.g., 'env.KEYCLOAK_CLIENT_SECRET')"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected JWT audience (default: clientId)"
+        },
+        "userIdField": {
+          "type": "string",
+          "description": "JWT claim field for user ID (default: 'sub')",
+          "default": "sub"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for roles (default: 'roles')",
+          "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply)",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
     },
     "load_balancer_config": {
@@ -3667,7 +3935,12 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for rule execution"
+                "description": "Timeout in seconds for rule execution"
+              },
+              "max_turns_to_send": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
               },
               "provider_config_ids": {
                 "type": "array",
@@ -3706,7 +3979,7 @@
               "timeout": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Timeout in milliseconds for provider execution"
+                "description": "Timeout in seconds for provider execution"
               },
               "config": {
                 "type": "object",
@@ -3741,6 +4014,11 @@
         "reset_duration": {
           "type": "string",
           "description": "Reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id", "max_limit", "reset_duration"],
@@ -3768,6 +4046,11 @@
         "request_reset_duration": {
           "type": "string",
           "description": "Request reset window, e.g. \"1M\", \"1h\""
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Deprecated: set calendar_aligned on the parent access profile instead. Kept for backward compatibility with older config.json files; the access-profile reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+          "default": false
         }
       },
       "required": ["id"],
@@ -3805,6 +4088,11 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
+          "default": false
         },
         "provider_configs": {
           "type": "array",

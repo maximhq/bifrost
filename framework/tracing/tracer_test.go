@@ -308,6 +308,106 @@ func TestTracer_SetAttribute(t *testing.T) {
 	}
 }
 
+func TestTracer_GetSpanHandleByID_RootSpan(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+
+	rootCtx, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	_, childHandle := tracer.StartSpan(rootCtx, "llm-call", schemas.SpanKindLLMCall)
+
+	tracer.SetAttribute(childHandle, "child.attr", "child-value")
+
+	handle := tracer.GetSpanHandleByID(traceID, nil)
+	if handle == nil {
+		t.Fatal("GetSpanHandleByID(traceID, nil) returned nil")
+	}
+	tracer.SetAttribute(handle, "custom.root_attr", "root-value")
+
+	trace := store.GetTrace(traceID)
+	if trace.RootSpan.Attributes["custom.root_attr"] != "root-value" {
+		t.Fatalf("root span custom attr = %v, want root-value", trace.RootSpan.Attributes["custom.root_attr"])
+	}
+	if trace.RootSpan.Attributes["child.attr"] != nil {
+		t.Fatalf("child attr leaked to root span: %v", trace.RootSpan.Attributes["child.attr"])
+	}
+
+	childSpanID := childHandle.(*spanHandle).spanID
+	childSpan := trace.GetSpan(childSpanID)
+	if childSpan.Attributes["custom.root_attr"] != nil {
+		t.Fatalf("root attr leaked to child span: %v", childSpan.Attributes["custom.root_attr"])
+	}
+
+	if rootHandle.(*spanHandle).spanID != trace.RootSpan.SpanID {
+		t.Fatalf("root handle span ID = %q, want %q", rootHandle.(*spanHandle).spanID, trace.RootSpan.SpanID)
+	}
+}
+
+func TestTracer_GetSpanHandleByID_ExplicitSpan(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+
+	rootCtx, _ := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	_, childHandle := tracer.StartSpan(rootCtx, "llm-call", schemas.SpanKindLLMCall)
+	childSpanID := childHandle.(*spanHandle).spanID
+
+	handle := tracer.GetSpanHandleByID(traceID, &childSpanID)
+	if handle == nil {
+		t.Fatal("GetSpanHandleByID(traceID, childSpanID) returned nil")
+	}
+	tracer.SetAttribute(handle, "custom.child_attr", "child-value")
+
+	trace := store.GetTrace(traceID)
+	childSpan := trace.GetSpan(childSpanID)
+	if childSpan.Attributes["custom.child_attr"] != "child-value" {
+		t.Fatalf("child span custom attr = %v, want child-value", childSpan.Attributes["custom.child_attr"])
+	}
+	if trace.RootSpan.Attributes["custom.child_attr"] != nil {
+		t.Fatalf("child attr leaked to root span: %v", trace.RootSpan.Attributes["custom.child_attr"])
+	}
+}
+
+func TestTracer_GetSpanHandleByID_MissingInputs(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	if handle := tracer.GetSpanHandleByID("", nil); handle != nil {
+		t.Fatalf("empty trace ID handle = %v, want nil", handle)
+	}
+	if handle := tracer.GetSpanHandleByID("missing-trace", nil); handle != nil {
+		t.Fatalf("missing trace handle = %v, want nil", handle)
+	}
+
+	traceID := tracer.CreateTrace("")
+	if handle := tracer.GetSpanHandleByID(traceID, nil); handle != nil {
+		t.Fatalf("trace with no root span handle = %v, want nil", handle)
+	}
+
+	missingSpanID := "missing-span"
+	if handle := tracer.GetSpanHandleByID(traceID, &missingSpanID); handle != nil {
+		t.Fatalf("missing span handle = %v, want nil", handle)
+	}
+
+	emptySpanID := ""
+	if handle := tracer.GetSpanHandleByID(traceID, &emptySpanID); handle != nil {
+		t.Fatalf("empty span ID handle = %v, want nil", handle)
+	}
+}
+
 func TestTracer_AddEvent(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()

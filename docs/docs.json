@@ -100,6 +100,13 @@
             ]
           },
           {
+            "group": "Release Cadence",
+            "icon": "calendar",
+            "pages": [
+              "release-cadence"
+            ]
+          },
+          {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
@@ -165,12 +172,23 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
-              "mcp/oauth",
-              "mcp/per-user-oauth",
+              {
+                "group": "Authentication",
+                "icon": "shield-check",
+                "pages": [
+                  "mcp/auth/overview",
+                  "mcp/auth/none",
+                  "mcp/auth/headers",
+                  "mcp/auth/per-user-headers",
+                  "mcp/auth/oauth",
+                  "mcp/auth/per-user-oauth"
+                ]
+              },
+              "mcp/sessions",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
-              "mcp/gateway-url",
+              "mcp/gateway",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -214,6 +232,7 @@
                 ]
               },
               "features/telemetry",
+              "features/otel",
               "features/semantic-caching",
               {
                 "group": "Prompt Repository",
@@ -240,10 +259,28 @@
         "icon": "building",
         "groups": [
           {
-            "group": "Overview",
-            "icon": "building",
+            "group": "Getting Started",
+            "icon": "rocket",
             "pages": [
               "enterprise/overview"
+            ]
+          },
+          {
+            "group": "Moving from OSS",
+            "icon": "globe",
+            "pages": [
+              "enterprise/moving-from-oss/overview",
+              "enterprise/moving-from-oss/sizing",
+              "enterprise/moving-from-oss/cross-region",
+              "enterprise/moving-from-oss/security-hardening",
+              "enterprise/moving-from-oss/versioning"
+            ]
+          },
+          {
+            "group": "Release Cadence",
+            "icon": "calendar",
+            "pages": [
+              "enterprise/release-cadence"
             ]
           },
           {
@@ -257,24 +294,32 @@
             "group": "Features",
             "icon": "bolt",
             "pages": [
-              "enterprise/guardrails",
-              "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
-              "enterprise/mcp-with-fa",
-              "enterprise/invpc-deployments",
-              "enterprise/custom-plugins",
+              "enterprise/user-provisioning",
+              "enterprise/access-profiles",
+              "enterprise/rbac",
+              "enterprise/data-access-control",
+              "enterprise/mcp-tool-groups",
+              {
+                "group": "Guardrails",
+                "icon": "road-barrier",
+                "pages": [
+                  "enterprise/guardrails",
+                  "enterprise/guardrails/secrets-detection",
+                  "enterprise/guardrails/custom-regex",
+                  "integrations/guardrails/aws-bedrock",
+                  "integrations/guardrails/azure-content-safety",
+                  "integrations/guardrails/google-model-armor",
+                  "integrations/guardrails/crowdstrike-aidr",
+                  "integrations/guardrails/grayswan",
+                  "integrations/guardrails/patronus-ai"
+                ]
+              },
               "enterprise/audit-logs",
               "enterprise/log-exports",
-              "enterprise/datadog-connector"
-            ]
-          },
-          {
-            "group": "Governance & Access Control",
-            "icon": "shield-check",
-            "pages": [
-              "enterprise/advanced-governance",
-              "enterprise/rbac",
-              "enterprise/user-provisioning"
+              "enterprise/datadog-connector",
+              "enterprise/clustering",
+              "enterprise/adaptive-load-balancing",
+              "enterprise/invpc-deployments"
             ]
           },
           {
@@ -364,8 +409,12 @@
             "group": "Content Safety (Guardrails)",
             "icon": "road-barrier",
             "pages": [
+              "enterprise/guardrails/secrets-detection",
+              "enterprise/guardrails/custom-regex",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/google-model-armor",
+              "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai"
             ]
@@ -534,6 +583,11 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.5",
+              "changelogs/v1.5.4",
+              "changelogs/v1.5.3",
+              "changelogs/v1.5.2",
+              "changelogs/v1.5.1",
               "changelogs/v1.5.0",
               "changelogs/v1.5.0-prerelease8",
               {
@@ -697,6 +751,11 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.5",
+              "changelogs/ent-v1.4.4",
+              "changelogs/ent-v1.4.3",
+              "changelogs/ent-v1.4.2",
+              "changelogs/ent-v1.4.1",
               "changelogs/ent-v1.4.0",
               "changelogs/ent-v1.4.0-prerelease7",
               {
@@ -735,10 +794,79 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.3",
-              "changelogs/cli-v0.10.2",
-              "changelogs/cli-v0.10.1",
-              "changelogs/cli-v0.10.0"
+              "changelogs/cli-v0.10.4",
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.3",
+                  "changelogs/cli-v0.10.2",
+                  "changelogs/cli-v0.10.1",
+                  "changelogs/cli-v0.10.0"
+                ]
+              }
+            ]
+          },
+          {
+            "item": "Helm",
+            "icon": "box",
+            "pages": [
+              "changelogs/helm-v2.1.20",
+              "changelogs/helm-v2.1.19",
+              "changelogs/helm-v2.1.18",
+              "changelogs/helm-v2.1.17",
+              "changelogs/helm-v2.1.16",
+              "changelogs/helm-v2.1.15",
+              "changelogs/helm-v2.1.14",
+              "changelogs/helm-v2.1.13",
+              {
+                "group": "April 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.12",
+                  "changelogs/helm-v2.1.11",
+                  "changelogs/helm-v2.1.10",
+                  "changelogs/helm-v2.1.9",
+                  "changelogs/helm-v2.1.8",
+                  "changelogs/helm-v2.1.7",
+                  "changelogs/helm-v2.1.6",
+                  "changelogs/helm-v2.1.4",
+                  "changelogs/helm-v2.1.3",
+                  "changelogs/helm-v2.1.2",
+                  "changelogs/helm-v2.1.1",
+                  "changelogs/helm-v2.1.0-prerelease2",
+                  "changelogs/helm-v2.0.17",
+                  "changelogs/helm-v2.0.16",
+                  "changelogs/helm-v2.0.15"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.14",
+                  "changelogs/helm-v2.0.13",
+                  "changelogs/helm-v2.0.12",
+                  "changelogs/helm-v2.0.11",
+                  "changelogs/helm-v2.0.10"
+                ]
+              },
+              {
+                "group": "February 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.9",
+                  "changelogs/helm-v2.0.8",
+                  "changelogs/helm-v2.0.7",
+                  "changelogs/helm-v2.0.6",
+                  "changelogs/helm-v2.0.5"
+                ]
+              },
+              {
+                "group": "January 2026",
+                "pages": [
+                  "changelogs/helm-v2.0.2",
+                  "changelogs/helm-v2.0.1",
+                  "changelogs/helm-v2.0.0",
+                  "changelogs/helm-v1.7.0"
+                ]
+              }
             ]
           }
         ]
@@ -791,6 +919,10 @@
       "destination": "/plugins/writing-go-plugin"
     },
     {
+      "source": "/enterprise/custom-plugins",
+      "destination": "/plugins/writing-go-plugin"
+    },
+    {
       "source": "/features/mcp/overview",
       "destination": "/mcp/overview"
     },
@@ -816,7 +948,19 @@
     },
     {
       "source": "/features/mcp/gateway-url",
-      "destination": "/mcp/gateway-url"
+      "destination": "/mcp/gateway"
+    },
+    {
+      "source": "/mcp/gateway-url",
+      "destination": "/mcp/gateway"
+    },
+    {
+      "source": "/mcp/oauth",
+      "destination": "/mcp/auth/oauth"
+    },
+    {
+      "source": "/mcp/per-user-oauth",
+      "destination": "/mcp/auth/per-user-oauth"
     },
     {
       "source": "/features/mcp/tool-hosting",
@@ -828,7 +972,11 @@
     },
     {
       "source": "/enterprise/governance",
-      "destination": "/enterprise/advanced-governance"
+      "destination": "/enterprise/user-provisioning"
+    },
+    {
+      "source": "/enterprise/advanced-governance",
+      "destination": "/enterprise/user-provisioning"
     },
     {
       "source": "/features/enterprise/scim",
@@ -845,6 +993,14 @@
     {
       "source": "/enterprise/data-connectors/datadog",
       "destination": "/enterprise/datadog-connector"
+    },
+    {
+      "source": "/enterprise/mcp-with-fa",
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/enterprise/getting-started",
+      "destination": "/enterprise/overview"
     }
   ],
   "footer": {

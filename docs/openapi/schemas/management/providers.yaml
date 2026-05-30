@@ -175,17 +175,6 @@ VLLMKeyConfig:
       type: string
       description: Exact model name served on this vLLM instance
 
-VLLMKeyConfig:
-  type: object
-  description: vLLM-specific key configuration for per-key routing to different vLLM instances
-  properties:
-    url:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      description: vLLM server base URL (required)
-    model_name:
-      type: string
-      description: Exact model name served on this vLLM instance
-
 Key:
   type: object
   description: API key configuration

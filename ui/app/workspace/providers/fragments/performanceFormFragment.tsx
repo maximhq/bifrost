@@ -144,7 +144,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 				</div>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 mb-6">
+				<div className="mb-6 flex justify-end space-x-2">
 					<Button
 						type="submit"
 						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}

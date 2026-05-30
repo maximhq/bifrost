@@ -79,16 +79,14 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
 				? ""
 				: redactNonEnvValue && !showBadge && !hasChanged.current && rawValue
 					? "<REDACTED>"
-				: maskNonEnvValue && !showBadge && !hasChanged.current
-					? maskValue(rawValue, maskVisiblePrefix, maskVisibleSuffix)
-					: rawValue;
+					: maskNonEnvValue && !showBadge && !hasChanged.current
+						? maskValue(rawValue, maskVisiblePrefix, maskVisibleSuffix)
+						: rawValue;
 
 		const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
 			const inputValue = e.target.value;
 			const isMaskedOrPlaceholder =
-				!hasChanged.current &&
-				displayValue !== rawValue &&
-				(displayValue === "<REDACTED>" || (displayValue.length > 0 && !showBadge));
+				!hasChanged.current && displayValue !== rawValue && (displayValue === "<REDACTED>" || (displayValue.length > 0 && !showBadge));
 			let newValue = inputValue;
 			if (isMaskedOrPlaceholder) {
 				if (inputValue === displayValue) {

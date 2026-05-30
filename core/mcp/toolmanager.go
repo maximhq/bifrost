@@ -11,9 +11,8 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -22,13 +21,42 @@ type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	GetPluginPipeline() PluginPipeline
+	ReleasePluginPipeline(pipeline PluginPipeline)
+	// AcquireClientConn returns a live upstream MCP client connection for the
+	// given client state along with a release function the caller must invoke
+	// (typically via defer). For shared-connection auth types the connection is
+	// the persistent state.Conn and the release is a no-op; for per-user auth
+	// types a fresh ephemeral connection is opened (with the caller-resolved
+	// credentials) and closed on release. The credential-resolution error path
+	// (e.g. *MCPUserOAuthRequiredError) surfaces here.
+	AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error)
+	// RunWithPluginPipeline wraps an MCP wire operation in the canonical plugin
+	// gate (PreMCPHooks → op → PostMCPHooks). It owns the tracing span,
+	// MCPRequestType/ClientName/ToolName stamping, plugin log draining, and
+	// short-circuit semantics. Use this from any call site that needs to invoke
+	// an MCP tool/list/ping outside the gateway path — e.g. nested tool calls
+	// from the Starlark codemode sandbox — to stay in sync with the gateway.
+	RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
 }
 
+// MCPToolExecutor is the per-call executor signature used by the agent loop.
+// Callers (e.g. MCPManager.executeToolForAgent) handle client lifecycle
+// internally — the agent itself is decoupled from connection management.
+type MCPToolExecutor func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
+
 // PluginPipeline represents the plugin execution pipeline interface
-// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost
+// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost.
+// Two parallel pipelines exist: the envelope-based MCP pipeline for Ping/ListTools/
+// ExecuteTool variants, and the typed Connect pipeline for MCPConnectionPlugin.
 type PluginPipeline interface {
+	// Envelope pipeline (Ping / ListTools / ExecuteTool variants)
 	RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int)
 	RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+
+	// Typed Connect pipeline (MCPConnectionPlugin)
+	RunMCPPreConnectionHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, int)
+	RunMCPPostConnectionHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError)
 }
 
 // ToolsManager manages MCP tool execution and agent mode.
@@ -40,8 +68,9 @@ type ToolsManager struct {
 	logger                schemas.Logger
 	agentModeExecutor     *AgentModeExecutor
 
-	// OAuth2Provider for per-user OAuth token management
-	oauth2Provider schemas.OAuth2Provider
+	// CredentialStore resolves per-call credentials (headers, Bearer tokens)
+	// and signals whether a client needs an ephemeral upstream connection.
+	credStore schemas.MCPCredentialStore
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -51,13 +80,6 @@ type ToolsManager struct {
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provided, same request ID is used for all tool call result messages without any overrides.
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
-
-	// Function to get a plugin pipeline from the pool for running MCP plugin hooks
-	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them
-	pluginPipelineProvider func() PluginPipeline
-
-	// Function to release a plugin pipeline back to the pool
-	releasePluginPipeline func(pipeline PluginPipeline)
 }
 
 // NewToolsManager creates and initializes a new tools manager instance.
@@ -68,8 +90,6 @@ type ToolsManager struct {
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
-//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
-//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //
 // Returns:
 //   - *ToolsManager: Initialized tools manager instance
@@ -77,19 +97,15 @@ func NewToolsManager(
 	config *schemas.MCPToolManagerConfig,
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	pluginPipelineProvider func() PluginPipeline,
-	releasePluginPipeline func(pipeline PluginPipeline),
-	oauth2Provider schemas.OAuth2Provider,
+	credStore schemas.MCPCredentialStore,
 	logger schemas.Logger,
 ) *ToolsManager {
 	return NewToolsManagerWithCodeMode(
 		config,
 		clientManager,
 		fetchNewRequestIDFunc,
-		pluginPipelineProvider,
-		releasePluginPipeline,
 		nil, // Use default code mode (will be set later via SetCodeMode)
-		oauth2Provider,
+		credStore,
 		logger,
 	)
 }
@@ -101,8 +117,6 @@ func NewToolsManager(
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
-//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
-//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //   - codeMode: Optional CodeMode implementation (if nil, must be set later via SetCodeMode)
 //
 // Returns:
@@ -111,10 +125,8 @@ func NewToolsManagerWithCodeMode(
 	config *schemas.MCPToolManagerConfig,
 	clientManager ClientManager,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	pluginPipelineProvider func() PluginPipeline,
-	releasePluginPipeline func(pipeline PluginPipeline),
 	codeMode CodeMode,
-	oauth2Provider schemas.OAuth2Provider,
+	credStore schemas.MCPCredentialStore,
 	logger schemas.Logger,
 ) *ToolsManager {
 	if config == nil {
@@ -139,19 +151,28 @@ func NewToolsManagerWithCodeMode(
 		logger = defaultLogger
 	}
 
+	// Default nil credStore to a fresh CredStore with no OAuth provider —
+	// mirrors NewMCPManager's safety net (mcp.go:85-86) so direct callers
+	// of NewToolsManager / NewToolsManagerWithCodeMode (Go SDK consumers
+	// that bypass NewMCPManager) don't hit a panic on the first tool call
+	// when executeToolInternal dereferences m.credStore. The default works
+	// transparently for None / StaticHeaders auth and surfaces a clear
+	// "OAuth2 provider not available" error for OAuth-flavored clients.
+	if credStore == nil {
+		credStore = credstore.NewCredStore(nil, nil, logger)
+	}
+
 	agentModeExecutor := &AgentModeExecutor{
 		logger: logger,
 	}
 
 	manager := &ToolsManager{
-		clientManager:          clientManager,
-		fetchNewRequestIDFunc:  fetchNewRequestIDFunc,
-		pluginPipelineProvider: pluginPipelineProvider,
-		releasePluginPipeline:  releasePluginPipeline,
-		codeMode:               codeMode,
-		logger:                 logger,
-		agentModeExecutor:      agentModeExecutor,
-		oauth2Provider:         oauth2Provider,
+		clientManager:         clientManager,
+		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
+		codeMode:              codeMode,
+		logger:                logger,
+		agentModeExecutor:     agentModeExecutor,
+		credStore:             credStore,
 	}
 
 	// Initialize atomic values
@@ -178,23 +199,9 @@ func (m *ToolsManager) GetCodeMode() CodeMode {
 // This is useful when constructing a CodeMode implementation externally.
 func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 	return &CodeModeDependencies{
-		ClientManager:          m.clientManager,
-		PluginPipelineProvider: m.pluginPipelineProvider,
-		ReleasePluginPipeline:  m.releasePluginPipeline,
-		FetchNewRequestIDFunc:  m.fetchNewRequestIDFunc,
-		OAuth2Provider:         m.oauth2Provider,
-	}
-}
-
-// SetPluginPipeline updates the plugin pipeline provider and release function
-// on both the ToolsManager and its CodeMode implementation.
-// This is used when an externally-created MCPManager is attached to a Bifrost instance
-// via SetMCPManager, so the CodeMode can route nested tool calls through Bifrost's plugin hooks.
-func (m *ToolsManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
-	m.pluginPipelineProvider = provider
-	m.releasePluginPipeline = release
-	if m.codeMode != nil {
-		m.codeMode.SetDependencies(m.GetCodeModeDependencies())
+		ClientManager:         m.clientManager,
+		FetchNewRequestIDFunc: m.fetchNewRequestIDFunc,
+		CredentialStore:       m.credStore,
 	}
 }
 
@@ -540,11 +547,20 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 // Parameters:
 //   - ctx: Execution context
 //   - request: The MCP request containing the tool call (Chat or Responses format)
+//   - clientConn: The client connection for executing the tool
+//   - executionConfig: The MCP client configuration for execution context
+//   - toolNameMapping: Mapping of sanitized tool names to original MCP tool names for accurate logging and response metadata
 //
 // Returns:
 //   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
 //   - error: Any execution error
-func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+func (m *ToolsManager) ExecuteTool(
+	ctx *schemas.BifrostContext,
+	request *schemas.BifrostMCPRequest,
+	clientConn *client.Client,
+	executionConfig *schemas.MCPClientConfig,
+	toolNameMapping map[string]string,
+) (*schemas.BifrostMCPResponse, error) {
 	// Validate request is not nil
 	if request == nil {
 		return nil, fmt.Errorf("request cannot be nil")
@@ -581,7 +597,7 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +638,13 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 // executeToolInternal is the internal tool executor that works with Chat format.
 // This is used internally by ExecuteTool after format conversion.
 // Returns: (message, clientName, originalToolName, error)
-func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, string, string, error) {
+func (m *ToolsManager) executeToolInternal(
+	ctx *schemas.BifrostContext,
+	toolCall *schemas.ChatAssistantMessageToolCall,
+	clientConn *client.Client,
+	executionConfig *schemas.MCPClientConfig,
+	toolNameMapping map[string]string,
+) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
 	// Check if this is a code mode tool and delegate to CodeMode implementation
@@ -631,30 +653,11 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		return msg, "", toolName, err
 	}
 
-	// Handle regular MCP tools
-	// Check if the user has permission to execute the tool call
-	availableTools := m.clientManager.GetToolPerClient(ctx)
-	toolFound := false
-	for _, tools := range availableTools {
-		for _, mcpTool := range tools {
-			if mcpTool.Function != nil && mcpTool.Function.Name == toolName {
-				toolFound = true
-				break
-			}
-		}
-		if toolFound {
-			break
-		}
-	}
-
-	if !toolFound {
-		return nil, "", "", fmt.Errorf("tool '%s' is not available or not permitted", toolName)
-	}
-
-	client := m.clientManager.GetClientForTool(toolName)
-	if client == nil {
-		return nil, "", "", fmt.Errorf("client not found for tool %s", toolName)
-	}
+	// The caller (MCPManager.prepareToolExecution → executeToolWithHooks /
+	// ExecuteChatTool) is responsible for resolving the tool to a client and
+	// supplying the corresponding connection + execution config. Tool
+	// availability and permission checks are enforced at that layer, so no
+	// redundant lookup is needed here.
 
 	// Parse tool arguments
 	var arguments map[string]interface{}
@@ -668,10 +671,21 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 
 	// Strip the client name prefix from tool name before calling MCP server
 	// The MCP server expects the original tool name (with hyphens), not the sanitized version
-	sanitizedToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
-	originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
+	sanitizedToolName := stripClientPrefix(toolName, executionConfig.Name)
+	originalMCPToolName := getOriginalToolName(sanitizedToolName, toolNameMapping)
 
-	// Call the tool via MCP client -> MCP server
+	// Create timeout context for tool execution
+	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
+	defer cancel()
+
+	// The connection (shared persistent OR ephemeral per-call) is supplied by
+	// the caller via AcquireClientConn. Admin-level credentials live on the
+	// transport; per-call request carries filtered context-extras only.
+	reqHeaders, err := m.credStore.RequestHeaders(ctx, executionConfig)
+	if err != nil {
+		return nil, "", "", err
+	}
 	callRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: string(mcp.MethodToolsCall),
@@ -680,49 +694,16 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
-		Header: utils.GetHeadersForToolExecution(ctx, client),
+		Header: reqHeaders,
 	}
 
-	// Handle per-user OAuth: inject user-specific Authorization header
-	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		accessToken, err := utils.ResolvePerUserOAuthToken(ctx, client, m.oauth2Provider)
-		if err != nil {
-			return nil, "", "", err
-		}
-
-		if client.Conn == nil {
-			// No persistent connection — create temporary connection with user's token
-			toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-			toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-			defer cancel()
-
-			toolResponse, callErr := ExecuteToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
-			if callErr != nil {
-				if toolCtx.Err() == context.DeadlineExceeded {
-					return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
-				}
-				m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-				return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
-			}
-			responseText := extractTextFromMCPResponse(toolResponse, toolName)
-			return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
-		}
-
-		callRequest.Header = utils.BuildPerUserOAuthHeaders(callRequest.Header, accessToken)
-	}
-
-	// Create timeout context for tool execution
-	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-	defer cancel()
-
-	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
+	toolResponse, callErr := clientConn.CallTool(toolCtx, callRequest)
 	if callErr != nil {
 		// Check if it was a timeout error
 		if toolCtx.Err() == context.DeadlineExceeded {
 			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
 		}
-		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
+		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, executionConfig.Name, callErr)
 		return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
 	}
 
@@ -730,33 +711,25 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 	responseText := extractTextFromMCPResponse(toolResponse, toolName)
 
 	// Create tool response message
-	return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, responseText), executionConfig.Name, sanitizedToolName, nil
 }
 
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
-// iterative tool calls up to the configured maximum depth. It delegates to the
-// shared agent execution logic with the manager's configuration and dependencies.
-//
-// Parameters:
-//   - ctx: Context for agent execution
-//   - req: The original chat request
-//   - resp: The initial chat response containing tool calls
-//   - makeReq: Function to make subsequent chat requests during agent execution
-//
-// Returns:
-//   - *schemas.BifrostChatResponse: The final response after agent execution
-//   - *schemas.BifrostError: Any error that occurred during agent execution
+// iterative tool calls up to the configured maximum depth. Tool executions inside
+// the agent loop are dispatched through the executeTool callback the caller provides
+// (typically MCPManager.executeToolForAgent, which routes through the plugin gate).
 func (m *ToolsManager) ExecuteAgentForChatRequest(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostChatRequest,
 	resp *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeTool MCPToolExecutor,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// Use provided executeTool function, or fall back to internal ExecuteTool
-	executeToolFunc := executeTool
-	if executeToolFunc == nil {
-		executeToolFunc = m.ExecuteTool
+	if executeTool == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: "executeTool is required for agent mode"},
+		}
 	}
 	return m.agentModeExecutor.ExecuteAgentForChatRequest(
 		ctx,
@@ -765,35 +738,24 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		executeToolFunc,
+		executeTool,
 		m.clientManager,
 	)
 }
 
-// ExecuteAgentForResponsesRequest executes agent mode for a responses request, handling
-// iterative tool calls up to the configured maximum depth. It delegates to the
-// shared agent execution logic with the manager's configuration and dependencies.
-//
-// Parameters:
-//   - ctx: Context for agent execution
-//   - req: The original responses request
-//   - resp: The initial responses response containing tool calls
-//   - makeReq: Function to make subsequent responses requests during agent execution
-//
-// Returns:
-//   - *schemas.BifrostResponsesResponse: The final response after agent execution
-//   - *schemas.BifrostError: Any error that occurred during agent execution
+// ExecuteAgentForResponsesRequest mirrors ExecuteAgentForChatRequest for the Responses API.
 func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostResponsesRequest,
 	resp *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	executeTool MCPToolExecutor,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// Use provided executeTool function, or fall back to internal ExecuteTool
-	executeToolFunc := executeTool
-	if executeToolFunc == nil {
-		executeToolFunc = m.ExecuteTool
+	if executeTool == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: "executeTool is required for agent mode"},
+		}
 	}
 	return m.agentModeExecutor.ExecuteAgentForResponsesRequest(
 		ctx,
@@ -802,7 +764,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		executeToolFunc,
+		executeTool,
 		m.clientManager,
 	)
 }
@@ -832,77 +794,6 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
-
-// executeToolWithUserToken creates a temporary MCP connection using the user's
-// OAuth access token, calls the specified tool, and closes the connection.
-// This is used for per_user_oauth clients which have no persistent connection —
-// each tool call gets its own short-lived connection authenticated with the
-// requesting user's token.
-//
-// Parameters:
-//   - ctx: context with timeout for the entire operation
-//   - config: MCP client configuration (connection URL, name)
-//   - toolName: original MCP tool name to call
-//   - arguments: tool call arguments
-//   - accessToken: user's OAuth access token
-//   - logger: logger instance
-//
-// Returns:
-//   - *mcp.CallToolResult: tool execution result
-//   - error: any error during connection or execution
-func ExecuteToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
-	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
-		return nil, fmt.Errorf("connection URL is required for per-user OAuth tool execution")
-	}
-
-	// Create HTTP transport with the user's Bearer token, preserving configured headers
-	headers := make(map[string]string)
-	if config.Headers != nil {
-		for key, value := range config.Headers {
-			headers[key] = value.GetValue()
-		}
-	}
-	headers["Authorization"] = "Bearer " + accessToken
-	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
-	}
-
-	// Create temporary MCP client
-	tempClient := client.NewClient(httpTransport)
-	if err := tempClient.Start(ctx); err != nil {
-		return nil, fmt.Errorf("failed to start temporary MCP connection: %w", err)
-	}
-	defer tempClient.Close()
-
-	// Initialize MCP handshake
-	initRequest := mcp.InitializeRequest{
-		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-			Capabilities:    mcp.ClientCapabilities{},
-			ClientInfo: mcp.Implementation{
-				Name:    fmt.Sprintf("Bifrost-%s-user", config.Name),
-				Version: "1.0.0",
-			},
-		},
-	}
-	if _, err := tempClient.Initialize(ctx, initRequest); err != nil {
-		return nil, fmt.Errorf("failed to initialize temporary MCP connection: %w", err)
-	}
-
-	// Call the tool
-	callRequest := mcp.CallToolRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodToolsCall),
-		},
-		Params: mcp.CallToolParams{
-			Name:      toolName,
-			Arguments: arguments,
-		},
-	}
-	return tempClient.CallTool(ctx, callRequest)
-}
-
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
 // This method is safe to call concurrently from multiple goroutines.

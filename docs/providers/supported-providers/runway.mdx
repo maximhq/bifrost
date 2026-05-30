@@ -68,28 +68,64 @@ These values are the normalized view returned by Bifrost's API. Runway's native 
 
 ---
 
-## Configuration
+## Setup & Configuration
+
+Configure Runway as a provider.
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
+
+![Runway ML provider dashboard](../../media/provider-dashboard-runway.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Runway ML** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Runway ML**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.RUNWAY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "runway": {
+      "keys": [
+        {
+          "name": "runway-key-1",
+          "value": "env.RUNWAY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
 
 ```bash
 curl --location 'http://localhost:8080/api/providers' \
 --header 'Content-Type: application/json' \
 --data '{
-    "provider": "runway",
-    "keys": [
-        {
-            "name": "runway-key-1",
-            "value": "env.RUNWAY_API_KEY",
-            "models": ["*"],
-            "weight": 1.0
-        }
-    ]
+  "provider": "runway",
+  "keys": [
+    {
+      "name": "runway-key-1",
+      "value": "env.RUNWAY_API_KEY",
+      "models": [
+        "*"
+      ],
+      "weight": 1.0
+    }
+  ]
 }'
 ```
-
-See **[Provider Configuration](../../quickstart/gateway/provider-configuration)** for full setup options.
 
 </Tab>
 <Tab title="Go SDK">
@@ -97,13 +133,12 @@ See **[Provider Configuration](../../quickstart/gateway/provider-configuration)*
 ```go
 case schemas.Runway:
     return []schemas.Key{{
-        Value:  os.Getenv("RUNWAY_API_KEY"),
+        Name:   "runway-key-1",
+        Value:  *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil
 ```
-
-See **[Provider Configuration](../../quickstart/go-sdk/provider-configuration)** for full setup options.
 
 </Tab>
 </Tabs>

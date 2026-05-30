@@ -1,0 +1,282 @@
+---
+title: "Per-User Headers"
+sidebarTitle: "Per-User Headers"
+description: "Each end-user submits their own HTTP headers (API key, signed token, tenant ID) for the MCP server. Lazy-auth model, no upstream OAuth required."
+icon: "user-pen"
+---
+
+## Overview
+
+<Info>Per-user headers is available in **Bifrost v1.5.4 and above**.</Info>
+
+`auth_type: "per_user_headers"` lets each end-user supply their own HTTP headers for an upstream MCP server. The admin declares the **header names** that callers must fill in; each end-user submits their **values** the first time they hit the server. Bifrost stores one credential per `(identity, mcp_client)` and reuses it on every later call.
+
+Use this when the upstream MCP server authenticates with per-user API keys, signed tokens, or any other static-shape credential — but does **not** offer OAuth (which would call for [Per-User OAuth](./per-user-oauth)).
+
+This auth type is only valid for **HTTP** and **SSE** connections.
+
+| | Headers (`headers`) | Per-User Headers (`per_user_headers`) |
+| --- | --- | --- |
+| Who supplies values | Admin, once at setup | Each end-user, lazily |
+| Where values live | MCP client config (encrypted) | Per-credential rows keyed by identity (encrypted) |
+| Admin declares | Header names + values | Header names only (schema) |
+| Identity required | No | Yes (VK, signed-in user, or session ID) |
+
+---
+
+## How it works
+
+The lazy-auth model is identical to [Per-User OAuth](./per-user-oauth) — the only difference is what the user is asked for at the consent page:
+
+1. Caller sends a request with an identity (header or SSO).
+2. The LLM (or MCP client) asks to invoke a tool on a `per_user_headers` server.
+3. Bifrost looks up an existing credential for `(identity, mcp_client)`:
+   - **Found and `active`** → Bifrost attaches the stored header values and calls upstream.
+   - **Missing, `orphaned`, or `needs_update`** → Bifrost returns an `mcp_auth_required` payload with an inline `submit_url`. The tool is **not** executed.
+4. The user opens the URL, sees a Bifrost form listing the required header names, fills in values, and submits.
+5. Bifrost runs a one-time upstream verify with the submitted values, then stores the credential.
+6. The next request executes the tool normally.
+
+The `mcp_auth_required` payload carries `kind: "headers"` so SDKs can branch on it. The natural-language message also embeds the URL so plain-text clients see it:
+
+```text
+Authentication required for acme_api. Open this URL to submit the required headers: https://your-bifrost-domain.com/workspace/mcp-sessions/auth?flow=<flow-id>&kind=headers
+```
+
+VK and session-mode URLs may also carry a `#t=<temp-token>` fragment when [`mcp_enable_temp_token_auth`](./overview#the-mcp_enable_temp_token_auth-toggle) is turned on, letting anonymous browser visitors complete the form without a dashboard session (the fragment never reaches server logs). User-mode URLs never carry a temp token — visitors must complete SSO login first, and only the bound SSO user can finish the flow. See [Flow mode and access rules](./overview#flow-mode-and-access-rules).
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-headers-submit.png" alt="Per-user headers submission landing page at /workspace/mcp-sessions/auth?flow=<id>&kind=headers, showing required header inputs" />
+</Frame>
+
+---
+
+## Setup
+
+The admin configures the MCP client once, declaring the schema (header names) end-users will need to fill in. During setup, Bifrost asks the admin for sample values, runs a one-time upstream verify, and discovers the tool list — same as the per-user OAuth setup pattern, just with a values form instead of an OAuth popup. Sample values are discarded after the test.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **MCP Gateway** in the sidebar
+2. Click **New MCP Server**
+3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+4. Set **Auth Type** to **Per-User Headers**
+5. Fill in **Required Headers** — comma-separated list of header names each caller must supply (e.g. `X-API-Key, X-Tenant-ID`). Values are submitted per-user — never stored on this MCP config.
+6. (Optional) Fill in **Static Headers** — admin-set headers that accompany every per-user request (e.g. a fixed tenant ID). These are visible to plugins; the per-user values aren't.
+7. Click **Create** — a dialog opens asking for sample header values to run a one-time verify
+8. Enter sample values, click **Run Test**
+9. On success, the MCP client is persisted with the discovered tool list
+
+<Frame>
+  <img src="/media/ui-mcp-auth-per-user-headers-verify-dialog.png" alt="Per-user headers verify dialog asking the admin for sample values before persisting the MCP client" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acme_api",
+    "connection_type": "http",
+    "connection_string": "https://api.acme.example.com/mcp",
+    "auth_type": "per_user_headers",
+    "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
+    "user_headers": {
+      "X-API-Key":   "your-admin-sample-key",
+      "X-Tenant-ID": "your-admin-sample-tenant"
+    },
+    "headers": {
+      "X-Region": { "value": "us-east-1" }
+    },
+    "tools_to_execute": ["*"]
+  }'
+```
+
+| Field                  | Type                          | Purpose                                                                            |
+| ---------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
+| `per_user_header_keys` | `string[]`                    | Required header names end-users must supply. The schema.                           |
+| `user_headers`         | `map[string]string`           | Admin's sample values for the one-time verify. Discarded after the create call.   |
+| `headers`              | `map[string]EnvVar`           | Optional static admin headers that accompany every per-user request.              |
+
+On success, Bifrost runs the upstream verify with `user_headers`, attaches the discovered tools, persists the MCP client, and returns:
+
+```json
+{
+  "status": "success",
+  "message": "MCP client registered. 12 tools discovered. Each user will submit their own headers on first tool use."
+}
+```
+
+If the verify fails, the call returns `422 Unprocessable Entity` with the upstream error — nothing is persisted.
+
+</Tab>
+<Tab title="config.json">
+
+File-based config is **not supported** for `per_user_headers`. Bifrost needs to run the one-time upstream verify with the admin's sample values during create, which can only happen via an interactive admin step (Web UI or API).
+
+If you want a declarative-ish setup, run the API create once with your sample values, then check the resulting `mcp_client_id` into your config to reference it from other parts of the system. The MCP client itself stays in Bifrost's database.
+
+</Tab>
+</Tabs>
+
+---
+
+## Static admin headers
+
+`per_user_headers` clients can carry both:
+
+- **Per-user values** — what each end-user submits (e.g., `X-API-Key`, `X-Tenant-ID`)
+- **Static admin headers** — what the admin sets once and is sent on every per-user request (e.g., `X-Region`, `X-Tenant-Class`)
+
+There is a strict separation between the two:
+
+1. Static admin headers are **not** allowed to override per-user header names. If `X-API-Key` appears in both `per_user_header_keys` and `headers`, the static value is dropped on the wire — the per-user value wins.
+2. `Authorization` is treated as a credential by Bifrost and is **never** exposed to connect-plugins or accidentally leaked.
+3. Static admin headers are visible to connect-plugins (so a plugin can read e.g. `X-Region` and mutate it); per-user values aren't.
+
+---
+
+## Editing the schema
+
+If the admin later changes `per_user_header_keys` (adds, removes, or renames a required header), all existing credentials for that MCP server flip to `needs_update`. End-users will see an `mcp_auth_required` payload on the next tool call and be sent back to the submission form to fill in the new schema. Their old values are preserved where the key still matches — the form pre-shows which keys are already on file (names only, never values).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Open the MCP client in the **MCP Gateway** registry
+2. Click **Edit**
+3. Update **Required Headers**
+4. Click **Save**
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-headers-update.png" alt="End-user submission form mid-fill, with required header inputs and an admin-context block showing the names of static headers that will accompany the request" />
+</Frame>
+
+Existing per-user rows flip to `needs_update`. The next tool call from each user triggers a fresh submission.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X PUT http://localhost:8080/api/mcp/client/mcp_client_abc123 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "per_user_header_keys": ["X-API-Key", "X-Tenant-ID", "X-Workspace"]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## End-user submission flow
+
+When an end-user hits the inline-401 URL, they land on `/workspace/mcp-sessions/auth?flow=<id>&kind=headers`:
+
+1. The page shows:
+   - Which **MCP server** is asking for values
+   - Which **identity** the resulting credential will be bound to (VK name, signed-in user, or session ID)
+   - One input per **required header** name
+   - Any **static admin headers** (names only) so the user knows what context their values will accompany
+2. The user fills in values and clicks **Submit**
+3. Bifrost runs a one-time upstream verify against the live MCP client config
+4. On success, the credential is persisted; the user sees a "Headers saved" confirmation and can close the tab
+5. On failure (bad key, upstream rejected), the page shows the error and offers **Retry**
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-headers-success.png" alt="Per-user headers submission success state with a Headers saved confirmation message" />
+</Frame>
+
+---
+
+## Identity modes
+
+Same model as [Per-User OAuth](./per-user-oauth#identity-modes) — `user` > `vk` > `session`. A per-user-headers request with no identity is rejected with an inline-401 explaining the caller must send a VK, sign in, or set `x-bf-mcp-session-id`.
+
+---
+
+## Cross-gateway sharing
+
+Header credentials are stored against an identity, not a gateway. The same identity reaching either gateway reuses the credential. See [Per-User OAuth — Cross-gateway sharing](./per-user-oauth#cross-gateway-token-sharing) — the model is identical.
+
+---
+
+## Lifecycle and sessions
+
+Every per-user header credential shows up on the **MCP Sessions** page with one of these statuses:
+
+| State          | Badge        | Meaning                                                                                                       |
+| -------------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| `active`       | Active       | Credential present and usable. Bifrost attaches the stored values on every call.                              |
+| `needs_update` | Needs update | Admin changed `per_user_header_keys`. Credential is preserved; user must resubmit to satisfy the new schema. |
+| `orphaned`     | Orphaned     | The caller's VK lost access to this MCP (e.g. AP change). Credential preserved; auto-reactivates if access returns. |
+
+From the sessions table the user can **Edit values** (mints a fresh submission flow against the same MCP/identity) or **Revoke** outright. See [MCP Sessions](../sessions) for the full lifecycle and the orphan/reactivate behavior on VK changes.
+
+---
+
+## Configuration reference
+
+```json
+{
+  "name": "acme_api",
+  "connection_type": "http",
+  "connection_string": "https://api.acme.example.com/mcp",
+  "auth_type": "per_user_headers",
+  "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
+  "headers": {
+    "X-Region": { "value": "us-east-1" }
+  },
+  "tools_to_execute": ["*"]
+}
+```
+
+| Field                  | Type                  | Notes                                                                            |
+| ---------------------- | --------------------- | -------------------------------------------------------------------------------- |
+| `auth_type`            | string                | `"per_user_headers"`                                                             |
+| `per_user_header_keys` | `string[]`            | Required header names. Must be non-empty.                                        |
+| `headers`              | `map[string]EnvVar`   | Optional static admin headers.                                                   |
+| `user_headers`         | `map[string]string`   | **Create-only**: admin sample values for the upstream verify; not persisted.    |
+
+<Note>
+MCP client names cannot contain hyphens — Bifrost prefixes tools as `<client>-<tool>` and uses the hyphen to split the two halves at execution time.
+</Note>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="`Verification failed` on create">
+
+The admin sample values you supplied (`user_headers`) didn't pass upstream auth. Double-check the value spelling (some upstreams care about prefixes like `Bearer ` or hex casing), then retry.
+</Accordion>
+
+<Accordion title="End-users see `requires an identity` even though they sent a VK">
+
+The VK isn't resolving. Confirm the VK exists and the caller is sending it under one of `x-bf-vk`, `Authorization: Bearer …`, or `x-api-key`. If you're behind a proxy that strips `Authorization`, switch the caller to `x-bf-vk`.
+</Accordion>
+
+<Accordion title="`Headers submission flow has expired`">
+
+Pending submission flows have a 15-minute TTL. Trigger the original action again to mint a fresh flow.
+</Accordion>
+
+<Accordion title="`Edit values` on the sessions page does nothing">
+
+Make sure Bifrost can build a public URL — if behind a proxy, set `mcp_external_client_url` so the redirect lands on the right host.
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+- [Per-User OAuth](./per-user-oauth) — when the upstream provides OAuth
+- [Headers](./headers) — when one admin key fits everyone
+- [MCP Sessions](../sessions) — credential lifecycle, orphan/reactivate, revoke
+- [MCP Gateway Mode](../gateway) — expose Bifrost as an MCP server for Claude Code / Cursor

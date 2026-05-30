@@ -1,6 +1,7 @@
 import type { MCPTopToolsResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 
@@ -31,7 +32,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
+function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.tools || data.tools.length === 0) {
 			return [];
@@ -54,7 +55,7 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 						tick={{ fontSize: 11, className: "fill-zinc-500" }}
 						tickLine={false}
 						axisLine={false}
-						tickFormatter={(v) => v.toLocaleString()}
+						tickFormatter={(v) => formatCompactNumber(v)}
 						domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 						allowDataOverflow={false}
 					/>
@@ -78,3 +79,4 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 		</ChartErrorBoundary>
 	);
 }
+export const MCPTopToolsChart = memo(MCPTopToolsChartImpl);

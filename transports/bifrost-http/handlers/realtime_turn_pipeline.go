@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 )
@@ -71,6 +72,29 @@ func newRealtimeTurnContext(
 	return ctx
 }
 
+func applyRealtimeRawStorageContext(ctx *schemas.BifrostContext, storeRaw bool) {
+	if ctx == nil {
+		return
+	}
+	// Realtime turn logging captures raw payloads only for log storage. There is
+	// no client-facing raw send-back path for synthetic realtime turn responses.
+	sendBackRawRequest := false
+	sendBackRawResponse := false
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, storeRaw)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, storeRaw || sendBackRawRequest)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, storeRaw || sendBackRawResponse)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, storeRaw && !sendBackRawRequest)
+	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, storeRaw && !sendBackRawResponse)
+}
+
+func shouldStoreRealtimeRawPayloads(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	storeRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	return storeRaw
+}
+
 func applyRealtimeTurnContextValues(ctx *schemas.BifrostContext, values map[any]any) {
 	if ctx == nil || len(values) == 0 {
 		return
@@ -93,6 +117,18 @@ func applyRealtimeTurnContextValues(ctx *schemas.BifrostContext, values map[any]
 	}
 }
 
+func restoreRealtimeTurnTraceContext(ctx *schemas.BifrostContext, traceID string, values map[any]any) {
+	if ctx == nil {
+		return
+	}
+	if strings.TrimSpace(traceID) != "" {
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, strings.TrimSpace(traceID))
+	}
+	if tracer, ok := values[schemas.BifrostContextKeyTracer].(schemas.Tracer); ok && tracer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	}
+}
+
 func setRealtimeTurnStreamContext(ctx *schemas.BifrostContext, startedAt time.Time, isFinal bool) {
 	if ctx == nil {
 		return
@@ -106,7 +142,52 @@ func setRealtimeTurnStreamContext(ctx *schemas.BifrostContext, startedAt time.Ti
 	}
 }
 
-func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, turnInputs []bfws.RealtimeTurnInput) *schemas.BifrostRequest {
+// sanitizeRealtimeSessionEventForProvider mutates outbound session events before provider
+// serialization. It must not persist session state; rejected session.update events should
+// not affect later turn logs.
+func sanitizeRealtimeSessionEventForProvider(event *schemas.BifrostRealtimeEvent) {
+	if event == nil || event.Session == nil {
+		return
+	}
+	switch event.Type {
+	case schemas.RTEventSessionUpdate,
+		schemas.RTEventSessionCreated,
+		schemas.RTEventSessionUpdated:
+		if event.Session.ExtraParams != nil {
+			openaiProvider.StripNestedModelPrefixes(event.Session.ExtraParams)
+		}
+	}
+}
+
+// updateRealtimeSessionFromEvent updates the session's tracked tool
+// definitions and voice whenever a session.update, session.created, or
+// session.updated event carries them.
+func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.BifrostRealtimeEvent) {
+	if event == nil || event.Session == nil {
+		return
+	}
+	switch event.Type {
+	case schemas.RTEventSessionUpdate,
+		schemas.RTEventSessionCreated,
+		schemas.RTEventSessionUpdated:
+		// Only update if the event explicitly carries tools (even an empty array
+		// means "clear tools"). A nil/absent tools field means "not changed".
+		if event.Session.Tools != nil {
+			session.SetRealtimeSessionTools(event.Session.Tools)
+		}
+		if event.Session.Voice != "" {
+			session.SetRealtimeVoice(event.Session.Voice)
+		} else if audioRaw, ok := event.Session.ExtraParams["audio"]; ok {
+			// New API format nests voice under session.audio.output.voice
+			// instead of the legacy top-level session.voice.
+			if voice := openaiProvider.ExtractNestedVoice(audioRaw); voice != "" {
+				session.SetRealtimeVoice(voice)
+			}
+		}
+	}
+}
+
+func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, turnInputs []bfws.RealtimeTurnInput, sessionTools json.RawMessage) *schemas.BifrostRequest {
 	input := make([]schemas.ResponsesMessage, 0, len(turnInputs))
 	for _, turnInput := range turnInputs {
 		summary := strings.TrimSpace(turnInput.Summary)
@@ -134,12 +215,21 @@ func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, t
 		}
 	}
 
+	var params *schemas.ResponsesParameters
+	if len(sessionTools) > 0 {
+		var tools []schemas.ResponsesTool
+		if json.Unmarshal(sessionTools, &tools) == nil && len(tools) > 0 {
+			params = &schemas.ResponsesParameters{Tools: tools}
+		}
+	}
+
 	return &schemas.BifrostRequest{
 		RequestType: schemas.RealtimeRequest,
 		ResponsesRequest: &schemas.BifrostResponsesRequest{
 			Provider: provider,
 			Model:    model,
 			Input:    input,
+			Params:   params,
 		},
 	}
 }
@@ -180,12 +270,15 @@ func buildRealtimeTurnPostResponse(
 
 func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawResponse []byte, contentOverride string) []schemas.ResponsesMessage {
 	outputs := make([]schemas.ResponsesMessage, 0)
+	seenFunctionCalls := make(map[string]struct{})
 	if outputMessage := extractRealtimeTurnOutputMessage(rtProvider, rawResponse, contentOverride); outputMessage != nil {
 		outputs = append(outputs, buildRealtimeResponsesMessagesFromChat(outputMessage, contentOverride)...)
-	}
-
-	if len(outputs) > 0 {
-		return outputs
+		for _, output := range outputs {
+			if output.Type == nil || *output.Type != schemas.ResponsesMessageTypeFunctionCall {
+				continue
+			}
+			seenFunctionCalls[realtimeResponsesFunctionCallKey(output)] = struct{}{}
+		}
 	}
 
 	var parsed realtimeResponseDoneEnvelope
@@ -193,6 +286,9 @@ func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawRes
 		for _, item := range parsed.Response.Output {
 			switch item.Type {
 			case "message":
+				if realtimeOutputsContainMessage(outputs) {
+					continue
+				}
 				content := strings.TrimSpace(contentOverride)
 				if content == "" {
 					content = extractRealtimeResponseDoneContentText(item.Content)
@@ -227,6 +323,11 @@ func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawRes
 				if strings.TrimSpace(item.CallID) != "" {
 					msg.CallID = schemas.Ptr(strings.TrimSpace(item.CallID))
 				}
+				key := realtimeResponsesFunctionCallKey(msg)
+				if _, exists := seenFunctionCalls[key]; exists {
+					continue
+				}
+				seenFunctionCalls[key] = struct{}{}
 				outputs = append(outputs, msg)
 			}
 		}
@@ -244,6 +345,35 @@ func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawRes
 	}
 
 	return outputs
+}
+
+func realtimeOutputsContainMessage(outputs []schemas.ResponsesMessage) bool {
+	for _, output := range outputs {
+		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeMessage {
+			return true
+		}
+	}
+	return false
+}
+
+func realtimeResponsesFunctionCallKey(message schemas.ResponsesMessage) string {
+	if message.CallID != nil && strings.TrimSpace(*message.CallID) != "" {
+		return "call_id:" + strings.TrimSpace(*message.CallID)
+	}
+	if message.ID != nil && strings.TrimSpace(*message.ID) != "" {
+		return "id:" + strings.TrimSpace(*message.ID)
+	}
+
+	var parts []string
+	if message.ResponsesToolMessage != nil {
+		if message.ResponsesToolMessage.Name != nil {
+			parts = append(parts, strings.TrimSpace(*message.ResponsesToolMessage.Name))
+		}
+		if message.ResponsesToolMessage.Arguments != nil {
+			parts = append(parts, strings.TrimSpace(*message.ResponsesToolMessage.Arguments))
+		}
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func buildRealtimeResponsesMessagesFromChat(message *schemas.ChatMessage, contentOverride string) []schemas.ResponsesMessage {
@@ -488,9 +618,14 @@ func startRealtimeTurnHooks(
 	}()
 
 	startedAt := time.Now()
+	storeRaw := shouldStoreRealtimeRawPayloads(baseCtx)
 	turnCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, startEventType, key)
+	applyRealtimeRawStorageContext(turnCtx, storeRaw)
+	if voice := session.RealtimeVoice(); voice != "" {
+		turnCtx.SetValue(schemas.BifrostContextKeyRealtimeVoice, voice)
+	}
 	setRealtimeTurnStreamContext(turnCtx, startedAt, false)
-	req := buildRealtimeTurnPreRequest(provider, model, session.PeekRealtimeTurnInputs())
+	req := buildRealtimeTurnPreRequest(provider, model, session.PeekRealtimeTurnInputs(), session.RealtimeSessionTools())
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(turnCtx, req)
 	if bifrostErr != nil {
 		// RunRealtimeTurnPreHooks already executed post-hooks and flushed the trace
@@ -502,12 +637,15 @@ func startRealtimeTurnHooks(
 	}
 
 	requestID, _ := turnCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := turnCtx.Value(schemas.BifrostContextKeyTraceID).(string)
 	session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
 		PostHookRunner: hooks.PostHookRunner,
 		Cleanup:        hooks.Cleanup,
 		RequestID:      requestID,
 		StartedAt:      startedAt,
 		PreHookValues:  turnCtx.GetUserValues(),
+		TraceID:        traceID,
+		RawStore:       storeRaw,
 	})
 	committed = true
 	return nil
@@ -548,6 +686,8 @@ func finalizeRealtimeTurnHooks(
 		)
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
+		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
+		applyRealtimeRawStorageContext(postCtx, activeHooks.RawStore)
 		setRealtimeTurnStreamContext(postCtx, activeHooks.StartedAt, true)
 		_, bifrostErr := activeHooks.PostHookRunner(postCtx, postResponse, nil)
 		completeRealtimeTurnTrace(postCtx)
@@ -555,18 +695,22 @@ func finalizeRealtimeTurnHooks(
 	}
 
 	startedAt := time.Now()
+	storeRaw := shouldStoreRealtimeRawPayloads(baseCtx)
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
+	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
-	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs)
+	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools())
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if bifrostErr != nil {
 		return bifrostErr
 	}
+	preHookValues := preCtx.GetUserValues()
 	if hooks.Cleanup != nil {
 		defer hooks.Cleanup()
 	}
 
 	requestID, _ := preCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := preCtx.Value(schemas.BifrostContextKeyTraceID).(string)
 	postResponse := buildRealtimeTurnPostResponse(
 		rtProvider,
 		provider,
@@ -577,7 +721,9 @@ func finalizeRealtimeTurnHooks(
 		time.Since(startedAt).Milliseconds(),
 	)
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
-	applyRealtimeTurnContextValues(postCtx, preCtx.GetUserValues())
+	applyRealtimeTurnContextValues(postCtx, preHookValues)
+	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
+	applyRealtimeRawStorageContext(postCtx, storeRaw)
 	setRealtimeTurnStreamContext(postCtx, startedAt, true)
 	_, bifrostErr = hooks.PostHookRunner(postCtx, postResponse, nil)
 	completeRealtimeTurnTrace(postCtx)
@@ -618,6 +764,8 @@ func finalizeRealtimeTurnHooksWithError(
 		)
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, eventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
+		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
+		applyRealtimeRawStorageContext(postCtx, activeHooks.RawStore)
 		setRealtimeTurnStreamContext(postCtx, activeHooks.StartedAt, true)
 		_, hookErr := activeHooks.PostHookRunner(postCtx, nil, postErr)
 		completeRealtimeTurnTrace(postCtx)
@@ -633,18 +781,22 @@ func finalizeRealtimeTurnHooksWithError(
 	}
 
 	startedAt := time.Now()
+	storeRaw := shouldStoreRealtimeRawPayloads(baseCtx)
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
+	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
-	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs)
+	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools())
 	hooks, hookPreErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if hookPreErr != nil {
 		return hookPreErr
 	}
+	preHookValues := preCtx.GetUserValues()
 	if hooks.Cleanup != nil {
 		defer hooks.Cleanup()
 	}
 
 	requestID, _ := preCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := preCtx.Value(schemas.BifrostContextKeyTraceID).(string)
 	postErr := buildRealtimeTurnPostError(
 		provider,
 		model,
@@ -653,7 +805,9 @@ func finalizeRealtimeTurnHooksWithError(
 		bifrostErr,
 	)
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, eventType, key)
-	applyRealtimeTurnContextValues(postCtx, preCtx.GetUserValues())
+	applyRealtimeTurnContextValues(postCtx, preHookValues)
+	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
+	applyRealtimeRawStorageContext(postCtx, storeRaw)
 	setRealtimeTurnStreamContext(postCtx, startedAt, true)
 	_, hookErr := hooks.PostHookRunner(postCtx, nil, postErr)
 	completeRealtimeTurnTrace(postCtx)

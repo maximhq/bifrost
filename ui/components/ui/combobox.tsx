@@ -285,6 +285,10 @@ function ComboboxEmpty({ className, ...props }: React.ComponentProps<typeof Comm
 interface ComboboxSelectOption {
 	label: string;
 	value: string;
+	// Optional leading icon rendered next to the label in the dropdown list.
+	// Useful for facet filters where the icon helps disambiguate values
+	// (e.g. identity-mode dropdown: user / vk / session glyphs).
+	icon?: React.ReactNode;
 }
 
 interface ComboboxSelectBaseProps {
@@ -295,6 +299,12 @@ interface ComboboxSelectBaseProps {
 	hideClear?: boolean;
 	className?: string;
 	emptyMessage?: string;
+	// compactTrigger swaps the multi-select trigger from a wrapping row of
+	// per-value badges to a single "N selected" summary. Useful in filter
+	// bars where the trigger has a fixed narrow width and a long badge list
+	// would overflow. No-op on the single-select variant.
+	compactTrigger?: boolean;
+	"data-testid"?: string;
 }
 
 interface ComboboxSelectSingleProps extends ComboboxSelectBaseProps {
@@ -319,7 +329,9 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		disableSearch = false,
 		className,
 		emptyMessage = "No results found.",
-		noPortal
+		noPortal,
+		compactTrigger = false,
+		"data-testid": dataTestId,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -351,6 +363,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						role="combobox"
 						aria-expanded={open}
 						disabled={disabled}
+						data-testid={dataTestId}
 						className={cn(
 							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 							selectedValues.length === 0 && "text-muted-foreground",
@@ -360,6 +373,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						<div className="flex flex-1 flex-wrap gap-1 overflow-hidden">
 							{selectedValues.length === 0 ? (
 								<span>{placeholder}</span>
+							) : compactTrigger ? (
+								<span className="text-foreground truncate text-sm">{selectedValues.length} selected</span>
 							) : (
 								selectedValues.map((val) => (
 									<Badge key={val} variant="secondary" className="text-xs">
@@ -408,7 +423,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 											props.onValueChange?.(next);
 										}}
 									>
-										{option.label}
+										{option.icon ? <span className="text-muted-foreground flex shrink-0 items-center">{option.icon}</span> : null}
+										<span>{option.label}</span>
 										<span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
 											{isSelected && <CheckIcon className="size-4" />}
 										</span>
@@ -442,6 +458,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					role="combobox"
 					aria-expanded={open}
 					disabled={disabled}
+					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 						!selectedLabel && "text-muted-foreground",
@@ -518,8 +535,7 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator
+	ComboboxSeparator,
 };
 
 export type { ComboboxSelectOption, ComboboxSelectProps };
-

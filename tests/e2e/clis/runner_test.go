@@ -22,17 +22,37 @@ var activeCommands sync.Map // *exec.Cmd -> struct{}
 
 // Turn is one user→model exchange in a scenario.
 //
-//	AssertText:    every substring must appear in the response (case-sensitive)
-//	AssertTextAny: at least one substring must appear
+//	AssertText:        every substring must appear in the response (case-sensitive)
+//	AssertTextFold:    every substring must appear in the response (case-insensitive)
+//	AssertTextAny:     at least one substring must appear (case-sensitive)
+//	AssertTextAnyFold: at least one substring must appear (case-insensitive)
 //	AssertNotText: none of these substrings may appear (catches refusals like
 //	               "I don't have access to web search" that would otherwise
 //	               pass a positive-only assertion)
 type Turn struct {
-	Send          string
-	AssertText    []string
-	AssertTextAny []string
-	AssertNotText []string
-	Timeout       time.Duration
+	Send              string
+	AssertText        []string
+	AssertTextFold    []string
+	AssertTextAny     []string
+	AssertTextAnyFold []string
+	AssertNotText     []string
+	Validate          func(output string) error
+	Timeout           time.Duration
+}
+
+type assertionError struct {
+	err error
+}
+
+func (e assertionError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e assertionError) Unwrap() error {
+	return e.err
 }
 
 // runSingleTurn executes a one-shot prompt: spawn binary, read combined
@@ -255,6 +275,94 @@ func extractAssistantText(ev map[string]any, out *strings.Builder) {
 	}
 }
 
+func extractJSONAssistantText(raw string) (string, bool) {
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var out strings.Builder
+	sawJSON := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var ev any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		sawJSON = true
+		if isAssistantEvent(ev) {
+			appendJSONText(ev, &out)
+		}
+	}
+	return out.String(), sawJSON
+}
+
+func isAssistantEvent(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	if role, _ := m["role"].(string); role == "assistant" {
+		return true
+	}
+	if typ, _ := m["type"].(string); isAssistantType(typ) {
+		return true
+	}
+	if typ, _ := m["type"].(string); typ == "text" {
+		if part, _ := m["part"].(map[string]any); part != nil {
+			if partType, _ := part["type"].(string); partType == "text" {
+				return true
+			}
+		}
+	}
+	if typ, _ := m["item_type"].(string); isAssistantType(typ) {
+		return true
+	}
+	// Descend only into known wrapper keys; mirrors appendJSONText so a
+	// user envelope's sibling fields can't be misclassified as assistant.
+	for _, key := range []string{"item", "message", "delta"} {
+		if child, ok := m[key]; ok {
+			if isAssistantEvent(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAssistantType(typ string) bool {
+	typ = strings.ToLower(typ)
+	return strings.Contains(typ, "assistant") ||
+		strings.Contains(typ, "agent_message") ||
+		strings.Contains(typ, "output_text")
+}
+
+func appendJSONText(v any, out *strings.Builder) {
+	switch x := v.(type) {
+	case map[string]any:
+		if s, _ := x["text"].(string); s != "" {
+			out.WriteString(s)
+			out.WriteByte('\n')
+		}
+		if s, _ := x["output_text"].(string); s != "" {
+			out.WriteString(s)
+			out.WriteByte('\n')
+		}
+		for _, key := range []string{"content", "message", "item", "delta", "part", "parts"} {
+			if child, ok := x[key]; ok {
+				appendJSONText(child, out)
+			}
+		}
+	case []any:
+		for _, child := range x {
+			appendJSONText(child, out)
+		}
+	case string:
+		out.WriteString(x)
+		out.WriteByte('\n')
+	}
+}
+
 // ---- Codex: chained `exec` + `resume --last` ----
 //
 // Codex doesn't expose a bidirectional stream-json mode, so we drive multi-
@@ -334,6 +442,84 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 
 func (d *codexResume) Close() {
 	// CODEX_HOME cleanup is registered via t.Cleanup in Start.
+}
+
+// ---- OpenCode: chained `run` + `run --continue` ----
+
+type opencodeResume struct {
+	cli       CLI
+	model     string
+	envBase   []string
+	mirror    io.Writer
+	tempHome  string
+	turnIndex int
+	ctx       context.Context
+}
+
+func opencodeResumeDriver() multiTurnDriver { return &opencodeResume{} }
+
+func (d *opencodeResume) Start(ctx context.Context, t *testing.T, cli CLI, model string, env []string, mirror io.Writer) error {
+	t.Helper()
+	tempHome, err := os.MkdirTemp("", "bifrost-clis-opencode-home-*")
+	if err != nil {
+		return fmt.Errorf("create temp opencode home: %w", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
+
+	d.cli = cli
+	d.model = model
+	d.envBase = append(env,
+		"XDG_CONFIG_HOME="+tempHome+"/config",
+		"XDG_DATA_HOME="+tempHome+"/data",
+		"XDG_CACHE_HOME="+tempHome+"/cache",
+	)
+	d.mirror = mirror
+	d.tempHome = tempHome
+	d.ctx = ctx
+	return nil
+}
+
+func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration) (string, error) {
+	t.Helper()
+	if timeout == 0 {
+		timeout = 120 * time.Second
+	}
+	cctx, cancel := context.WithTimeout(d.ctx, timeout)
+	defer cancel()
+
+	args := []string{"run", "--dangerously-skip-permissions", "--format", "json"}
+	if d.turnIndex > 0 {
+		args = append(args, "--continue")
+	}
+	if d.model != "" {
+		args = append(args, "--model", opencodeModelRef(d.model))
+	}
+	args = append(args, prompt)
+	d.turnIndex++
+
+	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd.Env = append(os.Environ(), d.envBase...)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = teeWriter(&stdout, d.mirror)
+	cmd.Stderr = teeWriter(&stdout, d.mirror)
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start opencode turn %d: %w", d.turnIndex, err)
+	}
+	activeCommands.Store(cmd, struct{}{})
+	defer activeCommands.Delete(cmd)
+
+	if err := cmd.Wait(); err != nil {
+		out := stdout.String()
+		return out, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
+			d.turnIndex, err, tailStr(out, 600))
+	}
+	return stdout.String(), nil
+}
+
+func (d *opencodeResume) Close() {
+	// XDG temp dirs are cleaned via t.Cleanup in Start.
 }
 
 // ---- shared helpers ----

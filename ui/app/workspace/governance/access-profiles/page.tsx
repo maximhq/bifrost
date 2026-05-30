@@ -10,7 +10,7 @@ export default function AccessProfilesPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col">
 			<AccessProfilesIndexView />
 		</div>
 	);

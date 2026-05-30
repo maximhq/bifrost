@@ -86,7 +86,11 @@ env.BIFROST_POSTGRES_PASSWORD
 {{- .Values.postgresql.external.password -}}
 {{- end -}}
 {{- else -}}
+{{- if .Values.postgresql.auth.existingSecret -}}
+env.BIFROST_POSTGRES_PASSWORD
+{{- else -}}
 {{- .Values.postgresql.auth.password -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -303,26 +307,11 @@ false
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpEnableTempTokenAuth" }}
+{{- $_ := set $client "mcp_enable_temp_token_auth" .Values.bifrost.client.mcpEnableTempTokenAuth }}
+{{- end }}
 {{- if .Values.bifrost.client.routingChainMaxDepth }}
 {{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
-{{- end }}
-{{- if hasKey .Values.bifrost.client "mcpExternalBaseUrl" }}
-{{- $mcpExternalBaseUrl := .Values.bifrost.client.mcpExternalBaseUrl }}
-{{- if kindIs "map" $mcpExternalBaseUrl }}
-{{- $envVar := dict }}
-{{- if hasKey $mcpExternalBaseUrl "value" }}
-{{- $_ := set $envVar "value" $mcpExternalBaseUrl.value }}
-{{- end }}
-{{- if hasKey $mcpExternalBaseUrl "envVar" }}
-{{- $_ := set $envVar "env_var" $mcpExternalBaseUrl.envVar }}
-{{- end }}
-{{- if hasKey $mcpExternalBaseUrl "fromEnv" }}
-{{- $_ := set $envVar "from_env" $mcpExternalBaseUrl.fromEnv }}
-{{- end }}
-{{- $_ := set $client "mcp_external_base_url" $envVar }}
-{{- else }}
-{{- $_ := set $client "mcp_external_base_url" $mcpExternalBaseUrl }}
-{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
@@ -333,6 +322,9 @@ false
 {{- $pricing := dict }}
 {{- if .Values.bifrost.framework.pricing.pricingUrl }}
 {{- $_ := set $pricing "pricing_url" .Values.bifrost.framework.pricing.pricingUrl }}
+{{- end }}
+{{- if .Values.bifrost.framework.pricing.modelParametersUrl }}
+{{- $_ := set $pricing "model_parameters_url" .Values.bifrost.framework.pricing.modelParametersUrl }}
 {{- end }}
 {{- if .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- $_ := set $pricing "pricing_sync_interval" .Values.bifrost.framework.pricing.pricingSyncInterval }}
@@ -460,6 +452,7 @@ false
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
+{{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
@@ -647,6 +640,7 @@ false
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
+{{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -698,6 +692,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.maxOpenConns }}
 {{- $_ := set $pgConfig "max_open_conns" (.Values.storage.logsStore.maxOpenConns | int) }}
+{{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshInterval }}
+{{- $_ := set $pgConfig "matview_refresh_interval" .Values.storage.logsStore.matviewRefreshInterval }}
 {{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
@@ -956,6 +953,19 @@ false
 {{- if hasKey $client "allowOnAllVirtualKeys" }}
 {{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
 {{- end }}
+{{- /* Map tlsConfig -> tls_config (only for http/sse/websocket connection types) */ -}}
+{{- if and $client.tlsConfig (or (eq $client.connectionType "http") (eq $client.connectionType "sse") (eq $client.connectionType "websocket")) }}
+{{- $tls := dict }}
+{{- if hasKey $client.tlsConfig "insecureSkipVerify" }}
+{{- $_ := set $tls "insecure_skip_verify" $client.tlsConfig.insecureSkipVerify }}
+{{- end }}
+{{- if $client.tlsConfig.caCertPem }}
+{{- $_ := set $tls "ca_cert_pem" $client.tlsConfig.caCertPem }}
+{{- end }}
+{{- if $tls }}
+{{- $_ := set $cc "tls_config" $tls }}
+{{- end }}
+{{- end }}
 {{- /* Override connection_string with env var placeholder when secretRef is set */ -}}
 {{- if and $client.secretRef $client.secretRef.name }}
 {{- $envName := printf "BIFROST_MCP_%s_CONNECTION_STRING" (regexReplaceAll "[^A-Z0-9]+" (upper $client.name) "_") }}
@@ -1096,9 +1106,6 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "exclude_system_prompt" }}
 {{- $_ := set $scConfig "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
-{{- end }}
-{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
-{{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
 {{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
@@ -1250,6 +1257,21 @@ false
 {{- $_ := set $config "websocket" $ws }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.featureFlags }}
+{{- $flags := dict }}
+{{- range $name, $cfg := .Values.bifrost.featureFlags }}
+{{- if not (kindIs "map" $cfg) }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s must be an object with an 'enabled' field." $name) }}
+{{- end }}
+{{- if not (hasKey $cfg "enabled") }}
+{{- fail (printf "ERROR: bifrost.featureFlags.%s.enabled is required." $name) }}
+{{- end }}
+{{- $_ := set $flags $name (dict "enabled" $cfg.enabled) }}
+{{- end }}
+{{- if $flags }}
+{{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
+{{- end }}
+{{- end }}
 {{- $config | toJson }}
 {{- end }}
 
@@ -1359,6 +1381,36 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "keycloak" }}
+{{- if not $scimValidation.config.serverUrl }}
+{{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
+{{- end }}
+{{- if not $scimValidation.config.realm }}
+{{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- if not $scimValidation.config.clientSecret }}
+{{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "zitadel" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "google" }}
+{{- if not $scimValidation.config.domain }}
+{{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
 {{- end }}

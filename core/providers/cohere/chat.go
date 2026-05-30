@@ -22,9 +22,15 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 
 	// Convert messages to Cohere v2 format
 	var cohereMessages []CohereMessage
+
 	for _, msg := range messages {
+		role := string(msg.Role)
+		// Cohere has no support for role "developer", so we treat it as "system"
+		if msg.Role == schemas.ChatMessageRoleDeveloper {
+			role = string(schemas.ChatMessageRoleSystem)
+		}
 		cohereMsg := CohereMessage{
-			Role: string(msg.Role),
+			Role: role,
 		}
 
 		// Convert content
@@ -94,6 +100,11 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		}
 
 		cohereMessages = append(cohereMessages, cohereMsg)
+	}
+
+	// If only a single system message is present, convert it to a user message (since openai allows it).
+	if len(cohereMessages) == 1 && (cohereMessages[0].Role == string(schemas.ChatMessageRoleSystem)) {
+		cohereMessages[0].Role = string(schemas.ChatMessageRoleUser)
 	}
 
 	cohereReq.Messages = cohereMessages
@@ -370,9 +381,8 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{},
 			},
 		},
-		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		Created:     int(time.Now().Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	// Convert messages

@@ -19,13 +19,30 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// Define a set of retryable status codes
-var retryableStatusCodes = map[int]bool{
+// transientServerStatusCodes are upstream-side failures unrelated to the credential —
+// retried with the *same* key (a different credential gains nothing against a flaky
+// server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
+var transientServerStatusCodes = map[int]bool{
 	500: true, // Internal Server Error
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
-	429: true, // Too Many Requests
+}
+
+// perKeyFailureStatusCodes are failures bound to the specific key/account rather than
+// the request. On these, executeRequestWithRetries rotates to the next available key
+// (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are
+// intentionally excluded — rotating would just burn every key on the same bad request.
+//
+// Split further inside the retry loop:
+//   - 429 → transient per-key (rate limit) → tracked in usedKeyIDs, may be retried later
+//   - 401/402/403 → permanent per-key (auth/billing/permission) → tracked in deadKeyIDs,
+//     never retried within the same request.
+var perKeyFailureStatusCodes = map[int]bool{
+	401: true, // Unauthorized — bad / revoked API key
+	402: true, // Payment Required — billing issue on this key's account
+	403: true, // Forbidden — key lacks permission or is org-level blocked
+	429: true, // Too Many Requests — this key is rate-limited, another may have capacity
 }
 
 // Define rate limit error message patterns (case-insensitive)
@@ -275,6 +292,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -409,43 +427,9 @@ func MarshalUnsafe(v any) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// // [Deprecated] use err.GetErrorString() instead. Will be removed in a future release.
 func GetErrorMessage(err *schemas.BifrostError) string {
-	if err == nil {
-		return ""
-	}
-	if err.Error != nil && err.Error.Message != "" {
-		return err.Error.Message
-	} else if err.StatusCode != nil {
-		switch *err.StatusCode {
-		case 401:
-			return "unauthorized"
-		case 403:
-			return "forbidden"
-		case 404:
-			return "endpoint not found"
-		case 405:
-			return "method not allowed"
-		case 429:
-			return "rate limit exceeded"
-		case 500:
-			return "internal server error"
-		case 502:
-			return "bad gateway"
-		case 503:
-			return "service unavailable"
-		case 504:
-			return "gateway timeout"
-		default:
-			if err.Error != nil && err.Error.Message != "" {
-				return err.Error.Message
-			}
-			return fmt.Sprintf("HTTP %d error", *err.StatusCode)
-		}
-	} else if err.Type != nil {
-		return *err.Type
-	} else {
-		return "unknown error"
-	}
+	return err.GetErrorString()
 }
 
 // GetStringFromContext safely extracts a string value from context

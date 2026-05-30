@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/mcps/error-test-server
 
-go 1.26.2
+go 1.26.3
 
 require github.com/mark3labs/mcp-go v0.43.2
 

@@ -3,7 +3,7 @@ title: "Migrating to Enterprise v1.4.0"
 description: "Breaking changes and migration instructions for the Enterprise v1.4.0 release"
 ---
 
-Enterprise v1.4.0 is a major release built on top of OSS v1.5.0. It inherits every breaking change from the v1.5.0 release plus a handful of enterprise-specific changes around the cluster transport, SCIM group enrichment, and the Helm chart layout. This page walks through both layers and gives you a single migration checklist.
+Enterprise v1.4.0 is a major release built on top of OSS v1.5.0. It inherits every breaking change from the v1.5.0 release plus a handful of enterprise-specific changes around the cluster transport, OIDC group enrichment, and the Helm chart layout. This page walks through both layers and gives you a single migration checklist.
 
 <Warning>
 **Make a database backup before upgrading.** Automatic database migrations run on startup and are not revertible. A backup is the only way to restore a previous state if anything goes wrong. A database successfully migrated to Enterprise v1.4.0 cannot be used to run a previous Enterprise version.
@@ -71,6 +71,10 @@ ports:
 
 Apply the same addition to your headless `Service`. See the updated [Clustering documentation](/enterprise/clustering) for full manifests.
 
+<Note>
+If you deploy via Helm, **upgrade to Bifrost chart `>= 2.1.14`** before rolling out v1.4.0. Earlier chart versions don't expose the `10102/TCP` gRPC port on the StatefulSet or headless `Service`, so cluster nodes won't be able to reach each other for counter-sync. The chart's [cluster values](/deployment-guides/helm/cluster) include the `grpc.port` field by default.
+</Note>
+
 **Optional `cluster_config.grpc` block** (defaults shown):
 ```json
 {
@@ -84,7 +88,7 @@ Apply the same addition to your headless `Service`. See the updated [Clustering 
 }
 ```
 
-### Breaking Change B: Token-Driven SCIM Group Restriction
+### Breaking Change B: Token-Driven OIDC Group Restriction
 
 Earlier Enterprise versions enriched team membership with **platform-wide group lookups** against the IdP directory API (Okta, Entra, Google, Keycloak, SailPoint, Zitadel). v1.4.0 removes this enrichment. Team attachment is now driven exclusively by the group claims **already present in the IdP token**.
 
@@ -125,7 +129,7 @@ bifrost:
 
 ### Breaking Change D: Helm Chart - Composable Enterprise Overlays
 
-Enterprise-specific Helm configuration now ships as **composable overlay files** rather than a monolithic `values.yaml`. The chart includes overlay templates for guardrails, organizational governance, access profiles, customer budgets, teams, multi-customer governance, and SCIM/SSO. Mix and match overlays for the capabilities you need.
+Enterprise-specific Helm configuration now ships as **composable overlay files** rather than a monolithic `values.yaml`. The chart includes overlay templates for guardrails, organizational governance, access profiles, customer budgets, teams, multi-customer governance, and OIDC/SSO. Mix and match overlays for the capabilities you need.
 
 If your existing Helm install bakes everything into a single `values.yaml`, it will continue to work; the overlay files are an additive convention. New deployments should follow the overlay pattern - see the [Helm deployment guide](/deployment-guides/helm) for the current layout.
 
@@ -167,10 +171,10 @@ Work through the [OSS v1.5.0 Migration Guide](/migration-guides/v1.5.0) checklis
 </Step>
 
 <Step title="Open the gRPC cluster port (10102/TCP) on every node">
-Update Kubernetes StatefulSets/Deployments, headless Services, NetworkPolicies, and any cloud-level security groups or firewall rules to allow `10102/TCP` peer-to-peer between cluster nodes.
+Update Kubernetes StatefulSets/Deployments, headless Services, NetworkPolicies, and any cloud-level security groups or firewall rules to allow `10102/TCP` peer-to-peer between cluster nodes. **Helm users:** upgrade to Bifrost chart `>= 2.1.14`, which exposes this port automatically.
 </Step>
 
-<Step title="Verify SCIM group claims in tokens">
+<Step title="Verify OIDC group claims in tokens">
 Decode an SSO login token and confirm the field configured in `teamIdsField` is populated. If your IdP relied on directory API enrichment, configure the IdP to include those groups directly in the token.
 </Step>
 
@@ -197,7 +201,7 @@ The gossip port (10101) is reachable but the gRPC port (10102) is blocked. Membe
 
 **Users losing team assignments after upgrade**
 
-The v1.4.0 SCIM change removed platform-wide group enrichment. Verify the SSO token from your IdP includes the field configured in `teamIdsField`. If it doesn't, update the IdP token configuration to include the relevant group claims directly.
+The v1.4.0 OIDC change removed platform-wide group enrichment. Verify the SSO token from your IdP includes the field configured in `teamIdsField`. If it doesn't, update the IdP token configuration to include the relevant group claims directly.
 
 **All requests returning 403/blocked after upgrade**
 

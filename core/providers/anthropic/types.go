@@ -103,9 +103,11 @@ const (
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
+	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
 	WebSearchDynamic       bool // web_search_20260209 dynamic filtering (cite: A)
 	WebFetch               bool // web_fetch server tool (cite: A)
 	CodeExecution          bool // code_execution server tool (cite: A)
+	CodeExecNova           bool // code_execution via nova_code_interpreter — Bedrock Responses path only, not Chat/Converse
 	ComputerUse            bool // computer_use client tool (cite: A, B-header)
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
@@ -132,6 +134,7 @@ type ProviderFeatureSupport struct {
 	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
+	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -149,6 +152,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
+		ServiceTier: true,
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -183,7 +187,9 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
-		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		WebSearchNova: true, // nova_grounding — Responses path only
+		CodeExecNova:  true, // nova_code_interpreter — Responses path only
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the
 		// provider_feature_support_test.go assertion, but NEITHER B-header
@@ -202,6 +208,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
+		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -218,6 +225,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		RedactThinking:      true,
 		EagerInputStreaming: true,
 		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
+		ServiceTier: true,
 	},
 }
 
@@ -794,11 +802,12 @@ type AnthropicMessageRole string
 const (
 	AnthropicMessageRoleUser      AnthropicMessageRole = "user"
 	AnthropicMessageRoleAssistant AnthropicMessageRole = "assistant"
+	AnthropicMessageRoleSystem    AnthropicMessageRole = "system"
 )
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant"
+	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
 	Content AnthropicContent     `json:"content"` // Array of content blocks
 }
 
@@ -1200,18 +1209,18 @@ const (
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer        AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch       AnthropicToolName = "web_search"
-	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
-	AnthropicToolNameBash            AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameComputer   AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch   AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash       AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
 	// AnthropicToolNameTextEditorLegacy is the name required for text_editor_20250124
 	// and text_editor_20250429. Newer text_editor_20250728+ use AnthropicToolNameTextEditor.
 	AnthropicToolNameTextEditorLegacy AnthropicToolName = "str_replace_editor"
-	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory          AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameCodeExecution    AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory           AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
 )
 
 type AnthropicToolComputerUse struct {

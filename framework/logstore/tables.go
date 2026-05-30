@@ -11,6 +11,21 @@ import (
 	"gorm.io/gorm"
 )
 
+// sanitizeJSONForJSONB removes JSON escape sequences that PostgreSQL's jsonb
+// type cannot represent. Specifically, jsonb rejects the NUL unicode escape
+// (\u0000) with errcode 22P05 even though plain TEXT and the json type can
+// store it. Stripping the escape from the marshaled JSON keeps subsequent
+// TEXT->jsonb casts in list queries safe. The replacement is case-insensitive
+// since JSON allows \u0000 or \U0000.
+func sanitizeJSONForJSONB(s string) string {
+	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\U`) {
+		return s
+	}
+	s = strings.ReplaceAll(s, `\u0000`, "")
+	s = strings.ReplaceAll(s, `\U0000`, "")
+	return s
+}
+
 type SortBy string
 
 const (
@@ -53,6 +68,7 @@ type SearchFilters struct {
 	MinCost           *float64          `json:"min_cost,omitempty"`
 	MaxCost           *float64          `json:"max_cost,omitempty"`
 	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 }
@@ -110,6 +126,7 @@ type SearchStats struct {
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
@@ -183,6 +200,12 @@ type Log struct {
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
 
+	// Cluster governance fields - attached by the logging plugin when running in a cluster
+	// so that leaders can recover disconnected node usage from the logs table.
+	ClusterNodeID *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
+	BudgetIDs     *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
+	RateLimitIDs  *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
+
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
 	CompletionTokens int `gorm:"default:0" json:"-"`
@@ -224,6 +247,8 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -277,7 +302,7 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.InputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.InputHistory = string(data)
+			l.InputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
@@ -285,7 +310,7 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.ResponsesInputHistoryParsed); err != nil {
 			return err
 		} else {
-			l.ResponsesInputHistory = string(data)
+			l.ResponsesInputHistory = sanitizeJSONForJSONB(string(data))
 		}
 	}
 
@@ -529,7 +554,26 @@ func (l *Log) SerializeFields() error {
 			l.Metadata = nil
 			l.MetadataParsed = nil
 		} else {
-			l.Metadata = new(string(data))
+			metadata := string(data)
+			l.Metadata = &metadata
+		}
+	}
+
+	if len(l.BudgetIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.BudgetIDsParsed); err != nil {
+			return err
+		} else {
+			budgetIDs := string(data)
+			l.BudgetIDs = &budgetIDs
+		}
+	}
+
+	if len(l.RateLimitIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.RateLimitIDsParsed); err != nil {
+			return err
+		} else {
+			rateLimitIDs := string(data)
+			l.RateLimitIDs = &rateLimitIDs
 		}
 	}
 
@@ -757,6 +801,18 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.BudgetIDs != nil && *l.BudgetIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BudgetIDs), &l.BudgetIDsParsed); err != nil {
+			l.BudgetIDsParsed = nil
+		}
+	}
+
+	if l.RateLimitIDs != nil && *l.RateLimitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.RateLimitIDs), &l.RateLimitIDsParsed); err != nil {
+			l.RateLimitIDsParsed = nil
+		}
+	}
+
 	if l.RoutingEnginesUsedStr != nil && *l.RoutingEnginesUsedStr != "" {
 		// Parse comma-separated routing engines
 		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
@@ -778,6 +834,10 @@ type MCPToolLog struct {
 	ServerLabel    string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
 	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	UserID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_user_id" json:"user_id"`
+	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
+	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
+	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
 	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
 	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
 	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
@@ -785,6 +845,7 @@ type MCPToolLog struct {
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
 	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
+	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed
@@ -1013,7 +1074,6 @@ type MCPToolLogSearchFilters struct {
 type MCPToolLogSearchResult struct {
 	Logs       []MCPToolLog      `json:"logs"`
 	Pagination PaginationOptions `json:"pagination"`
-	Stats      MCPToolLogStats   `json:"stats"`
 	HasLogs    bool              `json:"has_logs"`
 }
 
@@ -1482,4 +1542,88 @@ type UserRankingWithTrend struct {
 // UserRankingResult is the response for the user rankings endpoint.
 type UserRankingResult struct {
 	Rankings []UserRankingWithTrend `json:"rankings"`
+}
+
+// RankingDimension is the column used for grouping in dimension rankings.
+type RankingDimension string
+
+const (
+	RankingDimensionTeam         RankingDimension = "team"
+	RankingDimensionCustomer     RankingDimension = "customer"
+	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionUser         RankingDimension = "user"
+)
+
+var ValidRankingDimensions = map[RankingDimension]bool{
+	RankingDimensionTeam:         true,
+	RankingDimensionCustomer:     true,
+	RankingDimensionBusinessUnit: true,
+	RankingDimensionUser:         true,
+}
+
+type dimensionColumnDef struct {
+	IDCol   string
+	NameCol string
+}
+
+var dimensionColumns = map[RankingDimension]dimensionColumnDef{
+	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
+	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
+	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+}
+
+func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
+	def, exists := dimensionColumns[d]
+	return def.IDCol, def.NameCol, exists
+}
+
+type DimensionRankingEntry struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name,omitempty"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+type DimensionRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+}
+
+type DimensionRankingWithTrend struct {
+	DimensionRankingEntry
+	Trend DimensionRankingTrend `json:"trend"`
+}
+
+type DimensionRankingResult struct {
+	Rankings  []DimensionRankingWithTrend `json:"rankings"`
+	Dimension RankingDimension            `json:"dimension"`
+}
+
+// NodeUsageCursor identifies the last log row included in a node usage scan.
+// The initial scan uses Timestamp + LogID because each ghost has a timestamp
+// lower bound. Once rows written with IncNumber are seen, subsequent scans use
+// IncNumber because it is assigned by the database at insert time and therefore
+// does not skip late async log writes.
+type NodeUsageCursor struct {
+	Timestamp time.Time `json:"timestamp"`
+	LogID     string    `json:"log_id"`
+	IncNumber *int64    `json:"inc_number,omitempty"`
+}
+
+// NodeUsageAggregate represents aggregated usage for a specific node from the logs table,
+// broken down by the budget and rate-limit IDs that each log entry was tagged with.
+// This ensures usage is attributed to the correct governance resource rather than
+// spread uniformly across all resources the node was tracking.
+type NodeUsageAggregate struct {
+	BudgetCosts       map[string]float64 `json:"budget_costs"`        // budget_id -> cumulative cost
+	RateLimitRequests map[string]int64   `json:"rate_limit_requests"` // rate_limit_id -> successful request count
+	RateLimitTokens   map[string]int64   `json:"rate_limit_tokens"`   // rate_limit_id -> total tokens
+	RowCount          int                `json:"row_count"`           // number of log rows included in the aggregate
+	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
+	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
+	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
 }

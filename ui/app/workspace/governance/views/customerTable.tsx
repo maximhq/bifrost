@@ -1,3 +1,4 @@
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -7,10 +8,11 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -20,17 +22,75 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Input } from "@/components/ui/input";
-import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerDialog from "./customerDialog";
+import CustomerSheet from "./customerSheet";
 import { CustomersEmptyState } from "./customersEmptyState";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
 	return resetDurationLabels[duration] || duration;
 };
+
+const ACTIONS_COLUMN_CLASS = `sticky right-0 z-10 w-[56px] min-w-[56px] text-right ${PIN_SHADOW_RIGHT}`;
+
+interface CustomerActionsMenuProps {
+	customer: Customer;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: (customer: Customer) => void;
+	onDelete: (customer: Customer) => void;
+}
+
+function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete }: CustomerActionsMenuProps) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={`Customer actions ${customer.name}`}
+					data-testid={`customer-actions-btn-${customer.id}`}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
+				>
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					disabled={!canUpdate}
+					data-testid={`customer-button-edit-${customer.id}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(customer);
+						setIsOpen(false);
+					}}
+				>
+					<Edit className="h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					disabled={!canDelete}
+					data-testid={`customer-button-delete-${customer.id}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(customer);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 interface CustomersTableProps {
 	customers: Customer[];
@@ -43,6 +103,7 @@ interface CustomersTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	isFetching?: boolean
 }
 
 export default function CustomersTable({
@@ -56,9 +117,11 @@ export default function CustomersTable({
 	offset,
 	limit,
 	onOffsetChange,
+	isFetching
 }: CustomersTableProps) {
-	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -72,21 +135,23 @@ export default function CustomersTable({
 			toast.success("Customer deleted successfully");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
+		} finally {
+			setConfirmDeleteCustomer(null);
 		}
 	};
 
 	const handleAddCustomer = () => {
 		setEditingCustomer(null);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleEditCustomer = (customer: Customer) => {
 		setEditingCustomer(customer);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleCustomerSaved = () => {
-		setShowCustomerDialog(false);
+		setShowCustomerSheet(false);
 		setEditingCustomer(null);
 	};
 
@@ -101,13 +166,19 @@ export default function CustomersTable({
 	const hasActiveFilters = debouncedSearch;
 
 	// True empty state: no customers at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters) {
+	if (totalCount === 0 && !hasActiveFilters && !isFetching) {
 		return (
 			<>
 				<TooltipProvider>
-					{showCustomerDialog && (
-						<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-					)}
+					<CustomerSheet
+						open={showCustomerSheet}
+						onOpenChange={(open) => {
+							setShowCustomerSheet(open);
+							if (!open) setEditingCustomer(null);
+						}}
+						customer={editingCustomer}
+						onSuccess={handleCustomerSaved}
+					/>
 					<CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -117,12 +188,18 @@ export default function CustomersTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showCustomerDialog && (
-					<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-				)}
+				<CustomerSheet
+					open={showCustomerSheet}
+					onOpenChange={(open) => {
+						setShowCustomerSheet(open);
+						if (!open) setEditingCustomer(null);
+					}}
+					customer={editingCustomer}
+					onSuccess={handleCustomerSaved}
+				/>
 
-				<div className="space-y-4">
-					<div className="flex items-center justify-between">
+				<div className="flex flex-col grow">
+					<div className="flex items-center justify-between mb-4">
 						<div>
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
@@ -133,7 +210,7 @@ export default function CustomersTable({
 						</Button>
 					</div>
 
-					<div className="flex items-center gap-3">
+					<div className="flex items-center gap-3 mb-4">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -147,8 +224,8 @@ export default function CustomersTable({
 						</div>
 					</div>
 
-					<div className="overflow-hidden rounded-sm border" data-testid="customer-table-container">
-						<Table>
+					<div className="overflow-auto rounded-sm border grow mb-2" data-testid="customer-table-container">
+						<Table className="min-w-[1100px]">
 							<TableHeader>
 								<TableRow>
 									<TableHead>Name</TableHead>
@@ -156,7 +233,7 @@ export default function CustomersTable({
 									<TableHead>Budget</TableHead>
 									<TableHead>Rate Limit</TableHead>
 									<TableHead>Virtual Keys</TableHead>
-									<TableHead className="text-right"></TableHead>
+									<TableHead className={`bg-muted ${ACTIONS_COLUMN_CLASS}`}></TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
@@ -363,54 +440,20 @@ export default function CustomersTable({
 														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
-												<TableCell className="text-right">
-													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-														<Button
-															variant="ghost"
-															size="icon"
-															className="h-8 w-8"
-															onClick={() => handleEditCustomer(customer)}
-															disabled={!hasUpdateAccess}
-															aria-label={`Edit customer ${customer.name}`}
-															data-testid={`customer-button-edit-${customer.id}`}
-														>
-															<Edit className="h-4 w-4" />
-														</Button>
-														<AlertDialog>
-															<AlertDialogTrigger asChild>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																	disabled={!hasDeleteAccess}
-																	aria-label={`Delete customer ${customer.name}`}
-																	data-testid={`customer-button-delete-${customer.id}`}
-																>
-																	<Trash2 className="h-4 w-4" />
-																</Button>
-															</AlertDialogTrigger>
-															<AlertDialogContent>
-																<AlertDialogHeader>
-																	<AlertDialogTitle>Delete Customer</AlertDialogTitle>
-																	<AlertDialogDescription>
-																		Are you sure you want to delete &quot;{customer.name}&quot;? This will also delete all associated teams
-																		and unassign any virtual keys. This action cannot be undone.
-																	</AlertDialogDescription>
-																</AlertDialogHeader>
-																<AlertDialogFooter>
-																	<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
-																	<AlertDialogAction
-																		data-testid="customer-button-delete-confirm"
-																		onClick={() => handleDelete(customer.id)}
-																		disabled={isDeleting}
-																		className="bg-red-600 hover:bg-red-700"
-																	>
-																		{isDeleting ? "Deleting..." : "Delete"}
-																	</AlertDialogAction>
-																</AlertDialogFooter>
-															</AlertDialogContent>
-														</AlertDialog>
-													</div>
+												<TableCell
+													className={cn(
+														"dark:bg-card dark:group-hover:bg-muted",
+														isExhausted ? "bg-red-500/5 group-hover:bg-red-500/10" : "bg-white group-hover:bg-muted",
+														ACTIONS_COLUMN_CLASS,
+													)}
+												>
+													<CustomerActionsMenu
+														customer={customer}
+														canUpdate={hasUpdateAccess}
+														canDelete={hasDeleteAccess}
+														onEdit={handleEditCustomer}
+														onDelete={setConfirmDeleteCustomer}
+													/>
 												</TableCell>
 											</TableRow>
 										);
@@ -422,33 +465,66 @@ export default function CustomersTable({
 
 					{/* Pagination */}
 					{totalCount > 0 && (
-						<div className="flex items-center justify-between px-2">
-							<p className="text-muted-foreground text-sm">
-								Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-							</p>
-							<div className="flex gap-2">
+						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+							<div className="text-muted-foreground flex items-center gap-2">
+								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							</div>
+
+							<div className="flex items-center gap-2">
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset === 0}
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+									disabled={offset === 0}
 									data-testid="customers-pagination-prev-btn"
+									aria-label="Previous page"
 								>
-									<ChevronLeft className="mr-1 h-4 w-4" /> Previous
+									<ChevronLeft className="size-3" />
 								</Button>
+
+								<div className="flex items-center gap-1">
+									<span>Page</span>
+									<span>{Math.floor(offset / limit) + 1}</span>
+									<span>of {Math.ceil(totalCount / limit)}</span>
+								</div>
+
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset + limit >= totalCount}
 									onClick={() => onOffsetChange(offset + limit)}
+									disabled={offset + limit >= totalCount}
 									data-testid="customers-pagination-next-btn"
+									aria-label="Next page"
 								>
-									Next <ChevronRight className="ml-1 h-4 w-4" />
+									<ChevronRight className="size-3" />
 								</Button>
 							</div>
 						</div>
 					)}
 				</div>
+
+				<AlertDialog open={!!confirmDeleteCustomer} onOpenChange={(open) => !open && setConfirmDeleteCustomer(null)}>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>Delete Customer</AlertDialogTitle>
+							<AlertDialogDescription>
+								Are you sure you want to delete &quot;{confirmDeleteCustomer?.name}&quot;? This will also delete all associated teams and
+								unassign any virtual keys. This action cannot be undone.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
+							<AlertDialogAction
+								data-testid="customer-button-delete-confirm"
+								onClick={() => confirmDeleteCustomer && handleDelete(confirmDeleteCustomer.id)}
+								disabled={isDeleting}
+								className="bg-red-600 hover:bg-red-700"
+							>
+								{isDeleting ? "Deleting..." : "Delete"}
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 			</TooltipProvider>
 		</>
 	);
