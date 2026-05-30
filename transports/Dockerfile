@@ -59,7 +59,7 @@
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
   RUN apk upgrade --no-cache && \
-    apk add --no-cache musl libgcc ca-certificates wget zlib
+    apk add --no-cache musl libgcc ca-certificates zlib
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
@@ -103,8 +103,10 @@
   EXPOSE $APP_PORT
   
   # Health check for container status monitoring
+  # Uses busybox wget (built into alpine) instead of the standalone wget package
+  # to avoid CVE-2025-69194; busybox wget supports -q/-O but not --no-verbose/--tries.
   HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
   
   # Use entrypoint script that handles volume permissions and argument processing
   ENTRYPOINT ["/app/docker-entrypoint.sh"]
