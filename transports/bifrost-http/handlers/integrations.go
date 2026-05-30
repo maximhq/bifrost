@@ -35,6 +35,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		// passthrough routers
 		integrations.NewGenAIPassthroughRouter(client, handlerStore, logger),
 		integrations.NewOpenAIPassthroughRouter(client, handlerStore, logger),
+		integrations.NewOpenRouterPassthroughRouter(client, handlerStore, logger),
 		integrations.NewAnthropicPassthroughRouter(client, handlerStore, logger),
 		integrations.NewAzurePassthroughRouter(client, handlerStore, logger),
 		integrations.NewCursorRouter(client, handlerStore, logger),

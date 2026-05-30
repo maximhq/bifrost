@@ -47,6 +47,16 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// NewOpenRouterPassthroughRouter creates a passthrough router for /openrouter_passthrough.
+func NewOpenRouterPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		Provider: schemas.OpenRouter,
+		StripPrefix: []string{
+			"/openrouter_passthrough",
+		},
+	})
+}
+
 // NewAzurePassthroughRouter creates a passthrough router for /azure_passthrough.
 func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
