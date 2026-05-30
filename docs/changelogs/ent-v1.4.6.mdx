@@ -17,6 +17,7 @@ A security and hardening release on `transports/v1.5.7`. The headline items are 
 
 ## ✨ Features
 
+- **New onboarding environments** - Provisioned new isolated customer deployment environments (Dockerfiles and Terraform hub infrastructure) for upcoming onboardings.
 - **DAC scope coverage for more read paths (enterprise)** - Added DAC scope wrappers for `GetVirtualKeys`, `GetRoutingRules`, `GetRoutingRulesByScope`, and `GetRoutingRule`, plus MCP virtual-key config lookups by client ID, so previously unguarded read paths now enforce the caller's data-access scope.
 - **DAC bypass regression suite (enterprise)** - New end-to-end Postman regression collection covering `from_memory` list endpoints, hidden virtual key and team detail access, log and MCP filter-data cache isolation, and MCP client assignment leakage, wired into the enterprise API E2E run.
 
