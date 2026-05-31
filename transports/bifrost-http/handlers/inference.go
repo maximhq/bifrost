@@ -56,27 +56,13 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 	}
 }
 
-// resolveModelAndProvider parses the model string, validates it, and resolves
-// the provider via model catalog when no provider prefix is present. Stores
-// resolution metadata on the fasthttp context for ConvertToBifrostContext to
-// emit the routing engine log.
-func resolveModelAndProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+// resolveModelAndProvider parses the model string. An empty provider is allowed here —
+// the ModelCatalogResolver built-in PreRequestHook plugin fills it in as the last routing
+// layer when no other routing plugin (governance routing rules, governance VK LB, enterprise
+// LB) picked one. The empty-provider validation in handleRequest/handleStreamRequest catches
+// the case where catalog resolution also fails.
+func resolveModelAndProvider(_ *fasthttp.RequestCtx, _ *lib.Config, model string) (schemas.ModelProvider, string, error) {
 	provider, modelName := schemas.ParseModelString(model, "")
-	if modelName == "" {
-		return "", "", fmt.Errorf("model is required")
-	}
-	if provider == "" {
-		providers := config.GetProvidersForModel(modelName)
-		if len(providers) == 0 {
-			return "", "", fmt.Errorf("provider is required in model field (format: provider/model) — no providers found for model %q in model catalog to auto-resolve", modelName)
-		}
-		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
-			Model:            modelName,
-			ResolvedProvider: providers[0],
-			AllProviders:     providers,
-		})
-		provider = providers[0]
-	}
 	return provider, modelName, nil
 }
 

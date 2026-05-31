@@ -18,7 +18,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{
