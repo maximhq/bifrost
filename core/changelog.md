@@ -1,2 +1,2 @@
-- [fix]: map upstream connection failures to 502 instead of 400 [@chris-colinsky](https://github.com/chris-colinsky)
+- [fix]: map upstream connection failures to 502 instead of 400 (#3929) [@chris-colinsky](https://github.com/chris-colinsky)
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
