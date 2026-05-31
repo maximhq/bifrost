@@ -203,6 +203,11 @@ func (p *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook resolves the prompt via PromptResolver, loads the version from the in-memory
 // cache, sets governance/observability context (selected prompt name and version), merges
 // version ModelParams with the request (request overrides), converts stored messages to

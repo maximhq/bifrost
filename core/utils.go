@@ -135,17 +135,17 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
-// validateRequest validates the given request.
-func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
+// validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
+func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
+		return newBifrostErrorFromMsg("could not auto resolve a provider for the request, please specify a provider explicitly")
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("model is required")
+		return newBifrostErrorFromMsg("could not auto resolve a model for the request, please specify a model explicitly")
 	}
 	return nil
 }
