@@ -15,6 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -167,14 +168,14 @@ func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (stri
 	providerKey, model := schemas.ParseModelString(rawModel, realtimeDefaultProviderForPath(path))
 	// Model catalog auto-resolution for bare model names on base /v1 routes
 	if providerKey == "" && strings.TrimSpace(model) != "" {
-		providers := config.GetProvidersForModel(model)
-		if len(providers) > 0 {
+		selected, candidates := modelcatalogresolver.ResolveProviderFromCatalog(config.ModelCatalog, model, "")
+		if selected != "" {
 			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
 				Model:            model,
-				ResolvedProvider: providers[0],
-				AllProviders:     providers,
+				ResolvedProvider: selected,
+				AllProviders:     candidates,
 			})
-			providerKey = providers[0]
+			providerKey = selected
 		}
 	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {
@@ -199,14 +200,14 @@ func (h *WebRTCRealtimeHandler) handleLegacyRequest(ctx *fasthttp.RequestCtx, de
 	providerKey, model := schemas.ParseModelString(rawModel, defaultProvider)
 	// Model catalog auto-resolution for bare model names on base /v1 routes
 	if providerKey == "" && strings.TrimSpace(model) != "" {
-		providers := h.config.GetProvidersForModel(model)
-		if len(providers) > 0 {
+		selected, candidates := modelcatalogresolver.ResolveProviderFromCatalog(h.config.ModelCatalog, model, "")
+		if selected != "" {
 			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
 				Model:            model,
-				ResolvedProvider: providers[0],
-				AllProviders:     providers,
+				ResolvedProvider: selected,
+				AllProviders:     candidates,
 			})
-			providerKey = providers[0]
+			providerKey = selected
 		}
 	}
 	if providerKey == "" || model == "" {
@@ -1236,14 +1237,14 @@ func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path
 	providerKey, model := schemas.ParseModelString(strings.TrimSpace(rawModel), realtimeDefaultProviderForPath(path))
 	// Model catalog auto-resolution for bare model names in session body
 	if providerKey == "" && strings.TrimSpace(model) != "" {
-		providers := config.GetProvidersForModel(model)
-		if len(providers) > 0 {
+		selected, candidates := modelcatalogresolver.ResolveProviderFromCatalog(config.ModelCatalog, model, "")
+		if selected != "" {
 			ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
 				Model:            model,
-				ResolvedProvider: providers[0],
-				AllProviders:     providers,
+				ResolvedProvider: selected,
+				AllProviders:     candidates,
 			})
-			providerKey = providers[0]
+			providerKey = selected
 		}
 	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {

@@ -54,7 +54,7 @@ func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bif
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
+	provider, model := schemas.ParseModelString(req.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,

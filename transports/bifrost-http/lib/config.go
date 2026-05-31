@@ -65,8 +65,6 @@ type StreamChunkInterceptor interface {
 type HandlerStore interface {
 	// GetHeaderMatcher returns the precompiled header matcher for header filtering
 	GetHeaderMatcher() *HeaderMatcher
-	// GetProvidersForModel returns the list of providers that can serve a given model.
-	GetProvidersForModel(model string) []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
 	// Returns nil if no plugins are loaded or streaming interception is not needed.
 	GetStreamChunkInterceptor() StreamChunkInterceptor
@@ -4366,28 +4364,6 @@ func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
 		}
 	}
 	return result
-}
-
-// GetProvidersForModel returns the list of providers for a given model, sorted
-// deterministically so callers picking providers[0] always get the same result.
-func (c *Config) GetProvidersForModel(model string) []schemas.ModelProvider {
-	if c.ModelCatalog == nil {
-		return []schemas.ModelProvider{}
-	}
-	providersInCatalog := c.ModelCatalog.GetProvidersForModel(model)
-	// Filter out the providers which are not present in the configured provider list for the client
-	c.Mu.RLock()
-	defer c.Mu.RUnlock()
-	allowedProviders := make([]schemas.ModelProvider, 0, len(providersInCatalog))
-	for configuredProvider := range c.Providers {
-		if slices.Contains(providersInCatalog, configuredProvider) {
-			allowedProviders = append(allowedProviders, configuredProvider)
-		}
-	}
-	slices.SortFunc(allowedProviders, func(a, b schemas.ModelProvider) int {
-		return strings.Compare(string(a), string(b))
-	})
-	return allowedProviders
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.

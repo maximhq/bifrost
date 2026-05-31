@@ -273,6 +273,7 @@ github.com/maximhq/bifrost/plugins/maxim v1.6.15 h1:kyP6/SaLQvpwx8nivcDQ/XbpK4xe
 github.com/maximhq/bifrost/plugins/maxim v1.6.15/go.mod h1:TgNAT7aneAIgIshX2eNz40PTllXI85fNl+kq7cjYiMw=
 github.com/maximhq/bifrost/plugins/mocker v1.5.15 h1:I9n/8BFC2mrTUkP1CZ6OnLX2QxvlTIcLMwNIdxwvOJI=
 github.com/maximhq/bifrost/plugins/mocker v1.5.15/go.mod h1:v769pFsggp1utwiI/sVMzA0lRxxWmojhG4O9G/+65vI=
+github.com/maximhq/bifrost/plugins/modelcatalogresolver v0.0.0-20260531215024-856c9963e662 h1:RMa9QlP7IIPjCJ6w+XTI+68HzV303XiPFBWVf1risPQ=
 github.com/maximhq/bifrost/plugins/otel v1.2.15 h1:lPzYVlGT4zv4FSv+W1Md69WTq9zVnfm9Od+V1EZ4dPI=
 github.com/maximhq/bifrost/plugins/otel v1.2.15/go.mod h1:TJAltUhE3M0o8lqwTonRrBENdBEWnHMDaD/aILQc/UY=
 github.com/maximhq/bifrost/plugins/prompts v1.0.15 h1:Ur+nRu+ZUxYD9HdM+geJuSnxuQLlLhReJZU/NW9c478=

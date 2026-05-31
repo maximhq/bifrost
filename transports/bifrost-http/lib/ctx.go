@@ -33,8 +33,9 @@ const (
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
 	// FastHTTPUserValueModelCatalogResolution stores model catalog resolution metadata
-	// set by prepare*Request functions when a provider was auto-resolved. Picked up
-	// centrally in ConvertToBifrostContext to add the routing engine log.
+	// set by prepare*Request functions (and inline realtime catalog lookups) when a
+	// provider was auto-resolved. Picked up centrally in ConvertToBifrostContext to
+	// add the routing engine log via EmitModelCatalogRoutingLog.
 	FastHTTPUserValueModelCatalogResolution = "__bifrost_model_catalog_resolution"
 )
 
@@ -44,6 +45,26 @@ type ModelCatalogResolution struct {
 	Model            string
 	ResolvedProvider schemas.ModelProvider
 	AllProviders     []schemas.ModelProvider
+}
+
+// EmitModelCatalogRoutingLog appends a RoutingEngineModelCatalog log entry and
+// engines-used marker to bifrostCtx for an inline catalog resolution. Used by
+// ConvertToBifrostContext (normal HTTP path) and by realtime handlers that
+// bypass it (WebRTC, realtime client_secrets) so all paths emit observability
+// in the same shape regardless of which routing layer did the lookup.
+func EmitModelCatalogRoutingLog(bifrostCtx *schemas.BifrostContext, res *ModelCatalogResolution) {
+	if bifrostCtx == nil || res == nil {
+		return
+	}
+	providerStrs := make([]string, len(res.AllProviders))
+	for i, p := range res.AllProviders {
+		providerStrs[i] = string(p)
+	}
+	bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+		"No provider specified for model %s, found %d options in model catalog: [%s], selected: %s",
+		res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
+	))
+	schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 }
 
 // ParseSessionIDFromBaggage extracts the session-id baggage member value.
@@ -208,15 +229,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// it stores the resolution info on the fasthttp context. Emit the routing
 	// engine log and mark the engine as used centrally here.
 	if res, ok := ctx.UserValue(FastHTTPUserValueModelCatalogResolution).(*ModelCatalogResolution); ok && res != nil {
-		providerStrs := make([]string, len(res.AllProviders))
-		for i, p := range res.AllProviders {
-			providerStrs[i] = string(p)
-		}
-		bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-			"No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s",
-			res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider,
-		))
-		schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+		EmitModelCatalogRoutingLog(bifrostCtx, res)
 	}
 
 	// Initialize tags map for collecting maxim tags

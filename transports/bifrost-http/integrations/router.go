@@ -55,7 +55,6 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -394,10 +393,6 @@ type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp in
 // returns a schemas.RequestType indicating the HTTP request type derived from the context.
 type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
-// RequestModelGetter is a function type that accepts only a *fasthttp.RequestCtx and
-// returns a string indicating the model derived from the context.
-type RequestModelGetter func(ctx *fasthttp.RequestCtx, req interface{}) (string, error)
-
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
@@ -441,14 +436,6 @@ const (
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
-var RouteConfigTypeToProvider = map[RouteConfigType]schemas.ModelProvider{
-	RouteConfigTypeOpenAI:    schemas.OpenAI,
-	RouteConfigTypeAnthropic: schemas.Anthropic,
-	RouteConfigTypeGenAI:     schemas.Gemini,
-	RouteConfigTypeBedrock:   schemas.Bedrock,
-	RouteConfigTypeCohere:    schemas.Cohere,
-}
-
 // RouteConfig defines the configuration for a single route in an integration.
 // It specifies the path, method, and handlers for request/response conversion.
 type RouteConfig struct {
@@ -456,7 +443,6 @@ type RouteConfig struct {
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
 	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
-	GetRequestModel                        RequestModelGetter                     // Function to get the model from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
@@ -686,7 +672,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}()
 
-		// Set integration type to context
+		// Set integration type to context. Used by the ModelCatalogResolver built-in
+		// PreRequestHook (last routing layer) to prefer this integration's canonical
+		// provider when the model is unprefixed and the catalog returns multiple options.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
 		// Async retrieve: check x-bf-async-id header early (before body parsing)
@@ -774,62 +762,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 			if handled {
 				return
-			}
-		}
-
-		// Set available providers to context
-		if config.GetRequestModel != nil {
-			model, err := config.GetRequestModel(ctx, req)
-			if err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to get model from context"))
-				return
-			}
-			extractedProvider, extractedModel := schemas.ParseModelString(model, "")
-			// Skip model-catalog when governance already made a routing decision.
-			// Governance uses dot-notation aliases (e.g. "anthropic.claude-sonnet-4-6") which
-			// ParseModelString cannot extract a provider from (it only handles slash separators),
-			// causing a spurious model-catalog lookup that can override governance's selection.
-			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
-			if extractedProvider == "" && !skipModelCatalogProviderSelection {
-				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
-				existingProviders, hasExistingProviders := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-				if hasExistingProviders {
-					if len(existingProviders) == 0 {
-						availableProviders = []schemas.ModelProvider{}
-					} else if len(availableProviders) == 0 {
-						availableProviders = existingProviders
-					} else {
-						availableProviders = slices.DeleteFunc(availableProviders, func(provider schemas.ModelProvider) bool {
-							return !slices.Contains(existingProviders, provider)
-						})
-					}
-				}
-				availableProvidersStrs := make([]string, len(availableProviders))
-				for i, p := range availableProviders {
-					availableProvidersStrs[i] = string(p)
-				}
-				bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-					"No provider specified for model %s, found %d options in model catalog: [%s]",
-					extractedModel, len(availableProviders), strings.Join(availableProvidersStrs, ", "),
-				))
-				if len(availableProviders) > 0 {
-					if slices.Contains(availableProviders, RouteConfigTypeToProvider[config.Type]) {
-						availableProviders = []schemas.ModelProvider{RouteConfigTypeToProvider[config.Type]}
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-							"Integration route default provider %s is found in the available providers list, selecting it",
-							RouteConfigTypeToProvider[config.Type],
-						))
-					} else {
-						bifrostCtx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
-							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
-							RouteConfigTypeToProvider[config.Type], availableProviders[0],
-						))
-					}
-					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
-				} else if hasExistingProviders {
-					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
-				}
-				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 			}
 		}
 

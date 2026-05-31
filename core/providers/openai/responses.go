@@ -22,7 +22,7 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		}
 	}
 
-	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(resp.Model, defaultProvider)
 
 	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
