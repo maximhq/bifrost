@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -189,7 +188,7 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	// Create the embedding request
 	bifrostReq := &schemas.BifrostEmbeddingRequest{

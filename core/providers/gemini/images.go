@@ -20,7 +20,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 
 	// Parse provider from model string (e.g., "openai/gpt-image-1" -> provider="openai", model="gpt-image-1")
 	// This allows cross-provider routing through the GenAI endpoint
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
@@ -114,7 +114,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 
 	// Parse provider from model string (e.g., "openai/gpt-image-1" -> provider="openai", model="gpt-image-1")
 	// This allows cross-provider routing through the GenAI endpoint
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostImageEditRequest{
 		Provider: provider,

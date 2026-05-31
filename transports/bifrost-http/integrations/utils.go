@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -349,11 +348,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 	}
 
 	provider, _, _ := bifrostReq.GetRequestFields()
-	var availableProviders []schemas.ModelProvider
-	var hasAvailableProviders bool
-	if ctx != nil {
-		availableProviders, hasAvailableProviders = ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
-	}
 
 	// Parse fallbacks from strings to Fallback structs
 	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
@@ -364,9 +358,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 
 		// Use ParseModelString to extract provider and model
 		provider, model := schemas.ParseModelString(fallbackStr, provider)
-		if hasAvailableProviders && !slices.Contains(availableProviders, provider) {
-			continue
-		}
 
 		parsedFallback := schemas.Fallback{
 			Provider: provider,
@@ -376,7 +367,6 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 	}
 
 	if len(parsedFallbacks) == 0 {
-		bifrostReq.SetFallbacks(nil)
 		return nil // No valid fallbacks found
 	}
 
