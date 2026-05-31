@@ -75,6 +75,55 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	if selected == "" {
 		return nil
 	}
+
+	// Respect the routing-allowlist set by an earlier plugin (e.g., governance VK config):
+	// intersect catalog candidates with the allowlist so the VK's provider restrictions hold
+	// even when no earlier routing plugin set req.Provider. Emit observability logs for both
+	// the partial-prune and all-pruned cases — the two-level enforcement (cooperative here +
+	// hard core enforcement) is only useful if the cooperative pruning is visible in routing
+	// engine logs when it fires.
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok {
+		preFilterCount := len(candidates)
+		filtered := make([]schemas.ModelProvider, 0, preFilterCount)
+		excluded := make([]schemas.ModelProvider, 0)
+		for _, prov := range candidates {
+			if slices.Contains(allowed, prov) {
+				filtered = append(filtered, prov)
+			} else {
+				excluded = append(excluded, prov)
+			}
+		}
+		if len(excluded) > 0 {
+			excludedStrs := make([]string, len(excluded))
+			for i, prov := range excluded {
+				excludedStrs[i] = string(prov)
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"Routing allowlist %v excluded %d of %d catalog candidates for model %s: [%s]",
+				allowed, len(excluded), preFilterCount, model, strings.Join(excludedStrs, ", "),
+			))
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"No catalog providers for model %s remain after routing-allowlist filter %v; leaving req.Provider empty",
+				model, allowed,
+			))
+			return nil
+		}
+		// Re-pick if the original integration-aware selection was excluded by the allowlist.
+		if !slices.Contains(candidates, selected) {
+			selected = candidates[0]
+			if integrationType != "" {
+				if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
+					if slices.Contains(candidates, integrationDefault) {
+						selected = integrationDefault
+					}
+				}
+			}
+		}
+	}
+
 	req.SetProvider(selected)
 
 	candidateStrs := make([]string, len(candidates))

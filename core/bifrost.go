@@ -4572,6 +4572,23 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
+// filterFallbacksByAllowlist returns a new slice containing only the fallbacks whose Provider
+// is present in allowed. Used by handleRequest/handleStreamRequest to enforce the routing
+// allowlist published via BifrostContextKeyRoutingAllowedProviders — a plugin earlier in
+// PreRequestHook may have populated fallbacks that a later plugin's allowlist excludes.
+func filterFallbacksByAllowlist(fallbacks []schemas.Fallback, allowed []schemas.ModelProvider) []schemas.Fallback {
+	if len(fallbacks) == 0 {
+		return fallbacks
+	}
+	filtered := make([]schemas.Fallback, 0, len(fallbacks))
+	for _, fb := range fallbacks {
+		if slices.Contains(allowed, fb.Provider) {
+			filtered = append(filtered, fb)
+		}
+	}
+	return filtered
+}
+
 // handleRequest handles the request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -4606,6 +4623,18 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	if err := validateRequestAfterPreRequestHooks(req); err != nil {
 		err.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, err
+	}
+	// Enforce the routing-allowlist if any plugin published one. This guarantees no
+	// downstream layer (or user-specified provider prefix) can bypass governance VK
+	// restrictions or any other plugin-imposed allowlist.
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok {
+		if !slices.Contains(allowed, provider) {
+			bifrostErr := newBifrostErrorFromMsg(fmt.Sprintf("provider %q is not permitted for this request (routing allowlist: %v)", provider, allowed))
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, bifrostErr
+		}
+		fallbacks = filterFallbacksByAllowlist(fallbacks, allowed)
+		req.SetFallbacks(fallbacks)
 	}
 
 	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
@@ -4708,6 +4737,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	if err := validateRequestAfterPreRequestHooks(req); err != nil {
 		err.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, err
+	}
+	// Enforce the routing-allowlist if any plugin published one. See handleRequest.
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok {
+		if !slices.Contains(allowed, provider) {
+			bifrostErr := newBifrostErrorFromMsg(fmt.Sprintf("provider %q is not permitted for this request (routing allowlist: %v)", provider, allowed))
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			bifrostErr.StatusCode = schemas.Ptr(fasthttp.StatusBadRequest)
+			return nil, bifrostErr
+		}
+		fallbacks = filterFallbacksByAllowlist(fallbacks, allowed)
+		req.SetFallbacks(fallbacks)
 	}
 
 	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
