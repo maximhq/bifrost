@@ -138,6 +138,29 @@ func TestParseBedrockInvokeUsageFromHeaders(t *testing.T) {
 		assert.Equal(t, 42, usage.TotalTokens)
 	})
 
+	t.Run("parses output-only token count when input header is absent", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Output-Token-Count": "17",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 0, usage.PromptTokens)
+		assert.Equal(t, 17, usage.CompletionTokens)
+		assert.Equal(t, 17, usage.TotalTokens)
+	})
+
+	t.Run("preserves zero input alongside positive output", func(t *testing.T) {
+		headers := map[string]string{
+			"X-Amzn-Bedrock-Input-Token-Count":  "0",
+			"X-Amzn-Bedrock-Output-Token-Count": "12",
+		}
+		usage := parseBedrockInvokeUsageFromHeaders(headers)
+		require.NotNil(t, usage)
+		assert.Equal(t, 0, usage.PromptTokens)
+		assert.Equal(t, 12, usage.CompletionTokens)
+		assert.Equal(t, 12, usage.TotalTokens)
+	})
+
 	t.Run("parses both input and output token counts", func(t *testing.T) {
 		headers := map[string]string{
 			"X-Amzn-Bedrock-Input-Token-Count":  "100",

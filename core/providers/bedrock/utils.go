@@ -50,10 +50,10 @@ func parseBedrockInvokeUsageFromHeaders(headers map[string]string) *schemas.Bifr
 	}
 
 	usage := &schemas.BifrostLLMUsage{}
-	if n, err := strconv.Atoi(strings.TrimSpace(inStr)); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(inStr)); err == nil {
 		usage.PromptTokens = n
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(outStr)); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(outStr)); err == nil {
 		usage.CompletionTokens = n
 	}
 	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
