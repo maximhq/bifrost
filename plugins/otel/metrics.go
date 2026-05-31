@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,6 +149,55 @@ var (
 		.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10,
 	}
 )
+
+// parseBucketsFromEnv parses a comma-separated list of positive, increasing float64
+// bucket boundaries from an environment variable. Returns nil if unset or all values invalid.
+func parseBucketsFromEnv(envKey string) []float64 {
+	raw := os.Getenv(envKey)
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	buckets := make([]float64, 0, len(parts))
+	prev := 0.0
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			logger.Warn("otel: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
+			continue
+		}
+		if v <= 0 {
+			logger.Warn("otel: %s bucket value %v must be positive (skipped)", envKey, v)
+			continue
+		}
+		if v <= prev {
+			logger.Warn("otel: %s bucket value %v must be greater than previous value %v (skipped)", envKey, v, prev)
+			continue
+		}
+		buckets = append(buckets, v)
+		prev = v
+	}
+
+	if len(buckets) == 0 {
+		logger.Warn("otel: %s produced no valid buckets; using compiled-in defaults", envKey)
+		return nil
+	}
+	return buckets
+}
+
+func init() {
+	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS"); custom != nil {
+		upstreamLatencyBuckets = custom
+	}
+	if custom := parseBucketsFromEnv("BIFROST_FIRST_TOKEN_LATENCY_BUCKETS"); custom != nil {
+		firstTokenLatencyBuckets = custom
+	}
+	if custom := parseBucketsFromEnv("BIFROST_INTER_TOKEN_LATENCY_BUCKETS"); custom != nil {
+		interTokenLatencyBuckets = custom
+	}
+}
 
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
 type syncFloat64Histogram struct {
