@@ -387,7 +387,7 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
@@ -451,7 +451,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageGenerationRequest(ctx *schemas.Bifr
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
 		Model:    model,
@@ -515,7 +515,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageEditRequest(ctx *schemas.BifrostCon
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageEditRequest{
 		Provider: provider,
 		Model:    model,
@@ -690,7 +690,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageVariationRequest(ctx *schemas.Bifro
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageVariationRequest{
 		Provider: provider,
 		Model:    model,
