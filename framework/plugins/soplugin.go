@@ -27,8 +27,12 @@ type DynamicPlugin struct {
 	httpTransportStreamChunkHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
 
 	// LLMPlugin (optional)
-	preLLMHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
-	postLLMHook func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	// preRequestHook is forward-compat: new .so plugins built against LLMPlugin can export
+	// PreRequestHook to participate in the per-request routing phase. Legacy plugins predating
+	// PreRequestHook leave it nil and silently no-op for routing.
+	preRequestHook func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
+	preLLMHook     func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
+	postLLMHook    func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 
 	// MCPPlugin (optional)
 	preMCPHook  func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error)
@@ -77,6 +81,16 @@ func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContex
 		return stream, nil // No-op if not implemented
 	}
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
+}
+
+// PreRequestHook is invoked once per top-level request to decide provider/model/fallbacks
+// (LLMPlugin interface). Defaults to a no-op passthrough for legacy plugins that don't
+// export PreRequestHook.
+func (dp *DynamicPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if dp.preRequestHook == nil {
+		return nil
+	}
+	return dp.preRequestHook(ctx, req)
 }
 
 // PreLLMHook is invoked before LLM provider calls (LLMPlugin interface)
