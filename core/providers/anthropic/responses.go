@@ -2979,65 +2979,100 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	var toolCallGroups []toolCallGroup
 	var currentToolCallIDs map[string]bool // IDs of tool calls in the current pending batch
 
-	// Helper to flush pending tool result blocks into user messages
-	// This now matches tool results to their corresponding tool call groups
+	// knownToolUseIDs is the set of tool_use ids that are actually committed to the
+	// output as tool_use/server_tool_use blocks. A tool_result whose id is not in
+	// this set is "orphaned" (e.g. a function_call_output sent via the OpenAI
+	// previous_response_id pattern without its originating function_call) and must
+	// NOT be emitted as a tool_result, or Anthropic rejects the whole request.
+	knownToolUseIDs := make(map[string]bool)
+
+	// Helper to emit orphaned tool results (no matching tool_use) as a single user
+	// text message so their content is preserved without violating Anthropic's
+	// requirement that every tool_result have a corresponding tool_use.
+	appendOrphanToolResultsAsUserText := func(blocks []AnthropicContentBlock) {
+		if len(blocks) == 0 {
+			return
+		}
+		var textBlocks []AnthropicContentBlock
+		for i := range blocks {
+			text := toolResultBlockToText(&blocks[i])
+			if text == "" {
+				continue
+			}
+			textBlocks = append(textBlocks, AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeText,
+				Text: schemas.Ptr(text),
+			})
+		}
+		if len(textBlocks) > 0 {
+			anthropicMessages = append(anthropicMessages, AnthropicMessage{
+				Role:    AnthropicMessageRoleUser,
+				Content: AnthropicContent{ContentBlocks: textBlocks},
+			})
+		}
+	}
+
+	// Helper to flush pending tool result blocks into user messages.
+	// Results are partitioned into those with a real matching tool_use (emitted as
+	// tool_result, grouped by their originating assistant turn) and orphans, which
+	// are converted to user text. Anthropic rejects a tool_result block that has no
+	// corresponding tool_use block in the previous message:
+	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works
 	flushPendingToolResults := func() {
 		if len(pendingToolResultBlocks) == 0 {
 			return
 		}
 
-		// If there are no tool call groups, just flush all results together
-		if len(toolCallGroups) == 0 {
-			anthropicMessages = append(anthropicMessages, AnthropicMessage{
-				Role: AnthropicMessageRoleUser,
-				Content: AnthropicContent{
-					ContentBlocks: pendingToolResultBlocks,
-				},
-			})
-			pendingToolResultBlocks = nil
-			return
+		var matched []AnthropicContentBlock
+		var orphaned []AnthropicContentBlock
+		for _, block := range pendingToolResultBlocks {
+			if block.ToolUseID != nil && knownToolUseIDs[*block.ToolUseID] {
+				matched = append(matched, block)
+			} else {
+				orphaned = append(orphaned, block)
+			}
 		}
+		pendingToolResultBlocks = nil
 
-		// Group tool results by their corresponding tool call group
-		// Each group should be flushed as a separate user message
+		// Group matched tool results by their corresponding (not-yet-flushed) tool
+		// call group so each assistant turn's results land in their own user message.
+		remaining := matched
 		for i := range toolCallGroups {
 			if toolCallGroups[i].flushed {
 				continue
 			}
 
 			var groupResults []AnthropicContentBlock
-			var remainingResults []AnthropicContentBlock
-
-			for _, block := range pendingToolResultBlocks {
+			var rest []AnthropicContentBlock
+			for _, block := range remaining {
 				if block.ToolUseID != nil && toolCallGroups[i].toolCallIDs[*block.ToolUseID] {
 					groupResults = append(groupResults, block)
 				} else {
-					remainingResults = append(remainingResults, block)
+					rest = append(rest, block)
 				}
 			}
 
 			if len(groupResults) > 0 {
 				anthropicMessages = append(anthropicMessages, AnthropicMessage{
-					Role: AnthropicMessageRoleUser,
-					Content: AnthropicContent{
-						ContentBlocks: groupResults,
-					},
+					Role:    AnthropicMessageRoleUser,
+					Content: AnthropicContent{ContentBlocks: groupResults},
 				})
 				toolCallGroups[i].flushed = true
-				pendingToolResultBlocks = remainingResults
+				remaining = rest
 			}
 		}
 
-		// Flush any remaining tool results that didn't match any group
-		if len(pendingToolResultBlocks) > 0 {
+		// Matched results whose group was already flushed in an earlier call still
+		// have a valid tool_use, so emit them as a standalone tool_result message.
+		if len(remaining) > 0 {
 			anthropicMessages = append(anthropicMessages, AnthropicMessage{
-				Role: AnthropicMessageRoleUser,
-				Content: AnthropicContent{
-					ContentBlocks: pendingToolResultBlocks,
-				},
+				Role:    AnthropicMessageRoleUser,
+				Content: AnthropicContent{ContentBlocks: remaining},
 			})
-			pendingToolResultBlocks = nil
 		}
+
+		// Orphans (no matching tool_use anywhere) become user text.
+		appendOrphanToolResultsAsUserText(orphaned)
 	}
 
 	// Helper to flush pending tool calls with tool call ID tracking
@@ -3057,6 +3092,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					toolCallIDs: currentToolCallIDs,
 					flushed:     false,
 				})
+				// These ids are now committed as tool_use blocks in the output, so
+				// any later tool_result referencing them is legitimate.
+				for id := range currentToolCallIDs {
+					knownToolUseIDs[id] = true
+				}
 				currentToolCallIDs = nil
 			}
 
@@ -3152,6 +3192,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			anthropicMsg := convertBifrostMessageToAnthropicMessage(&msg, &pendingReasoningContentBlocks)
 			if anthropicMsg != nil {
 				anthropicMessages = append(anthropicMessages, *anthropicMsg)
+				// Register any tool_use ids carried on a regular assistant message so
+				// later tool_result blocks referencing them are not treated as orphans.
+				for _, b := range anthropicMsg.Content.ContentBlocks {
+					if (b.Type == AnthropicContentBlockTypeToolUse || b.Type == AnthropicContentBlockTypeServerToolUse) && b.ID != nil {
+						knownToolUseIDs[*b.ID] = true
+					}
+				}
 				seenConversation = true
 			}
 
@@ -4482,6 +4529,31 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 		return &toolResultBlock
 	}
 	return nil
+}
+
+// toolResultBlockToText renders a tool_result content block as plain text. It is
+// used to salvage an orphaned tool_result (one whose tool_use_id has no matching
+// tool_use block in the converted output) by converting it into a user text
+// message instead of an invalid tool_result block, which Anthropic rejects:
+// https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works
+// Returns "" when the block carries no renderable text.
+func toolResultBlockToText(block *AnthropicContentBlock) string {
+	if block == nil || block.Content == nil {
+		return ""
+	}
+	if block.Content.ContentStr != nil && *block.Content.ContentStr != "" {
+		return "Tool result: " + *block.Content.ContentStr
+	}
+	var sb strings.Builder
+	for _, cb := range block.Content.ContentBlocks {
+		if cb.Text != nil {
+			sb.WriteString(*cb.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return ""
+	}
+	return "Tool result: " + sb.String()
 }
 
 // convertBifrostComputerCallOutputToAnthropicToolResultBlock converts a Bifrost computer call output to a single tool result block
