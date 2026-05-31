@@ -30,6 +30,10 @@ type requestCapturer struct {
 func (p *requestCapturer) GetName() string { return "test-request-capturer" }
 func (p *requestCapturer) Cleanup() error  { return nil }
 
+func (p *requestCapturer) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *requestCapturer) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	p.mu.Lock()
 	// Snapshot the request via JSON round-trip so any later mutation by the

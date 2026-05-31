@@ -495,6 +495,11 @@ func (p *MockerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *MockerPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook intercepts requests and applies mocking rules based on configuration
 // This is called before the actual provider request and can short-circuit the flow
 func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -853,10 +858,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
+				RequestType:            req.RequestType,
+				Provider:               provider,
 				OriginalModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	} else if req.RequestType == schemas.ResponsesRequest {
@@ -877,10 +882,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				TotalTokens:  usage.TotalTokens,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesRequest,
-				Provider:       provider,
+				RequestType:            schemas.ResponsesRequest,
+				Provider:               provider,
 				OriginalModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	} else if req.RequestType == schemas.ResponsesStreamRequest {
@@ -905,10 +910,10 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       provider,
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               provider,
 				OriginalModelRequested: model,
-				Latency:        int64(time.Since(startTime).Milliseconds()),
+				Latency:                int64(time.Since(startTime).Milliseconds()),
 			},
 		}
 	}
@@ -959,8 +964,8 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 		},
 		AllowFallbacks: allowFallbacks,
 		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
+			RequestType:            req.RequestType,
+			Provider:               provider,
 			OriginalModelRequested: model,
 		},
 	}
@@ -1083,8 +1088,8 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ChatCompletionRequest,
-						Provider:       provider,
+						RequestType:            schemas.ChatCompletionRequest,
+						Provider:               provider,
 						OriginalModelRequested: model,
 					},
 				},
