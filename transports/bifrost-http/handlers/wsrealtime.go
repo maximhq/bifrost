@@ -92,6 +92,55 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Run PreRequestHook to give governance + LB a chance to route the realtime connection.
+	// Realtime bypasses handleRequest (per-turn pipelines instead), so we invoke the routing
+	// phase explicitly here. Mutations to provider/model are read back into the local vars
+	// and copied to fasthttp user values so snapshotRealtimeMiddlewareValues picks up any
+	// ctx changes (governance team/customer IDs, routing engine logs).
+	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.handlerStore, auth)
+	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
+	if realtimeDefaultProviderForPath(path) == schemas.OpenAI {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	// Surface full request headers + query params on the pre-request context so governance
+	// CEL routing rules (which read headers[...] / params[...]) see the same shape they would
+	// for normal HTTP requests. Mirrors lib/ctx.go ConvertToBifrostContext; the normal HTTP
+	// path doesn't run for WS upgrades, so we populate these explicitly. Keys are lowercased.
+	allHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		allHeaders[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	preReqCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+	if queryArgs := ctx.Request.URI().QueryArgs(); queryArgs.Len() > 0 {
+		allQuery := make(map[string]string, queryArgs.Len())
+		queryArgs.All()(func(key, value []byte) bool {
+			allQuery[strings.ToLower(string(key))] = string(value)
+			return true
+		})
+		preReqCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
+	}
+	preReq := &schemas.BifrostRequest{
+		RequestType: schemas.RealtimeRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: providerKey,
+			Model:    model,
+		},
+	}
+	h.client.RunPreRequestHooks(preReqCtx, preReq)
+	if routedProvider, routedModel, _ := preReq.GetRequestFields(); routedProvider != "" {
+		providerKey = routedProvider
+		if routedModel != "" {
+			model = routedModel
+		}
+	}
+	// Mirror ctx values back to fasthttp user values so snapshotRealtimeMiddlewareValues
+	// (called below) picks them up — same mechanism TransportInterceptorMiddleware uses.
+	for k, v := range preReqCtx.GetUserValues() {
+		ctx.SetUserValue(k, v)
+	}
+	preReqCancel()
+
 	provider := h.client.GetProviderByKey(providerKey)
 	rtProvider, ok := provider.(schemas.RealtimeProvider)
 	if provider == nil || !ok || !rtProvider.SupportsRealtimeAPI() {
