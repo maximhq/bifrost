@@ -142,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -156,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
