@@ -272,6 +272,48 @@ func TestBuildTabBarStringShowsEditSessionHintInCommandMode(t *testing.T) {
 	}
 }
 
+func TestBuildTabBarStringKeepsVersionVisibleWhenCommandHintIsLong(t *testing.T) {
+	t.Parallel()
+
+	tm := &TabManager{
+		version:       "0.1.1-dev",
+		rows:          24,
+		cols:          80,
+		commandMode:   true,
+		updateVersion: "0.1.2",
+		tabs: []*Tab{
+			{id: 1, label: "Claude Code"},
+		},
+	}
+
+	got := tm.buildTabBarString()
+
+	if !strings.Contains(got, " v0.1.1-dev ") {
+		t.Fatalf("expected version to stay visible, got %q", got)
+	}
+	if strings.Contains(got, "\n") || strings.Contains(got, "\r") {
+		t.Fatalf("expected tab bar to remain one line, got %q", got)
+	}
+}
+
+func TestNextInputTokenTreatsCtrlGAsTabModePrefix(t *testing.T) {
+	t.Parallel()
+
+	token, consumed, isPrefix, complete := nextInputToken([]byte{tmuxSafePrefix})
+
+	if !complete || !isPrefix || consumed != 1 || len(token) != 1 || token[0] != tmuxSafePrefix {
+		t.Fatalf("expected ctrl+g to be parsed as tab-mode prefix, token=%q consumed=%d isPrefix=%v complete=%v", token, consumed, isPrefix, complete)
+	}
+}
+
+func TestTabModeHintLabelUsesCtrlGInsideTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-501/default,123,0")
+
+	if got := tabModeHintLabel(); got != "^G" {
+		t.Fatalf("expected tmux tab mode hint to use ^G, got %q", got)
+	}
+}
+
 func TestHostInputModeSequenceEnablesMouseAndFocus(t *testing.T) {
 	t.Parallel()
 
@@ -478,6 +520,58 @@ func TestHandleActiveCtrlCResetsOnOtherInput(t *testing.T) {
 	}
 }
 
+func TestRemoveLastTabSignalsCloseForAppRelaunch(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	tab := &Tab{id: 1, label: "Codex", done: make(chan struct{})}
+	tm := &TabManager{
+		stdout:    &out,
+		rows:      24,
+		cols:      80,
+		tabs:      []*Tab{tab},
+		activeIdx: 0,
+		closeCh:   make(chan struct{}),
+	}
+
+	tm.removeTab(tab)
+
+	select {
+	case <-tm.closeCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected last tab removal to signal RunTabbed completion")
+	}
+	if got := out.String(); strings.Contains(got, "Bifrost CLI") || strings.Contains(got, "Home") {
+		t.Fatalf("did not expect placeholder home screen after last tab exits, got %q", got)
+	}
+}
+
+func TestHomeCtrlCRequiresSecondPressToQuit(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	tm := &TabManager{
+		stdout:      &out,
+		rows:        24,
+		cols:        80,
+		commandMode: true,
+		closeCh:     make(chan struct{}),
+	}
+
+	if tm.handleHomeCtrlC() {
+		t.Fatal("did not expect first home ctrl+c to quit")
+	}
+	if !tm.quitConfirm {
+		t.Fatal("expected first home ctrl+c to show quit confirmation")
+	}
+	if got := out.String(); !strings.Contains(got, "Quit Bifrost?") {
+		t.Fatalf("expected quit confirmation popup, got %q", got)
+	}
+	if !tm.handleHomeCtrlC() {
+		t.Fatal("expected second home ctrl+c to confirm quit")
+	}
+}
+
 func TestModifierHasCtrlSupportsColonSuffix(t *testing.T) {
 	t.Parallel()
 
@@ -526,23 +620,35 @@ func TestDecodeCommandByteCSIU(t *testing.T) {
 	}
 }
 
-func TestIsCtrlBSequenceSupportsColonSuffix(t *testing.T) {
+func TestIsPrefixSequenceSupportsColonSuffix(t *testing.T) {
 	t.Parallel()
 
 	// Press event with colon-suffixed modifier (event_type 1) should match.
-	if !isCtrlBSequence([]byte("\x1b[98;5:1u")) {
+	if !isPrefixSequence([]byte("\x1b[98;5:1u")) {
 		t.Fatal("expected ctrl+b press event with colon-suffixed modifiers to be recognized")
 	}
 
 	// Release event (event_type 3) should NOT match — release events must be
 	// silently dropped, otherwise command mode enters and exits instantly.
-	if isCtrlBSequence([]byte("\x1b[98;5:3u")) {
+	if isPrefixSequence([]byte("\x1b[98;5:3u")) {
 		t.Fatal("expected ctrl+b release event to be rejected")
 	}
 
 	// Repeat event (event_type 2) should match.
-	if !isCtrlBSequence([]byte("\x1b[98;5:2u")) {
+	if !isPrefixSequence([]byte("\x1b[98;5:2u")) {
 		t.Fatal("expected ctrl+b repeat event to be recognized")
+	}
+
+	// Ctrl+G is the tmux-safe alternate prefix and must be recognized in its
+	// CSI-encoded forms too, not just as the raw 0x07 byte.
+	if !isPrefixSequence([]byte("\x1b[103;5:1u")) {
+		t.Fatal("expected ctrl+g press event (CSI u, tmux-safe prefix) to be recognized")
+	}
+	if isPrefixSequence([]byte("\x1b[103;5:3u")) {
+		t.Fatal("expected ctrl+g release event to be rejected")
+	}
+	if !isPrefixSequence([]byte("\x1b[27;5;103~")) {
+		t.Fatal("expected ctrl+g modifyOtherKeys (CSI 27 ~) to be recognized")
 	}
 }
 
