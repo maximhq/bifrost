@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -172,6 +173,10 @@ func parseBucketsFromEnv(envKey string) []float64 {
 		v, err := strconv.ParseFloat(p, 64)
 		if err != nil {
 			warn("otel: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
+			continue
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			warn("otel: %s bucket value %v is not finite (skipped)", envKey, v)
 			continue
 		}
 		if v <= 0 {

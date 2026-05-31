@@ -6,6 +6,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -242,6 +243,10 @@ func parseBucketsFromEnv(envKey string, logger schemas.Logger) []float64 {
 		v, err := strconv.ParseFloat(p, 64)
 		if err != nil {
 			logger.Warn("telemetry: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
+			continue
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			logger.Warn("telemetry: %s bucket value %v is not finite (skipped)", envKey, v)
 			continue
 		}
 		if v <= 0 {
