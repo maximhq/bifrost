@@ -273,6 +273,9 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		logger.Warn("telemetry plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
 
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
 	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS", logger); custom != nil {
 		upstreamLatencyBuckets = custom
 	}

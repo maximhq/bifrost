@@ -158,6 +158,12 @@ func parseBucketsFromEnv(envKey string) []float64 {
 		return nil
 	}
 
+	warn := func(msg string, args ...any) {
+		if logger != nil {
+			logger.Warn(msg, args...)
+		}
+	}
+
 	parts := strings.Split(raw, ",")
 	buckets := make([]float64, 0, len(parts))
 	prev := 0.0
@@ -165,15 +171,15 @@ func parseBucketsFromEnv(envKey string) []float64 {
 		p = strings.TrimSpace(p)
 		v, err := strconv.ParseFloat(p, 64)
 		if err != nil {
-			logger.Warn("otel: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
+			warn("otel: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
 			continue
 		}
 		if v <= 0 {
-			logger.Warn("otel: %s bucket value %v must be positive (skipped)", envKey, v)
+			warn("otel: %s bucket value %v must be positive (skipped)", envKey, v)
 			continue
 		}
 		if v <= prev {
-			logger.Warn("otel: %s bucket value %v must be greater than previous value %v (skipped)", envKey, v, prev)
+			warn("otel: %s bucket value %v must be greater than previous value %v (skipped)", envKey, v, prev)
 			continue
 		}
 		buckets = append(buckets, v)
@@ -181,23 +187,12 @@ func parseBucketsFromEnv(envKey string) []float64 {
 	}
 
 	if len(buckets) == 0 {
-		logger.Warn("otel: %s produced no valid buckets; using compiled-in defaults", envKey)
+		warn("otel: %s produced no valid buckets; using compiled-in defaults", envKey)
 		return nil
 	}
 	return buckets
 }
 
-func init() {
-	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS"); custom != nil {
-		upstreamLatencyBuckets = custom
-	}
-	if custom := parseBucketsFromEnv("BIFROST_FIRST_TOKEN_LATENCY_BUCKETS"); custom != nil {
-		firstTokenLatencyBuckets = custom
-	}
-	if custom := parseBucketsFromEnv("BIFROST_INTER_TOKEN_LATENCY_BUCKETS"); custom != nil {
-		interTokenLatencyBuckets = custom
-	}
-}
 
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
 type syncFloat64Histogram struct {
@@ -420,6 +415,19 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 }
 
 func (m *MetricsExporter) initMetrics() {
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
+	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS"); custom != nil {
+		upstreamLatencyBuckets = custom
+	}
+	if custom := parseBucketsFromEnv("BIFROST_FIRST_TOKEN_LATENCY_BUCKETS"); custom != nil {
+		firstTokenLatencyBuckets = custom
+	}
+	if custom := parseBucketsFromEnv("BIFROST_INTER_TOKEN_LATENCY_BUCKETS"); custom != nil {
+		interTokenLatencyBuckets = custom
+	}
+
 	// Bifrost upstream metrics
 	m.upstreamRequestsTotal = &syncInt64Counter{
 		name:  "bifrost_upstream_requests_total",
