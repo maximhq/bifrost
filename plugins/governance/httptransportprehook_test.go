@@ -15,7 +15,12 @@ import (
 
 // TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel verifies that
 // virtual-key provider pinning rewrites the request model to Replicate's nested provider slug.
+//
+// Body-having governance routing moved to PreRequestHook; HTTPTransportPreHook now no-ops for
+// body-having requests. Equivalent PreRequestHook test belongs in Phase 3 once integration
+// normalization is finalized. See private/pre-request-hook-refactor-plan.md.
 func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 	mc := modelcatalog.NewTestCatalog(map[string]string{
 		"openai/gpt-5-nano": "gpt-5-nano",
@@ -403,6 +408,7 @@ func TestHTTPTransportPreHook_WildcardOpaqueProviderRespectsBlacklist(t *testing
 // matches on the /genai path, governance load balancing does not override the routing-rule target
 // with a provider from the VK pool (regression test for issue #2516).
 func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook; ctx.Value(\"model\") cross-plugin handoff removed — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 
 	routingRule := configstoreTables.TableRoutingRule{
@@ -470,6 +476,7 @@ func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget(t *testing.T) {
 // containing the routing-rule provider, confirming the fix holds when p.inMemoryStore != nil
 // and the provider IS present in GetConfiguredProviders (the normal production code path).
 func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget_WithStore(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook; ctx.Value(\"model\") cross-plugin handoff removed — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 
 	routingRule := configstoreTables.TableRoutingRule{
@@ -545,6 +552,7 @@ func TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget_WithStore(t *testi
 // TestHTTPTransportPreHook_GenAINoRoutingRuleStillLoadBalances verifies that when no routing rule
 // matches on the /genai path, governance load balancing still selects a provider from the VK pool.
 func TestHTTPTransportPreHook_GenAINoRoutingRuleStillLoadBalances(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 
 	// VK with repro-openai-b at weight=1 — LB should select this
@@ -593,6 +601,7 @@ func TestHTTPTransportPreHook_GenAINoRoutingRuleStillLoadBalances(t *testing.T) 
 // matches on the /bedrock path, governance load balancing does not override the routing-rule target
 // (regression test mirroring the GenAI fix for the Bedrock integration).
 func TestHTTPTransportPreHook_BedrockRoutingRulePreservesTarget(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook; ctx.Value(\"modelId\") cross-plugin handoff removed — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 
 	routingRule := configstoreTables.TableRoutingRule{
@@ -658,6 +667,7 @@ func TestHTTPTransportPreHook_BedrockRoutingRulePreservesTarget(t *testing.T) {
 // TestHTTPTransportPreHook_BedrockNoRoutingRuleStillLoadBalances verifies that when no routing rule
 // matches on the /bedrock path, governance load balancing still selects a provider from the VK pool.
 func TestHTTPTransportPreHook_BedrockNoRoutingRuleStillLoadBalances(t *testing.T) {
+	t.Skip("body-having branch migrated to PreRequestHook — rewrite as PreRequestHook test in Phase 3")
 	logger := NewMockLogger()
 
 	// VK with repro-openai-b at weight=1 — LB should select this
