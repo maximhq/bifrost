@@ -192,22 +192,10 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: schemas.ErrProviderNetworkError,
-						Error:   err,
-					},
-				}, noop
+				return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderDoRequest,
-					Error:   err,
-				},
-			}, noop
+			return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -1726,6 +1714,28 @@ func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 	errorType := schemas.RequestTimedOut
 	return &schemas.BifrostError{
 		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: message,
+			Type:    &errorType,
+			Error:   err,
+		},
+	}
+}
+
+// NewBifrostUpstreamConnectionError creates a standardized error for upstream
+// connectivity failures where Bifrost successfully dispatched to the provider
+// but the provider failed to return a response body (DNS lookup failure,
+// connection refused, connection reset before the first response byte, etc.).
+// Sets StatusCode to 502 (Bad Gateway) and Error.Type to ProviderConnectionFailed,
+// distinguishing these retriable upstream failures from genuine HTTP 400
+// client-side bad-request errors. Mirrors NewBifrostTimeoutError; IsBifrostError
+// is false because the upstream provider is the cause.
+func NewBifrostUpstreamConnectionError(message string, err error) *schemas.BifrostError {
+	statusCode := 502
+	errorType := schemas.ProviderConnectionFailed
+	return &schemas.BifrostError{
+		IsBifrostError: false,
 		StatusCode:     &statusCode,
 		Error: &schemas.ErrorField{
 			Message: message,
