@@ -840,6 +840,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelConfigCalendarAlignedColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4047,9 +4050,9 @@ func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// ensureVKWildcardModelConfig returns the ID of the VK-scoped all-models wildcard model
-// config, creating it if absent.
-func ensureVKWildcardModelConfig(tx *gorm.DB, vkID string, provider *string, calendarAligned bool, now time.Time) (string, error) {
+// ensureVKModelConfig returns the ID of the VK-scoped model config for the given
+// (vkID, provider) pair, creating it if absent.
+func ensureVKModelConfig(tx *gorm.DB, vkID string, provider *string, calendarAligned bool, now time.Time) (string, error) {
 	q := tx.Model(&tables.TableModelConfig{}).
 		Where("scope = ? AND scope_id = ? AND model_name = ?",
 			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
@@ -4060,7 +4063,7 @@ func ensureVKWildcardModelConfig(tx *gorm.DB, vkID string, provider *string, cal
 	}
 	var existing []tables.TableModelConfig
 	if err := q.Limit(1).Find(&existing).Error; err != nil {
-		return "", fmt.Errorf("failed to look up VK wildcard model config: %w", err)
+		return "", fmt.Errorf("failed to look up VK model config: %w", err)
 	}
 	if len(existing) > 0 {
 		return existing[0].ID, nil
@@ -4076,7 +4079,7 @@ func ensureVKWildcardModelConfig(tx *gorm.DB, vkID string, provider *string, cal
 		UpdatedAt:       now,
 	}
 	if err := tx.Create(&mc).Error; err != nil {
-		return "", fmt.Errorf("failed to create VK wildcard model config: %w", err)
+		return "", fmt.Errorf("failed to create VK model config: %w", err)
 	}
 	return mc.ID, nil
 }
@@ -4110,7 +4113,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 
 				// VK top-level governance -> all-providers wildcard.
 				if len(vk.Budgets) > 0 || vk.RateLimitID != nil {
-					mcID, err := ensureVKWildcardModelConfig(tx, vk.ID, nil, vk.CalendarAligned, now)
+					mcID, err := ensureVKModelConfig(tx, vk.ID, nil, vk.CalendarAligned, now)
 					if err != nil {
 						return err
 					}
@@ -4139,7 +4142,7 @@ func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db 
 						continue
 					}
 					provider := pc.Provider
-					mcID, err := ensureVKWildcardModelConfig(tx, vk.ID, &provider, vk.CalendarAligned, now)
+					mcID, err := ensureVKModelConfig(tx, vk.ID, &provider, vk.CalendarAligned, now)
 					if err != nil {
 						return err
 					}
