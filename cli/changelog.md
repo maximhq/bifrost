@@ -1,7 +1,3 @@
-# Bifrost CLI Changelog
-
-## v0.10.5
-
 - feat: adds an interactive tab command popup invoked by the `Ctrl+B` prefix — lists every open tab plus a trailing "New tab" action row, supports arrow keys / `h`/`j`/`k`/`l` navigation, `Enter` to switch or open a tab, number keys (`1`–`9`) for direct jumps, and `Esc`/`Ctrl+B` to resume
 - feat: adds `Ctrl+G` as a tmux-safe alternate prefix key, giving users a one-press tab selector inside tmux sessions that already consume `Ctrl+B`
 - feat: adds a Home-screen Ctrl+C quit confirmation — when no tabs are open, the first `Ctrl+C` shows a centered "Quit Bifrost?" prompt and the second press exits, preventing accidental termination
