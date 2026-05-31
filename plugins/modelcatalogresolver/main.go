@@ -120,7 +120,8 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 // ResolveProviderFromCatalog performs the deterministic, integration-aware provider pick
 // that PreRequestHook does, exposed for transport paths that can't run through
 // PreRequestHook (realtime client_secrets, WebRTC). Returns the selected provider plus the
-// full ordered candidate list. Returns ("", nil) when the catalog has no match for the model.
+// candidate list (post-allowlist when an allowlist is in effect). Returns ("", nil) when
+// the catalog has no match for the model, or when an allowlist excludes every candidate.
 //
 // The integration hint (BifrostContextKeyIntegrationType, when present and mapped) biases
 // the pick toward the integration's canonical provider if it is in the candidate set;
@@ -130,6 +131,12 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 // OpenAI SDK (BifrostContextKeyIsAzureUserAgent), schemas.Azure is preferred over
 // schemas.OpenAI when Azure is in the candidate list — the openai-format converters no
 // longer apply this default inline.
+//
+// When BifrostContextKeyRoutingAllowedProviders is set on ctx by an earlier plugin (e.g.,
+// governance VK config), the candidate list is intersected with the allowlist before
+// selection — emitting routing-engine logs visible to callers when the allowlist prunes
+// candidates. Side effect: routing-engine logs are written to ctx when allowlist filtering
+// is applied (nil ctx skips logging).
 func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
 	if catalog == nil || model == "" {
 		return "", nil
@@ -146,13 +153,68 @@ func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatal
 		return strings.Compare(string(a), string(b))
 	})
 
-	selected := providers[0]
 	var integrationType string
 	var isAzureUser bool
+	var allowed []schemas.ModelProvider
+	allowlistSet := false
 	if ctx != nil {
 		integrationType, _ = ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
 		isAzureUser, _ = ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool)
+		allowed, allowlistSet = ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	}
+
+	// Respect the routing-allowlist set by an earlier plugin (e.g., governance VK config):
+	// intersect catalog candidates with the allowlist so the VK's provider restrictions hold
+	// even when no earlier routing plugin set req.Provider. Emit observability logs for both
+	// the partial-prune and all-pruned cases — the two-level enforcement (cooperative here +
+	// hard core enforcement) is only useful if the cooperative pruning is visible in routing
+	// engine logs when it fires.
+	if allowlistSet {
+		preFilterCount := len(providers)
+		preFilterStrs := make([]string, preFilterCount)
+		for i, prov := range providers {
+			preFilterStrs[i] = string(prov)
+		}
+		allowedStrs := make([]string, len(allowed))
+		for i, prov := range allowed {
+			allowedStrs[i] = string(prov)
+		}
+		filtered := make([]schemas.ModelProvider, 0, preFilterCount)
+		excluded := make([]schemas.ModelProvider, 0)
+		for _, prov := range providers {
+			if slices.Contains(allowed, prov) {
+				filtered = append(filtered, prov)
+			} else {
+				excluded = append(excluded, prov)
+			}
+		}
+		if len(excluded) > 0 && ctx != nil {
+			filteredStrs := make([]string, len(filtered))
+			for i, prov := range filtered {
+				filteredStrs[i] = string(prov)
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"Catalog returned %d candidate provider(s) for model %s: [%s]; provider allowlist is [%s], so excluded %d; remaining providers are [%s]",
+				preFilterCount, model, strings.Join(preFilterStrs, ", "),
+				strings.Join(allowedStrs, ", "),
+				len(excluded),
+				strings.Join(filteredStrs, ", "),
+			))
+		}
+		providers = filtered
+		if len(providers) == 0 {
+			if ctx != nil {
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+					"Catalog returned %d candidate provider(s) for model %s: [%s]; provider allowlist [%s] excluded all of them; leaving req.Provider empty",
+					preFilterCount, model, strings.Join(preFilterStrs, ", "),
+					strings.Join(allowedStrs, ", "),
+				))
+			}
+			return "", nil
+		}
+	}
+
+	selected := providers[0]
 	if integrationType != "" {
 		if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
 			preferred := integrationDefault
