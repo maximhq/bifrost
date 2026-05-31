@@ -56,7 +56,7 @@ func (request *OpenAIImageGenerationRequest) ToBifrostImageGenerationRequest(ctx
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
@@ -74,7 +74,7 @@ func (request *OpenAIImageEditRequest) ToBifrostImageEditRequest(ctx *schemas.Bi
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostImageEditRequest{
 		Provider:  provider,
@@ -90,7 +90,7 @@ func (request *OpenAIImageVariationRequest) ToBifrostImageVariationRequest(ctx *
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostImageVariationRequest{
 		Provider:  provider,

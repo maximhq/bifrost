@@ -24,10 +24,6 @@ func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return s.matcher
 }
 
-func (s testWSHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
-	return nil
-}
-
 func (s testWSHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
 }
