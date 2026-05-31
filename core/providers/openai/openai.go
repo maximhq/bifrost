@@ -558,7 +558,9 @@ func HandleOpenAITextCompletionStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -1101,7 +1103,9 @@ func HandleOpenAIChatCompletionStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -1740,7 +1744,9 @@ func HandleOpenAIResponsesStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -2350,7 +2356,9 @@ func HandleOpenAISpeechStreamRequest(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -2791,7 +2799,9 @@ func HandleOpenAITranscriptionStreamRequest(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -3229,7 +3239,9 @@ func HandleOpenAIImageGenerationStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return
@@ -4467,7 +4479,9 @@ func HandleOpenAIImageEditStreamRequest(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		var drainedNonSSE bool
+		reader, drainedNonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drainedNonSSE {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, logger, postHookSpanFinalizer)
 			return

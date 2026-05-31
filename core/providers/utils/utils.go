@@ -996,18 +996,54 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 // DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
 // If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
 // non-line-delimited data. Returns true if body was drained (caller should skip scanner).
-// We intentionally do not touch valid SSE bodies here: callers must continue reading from
-// the reader returned by DecompressStreamBody, and draining SSE in this helper would consume
-// the stream before the scanner/manual event loop starts.
+//
+// Prefer DrainNonSSEStreamReader when the caller has already wrapped the body stream
+// (gzip, idle timeout, cancellation, etc.). This compatibility helper can only preserve
+// sniffed bytes by replacing resp.BodyStream directly.
 func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+	reader, drained := DrainNonSSEStreamReader(resp, resp.BodyStream())
+	if !drained && reader != nil {
+		resp.SetBodyStream(reader, -1)
+	}
+	return drained
+}
+
+// DrainNonSSEStreamReader is the reader-preserving variant of DrainNonSSEStreamResponse.
+// Some OpenAI-compatible services emit valid SSE frames without a text/event-stream
+// Content-Type. In that case, sniff a small prefix and keep the stream readable.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
+	if resp == nil || reader == nil {
+		return reader, true
+	}
+
 	ct := strings.ToLower(string(resp.Header.ContentType()))
 	if strings.Contains(ct, "text/event-stream") {
-		return false
+		return reader, false
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		_, _ = io.Copy(io.Discard, bodyStream)
+
+	var buf [512]byte
+	n, readErr := reader.Read(buf[:])
+	if n > 0 {
+		prefix := append([]byte(nil), buf[:n]...)
+		reader = io.MultiReader(bytes.NewReader(prefix), reader)
+		if looksLikeSSEStreamPrefix(prefix) {
+			return reader, false
+		}
 	}
-	return true
+
+	if readErr != nil && readErr != io.EOF {
+		return reader, true
+	}
+
+	_, _ = io.Copy(io.Discard, reader)
+	return reader, true
+}
+
+func looksLikeSSEStreamPrefix(prefix []byte) bool {
+	trimmed := bytes.TrimLeft(prefix, "\xef\xbb\xbf \t\r\n")
+	return bytes.HasPrefix(trimmed, []byte("data:")) ||
+		bytes.HasPrefix(trimmed, []byte("event:")) ||
+		bytes.HasPrefix(trimmed, []byte(":"))
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.

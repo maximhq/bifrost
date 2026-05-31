@@ -748,6 +748,49 @@ func TestDrainNonSSEStreamResponse_SSEDoesNotDrain(t *testing.T) {
 	}
 }
 
+func TestDrainNonSSEStreamReader_SSEWithoutContentTypeDoesNotDrain(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("event: response.completed\n" +
+		`data: {"type":"response.completed","sequence_number":1}` + "\n\n")
+	resp.SetBodyStream(bytes.NewReader(body), len(body))
+
+	reader, drained := DrainNonSSEStreamReader(resp, resp.BodyStream())
+	if drained {
+		t.Fatal("expected SSE-looking response without content type to remain readable")
+	}
+
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read SSE body after guard: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected SSE body to remain intact, got %q", string(remaining))
+	}
+}
+
+func TestDrainNonSSEStreamResponse_SSEWithoutContentTypeDoesNotDrain(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("data: hello\n\n")
+	resp.SetBodyStream(bytes.NewReader(body), len(body))
+
+	drained := DrainNonSSEStreamResponse(resp)
+	if drained {
+		t.Fatal("expected SSE-looking response without content type to remain readable")
+	}
+
+	remaining, err := io.ReadAll(resp.BodyStream())
+	if err != nil {
+		t.Fatalf("failed to read SSE body after guard: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected SSE body to remain intact, got %q", string(remaining))
+	}
+}
+
 func TestDrainNonSSEStreamResponse_NonSSEDrains(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
