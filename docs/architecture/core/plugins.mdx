@@ -68,8 +68,12 @@ Every plugin goes through a well-defined lifecycle that ensures proper resource 
 stateDiagram-v2
     [*] --> PluginInit: Plugin Creation
     PluginInit --> Registered: Add to BifrostConfig
-    Registered --> PreHookCall: Request Received
+    Registered --> PreRequestHookCall: Request Received (once per request)
 
+    PreRequestHookCall --> RouteDecided: Provider/Model resolved
+    PreRequestHookCall --> ShortCircuitError: Return Error
+
+    RouteDecided --> PreHookCall: Per-attempt phase
     PreHookCall --> ModifyRequest: Normal Flow
     PreHookCall --> ShortCircuitResponse: Return Response
     PreHookCall --> ShortCircuitError: Return Error
@@ -87,7 +91,7 @@ stateDiagram-v2
 
     FallbackCheck --> TryFallback: AllowFallbacks=true/nil
     FallbackCheck --> ResponseReady: AllowFallbacks=false
-    TryFallback --> PreHookCall: Next Provider
+    TryFallback --> PreHookCall: Next Provider (PreRequestHook NOT re-run)
 
     ModifyResponse --> ResponseReady: Modified
     RecoverError --> ResponseReady: Recovered
@@ -148,6 +152,12 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Request
+    Note over Bifrost,Plugin2: PreRequestHook phase (once per request, before any fan-out)
+    Bifrost->>Plugin1: PreRequestHook(request)
+    Plugin1-->>Bifrost: routed request
+    Bifrost->>Plugin2: PreRequestHook(request)
+    Plugin2-->>Bifrost: routed request
+    Note over Bifrost,Plugin2: PreLLMHook phase (per provider attempt)
     Bifrost->>Plugin1: PreLLMHook(request)
     Plugin1-->>Bifrost: modified request
     Bifrost->>Plugin2: PreLLMHook(request)
@@ -163,9 +173,19 @@ sequenceDiagram
 
 **Execution Order:**
 
-1. **PreHooks:** Execute in registration order (1 → 2 → N)
-2. **Provider Call:** If no short-circuit occurred
-3. **PostHooks:** Execute in reverse order (N → 2 → 1)
+1. **PreRequestHooks** (per-request, registration order 1 → 2 → N): the **routing phase**. Plugins decide which provider/model the request goes to. Mutations to `req.Provider`/`req.Model`/`req.Fallbacks` commit to the shared request and are observed by every subsequent phase and every fallback attempt. There is no short-circuit. Plugin errors are non-blocking — logged as warnings and the pipeline continues to the next plugin. After all PreRequestHooks have run, the core validates `req.Provider`: an unresolved provider returns a 400 to the caller.
+2. **PreLLMHooks** (per attempt, registration order 1 → 2 → N): pre-call transforms — caching, validation, content modification. May short-circuit with a synthetic response.
+3. **Provider Call:** if no short-circuit occurred.
+4. **PostLLMHooks** (per attempt, reverse order N → 2 → 1): response transforms — error recovery, logging, observability.
+
+**Per-request vs per-attempt:** `PreRequestHook` runs **exactly once** at the top of `handleRequest` / `handleStreamRequest`, before any provider call. `PreLLMHook` and `PostLLMHook` run **once per provider attempt** — so if the primary call fails and a fallback fires, `PreLLMHook` and `PostLLMHook` run again on the fallback, but `PreRequestHook` does **not**. This is what makes `PreRequestHook` the right place for routing decisions: the decision is committed once and applies uniformly to the primary attempt and every fallback.
+
+<Info>
+**When to use which hook:**
+- **PreRequestHook** → routing decisions (governance rules, load balancing, model-catalog provider resolution). Mutations to `req.Provider`/`req.Model`/`req.Fallbacks` stick.
+- **PreLLMHook** → per-attempt transforms (semantic-cache lookups, request validation, content rewrites). Mutations to provider/model are intentionally no-ops here.
+- **PostLLMHook** → per-attempt response handling (caching writes, logging, error recovery).
+</Info>
 
 #### **Short-Circuit Response Flow (Cache Hit)**
 
@@ -178,6 +198,7 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Request
+    Note over Bifrost,Cache: PreRequestHook phase (routing decided)
     Bifrost->>Auth: PreLLMHook(request)
     Auth-->>Bifrost: modified request
     Bifrost->>Cache: PreLLMHook(request)
@@ -203,6 +224,7 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Stream Request
+    Note over Bifrost,Plugin2: PreRequestHook phase (routing decided)
     Bifrost->>Plugin1: PreLLMHook(request)
     Plugin1-->>Bifrost: modified request
     Bifrost->>Plugin2: PreLLMHook(request)
