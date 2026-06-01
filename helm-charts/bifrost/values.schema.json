@@ -1556,6 +1556,75 @@
                 },
                 "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
+            },
+            "complexityAnalyzerConfig": {
+              "type": ["object", "null"],
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "properties": {
+                "tier_boundaries": {
+                  "type": "object",
+                  "properties": {
+                    "simple_medium": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    },
+                    "medium_complex": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    },
+                    "complex_reasoning": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "exclusiveMaximum": 1
+                    }
+                  },
+                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "additionalProperties": false
+                },
+                "keywords": {
+                  "type": "object",
+                  "properties": {
+                    "code_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "reasoning_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "technical_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "simple_keywords": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["tier_boundaries", "keywords"],
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

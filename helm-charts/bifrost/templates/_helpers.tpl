@@ -487,6 +487,9 @@ false
 {{- if .Values.bifrost.governance.pricingOverrides }}
 {{- $_ := set $governance "pricing_overrides" .Values.bifrost.governance.pricingOverrides }}
 {{- end }}
+{{- if .Values.bifrost.governance.complexityAnalyzerConfig }}
+{{- $_ := set $governance "complexity_analyzer_config" .Values.bifrost.governance.complexityAnalyzerConfig }}
+{{- end }}
 {{- if .Values.bifrost.governance.authConfig }}
 {{- $authConfig := dict }}
 {{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.usernameKey }}
@@ -509,7 +512,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.complexity_analyzer_config $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
