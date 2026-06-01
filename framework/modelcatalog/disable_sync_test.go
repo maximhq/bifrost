@@ -47,18 +47,34 @@ func TestInit_DisableSync_NoHTTPCall(t *testing.T) {
 	assert.Equal(t, 0, len(mc.pricingData))
 }
 
-// TestSync_RuntimeToggleViaAtomic verifies the atomic flag round-trips so that
-// runtime config reloads (UpdateSyncConfig) take effect on the next sync entry
-// point — the path flagged by the PR review for not being honored at runtime.
+// TestSync_RuntimeToggleViaAtomic verifies the atomic flag is honored at
+// runtime: flipping it on suppresses HTTP fetches, flipping it back off
+// resumes them. Uses loadPricingIntoMemoryFromURL / loadModelParametersIntoMemoryFromURL
+// (the no-configstore paths) so the test does not need a database.
 func TestSync_RuntimeToggleViaAtomic(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
 	mc := NewTestCatalog(nil)
 	mc.logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
+	mc.pricingURL = srv.URL
+	mc.modelParametersURL = srv.URL
 
+	// Disabled → no HTTP, no work.
 	mc.disableSync.Store(true)
-	require.NoError(t, mc.syncPricing(context.Background()), "disabled syncPricing must be a no-op nil")
-	require.NoError(t, mc.syncModelParameters(context.Background()), "disabled syncModelParameters must be a no-op nil")
+	require.NoError(t, mc.loadPricingIntoMemoryFromURL(context.Background()))
+	require.NoError(t, mc.loadModelParametersIntoMemoryFromURL(context.Background()))
+	require.Equal(t, int64(0), atomic.LoadInt64(&hits), "disabled must skip HTTP")
 
+	// Re-enabled → HTTP fires for both fetchers.
 	mc.disableSync.Store(false)
-	assert.False(t, mc.disableSync.Load(), "runtime toggle off must be observable")
+	require.NoError(t, mc.loadPricingIntoMemoryFromURL(context.Background()))
+	require.NoError(t, mc.loadModelParametersIntoMemoryFromURL(context.Background()))
+	assert.Equal(t, int64(2), atomic.LoadInt64(&hits), "re-enable must resume HTTP fetches")
 }
 
