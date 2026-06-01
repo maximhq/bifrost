@@ -67,8 +67,9 @@ type CodeModeDependencies struct {
 	// LogMutex protects concurrent access to logs during code execution
 	LogMutex *sync.Mutex
 
-	// OAuth2Provider handles per-user OAuth token lookup and flow initiation
-	OAuth2Provider schemas.OAuth2Provider
+	// CredentialStore resolves per-call credentials (Bearer tokens, headers)
+	// and signals whether a client requires an ephemeral upstream connection.
+	CredentialStore schemas.MCPCredentialStore
 }
 
 // DefaultCodeModeConfig returns the default configuration for CodeMode.

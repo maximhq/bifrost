@@ -1,2 +1,1 @@
-- chore: upgraded core to v1.5.11 and framework to v1.3.11
-- chore: dependency and AWS SDK security updates (#3461)
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

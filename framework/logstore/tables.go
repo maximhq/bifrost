@@ -126,6 +126,7 @@ type SearchStats struct {
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
@@ -201,9 +202,9 @@ type Log struct {
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
-	ClusterNodeID  *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
-	BudgetIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
-	RateLimitIDs   *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
+	ClusterNodeID *string `gorm:"type:varchar(255)" json:"cluster_node_id,omitempty"`
+	BudgetIDs     *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
+	RateLimitIDs  *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -246,8 +247,8 @@ type Log struct {
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
-	BudgetIDsParsed    []string `gorm:"-" json:"budget_ids,omitempty"`
-	RateLimitIDsParsed []string `gorm:"-" json:"rate_limit_ids,omitempty"`
+	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -553,7 +554,8 @@ func (l *Log) SerializeFields() error {
 			l.Metadata = nil
 			l.MetadataParsed = nil
 		} else {
-			l.Metadata = new(string(data))
+			metadata := string(data)
+			l.Metadata = &metadata
 		}
 	}
 
@@ -561,7 +563,8 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.BudgetIDsParsed); err != nil {
 			return err
 		} else {
-			l.BudgetIDs = new(string(data))
+			budgetIDs := string(data)
+			l.BudgetIDs = &budgetIDs
 		}
 	}
 
@@ -569,7 +572,8 @@ func (l *Log) SerializeFields() error {
 		if data, err := sonic.Marshal(l.RateLimitIDsParsed); err != nil {
 			return err
 		} else {
-			l.RateLimitIDs = new(string(data))
+			rateLimitIDs := string(data)
+			l.RateLimitIDs = &rateLimitIDs
 		}
 	}
 
@@ -1540,6 +1544,76 @@ type UserRankingResult struct {
 	Rankings []UserRankingWithTrend `json:"rankings"`
 }
 
+// RankingDimension is the column used for grouping in dimension rankings.
+type RankingDimension string
+
+const (
+	RankingDimensionTeam         RankingDimension = "team"
+	RankingDimensionCustomer     RankingDimension = "customer"
+	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionUser         RankingDimension = "user"
+)
+
+var ValidRankingDimensions = map[RankingDimension]bool{
+	RankingDimensionTeam:         true,
+	RankingDimensionCustomer:     true,
+	RankingDimensionBusinessUnit: true,
+	RankingDimensionUser:         true,
+}
+
+type dimensionColumnDef struct {
+	IDCol   string
+	NameCol string
+}
+
+var dimensionColumns = map[RankingDimension]dimensionColumnDef{
+	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
+	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
+	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+}
+
+func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
+	def, exists := dimensionColumns[d]
+	return def.IDCol, def.NameCol, exists
+}
+
+type DimensionRankingEntry struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name,omitempty"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+type DimensionRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+}
+
+type DimensionRankingWithTrend struct {
+	DimensionRankingEntry
+	Trend DimensionRankingTrend `json:"trend"`
+}
+
+type DimensionRankingResult struct {
+	Rankings  []DimensionRankingWithTrend `json:"rankings"`
+	Dimension RankingDimension            `json:"dimension"`
+}
+
+// NodeUsageCursor identifies the last log row included in a node usage scan.
+// The initial scan uses Timestamp + LogID because each ghost has a timestamp
+// lower bound. Once rows written with IncNumber are seen, subsequent scans use
+// IncNumber because it is assigned by the database at insert time and therefore
+// does not skip late async log writes.
+type NodeUsageCursor struct {
+	Timestamp time.Time `json:"timestamp"`
+	LogID     string    `json:"log_id"`
+	IncNumber *int64    `json:"inc_number,omitempty"`
+}
+
 // NodeUsageAggregate represents aggregated usage for a specific node from the logs table,
 // broken down by the budget and rate-limit IDs that each log entry was tagged with.
 // This ensures usage is attributed to the correct governance resource rather than
@@ -1548,4 +1622,8 @@ type NodeUsageAggregate struct {
 	BudgetCosts       map[string]float64 `json:"budget_costs"`        // budget_id -> cumulative cost
 	RateLimitRequests map[string]int64   `json:"rate_limit_requests"` // rate_limit_id -> successful request count
 	RateLimitTokens   map[string]int64   `json:"rate_limit_tokens"`   // rate_limit_id -> total tokens
+	RowCount          int                `json:"row_count"`           // number of log rows included in the aggregate
+	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
+	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
+	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
 }

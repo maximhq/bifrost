@@ -31,13 +31,10 @@ const (
 	// does not block other pods from running their (fast) migrations on startup.
 	indexAdvisoryLockKey = 1000002
 
-	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
-	// refreshes across cluster nodes so only one replica refreshes at a time.
+	// matviewRefreshAdvisoryLockKey serializes materialized view maintenance
+	// across cluster nodes. Startup create/repair and periodic refresh both use
+	// this key so they never overlap.
 	matviewRefreshAdvisoryLockKey = 1000005
-
-	// matviewEnsureAdvisoryLockKey serializes startup materialized view
-	// creation/repair without contending with the periodic refresh lock.
-	matviewEnsureAdvisoryLockKey = 1000006
 
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second
@@ -331,6 +328,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddClusterGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddLogIncNumberColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterUsersMatView(ctx, db); err != nil {
 		return err
 	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
@@ -1697,7 +1700,7 @@ func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) 
           FROM batch
           WHERE mcp_tool_logs.ctid = batch.ctid
         `); err != nil {
-				return err
+					return err
 				}
 			} else {
 				result := tx.Exec("UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''")
@@ -2491,6 +2494,16 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_cluster_node_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
 	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_usage ON logs(cluster_node_id, status, timestamp, id) WHERE cluster_node_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_cluster_node_inc_usage",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -3231,6 +3244,92 @@ func migrationAddClusterGovernanceColumns(ctx context.Context, db *gorm.DB) erro
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding cluster governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLogIncNumberColumn adds a database-assigned monotonic cursor to
+// logs. Existing rows remain NULL; new rows receive values from a PostgreSQL
+// sequence at insert time. Ghost reconciliation uses this column after its
+// initial timestamp query to avoid missing rows flushed late by the async log
+// writer.
+func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_inc_number_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.AddColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("CREATE SEQUENCE IF NOT EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to create logs_inc_number_seq: %w", err)
+				}
+				if err := tx.Exec("ALTER SEQUENCE logs_inc_number_seq OWNED BY logs.inc_number").Error; err != nil {
+					return fmt.Errorf("failed to set logs_inc_number_seq ownership: %w", err)
+				}
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number SET DEFAULT nextval('logs_inc_number_seq')").Error; err != nil {
+					return fmt.Errorf("failed to set inc_number default: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("ALTER TABLE logs ALTER COLUMN inc_number DROP DEFAULT").Error; err != nil {
+					return fmt.Errorf("failed to drop inc_number default: %w", err)
+				}
+				if err := tx.Exec("DROP SEQUENCE IF EXISTS logs_inc_number_seq").Error; err != nil {
+					return fmt.Errorf("failed to drop logs_inc_number_seq: %w", err)
+				}
+			}
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "inc_number") {
+				if err := migrator.DropColumn(&Log{}, "IncNumber"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding log inc_number column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterUsersMatView drops mv_filter_users so ensureMatViews
+// recreates it with the corrected WHERE clause that excludes rows without a
+// user_name, preventing duplicate entries where name falls back to user_id.
+func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_users_matview",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop mv_filter_users: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter users matview: %s", err.Error())
 	}
 	return nil
 }

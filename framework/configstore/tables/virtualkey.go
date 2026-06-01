@@ -24,12 +24,13 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID            uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID  string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider      string            `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        *float64          `json:"weight"`
-	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	ID                uint                `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID      string              `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider          string              `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight            *float64            `json:"weight"`
+	AllowedModels     schemas.WhiteList   `gorm:"type:text;serializer:json" json:"allowed_models"`         // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels schemas.BlackList   `gorm:"type:text;serializer:json" json:"blacklisted_models"`     // ["*"] blocks all models; empty blocks none
+	AllowAllKeys      bool                `gorm:"default:false" json:"allow_all_keys"`                     // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
 	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
@@ -77,30 +78,39 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BeforeSave validates WhiteList fields before GORM persists the record.
+// BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_models: %w", err)
 	}
+	if err := pc.BlacklistedModels.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models: %w", err)
+	}
 	return nil
 }
 
-// MarshalJSON custom marshaller to ensure AllowedModels is always an array (never null)
+// MarshalJSON custom marshaller to ensure AllowedModels and BlacklistedModels are always arrays (never null)
 func (pc TableVirtualKeyProviderConfig) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKeyProviderConfig
 
-	// Ensure AllowedModels is an empty slice instead of nil
+	// Ensure arrays are empty slices instead of nil
 	allowedModels := pc.AllowedModels
 	if allowedModels == nil {
 		allowedModels = []string{}
 	}
+	blacklistedModels := pc.BlacklistedModels
+	if blacklistedModels == nil {
+		blacklistedModels = []string{}
+	}
 
 	return json.Marshal(&struct {
 		Alias
-		AllowedModels []string `json:"allowed_models"`
+		AllowedModels     []string `json:"allowed_models"`
+		BlacklistedModels []string `json:"blacklisted_models"`
 	}{
-		Alias:         Alias(pc),
-		AllowedModels: allowedModels,
+		Alias:             Alias(pc),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
 	})
 }
 
@@ -116,7 +126,6 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil
-			key.AzureAPIVersion = nil
 			key.AzureClientID = nil
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil
@@ -205,11 +214,10 @@ type TableVirtualKey struct {
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
-	// Foreign key relationships (mutually exclusive: TeamID, CustomerID, or AccessProfileID)
-	TeamID          *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID      *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	AccessProfileID *uint   `gorm:"index" json:"access_profile_id,omitempty"`
-	RateLimitID     *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
+	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
@@ -225,6 +233,8 @@ type TableVirtualKey struct {
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
+
+	CreatedByUserID *string `gorm:"type:varchar(255);index:idx_virtual_key_created_by" json:"created_by_user_id,omitempty"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
@@ -244,22 +254,13 @@ func (vk *TableVirtualKey) IsActiveValue() bool {
 	return *vk.IsActive
 }
 
-// BeforeSave is a GORM hook that enforces mutual exclusion among team, customer, and
-// access profile attachments, computes a SHA-256 hash of the plaintext value for indexed
-// lookups, and encrypts the virtual key value before writing to the database.
+// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
+// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
+// value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
-	entityCount := 0
-	if vk.TeamID != nil {
-		entityCount++
-	}
-	if vk.CustomerID != nil {
-		entityCount++
-	}
-	if vk.AccessProfileID != nil && *vk.AccessProfileID > 0 {
-		entityCount++
-	}
-	if entityCount > 1 {
-		return fmt.Errorf("virtual key can only be attached to one of: team, customer, or access profile")
+	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
+	if vk.TeamID != nil && vk.CustomerID != nil {
+		return fmt.Errorf("virtual key cannot belong to both team and customer")
 	}
 
 	// Hash must be computed before encryption (from plaintext value)

@@ -14,6 +14,57 @@ virtual-keys:
         schema:
           type: boolean
           default: false
+      - name: limit
+        in: query
+        description: Maximum number of virtual keys to return
+        schema:
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of virtual keys to skip
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Case-insensitive search by virtual key name
+        schema:
+          type: string
+      - name: customer_id
+        in: query
+        description: Filter virtual keys by customer ID
+        schema:
+          type: string
+      - name: team_id
+        in: query
+        description: Filter virtual keys by team ID
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        description: Field to sort by
+        schema:
+          type: string
+          enum: [name, budget_spent, created_at, status]
+      - name: order
+        in: query
+        description: Sort order
+        schema:
+          type: string
+          enum: [asc, desc]
+      - name: export
+        in: query
+        description: If true, enables export pagination limits
+        schema:
+          type: boolean
+          default: false
+      - name: exclude_access_profile_managed_virtual
+        in: query
+        description: If true, excludes virtual keys managed by access profiles
+        schema:
+          type: boolean
+          default: false
     responses:
       '200':
         description: Successful response
@@ -53,7 +104,8 @@ virtual-keys-quota:
     operationId: getVirtualKeyQuota
     summary: Get virtual key quota
     description: |
-      Returns the budget and rate limit quota for the authenticated virtual key.
+      Returns the overall budget and rate limit quota for the authenticated virtual key,
+      as well as per-provider budgets and rate limits.
       This is a self-service endpoint - no admin authentication required.
       The virtual key value itself (provided via header) is the credential.
     tags:
@@ -108,6 +160,8 @@ virtual-keys-by-id:
           application/json:
             schema:
               type: object
+              required:
+                - virtual_key
               properties:
                 virtual_key:
                   $ref: '../../schemas/management/governance.yaml#/VirtualKey'

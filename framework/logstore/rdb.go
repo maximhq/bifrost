@@ -284,13 +284,27 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 
 // Create inserts a new log entry into the database.
 func (s *RDBLogStore) Create(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Create(entry).Error
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Create(entry).Error
 }
 
 // CreateIfNotExists inserts a new log entry only if it doesn't already exist.
 // Uses ON CONFLICT DO NOTHING to handle duplicate key errors gracefully.
 func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if entry == nil {
+		return fmt.Errorf("log entry is nil")
+	}
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(entry).Error
@@ -302,7 +316,11 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	db := s.db.WithContext(ctx)
+	if s.db.Dialector.Name() == "postgres" {
+		db = db.Omit("inc_number")
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(&entries).Error
@@ -352,26 +370,39 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	})
 }
 
-// GetNodeUsageSince returns per-budget cost and per-rate-limit request/token usage
-// for a specific cluster node from a given timestamp onwards. Usage is attributed
-// to the exact budget and rate-limit IDs stored in each log entry, so callers get
-// correctly scoped breakdowns rather than a single aggregate.
-func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, since time.Time) (*NodeUsageAggregate, error) {
-	// Fetch only the columns needed for attribution. The row count is bounded by
-	// the ghost node's activity since its LastMessageAt, typically a small window.
+// GetNodeUsageAfter returns per-budget cost and per-rate-limit request/token usage
+// for a specific cluster node after a stable cursor. The first scan uses the
+// timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
+// inc_number values are observed, subsequent scans use inc_number so rows flushed
+// late by the async log writer are not skipped.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
 	type logRow struct {
-		Cost         float64 `gorm:"column:cost"`
-		TotalTokens  int64   `gorm:"column:total_tokens"`
-		BudgetIDs    *string `gorm:"column:budget_ids"`
-		RateLimitIDs *string `gorm:"column:rate_limit_ids"`
+		ID           string    `gorm:"column:id"`
+		Timestamp    time.Time `gorm:"column:timestamp"`
+		IncNumber    *int64    `gorm:"column:inc_number"`
+		Cost         float64   `gorm:"column:cost"`
+		TotalTokens  int64     `gorm:"column:total_tokens"`
+		BudgetIDs    *string   `gorm:"column:budget_ids"`
+		RateLimitIDs *string   `gorm:"column:rate_limit_ids"`
 	}
 	var rows []logRow
 
-	err := s.db.WithContext(ctx).Model(&Log{}).
+	query := s.db.WithContext(ctx).Model(&Log{}).
 		Where("cluster_node_id = ?", nodeID).
-		Where("timestamp >= ?", since).
-		Where("status = ?", "success").
-		Select("COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Where("status = ?", "success")
+	orderBy := "timestamp ASC, id ASC"
+	if cursor.IncNumber != nil {
+		query = query.Where("inc_number > ?", *cursor.IncNumber)
+		orderBy = "inc_number ASC"
+	} else if cursor.LogID != "" {
+		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
+	} else {
+		query = query.Where("timestamp > ?", cursor.Timestamp)
+	}
+
+	err := query.
+		Select("id, timestamp, inc_number, COALESCE(cost, 0) as cost, COALESCE(total_tokens, 0) as total_tokens, budget_ids, rate_limit_ids").
+		Order(orderBy).
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node usage aggregate: %w", err)
@@ -381,8 +412,17 @@ func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, sinc
 	rateLimitRequests := make(map[string]int64)
 	rateLimitTokens := make(map[string]int64)
 
+	maxCursor := cursor // preserve incoming cursor so zero rows don't rewind
 	for i := range rows {
 		row := &rows[i]
+		if row.Timestamp.After(maxCursor.Timestamp) || (row.Timestamp.Equal(maxCursor.Timestamp) && row.ID > maxCursor.LogID) {
+			maxCursor.Timestamp = row.Timestamp
+			maxCursor.LogID = row.ID
+		}
+		if row.IncNumber != nil && (maxCursor.IncNumber == nil || *row.IncNumber > *maxCursor.IncNumber) {
+			incNumber := *row.IncNumber
+			maxCursor.IncNumber = &incNumber
+		}
 
 		// Attribute cost to each budget that governed this request.
 		if row.BudgetIDs != nil && *row.BudgetIDs != "" {
@@ -424,6 +464,10 @@ func (s *RDBLogStore) GetNodeUsageSince(ctx context.Context, nodeID string, sinc
 		BudgetCosts:       budgetCosts,
 		RateLimitRequests: rateLimitRequests,
 		RateLimitTokens:   rateLimitTokens,
+		RowCount:          len(rows),
+		MaxTimestamp:      maxCursor.Timestamp,
+		MaxLogID:          maxCursor.LogID,
+		NextCursor:        maxCursor,
 	}, nil
 }
 
@@ -1950,6 +1994,142 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	}
 
 	return &UserRankingResult{Rankings: rankings}, nil
+}
+
+// GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
+func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
+	}
+
+	var nameExpr string
+	if nameCol != "" {
+		nameExpr = fmt.Sprintf("MAX(%s) as name", nameCol)
+	} else {
+		nameExpr = "'' as name"
+	}
+
+	selectClause := fmt.Sprintf(`
+		%s as id,
+		%s,
+		COUNT(*) as total_requests,
+		SUM(total_tokens) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost
+	`, idCol, nameExpr)
+
+	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery = s.applyFilters(currentQuery, filters)
+	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+	var currentResults []struct {
+		ID            string          `gorm:"column:id"`
+		Name          string          `gorm:"column:name"`
+		TotalRequests int64           `gorm:"column:total_requests"`
+		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+
+	if err := currentQuery.
+		Select(selectClause).
+		Group(idCol).
+		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
+		Find(&currentResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
+	}
+
+	if len(currentResults) == 0 {
+		return &DimensionRankingResult{
+			Rankings:  []DimensionRankingWithTrend{},
+			Dimension: dimension,
+		}, nil
+	}
+
+	prevMap := make(map[string]DimensionRankingEntry)
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+
+		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery = s.applyFilters(prevQuery, prevFilters)
+		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+		if len(currentResults) > 0 {
+			ids := make([]string, len(currentResults))
+			for i, r := range currentResults {
+				ids[i] = r.ID
+			}
+			prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", idCol), ids)
+		}
+
+		var prevResults []struct {
+			ID            string          `gorm:"column:id"`
+			TotalRequests int64           `gorm:"column:total_requests"`
+			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+		}
+
+		prevSelect := fmt.Sprintf(`
+			%s as id,
+			COUNT(*) as total_requests,
+			SUM(total_tokens) as total_tokens,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, idCol)
+
+		if err := prevQuery.
+			Select(prevSelect).
+			Group(idCol).
+			Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+
+		for _, r := range prevResults {
+			prevMap[r.ID] = DimensionRankingEntry{
+				ID:            r.ID,
+				TotalRequests: r.TotalRequests,
+				TotalTokens:   r.TotalTokens.Int64,
+				TotalCost:     r.TotalCost.Float64,
+			}
+		}
+	}
+
+	rankings := make([]DimensionRankingWithTrend, len(currentResults))
+	for i, r := range currentResults {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          r.Name,
+			TotalRequests: r.TotalRequests,
+			TotalTokens:   r.TotalTokens.Int64,
+			TotalCost:     r.TotalCost.Float64,
+		}
+
+		var trend DimensionRankingTrend
+		if prev, exists := prevMap[r.ID]; exists && prev.TotalRequests > 0 {
+			trend.HasPreviousPeriod = true
+			trend.RequestsTrend = pctChange(float64(prev.TotalRequests), float64(r.TotalRequests))
+			trend.TokensTrend = pctChange(float64(prev.TotalTokens), float64(r.TotalTokens.Int64))
+			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
+		}
+
+		rankings[i] = DimensionRankingWithTrend{
+			DimensionRankingEntry: entry,
+			Trend:                 trend,
+		}
+	}
+
+	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
 }
 
 // pctChange computes the percentage change from old to new.

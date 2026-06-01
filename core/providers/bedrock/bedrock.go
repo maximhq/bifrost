@@ -191,7 +191,8 @@ func isStreamTransportError(err error) bool {
 // retryableBedrockExceptions maps AWS Bedrock EventStream exception types to
 // their HTTP status code equivalents. These exceptions are transient and should
 // be retried — the retry gate in executeRequestWithRetries checks StatusCode
-// against retryableStatusCodes (429, 500, 502, 503, 504).
+// against transientServerStatusCodes (500, 502, 503, 504) for same-key retries
+// and perKeyFailureStatusCodes (429) for rotation-triggered retries.
 var retryableBedrockExceptions = map[string]int{
 	"throttlingException":         429,
 	"serviceUnavailableException": 503,
@@ -930,6 +931,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "invoke-with-response-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -964,7 +966,6 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		defer stopCancellation()
 
 		// Process AWS Event Stream format
-		startTime := time.Now()
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
 
@@ -1020,7 +1021,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 						// Retryable AWS exceptions must not set IsBifrostError:true — that would
 						// bypass the retry gate in executeRequestWithRetries. Instead emit
 						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retryableStatusCodes gate handles the retry.
+						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
 						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
 								IsBifrostError: false,
@@ -1166,6 +1167,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1204,7 +1206,6 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
-		startTime := time.Now()
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
@@ -1221,7 +1222,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		var structuredOutputBuilder strings.Builder
 		var isAccumulatingStructuredOutput bool
 
-		streamState := NewBedrockStreamState()
+		streamState := NewBedrockStreamStateWithContext(ctx)
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1272,7 +1273,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						// Retryable AWS exceptions must not set IsBifrostError:true — that would
 						// bypass the retry gate in executeRequestWithRetries. Instead emit
 						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retryableStatusCodes gate handles the retry.
+						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
 						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
 								IsBifrostError: false,
@@ -1546,6 +1547,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, bifrostErr
 	}
 
+	startTime := time.Now()
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1582,11 +1584,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		// Process AWS Event Stream format
 		usage := &schemas.ResponsesResponseUsage{}
+		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions
 		streamState := acquireBedrockResponsesStreamState()
 		streamState.Model = &request.Model
+		streamState.Ctx = ctx
 		defer releaseBedrockResponsesStreamState(streamState)
 
 		// Check for structured output mode - if set, we need to intercept tool calls
@@ -1598,7 +1602,6 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		var isAccumulatingStructuredOutput bool
 
 		// Process AWS Event Stream format using proper decoder
-		startTime := time.Now()
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
@@ -1616,7 +1619,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				if err == io.EOF {
 					// End of stream - finalize any open items
-					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage)
+					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
@@ -1675,7 +1678,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						// Retryable AWS exceptions must not set IsBifrostError:true — that would
 						// bypass the retry gate in executeRequestWithRetries. Instead emit
 						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retryableStatusCodes gate handles the retry.
+						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
 						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
 								IsBifrostError: false,
@@ -1697,6 +1700,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 					return
+				}
+
+				if streamEvent.Trace != nil {
+					streamTrace = streamEvent.Trace
 				}
 
 				if streamEvent.Usage != nil {
@@ -1751,6 +1758,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							streamState.UsedStructuredOutputTool = true
 							continue
 						}
 					}

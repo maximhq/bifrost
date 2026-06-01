@@ -330,7 +330,7 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(schemas.Anthropic, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+			return provider.listModelsByKey(ctx, schemas.Key{Models: schemas.WhiteList{"*"}}, request)
 		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
@@ -631,6 +631,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -713,7 +714,6 @@ func HandleAnthropicChatCompletionStreaming(
 
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
@@ -726,6 +726,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string
 		var isAccumulatingStructuredOutput bool
+		var consumedStructuredOutput bool // true once the SO tool block has been fully streamed as content
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
@@ -825,9 +826,11 @@ func HandleAnthropicChatCompletionStreaming(
 				mappedReason := ConvertAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 
-				// Override finish reason for structured output
-				// When structured output is used, tool_use stop reason should appear as "stop" to the client
-				if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+				// Override finish reason for structured output only when the SO tool
+				// was consumed into content AND no real tool calls were also emitted.
+				// streamState.nextToolCallIndex > 0 means real tool_use blocks were seen.
+				if consumedStructuredOutput && streamState.nextToolCallIndex == 0 &&
+					*finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 					stopReason := string(schemas.BifrostFinishReasonStop)
 					finishReason = &stopReason
 				}
@@ -884,6 +887,7 @@ func HandleAnthropicChatCompletionStreaming(
 				// Check for content block stop
 				if event.Type == AnthropicStreamEventTypeContentBlockStop && isAccumulatingStructuredOutput {
 					isAccumulatingStructuredOutput = false
+					consumedStructuredOutput = true
 					continue
 				}
 			}
@@ -1103,6 +1107,7 @@ func HandleAnthropicResponsesStream(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -1186,7 +1191,6 @@ func HandleAnthropicResponsesStream(
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format

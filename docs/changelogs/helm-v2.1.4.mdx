@@ -1,0 +1,17 @@
+---
+title: "v2.1.4"
+description: "Helm v2.1.4 changelog - 2026-04-24"
+---
+
+<Update label="Bifrost Helm" description="v2.1.4">
+
+## Changelog
+
+- Added stricter cluster discovery validation in Helm templates:
+  - Require `bifrost.cluster.discovery.serviceName` when `bifrost.cluster.discovery.type` is `consul`, `etcd`, or `udp`.
+  - For `udp` discovery, require both:
+    - `bifrost.cluster.discovery.udpBroadcastPort`
+    - `bifrost.cluster.discovery.allowedAddressSpace`
+- Added/updated template fail-fast errors so invalid discovery config is rejected at render time instead of failing later at runtime.
+
+</Update>

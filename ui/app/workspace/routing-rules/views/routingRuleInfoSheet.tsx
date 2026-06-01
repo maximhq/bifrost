@@ -1,3 +1,4 @@
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DottedSeparator } from "@/components/ui/separator";
@@ -10,6 +11,7 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/routingRules";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -20,6 +22,9 @@ interface Props {
 	rule: RoutingRule | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -234,36 +239,53 @@ function FallbackChain({ fallbacks }: { fallbacks: string[] }) {
 
 // ─── main sheet ──────────────────────────────────────────────────────────────
 
-export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
+export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, hasPrev = false, hasNext = false }: Props) {
 	const targets = rule?.targets ?? [];
 	const fallbacks = rule?.fallbacks ?? [];
 	const hasQuery = rule?.query && (rule.query.rules?.length ?? 0) > 0;
 	const scopeName = useScopeName(rule?.scope ?? "global", rule?.scope_id);
+
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
+	});
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl" data-testid="routing-rule-info">
 				{rule && (
 					<>
-						<SheetHeader className="flex flex-col items-start gap-1 p-0">
-							<div className="flex w-full flex-wrap items-center gap-2">
-								<SheetTitle className="text-base">{rule.name}</SheetTitle>
-								<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
-								{rule.chain_rule && (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Badge variant="outline" className="cursor-default gap-1">
-												<GitMerge className="h-3 w-3" />
-												Chain Rule
-											</Badge>
-										</TooltipTrigger>
-										<TooltipContent className="max-w-64">
-											After this rule matches, routing rules are re-evaluated using the resolved provider/model as the new context.
-										</TooltipContent>
-									</Tooltip>
-								)}
+						<SheetHeader className="flex flex-row items-start justify-between gap-1 p-0">
+							<div className="flex flex-col items-start gap-1">
+								<div className="flex w-full flex-wrap items-center gap-2">
+									<SheetTitle className="text-base">{rule.name}</SheetTitle>
+									<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
+									{rule.chain_rule && (
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Badge variant="outline" className="cursor-default gap-1">
+													<GitMerge className="h-3 w-3" />
+													Chain Rule
+												</Badge>
+											</TooltipTrigger>
+											<TooltipContent className="max-w-64">
+												After this rule matches, routing rules are re-evaluated using the resolved provider/model as the new context.
+											</TooltipContent>
+										</Tooltip>
+									)}
+								</div>
+								{rule.description && <SheetDescription className="mt-0.5 text-sm">{rule.description}</SheetDescription>}
 							</div>
-							{rule.description && <SheetDescription className="mt-0.5 text-sm">{rule.description}</SheetDescription>}
+							<SheetNavigationButtons
+								hasPrev={hasPrev}
+								hasNext={hasNext}
+								onNavigate={(dir) => onNavigate?.(dir)}
+								prevKeys={prevKeys}
+								nextKeys={nextKeys}
+								entityLabel="rule"
+							/>
 						</SheetHeader>
 
 						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">

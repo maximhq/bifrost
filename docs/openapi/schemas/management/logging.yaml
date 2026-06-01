@@ -460,17 +460,47 @@ PaginationOptions:
 LogStats:
   type: object
   description: Log statistics
+  required:
+    - total_requests
+    - total_tokens
+    - total_cost
+    - average_latency
+    - success_rate
+    - user_facing_success_rate
+    - user_facing_total_requests
   properties:
     total_requests:
       type: integer
+      format: int64
     total_tokens:
       type: integer
+      format: int64
     total_cost:
       type: number
     average_latency:
       type: number
     success_rate:
       type: number
+      description: Percentage of completed provider attempts that succeeded
+    user_facing_success_rate:
+      type: number
+      description: Percentage of user requests that ultimately succeeded, counting fallback chains as one request
+    user_facing_total_requests:
+      type: integer
+      format: int64
+      description: Count of root requests used as the denominator for user_facing_success_rate
+    cache_hit_rate_total_requests:
+      type: integer
+      format: int64
+      description: Completed requests used as the local-cache hit-rate denominator
+    direct_cache_hits:
+      type: integer
+      format: int64
+      description: Number of direct local-cache hits
+    semantic_cache_hits:
+      type: integer
+      format: int64
+      description: Number of semantic local-cache hits
 
 DroppedRequestsResponse:
   type: object

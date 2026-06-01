@@ -1,14 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/store";
 import { useListFeatureFlagsQuery, useUpdateFeatureFlagMutation } from "@/lib/store/apis/featureFlagsApi";
 import type { FeatureFlagStatus } from "@/lib/types/featureFlag";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Crown, Flag, Lock } from "lucide-react";
+import { Crown, Lock } from "lucide-react";
 import { toast } from "sonner";
-import { FeatureFlagsEmptyState } from "./featureFlagsEmptyState";
 
 export default function FeatureFlagsView() {
 	const hasUpdateAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.Update);
@@ -27,30 +26,42 @@ export default function FeatureFlagsView() {
 	}
 
 	return (
-		<div className="flex w-full flex-col gap-6 py-6">
-			<header className="space-y-1">
-				<h2 className="flex flex-row items-center gap-1 text-lg font-semibold tracking-tight">
-					<Flag className="size-4" />
-					Feature Flags
-				</h2>
+		<div className="space-y-4 w-full">
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Feature Flags</h2>
 				<p className="text-muted-foreground text-sm">
 					Toggle in-process feature flags. Flags are declared in code; values can also be set via{" "}
 					<code className="text-xs">config.json</code> or Helm, in which case they appear here as locked.
 				</p>
-			</header>
+			</div>
 
 			{isLoading && <p className="text-muted-foreground text-sm">Loading feature flags...</p>}
 			{isError && <p className="text-sm text-red-500">Failed to load feature flags: {getErrorMessage(error)}</p>}
 
-			{!isLoading && !isError && flags.length === 0 && <FeatureFlagsEmptyState />}
-
-			{flags.length > 0 && (
-				<div className="rounded-md border">
-					<Table>
+			{!isLoading && !isError && (
+				<div className="overflow-auto rounded-sm border">
+					<Table data-testid="feature-flags-table">
+						<TableHeader>
+							<TableRow className="bg-muted/50">
+								<TableHead className="font-semibold">Flag</TableHead>
+								<TableHead className="w-px text-right font-semibold">Enabled</TableHead>
+							</TableRow>
+						</TableHeader>
 						<TableBody>
-							{flags.map((flag) => (
-								<FeatureFlagRow key={flag.id} flag={flag} canUpdate={hasUpdateAccess} onToggle={handleToggle} />
-							))}
+							{flags.length === 0 ? (
+								<TableRow data-testid="feature-flags-table-empty-state">
+									<TableCell colSpan={2} className="h-24 text-center">
+										<span className="text-muted-foreground text-sm">
+											No feature flags found. Flags are declared in code via{" "}
+											<code className="text-xs">featureflags.Register(...)</code>.
+										</span>
+									</TableCell>
+								</TableRow>
+							) : (
+								flags.map((flag) => (
+									<FeatureFlagRow key={flag.id} flag={flag} canUpdate={hasUpdateAccess} onToggle={handleToggle} />
+								))
+							)}
 						</TableBody>
 					</Table>
 				</div>
@@ -72,7 +83,7 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 	const primaryLabel = flag.display_name || flag.id;
 
 	return (
-		<TableRow>
+		<TableRow className="group hover:bg-muted/50 transition-colors">
 			<TableCell className="align-top">
 				<div className="flex flex-col gap-1">
 					<div className="flex flex-wrap items-center gap-2">
@@ -91,7 +102,7 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 					)}
 				</div>
 			</TableCell>
-			<TableCell className="w-px align-top">
+			<TableCell className="w-px align-top text-right">
 				<Switch
 					data-testid={`feature-flag-toggle-${flag.id}`}
 					size="md"

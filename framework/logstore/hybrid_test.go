@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
@@ -591,6 +592,53 @@ func TestHybrid_Tags(t *testing.T) {
 	assert.Equal(t, "true", tags["stream"])
 	assert.Equal(t, "vk_test", tags["virtual_key_id"])
 	assert.Equal(t, "2026-04-03", tags["date"])
+}
+
+func TestHybrid_MetadataIsRetainedInDBAndExcludedFromObjectPayload(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	ts := time.Date(2026, 4, 3, 14, 30, 0, 0, time.UTC)
+	inputContent := "Hello"
+	entry := &Log{
+		ID:        "metadata-1",
+		Timestamp: ts,
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
+		},
+		MetadataParsed: map[string]interface{}{
+			"cortex-user-id": "user-123",
+			"team":           "payments",
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "metadata-1")
+	require.NoError(t, err)
+	require.NotNil(t, dbLog.Metadata)
+	assert.Contains(t, *dbLog.Metadata, "cortex-user-id")
+
+	// Metadata is DB-authoritative and must never be written to the object
+	// store snapshot.
+	key := ObjectKey("test", ts, "metadata-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	var payload map[string]string
+	require.NoError(t, sonic.Unmarshal(rawPayload, &payload))
+	assert.NotContains(t, payload, "metadata", "metadata must not be written to the object store snapshot")
+
+	// Hydration still returns metadata, sourced from the DB row.
+	found, err := hybrid.FindByID(ctx, "metadata-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-123", found.MetadataParsed["cortex-user-id"])
+	assert.Equal(t, "payments", found.MetadataParsed["team"])
 }
 
 func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {

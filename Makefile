@@ -386,7 +386,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.3-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -403,7 +403,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.3-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -1858,6 +1858,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					--env-var "baseUrl=$$BASE_URL_VAL" \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
 					--reporters cli,json \
@@ -1904,7 +1906,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s '{collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]?], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: if failed then trimstream else (.response.stream = null) end; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
 			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
@@ -1936,6 +1938,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \
@@ -1955,6 +1959,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \

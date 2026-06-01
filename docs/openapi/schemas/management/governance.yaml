@@ -3,6 +3,15 @@
 Budget:
   type: object
   description: Budget configuration
+  required:
+    - id
+    - max_limit
+    - reset_duration
+    - last_reset
+    - current_usage
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -21,9 +30,17 @@ Budget:
       format: date-time
     current_usage:
       type: number
-    config_hash:
+    team_id:
       type: string
-      nullable: true
+      description: Team that owns this budget, when the budget is team-scoped
+    virtual_key_id:
+      type: string
+      description: Virtual key that owns this budget, when the budget is virtual-key-scoped
+    provider_config_id:
+      type: integer
+      description: Provider config that owns this budget, when the budget is provider-config-scoped
+    config_hash:
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -34,6 +51,15 @@ Budget:
 RateLimit:
   type: object
   description: Rate limit configuration
+  required:
+    - id
+    - token_current_usage
+    - token_last_reset
+    - request_current_usage
+    - request_last_reset
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -49,12 +75,10 @@ RateLimit:
       type: string
       format: date-time
     request_max_limit:
-      type: integer
+      type: [integer, 'null']
       format: int64
-      nullable: true
     request_reset_duration:
-      type: string
-      nullable: true
+      type: [string, 'null']
     request_current_usage:
       type: integer
       format: int64
@@ -62,8 +86,7 @@ RateLimit:
       type: string
       format: date-time
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -101,8 +124,7 @@ UpdateBudgetRequest:
     reset_duration:
       type: string
     calendar_aligned:
-      type: boolean
-      nullable: true
+      type: [boolean, 'null']
       description: >
         Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations
         that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`,
@@ -142,6 +164,15 @@ UpdateRateLimitRequest:
 VirtualKeyProviderConfig:
   type: object
   description: Provider configuration for a virtual key
+  required:
+    - id
+    - virtual_key_id
+    - provider
+    - weight
+    - allowed_models
+    - blacklisted_models
+    - allow_all_keys
+    - keys
   properties:
     id:
       type: integer
@@ -150,34 +181,54 @@ VirtualKeyProviderConfig:
     provider:
       type: string
     weight:
-      type: number
-      nullable: true
+      type: [number, 'null']
       description: Weight for provider load balancing. Null means excluded from weighted routing.
     allowed_models:
       type: array
       items:
         type: string
-    budget_id:
-      type: string
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+    allow_all_keys:
+      type: boolean
     rate_limit_id:
       type: string
-    budget:
-      $ref: '#/Budget'
+    budgets:
+      type: array
+      description: Budget quotas assigned to this provider config
+      items:
+        $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
     keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Associated API keys for this provider config. **Always null in the quota endpoint** —
+        keys are intentionally not loaded here to keep the response lean and avoid
+        exposing sensitive credentials. Use the admin virtual-key API to inspect actual key assignments.
       items:
         $ref: '#/TableKey'
 
 VirtualKeyMCPConfig:
   type: object
   description: MCP configuration for a virtual key
+  required:
+    - id
+    - virtual_key_id
+    - mcp_client_id
+    - mcp_client
+    - tools_to_execute
   properties:
     id:
       type: integer
-    mcp_client_name:
+    virtual_key_id:
       type: string
+    mcp_client_id:
+      type: integer
+    mcp_client:
+      $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
     tools_to_execute:
       type: array
       items:
@@ -186,6 +237,17 @@ VirtualKeyMCPConfig:
 VirtualKey:
   type: object
   description: Virtual key configuration
+  required:
+    - id
+    - name
+    - value
+    - is_active
+    - provider_configs
+    - mcp_configs
+    - calendar_aligned
+    - config_hash
+    - created_at
+    - updated_at
   properties:
     id:
       type: string
@@ -205,6 +267,36 @@ VirtualKey:
       type: array
       items:
         $ref: '#/VirtualKeyMCPConfig'
+    team_id:
+      type: string
+    customer_id:
+      type: string
+    rate_limit_id:
+      type: string
+    calendar_aligned:
+      type: boolean
+    team:
+      $ref: '#/Team'
+    customer:
+      $ref: '#/Customer'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+      description: User that created this virtual key, when available
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
 
 CreateVirtualKeyRequest:
   type: object
@@ -225,15 +317,21 @@ CreateVirtualKeyRequest:
           provider:
             type: string
           weight:
-            type: number
-            nullable: true
+            type: [number, 'null']
             description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
               type: string
-          budget:
-            $ref: '#/CreateBudgetRequest'
+          blacklisted_models:
+            type: array
+            items:
+              type: string
+          budgets:
+            type: array
+            description: Provider-specific budget quotas
+            items:
+              $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/CreateRateLimitRequest'
           key_ids:
@@ -256,12 +354,18 @@ CreateVirtualKeyRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/CreateBudgetRequest'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/CreateRateLimitRequest'
     is_active:
       type: boolean
+    calendar_aligned:
+      type: boolean
+      default: false
 
 UpdateVirtualKeyRequest:
   type: object
@@ -281,15 +385,21 @@ UpdateVirtualKeyRequest:
           provider:
             type: string
           weight:
-            type: number
-            nullable: true
+            type: [number, 'null']
             description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
               type: string
-          budget:
-            $ref: '#/UpdateBudgetRequest'
+          blacklisted_models:
+            type: array
+            items:
+              type: string
+          budgets:
+            type: array
+            description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided.
+            items:
+              $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/UpdateRateLimitRequest'
           key_ids:
@@ -313,16 +423,30 @@ UpdateVirtualKeyRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/UpdateBudgetRequest'
+    budgets:
+      type: array
+      description: Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
     is_active:
       type: boolean
+    calendar_aligned:
+      type: boolean
+    reset_budget_usage:
+      type: boolean
+      description: When true, resets usage for virtual-key and provider-config budget records reconciled by this update.
 
 ListVirtualKeysResponse:
   type: object
   description: List virtual keys response
+  required:
+    - virtual_keys
+    - count
+    - total_count
+    - limit
+    - offset
   properties:
     virtual_keys:
       type: array
@@ -330,10 +454,26 @@ ListVirtualKeysResponse:
         $ref: '#/VirtualKey'
     count:
       type: integer
+    total_count:
+      type: integer
+      format: int64
+      description: Total number of virtual keys matching the query
+    limit:
+      type: integer
+      description: Page size used for the response
+    offset:
+      type: integer
+      description: Page offset used for the response
 
 VirtualKeyQuotaResponse:
   type: object
   description: Virtual key quota response (self-service, no admin auth required)
+  required:
+    - virtual_key_name
+    - is_active
+    - budgets
+    - rate_limit
+    - provider_configs
   properties:
     virtual_key_name:
       type: string
@@ -342,16 +482,26 @@ VirtualKeyQuotaResponse:
       type: boolean
       description: Whether the virtual key is active
     budgets:
-      type: array
-      description: Budget quotas assigned to this virtual key
+      type: [array, 'null']
+      description: Overall budget quotas assigned to this virtual key
       items:
         $ref: '#/Budget'
     rate_limit:
-      $ref: '#/RateLimit'
+      oneOf:
+        - $ref: '#/RateLimit'
+        - type: 'null'
+    provider_configs:
+      type: [array, 'null']
+      description: Per-provider budget quotas and rate limits (provider-level splits and limits)
+      items:
+        $ref: '#/VirtualKeyProviderConfig'
 
 VirtualKeyResponse:
   type: object
   description: Virtual key operation response
+  required:
+    - message
+    - virtual_key
   properties:
     message:
       type: string
@@ -375,8 +525,7 @@ Team:
     budget:
       $ref: '#/Budget'
     virtual_keys:
-      type: array
-      nullable: true
+      type: [array, 'null']
       description: >
         Virtual keys assigned to this team. This field may be omitted or returned as null in some
         responses (for example, when a team is embedded inside a virtual-key response) to avoid
@@ -393,8 +542,7 @@ Team:
       type: object
       additionalProperties: true
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     created_at:
       type: string
       format: date-time
@@ -558,16 +706,13 @@ TableKey:
       items:
         type: string
     weight:
-      type: number
-      nullable: true
+      type: [number, 'null']
     enabled:
-      type: boolean
+      type: [boolean, 'null']
       default: true
-      nullable: true
     use_for_batch_api:
-      type: boolean
+      type: [boolean, 'null']
       default: false
-      nullable: true
     created_at:
       type: string
       format: date-time
@@ -575,53 +720,62 @@ TableKey:
       type: string
       format: date-time
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
     # Azure config fields
     azure_endpoint:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
-    azure_api_version:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_client_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_client_secret:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     azure_tenant_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     # Vertex config fields
     vertex_project_id:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_project_number:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_region:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     vertex_auth_credentials:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     # Bedrock config fields
     bedrock_access_key:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_secret_key:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_session_token:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_region:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
     bedrock_arn:
-      $ref: '../../schemas/management/common.yaml#/EnvVar'
-      nullable: true
+      oneOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
+        - type: 'null'
 
 # Routing Rules schemas
 
@@ -635,17 +789,14 @@ RoutingTarget:
       - provider
   properties:
     provider:
-      type: string
+      type: [string, 'null']
       description: Target provider (omit or empty to use the incoming request provider)
-      nullable: true
     model:
-      type: string
+      type: [string, 'null']
       description: Target model (omit or empty to use the incoming request model)
-      nullable: true
     key_id:
-      type: string
+      type: [string, 'null']
       description: UUID of the API key to pin for this target (omit for load-balanced key selection)
-      nullable: true
     weight:
       type: number
       format: double
@@ -687,16 +838,14 @@ RoutingRule:
       enum: [global, team, customer, virtual_key]
       description: Scope level for the rule
     scope_id:
-      type: string
+      type: [string, 'null']
       description: ID for the scope (empty for global scope)
-      nullable: true
     priority:
       type: integer
       description: Priority for rule evaluation (lower number = higher priority)
     query:
-      type: object
+      type: [object, 'null']
       description: Visual rule tree structure from query builder
-      nullable: true
     created_at:
       type: string
       format: date-time
@@ -762,16 +911,14 @@ CreateRoutingRuleRequest:
       enum: [global, team, customer, virtual_key]
       description: Scope level for the rule
     scope_id:
-      type: string
+      type: [string, 'null']
       description: ID for the scope (required if scope is not global)
-      nullable: true
     priority:
       type: integer
       description: Priority for rule evaluation (lower number = higher priority)
     query:
-      type: object
+      type: [object, 'null']
       description: Visual rule tree structure
-      nullable: true
   oneOf:
     - type: object
       properties:
@@ -818,8 +965,7 @@ UpdateRoutingRuleRequest:
     priority:
       type: integer
     query:
-      type: object
-      nullable: true
+      type: [object, 'null']
 
 RoutingRuleResponse:
   type: object
@@ -1158,16 +1304,13 @@ PricingOverride:
         - virtual_key_provider_key
       description: Scope that determines which requests this override applies to
     virtual_key_id:
-      type: string
-      nullable: true
+      type: [string, 'null']
       description: Required for virtual_key* scopes
     provider_id:
-      type: string
-      nullable: true
+      type: [string, 'null']
       description: Required for provider and virtual_key_provider scopes
     provider_key_id:
-      type: string
-      nullable: true
+      type: [string, 'null']
       description: Required for provider_key and virtual_key_provider_key scopes
     match_type:
       type: string
@@ -1191,8 +1334,7 @@ PricingOverride:
       $ref: '#/PricingPatch'
       description: Decoded pricing fields (present in API responses)
     config_hash:
-      type: string
-      nullable: true
+      type: [string, 'null']
       description: Auto-managed hash for config-file-sourced overrides. Do not set manually.
     created_at:
       type: string

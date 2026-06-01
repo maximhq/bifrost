@@ -179,6 +179,12 @@ type GovernanceStore interface {
 	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
 	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
 	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
+	// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that
+	// govern a request for the given virtual key, provider, and model. The
+	// returned IDs are attached to log entries so that ghost-node usage
+	// reconciliation can attribute cost and tokens to the correct governance
+	// entities.
+	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -2247,6 +2253,83 @@ func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Contex
 		}
 	}
 	return rateLimitIDs
+}
+
+// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that are
+// affected by a request with the given virtual key, provider, and model.
+// It combines provider-level, model-level, and VK-hierarchy (team/customer) IDs.
+// All lookups are fast in-memory sync.Map reads.
+func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+	seenBudgets := map[string]bool{}
+	seenRateLimits := map[string]bool{}
+
+	// --- Provider-level ---
+	if provider != "" {
+		providerKey := string(provider)
+		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
+			if pt, ok := value.(*configstoreTables.TableProvider); ok && pt != nil {
+				if pt.BudgetID != nil && !seenBudgets[*pt.BudgetID] {
+					budgetIDs = append(budgetIDs, *pt.BudgetID)
+					seenBudgets[*pt.BudgetID] = true
+				}
+				if pt.RateLimitID != nil && !seenRateLimits[*pt.RateLimitID] {
+					rateLimitIDs = append(rateLimitIDs, *pt.RateLimitID)
+					seenRateLimits[*pt.RateLimitID] = true
+				}
+			}
+		}
+	}
+
+	// --- Model-level ---
+	if model != "" {
+		// model+provider specific config
+		if provider != "" {
+			key := fmt.Sprintf("%s:%s", model, string(provider))
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
+					if mc.BudgetID != nil && !seenBudgets[*mc.BudgetID] {
+						budgetIDs = append(budgetIDs, *mc.BudgetID)
+						seenBudgets[*mc.BudgetID] = true
+					}
+					if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
+						rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+						seenRateLimits[*mc.RateLimitID] = true
+					}
+				}
+			}
+		}
+		// model-only config
+		if mc, _ := gs.findModelOnlyConfig(ctx, model); mc != nil {
+			if mc.BudgetID != nil && !seenBudgets[*mc.BudgetID] {
+				budgetIDs = append(budgetIDs, *mc.BudgetID)
+				seenBudgets[*mc.BudgetID] = true
+			}
+			if mc.RateLimitID != nil && !seenRateLimits[*mc.RateLimitID] {
+				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+				seenRateLimits[*mc.RateLimitID] = true
+			}
+		}
+	}
+
+	// --- VK hierarchy (provider-config → VK → team → customer) ---
+	if virtualKey != "" {
+		if vk, exists := gs.GetVirtualKey(ctx, virtualKey); exists && vk != nil {
+			for _, id := range gs.collectBudgetIDsFromMemory(ctx, vk, provider) {
+				if !seenBudgets[id] {
+					budgetIDs = append(budgetIDs, id)
+					seenBudgets[id] = true
+				}
+			}
+			for _, id := range gs.collectRateLimitIDsFromMemory(ctx, vk, provider) {
+				if !seenRateLimits[id] {
+					rateLimitIDs = append(rateLimitIDs, id)
+					seenRateLimits[id] = true
+				}
+			}
+		}
+	}
+
+	return budgetIDs, rateLimitIDs
 }
 
 // PUBLIC API METHODS

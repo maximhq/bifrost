@@ -1023,96 +1023,90 @@ func (p *LoggerPlugin) GetModelRankings(ctx context.Context, filters logstore.Se
 	return p.store.GetModelRankings(ctx, filters)
 }
 
+func (p *LoggerPlugin) GetDimensionRankings(ctx context.Context, filters logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	return p.store.GetDimensionRankings(ctx, filters, dimension)
+}
+
 // GetAvailableModels returns all unique models from logs.
 // Uses DISTINCT to avoid loading all rows (28K+) when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableModels(ctx context.Context, limit int, query string) []string {
+func (p *LoggerPlugin) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	models, err := p.store.GetDistinctModels(ctx, limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available models: %v", err)
-		return []string{}
+		return nil, fmt.Errorf("failed to get available models: %w", err)
 	}
-	return models
+	return models, nil
 }
 
 // GetAvailableAliases returns all unique alias values from logs.
-func (p *LoggerPlugin) GetAvailableAliases(ctx context.Context, limit int, query string) []string {
+func (p *LoggerPlugin) GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error) {
 	aliases, err := p.store.GetDistinctAliases(ctx, limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available aliases: %v", err)
-		return []string{}
+		return nil, fmt.Errorf("failed to get available aliases: %w", err)
 	}
-	return aliases
+	return aliases, nil
 }
 
-func (p *LoggerPlugin) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "selected_key_id", "selected_key_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available selected keys: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available selected keys: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
-func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available virtual keys: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available virtual keys: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
-func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "routing_rule_id", "routing_rule_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available routing rules: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available routing rules: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
 // GetAvailableTeams returns all unique team ID-Name pairs from logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableTeams(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "team_id", "team_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available teams: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available teams: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
 // GetAvailableCustomers returns all unique customer ID-Name pairs from logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableCustomers(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "customer_id", "customer_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available customers: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available customers: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
-// GetAvailableUsers returns all unique user IDs from logs.
-// Both ID and Name are set to user_id since users don't have a separate name column.
-func (p *LoggerPlugin) GetAvailableUsers(ctx context.Context, limit int, query string) []KeyPair {
-	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_id", limit, query)
+// GetAvailableUsers returns all unique user ID-Name pairs from logs.
+func (p *LoggerPlugin) GetAvailableUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available users: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available users: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
 // GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "business_unit_id", "business_unit_name", limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available business units: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available business units: %w", err)
 	}
-	return keyPairResultsToKeyPairs(results)
+	return keyPairResultsToKeyPairs(results), nil
 }
 
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
@@ -1135,24 +1129,22 @@ func (p *LoggerPlugin) GetDimensionLatencyHistogram(ctx context.Context, filters
 
 // GetAvailableRoutingEngines returns all unique routing engine types used in logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) []string {
+func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {
 	engines, err := p.store.GetDistinctRoutingEngines(ctx, limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available routing engines: %v", err)
-		return []string{}
+		return nil, fmt.Errorf("failed to get available routing engines: %w", err)
 	}
-	return engines
+	return engines, nil
 }
 
 // GetAvailableStopReasons returns all unique stop reason values from logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
-func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context, limit int, query string) []string {
+func (p *LoggerPlugin) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
 	stopReasons, err := p.store.GetDistinctStopReasons(ctx, limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available stop reasons: %v", err)
-		return []string{}
+		return nil, fmt.Errorf("failed to get available stop reasons: %w", err)
 	}
-	return stopReasons
+	return stopReasons, nil
 }
 
 // keyPairResultsToKeyPairs converts logstore.KeyPairResult slice to KeyPair slice
@@ -1165,11 +1157,10 @@ func keyPairResultsToKeyPairs(results []logstore.KeyPairResult) []KeyPair {
 }
 
 // GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
-func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) []KeyPair {
+func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	result, err := p.store.GetAvailableMCPVirtualKeys(ctx, limit, query)
 	if err != nil {
-		p.logger.Error("failed to get available virtual keys from MCP logs: %v", err)
-		return []KeyPair{}
+		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", err)
 	}
 	return p.extractUniqueMCPKeyPairs(result, func(log *logstore.MCPToolLog) KeyPair {
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil {
@@ -1179,7 +1170,7 @@ func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context, limit int
 			}
 		}
 		return KeyPair{}
-	})
+	}), nil
 }
 
 // extractUniqueMCPKeyPairs extracts unique non-empty key pairs from MCP logs using the provided extractor function

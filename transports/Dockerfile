@@ -17,7 +17,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
   
   # --- Go Build Stage: Compile the Go binary ---
-  FROM golang:1.26.2-alpine3.23@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
+  FROM golang:1.26.3-alpine3.23@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
   WORKDIR /app
   
   # Install dependencies including gcc for CGO and sqlite (with latest security patches)
@@ -59,7 +59,7 @@
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
   RUN apk upgrade --no-cache && \
-    apk add --no-cache musl libgcc ca-certificates wget zlib
+    apk add --no-cache musl libgcc ca-certificates zlib
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
@@ -103,8 +103,10 @@
   EXPOSE $APP_PORT
   
   # Health check for container status monitoring
+  # Uses busybox wget (built into alpine) instead of the standalone wget package
+  # to avoid CVE-2025-69194; busybox wget supports -q/-O but not --no-verbose/--tries.
   HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
   
   # Use entrypoint script that handles volume permissions and argument processing
   ENTRYPOINT ["/app/docker-entrypoint.sh"]

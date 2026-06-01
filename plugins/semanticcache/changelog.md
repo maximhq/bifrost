@@ -1,6 +1,1 @@
-- refactor: semantic cache plugin rewrite (#3210)
-- feat: remove `cleanup_on_shutdown` from semantic cache plugin config (#3330)
-- fix: dimension check on namespace creation and assorted semantic cache issues (#3611)
-- fix: guard `Cleanup` with `sync.Once` to prevent a double-close panic (#3532)
-- fix: decouple cache telemetry from the write decision and guard no-op search paths (#3424)
-- chore: dependency and AWS SDK security updates (#3461)
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

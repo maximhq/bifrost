@@ -82,7 +82,7 @@
           "}",
           "",
           "// Handle 405 for unimplemented cache endpoints",
-          "var unimplementedEndpoints = ['Clear Cache by Request ID', 'Clear Cache by Key'];",
+          "var unimplementedEndpoints = ['Clear Cache by Cache ID (Coverage Probe)', 'Clear Cache by Key (Coverage Probe)'];",
           "if (unimplementedEndpoints.indexOf(requestName) !== -1 && code === 405) {",
           "  pass = true;",
           "}",
@@ -202,7 +202,7 @@
           "  'Get Plugin (After Create)': ['name', 'actualName', 'enabled', 'config', 'isCustom', 'path', 'status'],",
           "  'Update Plugin': ['plugin', 'message'],",
           "  'Delete Plugin': ['message'],",
-          "  'Check If Auth Enabled': ['is_auth_enabled'],",
+          "  'Check If Auth Enabled': ['is_auth_enabled', 'has_valid_token', 'auth_type'],",
           "  'Logout': ['message'],",
           "  'Get Proxy Config': ['enabled', 'type', 'url', 'timeout', 'enable_for_scim', 'enable_for_inference', 'enable_for_api'],",
           "  'Update Proxy Config': ['message', 'status'],",
@@ -233,11 +233,9 @@
           "  'Get Version': true",
           "};",
           "var rawTextShapes = {",
-          "  'Clear Cache by Request ID': true,",
-          "  'Clear Cache by Key': true,",
-          "  'Per User OAuth Register (Coverage Probe)': true,",
-          "  'Per User OAuth Authorize (Coverage Probe)': true,",
-          "  'Per User OAuth Token (Coverage Probe)': true",
+          "  'Clear Cache by Cache ID (Coverage Probe)': true,",
+          "  'Clear Cache by Key (Coverage Probe)': true,",
+          "  'OAuth Callback (Coverage Probe)': true",
           "};",
           "pm.test('Response structure matches handler contract', function () {",
           "  var body = parseJSONOrNull();",
@@ -436,6 +434,99 @@
                   "  framework_config: {}",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Config (Enable Temp Token Auth)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"drop_excess_requests\": false, \"enable_logging\": true, \"log_retention_days\": 365, \"mcp_agent_depth\": 1, \"mcp_tool_execution_timeout\": 1, \"mcp_enable_temp_token_auth\": true}, \"framework_config\": {}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Send full client_config plus the new flag so the round-trip exercises mcp_enable_temp_token_auth",
+                  "var body = {",
+                  "  client_config: {",
+                  "    drop_excess_requests: false,",
+                  "    enable_logging: true,",
+                  "    log_retention_days: 365,",
+                  "    mcp_agent_depth: 1,",
+                  "    mcp_tool_execution_timeout: 1,",
+                  "    mcp_enable_temp_token_auth: true",
+                  "  },",
+                  "  framework_config: {}",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Enable temp token auth update accepted', function () {",
+                  "  pm.expect(pm.response.code, 'status').to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Config (Verify Temp Token Auth)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('mcp_enable_temp_token_auth round-trips to true', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('client_config');",
+                  "  pm.expect(body.client_config).to.have.property('mcp_enable_temp_token_auth', true);",
+                  "});"
                 ],
                 "type": "text/javascript"
               }
@@ -2156,7 +2247,7 @@
       "name": "Cache",
       "item": [
         {
-          "name": "Clear Cache by Request ID",
+          "name": "Clear Cache by Cache ID (Coverage Probe)",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -2175,7 +2266,7 @@
           }
         },
         {
-          "name": "Clear Cache by Key",
+          "name": "Clear Cache by Key (Coverage Probe)",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -2214,7 +2305,32 @@
                 "is-auth-enabled"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('is-auth-enabled exposes auth_type + has_valid_token contract', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('is_auth_enabled');",
+                  "  pm.expect(body).to.have.property('has_valid_token');",
+                  "  pm.expect(body).to.have.property('auth_type');",
+                  "  pm.expect(body.has_valid_token, 'has_valid_token is boolean').to.be.a('boolean');",
+                  "  pm.expect(body.auth_type, 'auth_type enum').to.be.oneOf(['none', 'password', 'sso']);",
+                  "  if (body.is_auth_enabled === false) {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth disabled').to.equal('none');",
+                  "    pm.expect(body.has_valid_token, 'has_valid_token when auth disabled').to.equal(false);",
+                  "  } else {",
+                  "    pm.expect(body.auth_type, 'auth_type when auth enabled').to.not.equal('none');",
+                  "  }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "Login",
@@ -2770,40 +2886,12 @@
           }
         },
         {
-          "name": "Per User OAuth Register (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/register",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "register"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"redirect_uris\":[\"http://localhost/callback\"],\"client_name\":\"coverage-probe\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User OAuth Authorize (Coverage Probe)",
+          "name": "Per User OAuth Flow Detail (Coverage Probe)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/authorize?client_id=coverage-probe-client&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback&response_type=code&state=coverage-probe-state",
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow",
               "host": [
                 "{{base_url}}"
               ],
@@ -2811,46 +2899,19 @@
                 "api",
                 "oauth",
                 "per-user",
-                "authorize?client_id=coverage-probe-client&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback&response_type=code&state=coverage-probe-state"
+                "flows",
+                "coverage-probe-flow"
               ]
             }
           }
         },
         {
-          "name": "Per User OAuth Token (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/token",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "token"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"grant_type\":\"authorization_code\",\"code\":\"coverage-probe-code\",\"redirect_uri\":\"http://localhost/callback\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User OAuth Upstream Authorize (Coverage Probe)",
+          "name": "Per User OAuth Flow Start (Coverage Probe)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/upstream/authorize?state=coverage-probe-state",
+              "raw": "{{base_url}}/api/oauth/per-user/flows/coverage-probe-flow/start",
               "host": [
                 "{{base_url}}"
               ],
@@ -2858,125 +2919,10 @@
                 "api",
                 "oauth",
                 "per-user",
-                "upstream",
-                "authorize?state=coverage-probe-state"
+                "flows",
+                "coverage-probe-flow",
+                "start"
               ]
-            }
-          }
-        },
-        {
-          "name": "Per User Consent VK (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/vk",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "vk"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\",\"virtual_key\":\"coverage-probe-vk\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent User ID (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/user-id",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "user-id"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\",\"user_id\":\"coverage-probe-user\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent Skip (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/skip",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "skip"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\"}"
-            }
-          }
-        },
-        {
-          "name": "Per User Consent Submit (Coverage Probe)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/oauth/per-user/consent/submit",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "oauth",
-                "per-user",
-                "consent",
-                "submit"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"state\":\"coverage-probe-state\"}"
             }
           }
         },

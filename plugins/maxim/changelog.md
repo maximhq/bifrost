@@ -1,2 +1,1 @@
-- fix: VK and provider-key level pricing overrides for streaming (#3421)
-- chore: dependency and AWS SDK security updates (#3461)
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

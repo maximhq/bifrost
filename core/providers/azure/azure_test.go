@@ -40,9 +40,9 @@ func TestAzure(t *testing.T) {
 		EmbeddingModel:       "text-embedding-ada-002",
 		ReasoningModel:       "claude-opus-4-5",
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		TranscriptionModel:   "whisper",
-		ImageGenerationModel: "gpt-image-1",
-		ImageEditModel:       "gpt-image-1",
+		TranscriptionModel:   "gpt-4o-transcribe",
+		ImageGenerationModel: "gpt-image-2",
+		ImageEditModel:       "gpt-image-2",
 		VideoGenerationModel: "sora-2",
 		PassthroughModel:     "gpt-4o",
 		Scenarios: llmtests.TestScenarios{

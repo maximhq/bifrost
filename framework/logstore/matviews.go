@@ -219,14 +219,10 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name: "mv_filter_users",
-		// user_id is exposed as both "id" and "name" for the dropdown and
-		// also as the scope column.
-		selectExpr: "user_id AS id, user_id AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
-		whereExpr:       "user_id IS NOT NULL AND user_id != ''",
-		uniqueIdx:       "id, " + scopeIdxColumns,
+		name:       "mv_filter_users",
+		selectExpr: "user_id AS id, user_name AS name, " + scopeProjection,
+		whereExpr:  "user_id IS NOT NULL AND user_id != '' AND user_name IS NOT NULL AND user_name != ''",
+		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
@@ -246,7 +242,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
 	{"team_id", "team_name"}:                   "mv_filter_teams",
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
-	{"user_id", "user_id"}:                     "mv_filter_users",
+	{"user_id", "user_name"}:                    "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
@@ -379,7 +375,8 @@ var matviewRequiredColumns = func() map[string][]string {
 // Postgres-only — runs on a dedicated connection so the advisory lock + the
 // CONCURRENTLY DDL all share one session and live outside any migration
 // transaction. Multi-replica deployments serialize on the advisory lock so
-// only one instance does the work.
+// only one instance does the work. It shares the same advisory lock as
+// refreshMatViews so startup create/repair cannot overlap a periodic refresh.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" {
 		return nil
@@ -593,7 +590,8 @@ var refreshGate matViewRefreshGate
 
 // logsActivityCounter returns the cumulative INSERT+UPDATE+DELETE count for
 // the `logs` table from pg_stat_user_tables. The stat collector is eventually
-// consistent (lags a few seconds under load) which is fine for a 30s tick.
+// consistent (lags a few seconds under load) which is fine for the periodic
+// refresh tick.
 //
 // Returns (0, false) if the row is missing (fresh DB before any writes) or the
 // query fails — callers treat that as "fall back to always-refresh."
@@ -648,7 +646,8 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 
 // refreshMatViews refreshes all materialized views concurrently (non-blocking
 // for readers). Uses a PostgreSQL advisory try-lock so that in multi-replica
-// deployments only one instance refreshes at a time — others skip silently.
+// deployments only one instance refreshes at a time — others skip silently and
+// try again on their next scheduled tick.
 //
 // Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
@@ -752,7 +751,7 @@ func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
 // freshAggregateMatViewMinWindow is the minimum time-range size that justifies
 // serving user-visible aggregates (e.g. /api/logs/stats totals, /api/logs
 // pagination counts) from the materialized view. Below this, the raw `logs`
-// table is fast enough and avoids the up-to-30s freshness lag that would
+// table is fast enough and avoids the refresh-interval freshness lag that would
 // otherwise cause counts to disagree with the row-list view — a visible
 // inconsistency on short, low-traffic windows.
 const freshAggregateMatViewMinWindow = 24 * time.Hour
@@ -1569,6 +1568,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	q = q.Where("model IS NOT NULL AND model != ''")
 	if err := q.Select(`
 		model, provider,
 		SUM(count) AS total,
@@ -1601,6 +1601,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters.EndTime = &prevEnd
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
 			model, provider,
 			SUM(count) AS total,
@@ -1727,6 +1728,109 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		rankings = append(rankings, urt)
 	}
 	return &UserRankingResult{Rankings: rankings}, nil
+}
+
+// getDimensionRankingsFromMatView returns entities ranked by usage from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	type row struct {
+		ID         string  `gorm:"column:id"`
+		Total      int64   `gorm:"column:total"`
+		TotalTkns  int64   `gorm:"column:total_tkns"`
+		TotalCost  float64 `gorm:"column:total_cost"`
+	}
+
+	var results []row
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	q = q.Where(fmt.Sprintf("%s != ''", idCol))
+	if err := q.Select(fmt.Sprintf(`
+		%s AS id,
+		SUM(count) AS total,
+		SUM(total_tokens) AS total_tkns,
+		SUM(total_cost) AS total_cost
+	`, idCol)).Group(idCol).
+		Order("total DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	// Resolve names from the logs table
+	nameMap := make(map[string]string)
+	if nameCol != "" && len(results) > 0 {
+		ids := make([]string, len(results))
+		for i, r := range results {
+			ids[i] = r.ID
+		}
+		var nameRows []struct {
+			ID   string `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		if err := s.ScopedDB(ctx).Model(&Log{}).
+			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
+			Where(fmt.Sprintf("%s IN ?", idCol), ids).
+			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
+			Order(fmt.Sprintf("%s, timestamp DESC", idCol)).
+			Find(&nameRows).Error; err == nil {
+			for _, nr := range nameRows {
+				nameMap[nr.ID] = nr.Name
+			}
+		}
+	}
+
+	// Previous period
+	var prevResults []row
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
+		if err := pq.Select(fmt.Sprintf(`
+			%s AS id,
+			SUM(count) AS total,
+			SUM(total_tokens) AS total_tkns,
+			SUM(total_cost) AS total_cost
+		`, idCol)).Group(idCol).Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+	}
+
+	prevMap := make(map[string]int, len(prevResults))
+	for i, r := range prevResults {
+		prevMap[r.ID] = i
+	}
+
+	rankings := make([]DimensionRankingWithTrend, 0, len(results))
+	for _, r := range results {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          nameMap[r.ID],
+			TotalRequests: r.Total,
+			TotalTokens:   r.TotalTkns,
+			TotalCost:     r.TotalCost,
+		}
+		drt := DimensionRankingWithTrend{DimensionRankingEntry: entry}
+		if idx, exists := prevMap[r.ID]; exists {
+			prev := prevResults[idx]
+			drt.Trend = DimensionRankingTrend{
+				HasPreviousPeriod: true,
+				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
+				TokensTrend:       trendPct(float64(r.TotalTkns), float64(prev.TotalTkns)),
+				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+			}
+		}
+		rankings = append(rankings, drt)
+	}
+	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,42 @@
+---
+title: "v2.1.6"
+description: "Helm v2.1.6 changelog - 2026-04-24"
+---
+
+<Update label="Bifrost Helm" description="v2.1.6">
+
+## Changelog
+
+- Includes unreleased `2.1.5` changes
+- Built-in plugin versioning for DB-backed deployments:
+  - Added `version` field support for built-in plugins.
+  - Added default `version: 1` for built-in plugins in `values.yaml` (`telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`).
+  - Updated `_helpers.tpl` to include plugin `version` in rendered config when set (cast as integer).
+- Updated StatefulSet PVC template labels to be immutable-safe:
+  - `spec.volumeClaimTemplates.metadata.labels` now uses stable selector labels (without chart/app version labels).
+- Governance schema and validation updates:
+  - Added `governance.budgets[].virtual_key_id` support.
+  - Removed stale `budget_id` references from virtual keys and provider configs in templates/tests.
+  - `validate-helm-config-fields.sh` assertions were updated accordingly.
+- Query/schema compatibility updates:
+  - Tightened `query` validation in `values.schema.json` and `config.schema.json` to valid RuleGroupType shape (`null` or `{ combinator, rules }`).
+- Config/input alias support updates:
+  - Added support for `env.*` references in proxy/TLS fields (`ca_cert_pem`, `url`, `username`, `password`).
+  - Added `provider_key_name` alias for routing targets and pricing overrides (resolved to `key_id` at config load time).
+- MCP config improvements:
+  - Added Go duration string support for `mcp.toolSyncInterval` (legacy numeric nanoseconds still supported).
+  - Added hash-based MCP client config reconciliation for DB-backed config store updates.
+- Upgrade impact:
+  - Existing SQLite StatefulSets created from older chart templates may require a one-time StatefulSet recreation during upgrade because `spec.volumeClaimTemplates` is immutable in Kubernetes.
+- Migration notes (only if upgrade fails with StatefulSet immutable-field error):
+  1. Identify StatefulSet name and namespace for your Helm release.
+  2. Delete only the StatefulSet while preserving dependents:
+     - `kubectl delete statefulset <statefulset-name> -n <namespace> --cascade=orphan`
+  3. Run Helm upgrade:
+     - `helm upgrade <release-name> bifrost/bifrost -n <namespace> -f <values-file> --set image.tag=<tag>`
+  4. If needed, re-apply/recreate the StatefulSet from the upgraded chart manifests.
+  5. Verify PVCs are preserved and pods become healthy:
+     - `kubectl get pvc -n <namespace>`
+     - `kubectl get pods -n <namespace>`
+
+</Update>

@@ -73,6 +73,7 @@ type ClientConfig struct {
 	DisableContentLogging                 bool                             `json:"disable_content_logging"`                    // Disable logging of content
 	AllowPerRequestContentStorageOverride bool                             `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                             `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
 	DisableDBPingsInHealth                bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays                      int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
@@ -87,6 +88,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool                             `json:"mcp_enable_temp_token_auth"`           // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
@@ -209,12 +211,22 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPEnableTempTokenAuth {
+		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowPerRequestContentStorageOverride {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
 	}
 
 	if c.AllowPerRequestRawOverride {
 		hash.Write([]byte("allowPerRequestRawOverride:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.AllowDirectKeys {
+		hash.Write([]byte("allowDirectKeys:true"))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -468,11 +480,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			if key.AzureKeyConfig.APIVersion != nil && key.AzureKeyConfig.APIVersion.IsFromEnv() {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
+			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
 			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
@@ -1245,6 +1256,15 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	// Hash StdioConfig
 	if m.StdioConfig != nil {
 		data, err := sonic.Marshal(m.StdioConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash TLSConfig
+	if m.TLSConfig != nil {
+		data, err := sonic.Marshal(m.TLSConfig)
 		if err != nil {
 			return "", err
 		}

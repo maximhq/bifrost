@@ -11,13 +11,17 @@ Bifrost can connect to any MCP-compatible server to discover and execute tools. 
 
 ## Connection Types
 
-Bifrost supports three connection protocols, each with different authentication options:
+Bifrost supports three connection protocols:
 
-| Type | Description | Best For | Auth Support |
-|------|-------------|----------|--------------|
-| **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts | None |
-| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions | Headers, OAuth 2.0, Per-User OAuth |
-| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools | Headers, OAuth 2.0, Per-User OAuth |
+| Type | Description | Best For |
+|------|-------------|----------|
+| **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts |
+| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions |
+| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools |
+
+<Info>
+Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP and SSE support five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. See [Authentication →](./auth/overview).
+</Info>
 
 ### STDIO Connections
 
@@ -32,6 +36,7 @@ STDIO connections launch external processes and communicate via standard input/o
     "args": ["-y", "@anthropic/mcp-filesystem"],
     "envs": ["HOME", "PATH"]
   },
+  "auth_type": "none",
   "tools_to_execute": ["*"]
 }
 ```
@@ -48,126 +53,30 @@ STDIO connections launch external processes and communicate via standard input/o
 
 ### HTTP Connections
 
-HTTP connections communicate with MCP servers via HTTP requests. Ideal for remote services and microservices.
-
-HTTP connections support three authentication methods:
-- **Header-based authentication**: Static headers (API keys, custom tokens)
-- **OAuth 2.0**: Shared token managed by an admin, with automatic refresh
-- **Per-User OAuth**: Each end-user authenticates with their own credentials
-
-#### Header-Based Authentication
-
-Use static headers for API keys and custom authentication tokens:
+HTTP connections communicate with MCP servers via HTTP requests. Ideal for remote APIs, microservices, and cloud-hosted MCP services.
 
 ```json
 {
   "name": "web-search",
   "connection_type": "http",
   "connection_string": "https://mcp-server.example.com/mcp",
-  "auth_type": "headers",
-  "headers": {
-    "Authorization": "Bearer your-api-key",
-    "X-Custom-Header": "value"
-  },
+  "auth_type": "none",
   "tools_to_execute": ["*"]
 }
 ```
 
-**Use Cases:**
-- Static API keys
-- Bearer token authentication
-- Custom header-based auth schemes
-
-#### OAuth 2.0 Authentication
-
-Use OAuth 2.0 for secure, user-based authentication with automatic token refresh:
-
-```json
-{
-  "name": "web-search",
-  "connection_type": "http",
-  "connection_string": "https://mcp-server.example.com/mcp",
-  "auth_type": "oauth",
-  "oauth_config": {
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret",
-    "authorize_url": "https://auth.example.com/authorize",
-    "token_url": "https://auth.example.com/token",
-    "scopes": ["read", "write"]
-  },
-  "tools_to_execute": ["*"]
-}
-```
-
-**Features:**
-- Automatic token refresh before expiration
-- PKCE support for public clients
-- Dynamic client registration (RFC 7591)
-- OAuth discovery from server URLs
-
-[→ Learn more about OAuth authentication →](./oauth)
-
-**Use Cases:**
-- Shared service integrations where all users access the same account
-- Admin-managed third-party connections
-- Compliance with OAuth 2.0 standards
-
-<Note>
-For existing MCP clients, the edit flow supports rotating OAuth credentials (`client_id` and `client_secret`) while preserving the same client ID. Connection type, auth type, and connection URL remain immutable after creation.
-</Note>
-
-#### Per-User OAuth
-
-Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server - users authenticate through a consent flow and their tokens are stored per-identity.
-
-Per-user OAuth is configured through the Web UI only (Bifrost runs a test OAuth flow and pre-fetches tools at setup time).
-
-[→ Learn more about Per-User OAuth →](./per-user-oauth)
-
-**Use Cases:**
-- Multi-tenant apps where users access their own data
-- Personal integrations (Notion, GitHub, Google Drive)
-- Scenarios requiring per-user audit trails and token isolation
-
-**Overall HTTP Use Cases:**
-- Remote API integrations
-- Cloud-hosted MCP services
-- Microservice architectures
-- Third-party tool providers
+For authenticated upstream servers, see [Authentication →](./auth/overview) and pick the auth type that matches: [Headers](./auth/headers), [OAuth 2.0](./auth/oauth), [Per-User OAuth](./auth/per-user-oauth), or [Per-User Headers](./auth/per-user-headers).
 
 ### SSE Connections
 
-Server-Sent Events (SSE) connections provide real-time, persistent connections to MCP servers. Like HTTP connections, SSE supports header-based authentication, OAuth 2.0, and per-user OAuth.
-
-#### Header-Based Authentication
+Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports the same auth options as HTTP.
 
 ```json
 {
   "name": "live-data",
   "connection_type": "sse",
   "connection_string": "https://stream.example.com/mcp/sse",
-  "auth_type": "headers",
-  "headers": {
-    "Authorization": "Bearer your-api-key"
-  },
-  "tools_to_execute": ["*"]
-}
-```
-
-#### OAuth 2.0 Authentication
-
-```json
-{
-  "name": "live-data",
-  "connection_type": "sse",
-  "connection_string": "https://stream.example.com/mcp/sse",
-  "auth_type": "oauth",
-  "oauth_config": {
-    "client_id": "your-client-id",
-    "authorize_url": "https://auth.example.com/authorize",
-    "token_url": "https://auth.example.com/token",
-    "scopes": ["stream:read"]
-  },
+  "auth_type": "none",
   "tools_to_execute": ["*"]
 }
 ```
@@ -176,15 +85,7 @@ Server-Sent Events (SSE) connections provide real-time, persistent connections t
 - Real-time market data
 - Live system monitoring
 - Event-driven workflows
-- Shared streaming connections managed by an admin
-
-#### Per-User OAuth
-
-Same as HTTP - each user authenticates under their own account. Configured through the Web UI only.
-
-[→ Learn more about Per-User OAuth →](./per-user-oauth)
-
-[→ Learn more about OAuth authentication →](./oauth)
+- Anything where the MCP server pushes notifications
 
 ---
 
@@ -370,7 +271,7 @@ import (
 
 func main() {
     mcpConfig := &schemas.MCPConfig{
-        ClientConfigs: []schemas.MCPClientConfig{
+        ClientConfigs: []*schemas.MCPClientConfig{
             {
                 Name:             "filesystem",
                 ConnectionType:   schemas.MCPConnectionTypeSTDIO,
@@ -441,6 +342,89 @@ A tool must be in **both** `ToolsToExecute` and `ToolsToAutoExecute` to be auto-
     ToolsToAutoExecute: []string{"read_file", "list_directory"},    // Only these auto-execute
 }
 ```
+
+### Global Tool Manager Settings
+
+Tool-manager behaviour is configured once and applies to every MCP server. There are no per-server overrides for these four knobs — the only per-server tool-manager-adjacent setting is `tool_sync_interval` on each `client_configs[]` entry.
+
+| Field                      | Type             | Default | Description                                                                                                                  |
+| -------------------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `tool_execution_timeout`   | integer / string | `30`    | Tool-call upstream timeout. Integer = seconds, string = Go duration (e.g. `"2m"`).                                           |
+| `max_agent_depth`          | integer          | `10`    | Maximum recursion depth in [agent mode](./agent-mode).                                                                       |
+| `code_mode_binding_level`  | string           | —       | `"server"` or `"tool"` — controls how tools are exposed in the [code-mode](./code-mode) VFS.                                 |
+| `disable_auto_tool_inject` | boolean          | `false` | When `true`, MCP tools are not auto-injected into requests; callers must opt in via `x-bf-mcp-include-tools` (for LLM calls) |
+
+<Tabs>
+<Tab title="Web UI">
+
+The MCP configuration panel under **Settings → MCP** exposes these four knobs plus `tool_sync_interval`:
+
+<Frame>
+  <img src="/media/ui-mcp-config.png" alt="MCP Gateway configuration panel showing tool execution timeout, agent depth, code mode binding level, tool sync interval, and auto tool inject toggle" />
+</Frame>
+
+Edits apply immediately and are persisted to the running config.
+
+</Tab>
+<Tab title="API">
+
+The `/api/config` endpoint accepts the runtime client-config aliases (`mcp_tool_execution_timeout`, `mcp_agent_depth`, `mcp_code_mode_binding_level`, `mcp_disable_auto_tool_inject`). These are deprecated names that mirror the canonical `mcp.tool_manager_config.*` fields below — the runtime accepts both forms.
+
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_config": {
+      "mcp_tool_execution_timeout": 120,
+      "mcp_agent_depth": 3,
+      "mcp_code_mode_binding_level": "server",
+      "mcp_disable_auto_tool_inject": true
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "tool_execution_timeout": "2m",
+      "max_agent_depth": 3,
+      "code_mode_binding_level": "server",
+      "disable_auto_tool_inject": true
+    },
+    "client_configs": [
+      { "name": "filesystem", "connection_type": "stdio", ... }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+Set `MCPConfig.ToolManagerConfig` before passing it to `bifrost.Init`:
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    ToolManagerConfig: &schemas.MCPToolManagerConfig{
+        ToolExecutionTimeout:  schemas.Duration(2 * time.Minute),
+        MaxAgentDepth:         3,
+        CodeModeBindingLevel:  schemas.CodeModeBindingLevelServer,
+        DisableAutoToolInject: true,
+    },
+    ClientConfigs: []*schemas.MCPClientConfig{
+        { Name: "filesystem", ConnectionType: schemas.MCPConnectionTypeSTDIO, /* ... */ },
+    },
+}
+```
+
+</Tab>
+</Tabs>
+
+The matching `client.mcp_tool_execution_timeout`, `client.mcp_agent_depth`, `client.mcp_code_mode_binding_level`, and `client.mcp_disable_auto_tool_inject` fields are deprecated aliases kept for backward compatibility — prefer `mcp.tool_manager_config.*` in new `config.json` and Go SDK setups. The Web UI panel and `/api/config` continue to use the aliases because they edit the live `client_config` row directly.
 
 ---
 

@@ -165,7 +165,7 @@ type TableOauthUserSession struct {
 	CodeVerifier     string    `gorm:"type:text" json:"-"`                                      // PKCE code verifier (kept secret)
 	SessionID        string    `gorm:"type:varchar(255);index" json:"session_id,omitempty"`     // Session-mode identity: client-asserted x-bf-mcp-session-id. Empty for vk/user mode rows. Stored plaintext (not a bearer credential; same trust model as a VK value).
 	VirtualKeyID     *string   `gorm:"type:varchar(255);index" json:"virtual_key_id"`           // VK identity (propagated to oauth_user_tokens)
-	UserID           *string   `gorm:"type:varchar(255);index" json:"user_id"`                  // Enterprise user identity (propagated to oauth_user_tokens); nullable for deferred-fill user-mode flows
+	UserID           *string   `gorm:"type:varchar(255);index" json:"user_id"`                  // User identity (propagated to oauth_user_tokens); populated only for user-mode rows, nil for vk/session-mode
 	FlowMode         string    `gorm:"type:varchar(20);not null;default:'vk'" json:"flow_mode"` // 'user' | 'vk' | 'session' — mirrors the token row's AuthMode; immutable after creation
 	Status           string    `gorm:"type:varchar(50);not null;index" json:"status"`           // "pending", "authorized", "failed", "expired"
 	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`

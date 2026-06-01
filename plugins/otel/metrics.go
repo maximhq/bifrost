@@ -46,6 +46,13 @@ type MetricsExporter struct {
 	outputTokensTotal     *syncInt64Counter
 	cacheHitsTotal        *syncInt64Counter
 
+	// Provider-side prompt cache token counters (distinct from cacheHitsTotal, which
+	// counts Bifrost's own semantic-cache hits).
+	cacheReadInputTokensTotal    *syncInt64Counter
+	cacheWriteInputTokensTotal   *syncInt64Counter
+	cacheWriteInputTokens5mTotal *syncInt64Counter
+	cacheWriteInputTokens1hTotal *syncInt64Counter
+
 	// Bifrost metrics - float counters (for cost)
 	costTotal *syncFloat64Counter
 
@@ -405,6 +412,34 @@ func (m *MetricsExporter) initMetrics() {
 		meter: m.meter,
 	}
 
+	m.cacheReadInputTokensTotal = &syncInt64Counter{
+		name:  "bifrost_cache_read_input_tokens_total",
+		desc:  "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokensTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_total",
+		desc:  "Total provider-side prompt-cache creation (write) input tokens",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokens5mTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_5m_total",
+		desc:  "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokens1hTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_1h_total",
+		desc:  "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
 	m.costTotal = &syncFloat64Counter{
 		name:  "bifrost_cost_total",
 		desc:  "Total cost in USD for requests to upstream providers",
@@ -511,6 +546,26 @@ func (m *MetricsExporter) RecordOutputTokens(ctx context.Context, count int64, a
 // RecordCacheHit records a cache hit metric
 func (m *MetricsExporter) RecordCacheHit(ctx context.Context, attrs ...attribute.KeyValue) {
 	m.cacheHitsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheReadInputTokens records provider-side prompt-cache read (cached) input tokens.
+func (m *MetricsExporter) RecordCacheReadInputTokens(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheReadInputTokensTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens records provider-side prompt-cache creation (write) input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokensTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens5m records the 5-minute-TTL subset of cache-write input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens5m(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokens5mTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens1h records the 1-hour-TTL subset of cache-write input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens1h(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokens1hTotal.Add(ctx, count, metric.WithAttributes(attrs...))
 }
 
 // RecordCost records cost metric

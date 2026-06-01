@@ -2054,15 +2054,15 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 			}
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := closer.Close(); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				if err := wce.CloseWithError(ctx.Err()); err != nil {
 					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 			}
 		case <-done:
 			// Race between done and ctx.Done: the streaming goroutine has reached its defer
@@ -2077,15 +2077,15 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 					return
 				}
 				if closer, ok := bodyStream.(io.Closer); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := closer.Close(); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				} else if wce, ok := bodyStream.(streamCloserWithError); ok {
+					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 					if err := wce.CloseWithError(ctx.Err()); err != nil {
 						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
 					}
-					ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
 				}
 			}
 		}
@@ -2145,12 +2145,16 @@ func closeBodyStream(bodyStream io.Reader, err error) {
 // if no data arrives within the configured timeout. This unblocks any pending
 // Read() call on the wrapped reader.
 type idleTimeoutReader struct {
-	reader     io.Reader
-	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
-	timeout    time.Duration
-	timer      *time.Timer
-	once       sync.Once
-	fired      atomic.Bool // set true when the idle timer fires
+	ctx           *schemas.BifrostContext
+	reader        io.Reader
+	bodyStream    io.Reader // closed via type assertion to io.Closer on timeout
+	timeout       time.Duration
+	timer         *time.Timer
+	once          sync.Once
+	cleanupOnce   sync.Once
+	timerDoneOnce sync.Once
+	timerDone     chan struct{}
+	fired         atomic.Bool // set true when the idle timer fires
 }
 
 // NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
@@ -2174,11 +2178,14 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 		timeout = DefaultStreamIdleTimeout
 	}
 	r := &idleTimeoutReader{
+		ctx:        ctx,
 		reader:     reader,
 		bodyStream: bodyStream,
 		timeout:    timeout,
+		timerDone:  make(chan struct{}),
 	}
 	r.timer = time.AfterFunc(timeout, func() {
+		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
 		r.once.Do(func() {
 			r.fired.Store(true)
 			if ctx != nil {
@@ -2187,11 +2194,51 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
 		})
 	})
-	return r, func() { r.timer.Stop() }
+	return r, r.cleanup
 }
 
-func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
+func (r *idleTimeoutReader) cleanup() {
+	r.cleanupOnce.Do(func() {
+		if r.timer.Stop() {
+			r.timerDoneOnce.Do(func() { close(r.timerDone) })
+			return
+		}
+		<-r.timerDone
+	})
+}
+
+func (r *idleTimeoutReader) connectionClosed() bool {
+	if r.ctx == nil {
+		return false
+	}
+	closed, ok := r.ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool)
+	return ok && closed
+}
+
+func (r *idleTimeoutReader) closedReadError() error {
+	if r.fired.Load() {
+		return ErrStreamIdleTimeout
+	}
+	return ErrStreamClosed
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if r.fired.Load() || r.connectionClosed() {
+				n = 0
+				err = r.closedReadError()
+				return
+			}
+			panic(recovered)
+		}
+	}()
+
+	// Checking if stream is already closed
+	if r.connectionClosed() {
+		return 0, r.closedReadError()
+	}
+	n, err = r.reader.Read(p)
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
@@ -2204,6 +2251,10 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 // ErrStreamIdleTimeout is returned when no data is received within the configured
 // stream_idle_timeout_in_seconds window.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
+
+// ErrStreamClosed is returned when a stream has already been closed by
+// cancellation or cleanup before the next read starts.
+var ErrStreamClosed = errors.New("stream closed")
 
 // HandleStreamCancellation should be called when a streaming goroutine exits
 // due to context cancellation. It ensures proper cleanup by:
@@ -2840,7 +2891,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
 	if ttftNs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)              // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstChunk, float64(ttftNs)/1e9) // spec: seconds
 	}
 	if chunkCount > 0 {
 		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)

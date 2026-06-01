@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/governance
 
-go 1.26.2
+go 1.26.3
 
 require gorm.io/gorm v1.31.1
 
@@ -8,8 +8,8 @@ require (
 	github.com/bytedance/sonic v1.15.0
 	github.com/google/cel-go v0.26.1
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.5.10
-	github.com/maximhq/bifrost/framework v1.3.10
+	github.com/maximhq/bifrost/core v1.5.15
+	github.com/maximhq/bifrost/framework v1.3.15
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
 )
@@ -120,7 +120,7 @@ require (
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
-	github.com/stoewer/go-strcase v1.3.0 // indirect
+	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
@@ -144,13 +144,13 @@ require (
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.274.0 // indirect
 	google.golang.org/genproto v0.0.0-20260316180232-0b37fe3546d5 // indirect

@@ -190,6 +190,11 @@
           },
           "description": "Additional allowed headers for CORS and WebSocket"
         },
+        "allow_direct_keys": {
+          "type": "boolean",
+          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and an Authorization header carrying the provider's raw API key.",
+          "default": false
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
@@ -218,28 +223,16 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_enable_temp_token_auth": {
+          "type": "boolean",
+          "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting — they always require SSO login.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
-        },
-        "mcp_external_server_url": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "object",
-              "properties": {
-                "value": { "type": "string" },
-                "env_var": { "type": "string" },
-                "from_env": { "type": "boolean" }
-              },
-              "additionalProperties": false
-            }
-          ],
-          "description": "Public base URL Bifrost advertises when acting as an OAuth server/resource (well-known metadata, WWW-Authenticate). Set when Bifrost runs behind a reverse proxy. Supports env var syntax: \"env.MY_VAR\"."
         },
         "mcp_external_client_url": {
           "anyOf": [
@@ -497,6 +490,10 @@
                 "type": "string",
                 "description": "Team name"
               },
+              "source_id": {
+                "type": "string",
+                "description": "Optional external source identifier (e.g. SCIM group ID) used to map this team to an upstream system. Unique when set."
+              },
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID"
@@ -626,6 +623,11 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
+              },
+              "access_profile_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
               "rate_limit_id": {
                 "type": "string",
@@ -1044,9 +1046,9 @@
                   },
                   "matview_refresh_interval": {
                     "type": "string",
-                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '30s', '5m', '1h'). Default 30s. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
                     "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
-                    "default": "30s"
+                    "default": "1m"
                   }
                 },
                 "required": [
@@ -1915,6 +1917,13 @@
             "type": "string"
           }
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
@@ -2416,10 +2425,6 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
-                "api_version": {
-                  "type": "string",
-                  "description": "Azure API version"
-                },
                 "client_id": {
                   "type": "string",
                   "description": "Azure client ID for Entra authentication (can use env. prefix)"
@@ -2436,6 +2441,10 @@
                   "type": "array",
                   "items": { "type": "string" },
                   "description": "OAuth2 scopes for Entra authentication"
+                },
+                "api_version": {
+                  "type": "string",
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
                 }
               },
               "required": ["endpoint"],
@@ -2823,7 +2832,7 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2834,6 +2843,13 @@
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
+          "items": {
             "type": "string"
           }
         },
@@ -2917,6 +2933,21 @@
           "type": "boolean",
           "description": "When true, this MCP client is disabled (connection and workers are stopped while preserving configuration).",
           "default": false
+        },
+        "tls_config": {
+          "type": "object",
+          "description": "TLS configuration for HTTP and SSE connections. Not applicable to stdio or inprocess connection types.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean",
+              "description": "Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set. Use only in development or trusted isolated environments. Not recommended for production."
+            },
+            "ca_cert_pem": {
+              "type": "string",
+              "description": "PEM-encoded CA certificate to trust for MCP server connections. Use when the MCP server uses a self-signed or private CA certificate. Supports env.VAR_NAME syntax to read the certificate from an environment variable."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["name", "connection_type"],
@@ -3603,6 +3634,11 @@
           "format": "uri",
           "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
         },
+        "authServerType": {
+          "type": "string",
+          "enum": ["org", "custom"],
+          "description": "'org' for Org Authorization Server or 'custom' for Custom Authorization Server. Auto-detected from issuer URL when omitted."
+        },
         "clientId": {
           "type": "string",
           "description": "Okta application client ID"
@@ -3633,6 +3669,48 @@
           "type": "string",
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
+        },
+        "attributeRoleMappings": {
+          "type": "array",
+          "description": "Ordered list of attribute -> role mappings (first match wins). Requires an Okta Custom Authorization Server.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
+              "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
+              "role": { "type": "string", "description": "Bifrost role to assign on match" }
+            },
+            "required": ["attribute", "value", "role"],
+            "additionalProperties": false
+          }
+        },
+        "attributeTeamMappings": {
+          "type": "array",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string" },
+              "value": { "type": "string" },
+              "team": { "type": "string" }
+            },
+            "required": ["attribute", "value", "team"],
+            "additionalProperties": false
+          }
+        },
+        "attributeBusinessUnitMappings": {
+          "type": "array",
+          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attribute": { "type": "string" },
+              "value": { "type": "string" },
+              "business_unit": { "type": "string" }
+            },
+            "required": ["attribute", "value", "business_unit"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],

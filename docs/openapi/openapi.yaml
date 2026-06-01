@@ -756,7 +756,7 @@ paths:
   /api/plugins/{name}:
     $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
 
-  # MCP
+  # MCP — client management
   /v1/mcp/tool/execute:
     $ref: './paths/management/mcp.yaml#/execute-tool'
   /api/mcp/clients:
@@ -770,41 +770,33 @@ paths:
   /api/mcp/client/{id}/complete-oauth:
     $ref: './paths/management/mcp.yaml#/client-complete-oauth'
 
-  # MCP - OAuth (server-level)
+  # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
+  /api/mcp/sessions:
+    $ref: './paths/management/mcp.yaml#/sessions'
+  /api/mcp/sessions/{id}:
+    $ref: './paths/management/mcp.yaml#/session-by-id'
+  /api/mcp/sessions/{id}/reauth:
+    $ref: './paths/management/mcp.yaml#/session-reauth'
+
+  # MCP — per-user-headers submission flow
+  /api/mcp/per-user-headers/flows/{id}:
+    $ref: './paths/management/mcp.yaml#/per-user-headers-flow'
+  /api/mcp/per-user-headers/credential/{id}:
+    $ref: './paths/management/mcp.yaml#/per-user-headers-credential'
+
+  # MCP — per-user OAuth flow
+  /api/oauth/per-user/flows/{id}:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-detail'
+  /api/oauth/per-user/flows/{id}/start:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-start'
+
+  # MCP — server-level OAuth admin endpoints
   /api/oauth/callback:
     $ref: './paths/management/oauth.yaml#/oauth-callback'
   /api/oauth/config/{id}/status:
     $ref: './paths/management/oauth.yaml#/oauth-config-status'
-
-  # Per-User OAuth 2.1 Authorization Server
-  /api/oauth/per-user/register:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-register'
-  /api/oauth/per-user/authorize:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-authorize'
-  /api/oauth/per-user/token:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-token'
-  /api/oauth/per-user/upstream/authorize:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-upstream-authorize'
-
-  # Per-User OAuth Consent Flow (browser UI)
-  /oauth/consent:
-    $ref: './paths/management/oauth.yaml#/consent-identity-page'
-  /oauth/consent/mcps:
-    $ref: './paths/management/oauth.yaml#/consent-mcps-page'
-  /api/oauth/per-user/consent/vk:
-    $ref: './paths/management/oauth.yaml#/consent-submit-vk'
-  /api/oauth/per-user/consent/user-id:
-    $ref: './paths/management/oauth.yaml#/consent-submit-user-id'
-  /api/oauth/per-user/consent/skip:
-    $ref: './paths/management/oauth.yaml#/consent-skip'
-  /api/oauth/per-user/consent/submit:
-    $ref: './paths/management/oauth.yaml#/consent-submit'
-
-  # OAuth Discovery (RFC 9728 + RFC 8414)
-  /.well-known/oauth-protected-resource:
-    $ref: './paths/management/oauth.yaml#/oauth-protected-resource-metadata'
-  /.well-known/oauth-authorization-server:
-    $ref: './paths/management/oauth.yaml#/oauth-authorization-server-metadata'
+  /api/oauth/config/{id}:
+    $ref: './paths/management/oauth.yaml#/oauth-config-by-id'
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
@@ -853,6 +845,60 @@ paths:
     $ref: './paths/management/governance.yaml#/pricing-overrides'
   /api/governance/pricing-overrides/{id}:
     $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
+
+  # RBAC (roles, permissions, resources, operations)
+  /api/roles:
+    $ref: './paths/management/rbac.yaml#/roles'
+  /api/roles/{id}:
+    $ref: './paths/management/rbac.yaml#/roles-by-id'
+  /api/roles/{id}/permissions:
+    $ref: './paths/management/rbac.yaml#/roles-permissions'
+  /api/resources:
+    $ref: './paths/management/rbac.yaml#/resources'
+  /api/operations:
+    $ref: './paths/management/rbac.yaml#/operations'
+  /api/permissions:
+    $ref: './paths/management/rbac.yaml#/permissions'
+
+  # Access Profiles
+  /api/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles'
+  /api/access-profiles/{id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-by-id'
+  /api/access-profiles/{id}/activate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-activate'
+  /api/access-profiles/{id}/deactivate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-deactivate'
+  /api/access-profiles/{id}/clone:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-clone'
+  /api/access-profiles/{id}/propagate:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-propagate'
+  /api/access-profiles/{id}/roles:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-roles'
+  /api/access-profiles/{id}/roles/{role_id}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-role-by-id'
+  /api/access-profiles/{id}/versions:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-versions'
+  /api/access-profiles/{id}/versions/{version}:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-version-by-number'
+  /api/access-profiles/{id}/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id'
+  /api/access-profiles/audit-logs:
+    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all'
+  /api/users/{target_user_id}/access-profiles:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
+  /api/users/{target_user_id}/access-profiles/{profile_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
+  /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
+  /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
+
+  # MCP Tool Groups
+  /api/mcp/tool-groups:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
+  /api/mcp/tool-groups/{id}:
+    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
 
   # Logging
   /api/logs:
@@ -985,6 +1031,12 @@ components:
   responses:
     BadRequest:
       description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    Unauthorized:
+      description: Unauthorized — missing or invalid credentials
       content:
         application/json:
           schema:
@@ -1299,6 +1351,28 @@ components:
       $ref: './schemas/management/oauth.yaml#/OAuthConfigStatus'
     OAuthToken:
       $ref: './schemas/management/oauth.yaml#/OAuthToken'
+    MCPOauthFlowDetail:
+      $ref: './schemas/management/oauth.yaml#/MCPOauthFlowDetail'
+
+    # MCP Sessions + per-user-headers
+    MCPClientSummary:
+      $ref: './schemas/management/mcp.yaml#/MCPClientSummary'
+    MCPVirtualKeySummary:
+      $ref: './schemas/management/mcp.yaml#/MCPVirtualKeySummary'
+    MCPUserSummary:
+      $ref: './schemas/management/mcp.yaml#/MCPUserSummary'
+    MCPSessionRow:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionRow'
+    MCPSessionsListResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionsListResponse'
+    MCPSessionReauthResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPSessionReauthResponse'
+    MCPHeadersFlowDetail:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersFlowDetail'
+    MCPHeadersSubmitRequest:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+    MCPHeadersSubmitResponse:
+      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitResponse'
 
     # Governance - Virtual Keys
     VirtualKey:
@@ -1311,6 +1385,8 @@ components:
       $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
     ListVirtualKeysResponse:
       $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
+    VirtualKeyQuotaResponse:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
     CreateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     UpdateVirtualKeyRequest:

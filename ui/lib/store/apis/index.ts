@@ -9,6 +9,7 @@ export * from "./governanceApi";
 export * from "./logsApi";
 export * from "./mcpApi";
 export * from "./mcpLogsApi";
+export * from "./mcpPerUserHeadersApi";
 export * from "./mcpSessionsApi";
 export * from "./pluginsApi";
 export * from "./providersApi";

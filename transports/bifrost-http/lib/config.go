@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -32,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
@@ -82,6 +84,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
+	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
+	ShouldAllowDirectKeys() bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -333,12 +337,13 @@ type Config struct {
 	// All plugins are stored in BasePlugins. Interface-specific caches are
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
-	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
-	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
-	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
-	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
-	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
-	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin] // Derived cache (auto-rebuilt)
+	pluginsMu            sync.Mutex                                                // Protects structural changes to BasePlugins
+	pluginOrderMap       map[string]pluginOrderInfo                                // Plugin ordering metadata (protected by pluginsMu)
+	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]                      // Master list of all plugins
+	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]                       // Derived cache (auto-rebuilt)
+	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]                       // Derived cache (auto-rebuilt)
+	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin]             // Derived cache (auto-rebuilt)
+	ConfigMarshallers    atomic.Pointer[map[string]schemas.ConfigMarshallerPlugin] // Derived cache (auto-rebuilt)
 	PluginLoader         plugins.PluginLoader
 
 	// Plugin metadata from config file/database
@@ -351,6 +356,13 @@ type Config struct {
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
 	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
+
+	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
+	// Constructed alongside OAuthProvider and passed into the Bifrost core
+	// init so the per-user-headers resolver can resolve / persist values
+	// scoped by (auth_mode, identity, mcp_client).
+	MCPHeadersProvider    *mcp_headers.Provider
+	MCPHeadersSweepWorker *mcp_headers.CredentialSweepWorker
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
@@ -398,6 +410,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
+	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
 	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
 }
@@ -1456,6 +1469,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
 }
@@ -3201,6 +3215,9 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 
 	// Initialize OAuth provider
 	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+	// Initialize per-user-headers credential provider. Storage parallel of
+	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
+	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
 
 	// Start token refresh worker for automatic OAuth token refresh
 	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
@@ -3213,6 +3230,15 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	config.OAuthSweepWorker = oauth2.NewPerUserOAuthSweepWorker(config.OAuthProvider, 30*24*time.Hour, logger)
 	if config.OAuthSweepWorker != nil {
 		config.OAuthSweepWorker.Start(ctx)
+	}
+
+	// Start per-user headers credential sweep worker. Parallel of the OAuth
+	// sweep but only reaps orphaned credential rows (no flow table to sweep).
+	// Same 30-day retention so admin expectations stay uniform across the two
+	// per-user auth surfaces.
+	config.MCPHeadersSweepWorker = mcp_headers.NewCredentialSweepWorker(config.MCPHeadersProvider, 30*24*time.Hour, logger)
+	if config.MCPHeadersSweepWorker != nil {
+		config.MCPHeadersSweepWorker.Start(ctx)
 	}
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
@@ -3502,6 +3528,11 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
+// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
+func (c *Config) ShouldAllowDirectKeys() bool {
+	return c.ClientConfig.AllowDirectKeys
+}
+
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
@@ -3680,6 +3711,9 @@ func (c *Config) Close(ctx context.Context) {
 	if c.OAuthSweepWorker != nil {
 		c.OAuthSweepWorker.Stop()
 	}
+	if c.MCPHeadersSweepWorker != nil {
+		c.MCPHeadersSweepWorker.Stop()
+	}
 	if c.KVStore != nil {
 		c.KVStore.Close()
 	}
@@ -3781,11 +3815,10 @@ func (c *Config) GetLoadedHTTPTransportPlugins() []schemas.HTTPTransportPlugin {
 func (c *Config) rebuildInterfaceCaches() {
 	basePlugins := c.BasePlugins.Load()
 	if basePlugins == nil {
-		// Clear all caches atomically
+		// Clear all caches atomically, except ConfigMarshallers which are preserved.
 		emptyLLM := []schemas.LLMPlugin{}
 		emptyMCP := []schemas.MCPPlugin{}
 		emptyHTTP := []schemas.HTTPTransportPlugin{}
-
 		c.LLMPlugins.Store(&emptyLLM)
 		c.MCPPlugins.Store(&emptyMCP)
 		c.HTTPTransportPlugins.Store(&emptyHTTP)
@@ -3807,12 +3840,49 @@ func (c *Config) rebuildInterfaceCaches() {
 		if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
 			httpTransport = append(httpTransport, httpPlugin)
 		}
+		if cm, ok := p.(schemas.ConfigMarshallerPlugin); ok {
+			// RegisterConfigMarshaller adds/updates atomically without clearing other entries
+			c.RegisterConfigMarshaller(p.GetName(), cm)
+		}
 	}
 
-	// Atomic stores of all caches
 	c.LLMPlugins.Store(&llm)
 	c.MCPPlugins.Store(&mcp)
 	c.HTTPTransportPlugins.Store(&httpTransport)
+}
+
+// RegisterConfigMarshaller registers a config marshaller for a plugin by name without
+// adding the plugin to BasePlugins. Use this to register marshallers for disabled plugins
+// at startup so their stored configs can still be redacted/expanded via the API.
+func (c *Config) RegisterConfigMarshaller(name string, cm schemas.ConfigMarshallerPlugin) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin)
+		if old != nil {
+			maps.Copy(newMap, *old)
+		}
+		newMap[name] = cm
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
+}
+
+// RemoveConfigMarshaller explicitly removes a plugin's config marshaller.
+// Call this only when a plugin is permanently deleted, not when it is disabled.
+func (c *Config) RemoveConfigMarshaller(name string) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		if old == nil {
+			return
+		}
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin, len(*old))
+		maps.Copy(newMap, *old)
+		delete(newMap, name)
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
 }
 
 // IsPluginLoaded checks if a plugin with the given name is currently loaded.
@@ -4697,7 +4767,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	// Track new environment variables
 	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, clientConfig)
 	// Config with processed env vars
-	if err := c.client.AddMCPClient(clientConfig); err != nil {
+	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
@@ -4800,6 +4870,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
+	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -5018,6 +5089,15 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 	if config.OauthClientSecret != nil {
 		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
+	// Redact TLS CA cert PEM if present
+	if config.TLSConfig != nil {
+		tlsCopy := *config.TLSConfig
+		if config.TLSConfig.CACertPEM != nil {
+			tlsCopy.CACertPEM = config.TLSConfig.CACertPEM.Redacted()
+		}
+		configCopy.TLSConfig = &tlsCopy
 	}
 
 	return &configCopy

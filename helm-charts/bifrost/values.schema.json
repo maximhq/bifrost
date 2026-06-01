@@ -446,34 +446,16 @@
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
               "default": false
             },
+            "mcpEnableTempTokenAuth": {
+              "type": "boolean",
+              "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",
+              "default": false
+            },
             "routingChainMaxDepth": {
               "type": "integer",
               "minimum": 1,
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
-            },
-            "mcpExternalBaseUrl": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "value": {
-                      "type": "string"
-                    },
-                    "envVar": {
-                      "type": "string"
-                    },
-                    "fromEnv": {
-                      "type": "boolean"
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              ],
-              "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy (e.g. \"https://api.example.com\"). Supports env var syntax: \"env.MY_VAR\"."
             }
           },
           "additionalProperties": false
@@ -1235,6 +1217,10 @@
                   "customer_id": {
                     "type": "string"
                   },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
                   "rate_limit_id": {
                     "type": "string"
                   },
@@ -1750,6 +1736,11 @@
                         "type": "string",
                         "format": "uri",
                         "description": "Okta issuer URL (e.g., https://your-domain.okta.com/oauth2/default)"
+                      },
+                      "authServerType": {
+                        "type": "string",
+                        "enum": ["org", "custom"],
+                        "description": "'org' for Org Authorization Server or 'custom' for Custom Authorization Server. Auto-detected from issuer URL when omitted."
                       },
                       "clientId": {
                         "type": "string",
@@ -3982,6 +3973,22 @@
           "type": "boolean",
           "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",
           "default": false
+        },
+        "tlsConfig": {
+          "type": "object",
+          "description": "[Upcoming] TLS configuration for HTTP and SSE connection types. Not applicable to stdio or inprocess.",
+          "properties": {
+            "insecureSkipVerify": {
+              "type": "boolean",
+              "description": "Disable TLS certificate verification. Takes priority over caCertPem. Development/testing only.",
+              "default": false
+            },
+            "caCertPem": {
+              "type": "string",
+              "description": "PEM-encoded CA certificate for MCP server connections. Accepts a literal PEM string or an env.VAR_NAME reference."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["name", "connectionType"],

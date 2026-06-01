@@ -247,6 +247,7 @@ bifrost:
     # mcpCodeModeBindingLevel: "server"
     # mcpToolSyncInterval: 10
     # mcpDisableAutoToolInject: false
+    # mcpEnableTempTokenAuth: false
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
@@ -373,6 +374,15 @@ bifrost:
       #   secretRef:
       #     name: ""                               # k8s secret name
       #     connectionStringKey: "connection-string"  # key within the secret
+      #
+      # - name: "example-https-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # TLS configuration for HTTP and SSE connection types.
+      #   # Use when the MCP server presents a self-signed or private CA certificate.
+      #   tlsConfig:
+      #     insecureSkipVerify: false              # Disable TLS verification (dev/test only — takes priority over caCertPem)
+      #     caCertPem: "env.MY_MCP_CA_CERT"       # PEM string or env.VAR_NAME reference
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
@@ -623,6 +633,7 @@ bifrost:
     config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
+      # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""
@@ -725,13 +736,14 @@ bifrost:
       #   cel_expression: "!contains(request.body, 'SSN')"
       #   apply_to: "input"
       #   sampling_rate: 100
-      #   timeout: 1000
+      #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
       #   policy_name: "content-filter"
       #   enabled: true
+      #   timeout: 30        # Timeout in seconds for provider execution (default: 30)
       #   config: {}
 
   # Access profiles (enterprise): seed RBAC access profile templates from Helm.
@@ -874,6 +886,10 @@ postgresql:
     username: bifrost
     password: bifrost_password
     database: bifrost
+    # Use existing Kubernetes secret for password (takes precedence over password field).
+    # The postgres pod and bifrost will both read from this secret.
+    existingSecret: ""
+    passwordKey: "password"
 
   primary:
     persistence:
@@ -887,6 +903,11 @@ postgresql:
       requests:
         cpu: 250m
         memory: 256Mi
+
+    podSecurityContext:
+      fsGroup: 999
+
+    containerSecurityContext: {}
 
   metrics:
     enabled: false

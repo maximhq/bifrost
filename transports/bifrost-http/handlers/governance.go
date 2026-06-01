@@ -80,21 +80,21 @@ type CreateVirtualKeyRequest struct {
 	Name            string `json:"name" validate:"required"`
 	Description     string `json:"description,omitempty"`
 	ProviderConfigs []struct {
-		Provider      string                  `json:"provider" validate:"required"`
-		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels schemas.WhiteList       `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
-		Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`        // Multi-budget for provider config
-		RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
-		KeyIDs        schemas.WhiteList       `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
+		Provider          string                  `json:"provider" validate:"required"`
+		Weight            *float64                `json:"weight,omitempty"`
+		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
+		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs []struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID          *string                 `json:"team_id,omitempty"`           // Mutually exclusive with CustomerID and AccessProfileID
-	CustomerID      *string                 `json:"customer_id,omitempty"`       // Mutually exclusive with TeamID and AccessProfileID
-	AccessProfileID *uint                   `json:"access_profile_id,omitempty"` // Mutually exclusive with TeamID and CustomerID
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`           // Multi-budget: each must have a unique reset_duration
+	TeamID          *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID      *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
@@ -105,27 +105,56 @@ type UpdateVirtualKeyRequest struct {
 	Name            *string `json:"name,omitempty"`
 	Description     *string `json:"description,omitempty"`
 	ProviderConfigs []struct {
-		ID            *uint                   `json:"id,omitempty"` // null for new entries
-		Provider      string                  `json:"provider" validate:"required"`
-		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels schemas.WhiteList       `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
-		Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`        // Multi-budget for provider config
-		RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
-		KeyIDs        schemas.WhiteList       `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
+		ID                *uint                   `json:"id,omitempty"` // null for new entries
+		Provider          string                  `json:"provider" validate:"required"`
+		Weight            *float64                `json:"weight,omitempty"`
+		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
+		RateLimit         *UpdateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
 	MCPConfigs []struct {
 		ID             *uint             `json:"id,omitempty"` // null for new entries
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID           *string                 `json:"team_id,omitempty"`
-	CustomerID       *string                 `json:"customer_id,omitempty"`
-	AccessProfileID  *uint                   `json:"access_profile_id,omitempty"`
-	Budgets          []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
-	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive         *bool                   `json:"is_active,omitempty"`
-	CalendarAligned  *bool                   `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
-	ResetBudgetUsage *bool                   `json:"reset_budget_usage,omitempty"`
+	TeamID           schemas.OptionalJSON[string] `json:"team_id,omitempty"`
+	CustomerID       schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
+	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	IsActive         *bool                        `json:"is_active,omitempty"`
+	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+}
+
+var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
+
+// optionalJSONStringHasValue reports whether a presence-aware string contains a non-empty value.
+func optionalJSONStringHasValue(value schemas.OptionalJSON[string]) bool {
+	return value.Set && !value.Null && value.Value != ""
+}
+
+// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer ownership changes.
+func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
+	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
+		return errVirtualKeyDualAssociation
+	}
+	if optionalJSONStringHasValue(req.TeamID) {
+		vk.TeamID = new(req.TeamID.Value)
+		vk.CustomerID = nil
+		return nil
+	}
+	if optionalJSONStringHasValue(req.CustomerID) {
+		vk.CustomerID = new(req.CustomerID.Value)
+		vk.TeamID = nil
+		return nil
+	}
+	if req.TeamID.Set || req.CustomerID.Set {
+		vk.TeamID = nil
+		vk.CustomerID = nil
+	}
+	return nil
 }
 
 type BulkRotateVirtualKeysRequest struct {
@@ -444,44 +473,18 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		// Convert map to slice to match the non-memory response format (array)
-		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
-		for _, vk := range data.VirtualKeys {
-			virtualKeys = append(virtualKeys, vk)
-		}
-		sort.Slice(virtualKeys, func(i, j int) bool {
-			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
-		})
-		SendJSON(ctx, map[string]interface{}{
-			"virtual_keys": virtualKeys,
-			"count":        len(virtualKeys),
-			"total_count":  len(virtualKeys),
-			"limit":        len(virtualKeys),
-			"offset":       0,
-		})
-		return
-	}
 	// Check for pagination/filter parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
-	accessProfileIDStr := string(ctx.QueryArgs().Peek("access_profile_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || accessProfileIDStr != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -491,18 +494,6 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			Order:                              order,
 			Export:                             isExport,
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
-		}
-		if accessProfileIDStr != "" {
-			apID, err := strconv.ParseUint(accessProfileIDStr, 10, 0)
-			if err != nil {
-				SendError(ctx, 400, "Invalid access_profile_id parameter: must be a number")
-				return
-			}
-			if (customerID != "" || teamID != "") && apID > 0 {
-				SendError(ctx, 400, "access_profile_id cannot be combined with team_id or customer_id filters")
-				return
-			}
-			params.AccessProfileID = uint(apID)
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
@@ -578,19 +569,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Virtual key name is required")
 		return
 	}
-	// Validate mutually exclusive TeamID, CustomerID, and AccessProfileID
-	entityCount := 0
-	if req.TeamID != nil {
-		entityCount++
-	}
-	if req.CustomerID != nil {
-		entityCount++
-	}
-	if req.AccessProfileID != nil && *req.AccessProfileID > 0 {
-		entityCount++
-	}
-	if entityCount > 1 {
-		SendError(ctx, 400, "VirtualKey can only be attached to one of: Team, Customer, or AccessProfile")
+	// Validate mutually exclusive TeamID and CustomerID
+	if req.TeamID != nil && req.CustomerID != nil {
+		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
 	// Validate budgets if provided
@@ -636,7 +617,6 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
-			AccessProfileID: req.AccessProfileID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
 		}
@@ -692,6 +672,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := pc.AllowedModels.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
 				}
+				if err := pc.BlacklistedModels.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+				}
 				if err := pc.KeyIDs.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 				}
@@ -713,12 +696,13 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 
 				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-					VirtualKeyID:  vk.ID,
-					Provider:      string(providerName),
-					Weight:        pc.Weight,
-					AllowedModels: pc.AllowedModels,
-					AllowAllKeys:  allowAllKeys,
-					Keys:          keys,
+					VirtualKeyID:      vk.ID,
+					Provider:          string(providerName),
+					Weight:            pc.Weight,
+					AllowedModels:     pc.AllowedModels,
+					BlacklistedModels: pc.BlacklistedModels,
+					AllowAllKeys:      allowAllKeys,
+					Keys:              keys,
 				}
 
 				// Create rate limit for provider config if provided
@@ -822,25 +806,6 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 // getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
 func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		for _, vk := range data.VirtualKeys {
-			if vk.ID == vkID {
-				SendJSON(ctx, map[string]interface{}{
-					"virtual_key": vk,
-				})
-				return
-			}
-		}
-		SendError(ctx, 404, "Virtual key not found")
-		return
-	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -864,19 +829,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	// Validate mutually exclusive TeamID, CustomerID, and AccessProfileID
-	entityCount := 0
-	if req.TeamID != nil {
-		entityCount++
-	}
-	if req.CustomerID != nil {
-		entityCount++
-	}
-	if req.AccessProfileID != nil && *req.AccessProfileID > 0 {
-		entityCount++
-	}
-	if entityCount > 1 {
-		SendError(ctx, 400, "VirtualKey can only be attached to one of: Team, Customer, or AccessProfile")
+	// Validate mutually exclusive TeamID and CustomerID
+	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
+		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
@@ -926,23 +881,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.Description != nil {
 			vk.Description = *req.Description
 		}
-		if req.TeamID != nil {
-			vk.TeamID = req.TeamID
-			vk.CustomerID = nil
-			vk.AccessProfileID = nil
-		} else if req.CustomerID != nil {
-			vk.CustomerID = req.CustomerID
-			vk.TeamID = nil
-			vk.AccessProfileID = nil
-		} else if req.AccessProfileID != nil {
-			vk.AccessProfileID = req.AccessProfileID
-			vk.TeamID = nil
-			vk.CustomerID = nil
-		} else {
-			// All nil — clear entity assignment
-			vk.TeamID = nil
-			vk.CustomerID = nil
-			vk.AccessProfileID = nil
+		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+			if errors.Is(err, errVirtualKeyDualAssociation) {
+				return &badRequestError{err: err}
+			}
+			return err
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
@@ -1078,13 +1021,6 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if err := h.configStore.UpdateVirtualKey(ctx, vk, tx); err != nil {
 			return err
 		}
-		// UpdateVirtualKey's Select list excludes access_profile_id to protect config-sync paths.
-		// Persist it separately so API-driven entity assignment is always saved.
-		if err := tx.Model(&configstoreTables.TableVirtualKey{}).
-			Where("id = ?", vk.ID).
-			Updates(map[string]interface{}{"access_profile_id": vk.AccessProfileID}).Error; err != nil {
-			return fmt.Errorf("failed to update virtual key access_profile_id: %w", err)
-		}
 		if req.ProviderConfigs != nil {
 			// Get existing provider configs for comparison
 			var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
@@ -1125,6 +1061,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.AllowedModels.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
 					}
+					if err := pc.BlacklistedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
@@ -1147,12 +1086,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 					// Create new provider config
 					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-						VirtualKeyID:  vk.ID,
-						Provider:      string(providerName),
-						Weight:        pc.Weight,
-						AllowedModels: pc.AllowedModels,
-						AllowAllKeys:  allowAllKeys,
-						Keys:          keys,
+						VirtualKeyID:      vk.ID,
+						Provider:          string(providerName),
+						Weight:            pc.Weight,
+						AllowedModels:     pc.AllowedModels,
+						BlacklistedModels: pc.BlacklistedModels,
+						AllowAllKeys:      allowAllKeys,
+						Keys:              keys,
 					}
 					// Create rate limit for provider config if provided
 					if pc.RateLimit != nil {
@@ -1214,12 +1154,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.AllowedModels.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
 					}
+					if err := pc.BlacklistedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
 					existing.Provider = string(providerName)
 					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
+					existing.BlacklistedModels = pc.BlacklistedModels
 
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
@@ -1512,6 +1456,21 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
 		return
 	}
+
+	// Per-user credential reconciliation when the VK's MCP allowlist
+	// changed. Mirrors the AP-propagation path: enterprise orphans /
+	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
+	// VK's owner (user-keyed creds) against the new effective allowlist
+	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	if req.MCPConfigs != nil && h.configStore != nil {
+		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
+			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
+		}
+		if err := h.configStore.ReconcileMCPHeadersAfterVKChange(ctx, vk.ID); err != nil {
+			logger.Error("reconcile per-user-headers credentials after VK %s update failed: %v", vk.ID, err)
+		}
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key updated successfully",
 		"virtual_key": preloadedVk,
@@ -1654,39 +1613,6 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 // getTeams handles GET /api/governance/teams - Get all teams
 func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		if customerID != "" {
-			teams := make(map[string]*configstoreTables.TableTeam)
-			for _, team := range data.Teams {
-				if team.CustomerID != nil && *team.CustomerID == customerID {
-					teams[team.ID] = team
-				}
-			}
-			SendJSON(ctx, map[string]interface{}{
-				"teams":       teams,
-				"count":       len(teams),
-				"total_count": len(teams),
-				"limit":       len(teams),
-				"offset":      0,
-			})
-		} else {
-			SendJSON(ctx, map[string]interface{}{
-				"teams":       data.Teams,
-				"count":       len(data.Teams),
-				"total_count": len(data.Teams),
-				"limit":       len(data.Teams),
-				"offset":      0,
-			})
-		}
-		return
-	}
 
 	// Check for pagination parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
@@ -1842,24 +1768,6 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		team, ok := data.Teams[teamID]
-		if !ok {
-			SendError(ctx, 404, "Team not found")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"team": team,
-		})
-		return
-	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2147,23 +2055,6 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 
 // getCustomers handles GET /api/governance/customers - Get all customers
 func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"customers":   data.Customers,
-			"count":       len(data.Customers),
-			"total_count": len(data.Customers),
-			"limit":       len(data.Customers),
-			"offset":      0,
-		})
-		return
-	}
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
@@ -2292,24 +2183,6 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 // getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
 func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		customer, ok := data.Customers[customerID]
-		if !ok {
-			SendError(ctx, 404, "Customer not found")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"customer": customer,
-		})
-		return
-	}
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2527,20 +2400,6 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 
 // getBudgets handles GET /api/governance/budgets - Get all budgets
 func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"budgets": data.Budgets,
-			"count":   len(data.Budgets),
-		})
-		return
-	}
 	budgets, err := h.configStore.GetBudgets(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve budgets: %v", err)
@@ -2555,20 +2414,6 @@ func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
 
 // getRateLimits handles GET /api/governance/rate-limits - Get all rate limits
 func (h *GovernanceHandler) getRateLimits(ctx *fasthttp.RequestCtx) {
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"rate_limits": data.RateLimits,
-			"count":       len(data.RateLimits),
-		})
-		return
-	}
 	rateLimits, err := h.configStore.GetRateLimits(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve rate limits: %v", err)
@@ -2644,23 +2489,6 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		SendJSON(ctx, map[string]any{
-			"model_configs": data.ModelConfigs,
-			"count":         len(data.ModelConfigs),
-			"total_count":   len(data.ModelConfigs),
-			"limit":         len(data.ModelConfigs),
-			"offset":        0,
-		})
-		return
-	}
-
 	// Check for pagination parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
@@ -3068,29 +2896,6 @@ type ProviderGovernanceResponse struct {
 
 // getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		data := h.governanceManager.GetGovernanceData(ctx)
-		if data == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		var result []ProviderGovernanceResponse
-		for _, p := range data.Providers {
-			if p.Budget != nil || p.RateLimit != nil {
-				result = append(result, ProviderGovernanceResponse{
-					Provider:  p.Name,
-					Budget:    p.Budget,
-					RateLimit: p.RateLimit,
-				})
-			}
-		}
-		SendJSON(ctx, map[string]interface{}{
-			"providers": result,
-			"count":     len(result),
-		})
-		return
-	}
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve providers: %v", err)
@@ -3362,44 +3167,6 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 	scope := string(ctx.QueryArgs().Peek("scope"))
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData(ctx)
-		if gd == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		inMemoryRules := gd.RoutingRules
-
-		// Filter rules by scope and scopeID
-		var rules []configstoreTables.TableRoutingRule
-		for _, rule := range inMemoryRules {
-			if scope != "" && rule.Scope != scope {
-				continue
-			}
-			if scopeID != "" {
-				ruleScope := ""
-				if rule.ScopeID != nil {
-					ruleScope = *rule.ScopeID
-				}
-				if ruleScope != scopeID {
-					continue
-				}
-			}
-			rules = append(rules, *rule)
-		}
-
-		SendJSON(ctx, map[string]interface{}{
-			"rules":       rules,
-			"count":       len(rules),
-			"total_count": len(rules),
-			"limit":       len(rules),
-			"offset":      0,
-		})
-		return
-	}
-
 	// If scope/scopeID filters are specified, use the existing non-paginated path
 	if scope != "" || scopeID != "" {
 		rules, err := h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
@@ -3493,41 +3260,15 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
 
-	var rule *configstoreTables.TableRoutingRule
-	var err error
-
-	// Check if "from_memory" query parameter is set to true
-	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
-		gd := h.governanceManager.GetGovernanceData(ctx)
-		if gd == nil {
-			SendError(ctx, 500, "Governance data is not available")
-			return
-		}
-		inMemoryRules := gd.RoutingRules
-
-		// Find rule by ID in memory
-		for _, r := range inMemoryRules {
-			if r.ID == ruleID {
-				rule = r
-				break
-			}
-		}
-		if rule == nil {
+	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Routing rule not found")
 			return
 		}
-	} else {
-		rule, err = h.configStore.GetRoutingRule(ctx, ruleID)
-		if err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				SendError(ctx, 404, "Routing rule not found")
-				return
-			}
-			logger.Error("failed to get routing rule: %v", err)
-			SendError(ctx, 500, "Failed to retrieve routing rule")
-			return
-		}
+		logger.Error("failed to get routing rule: %v", err)
+		SendError(ctx, 500, "Failed to retrieve routing rule")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -4248,5 +3989,6 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          vk.Budgets,
 		"rate_limit":       vk.RateLimit,
+		"provider_configs": vk.ProviderConfigs,
 	})
 }

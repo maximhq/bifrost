@@ -348,6 +348,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
+	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 
 	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
@@ -484,6 +485,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Toggle allowing per-request override for raw request/response exposure
 	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
+
+	// Toggle allowing direct key bypass via x-bf-direct-key header
+	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
