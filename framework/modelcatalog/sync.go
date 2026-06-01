@@ -24,6 +24,9 @@ const (
 
 // syncPricing syncs pricing data from URL to database and updates cache
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
+	if mc.disableSync {
+		return nil
+	}
 	if mc.shouldSyncGate != nil {
 		if !mc.shouldSyncGate(ctx) {
 			return nil
@@ -146,6 +149,9 @@ func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]Pric
 
 // loadPricingIntoMemoryFromURL loads pricing data from URL into memory cache (when config store is not available)
 func (mc *ModelCatalog) loadPricingIntoMemoryFromURL(ctx context.Context) error {
+	if mc.disableSync {
+		return nil
+	}
 	pricingData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]PricingEntry, error) {
 		return mc.loadPricingFromURL(ctx)
 	})
@@ -422,6 +428,9 @@ func (mc *ModelCatalog) applyModelParameters(paramsData map[string]json.RawMessa
 // loadModelParametersIntoMemoryFromURL loads model parameters from the remote URL into the
 // provider utils cache (when config store is not available).
 func (mc *ModelCatalog) loadModelParametersIntoMemoryFromURL(ctx context.Context) error {
+	if mc.disableSync {
+		return nil
+	}
 	paramsData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]json.RawMessage, error) {
 		return mc.loadModelParametersFromURL(ctx)
 	})
@@ -434,6 +443,9 @@ func (mc *ModelCatalog) loadModelParametersIntoMemoryFromURL(ctx context.Context
 
 // syncModelParameters syncs model parameters data from URL into memory cache
 func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
+	if mc.disableSync {
+		return nil
+	}
 	if mc.shouldSyncGate != nil {
 		if !mc.shouldSyncGate(ctx) {
 			mc.logger.Debug("model parameters sync cancelled by custom gate")

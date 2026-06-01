@@ -2013,6 +2013,12 @@
           "description": "Model parameters URL",
           "optional": true,
           "format": "uri"
+        },
+        "disable_sync": {
+          "type": "boolean",
+          "description": "When true, disables upstream fetches of both pricing data and model parameters. Required for airgapped deployments without outbound network access. Pricing data is then sourced only from the config store and from runtime pricing overrides. Default false.",
+          "default": false,
+          "optional": true
         }
       },
       "additionalProperties": false

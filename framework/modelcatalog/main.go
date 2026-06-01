@@ -25,6 +25,7 @@ type ModelCatalog struct {
 	pricingURL         string
 	modelParametersURL string
 	syncInterval       time.Duration
+	disableSync        bool
 	lastSyncedAt       time.Time
 	syncMu             sync.RWMutex
 
@@ -78,16 +79,24 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
 	}
+	disableSync := false
+	if config.DisableSync != nil {
+		disableSync = *config.DisableSync
+	}
 
 	// Log the active interval and the scheduler's actual check frequency so operators
 	// are not surprised that setting interval=1h does not mean checks happen every second.
 	// Actual syncs occur when: (1) the 1-hour ticker fires AND (2) time.Since(lastSync) >= pricingSyncInterval.
 	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", syncInterval, syncWorkerTickerPeriod)
+	if disableSync {
+		logger.Info("model catalog: sync disabled by config — skipping pricing and model-parameters URL fetches")
+	}
 
 	mc := &ModelCatalog{
 		pricingURL:             pricingURL,
 		modelParametersURL:     modelParametersURL,
 		syncInterval:           syncInterval,
+		disableSync:            disableSync,
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
