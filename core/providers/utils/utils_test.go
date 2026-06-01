@@ -1542,3 +1542,39 @@ func assertRange(t *testing.T, low, high, got int, label string) {
 		t.Errorf("%s: got %d, want in [%d, %d]", label, got, low, high)
 	}
 }
+
+// TestExtractProviderResponseHeaders_StripsProviderSecrets verifies that provider auth headers
+// Bifrost injects upstream (and some upstreams echo back, e.g. Google's file-download 302) are
+// never forwarded to clients via the response header map, while normal headers pass through.
+// Regression test for the /genai_passthrough x-goog-api-key leak.
+func TestExtractProviderResponseHeaders_StripsProviderSecrets(t *testing.T) {
+	resp := &fasthttp.Response{}
+	// Provider secrets that must be stripped (case-insensitive).
+	resp.Header.Set("x-goog-api-key", "AIzaSyEXAMPLE_SECRET")
+	resp.Header.Set("X-Api-Key", "sk-ant-secret")
+	resp.Header.Set("Api-Key", "azure-secret")
+	resp.Header.Set("Authorization", "Bearer secret-token")
+	// Benign headers that must be preserved.
+	resp.Header.Set("x-request-id", "req-123")
+
+	headers := ExtractProviderResponseHeaders(resp)
+
+	// fasthttp canonicalizes header keys, so look these up case-insensitively.
+	lookup := func(name string) (string, bool) {
+		for k, v := range headers {
+			if strings.EqualFold(k, name) {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	for _, secret := range []string{"x-goog-api-key", "x-api-key", "api-key", "authorization"} {
+		if _, ok := lookup(secret); ok {
+			t.Fatalf("provider secret header %q leaked in response headers: %v", secret, headers)
+		}
+	}
+	if v, ok := lookup("x-request-id"); !ok || v != "req-123" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+}
