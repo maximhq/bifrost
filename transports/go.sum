@@ -271,8 +271,8 @@ github.com/maximhq/bifrost/plugins/logging v1.5.15 h1:BVmqWonOexdTq67HQXj+0lfRam
 github.com/maximhq/bifrost/plugins/logging v1.5.15/go.mod h1:jTTWW4T5NcrCt2J0Lm1tweod2sn8uQ+XdeTsVewP1YI=
 github.com/maximhq/bifrost/plugins/maxim v1.6.15 h1:kyP6/SaLQvpwx8nivcDQ/XbpK4xeUxl2cCy6hn3D4SA=
 github.com/maximhq/bifrost/plugins/maxim v1.6.15/go.mod h1:TgNAT7aneAIgIshX2eNz40PTllXI85fNl+kq7cjYiMw=
-github.com/maximhq/bifrost/plugins/mocker v1.5.13 h1:GQMBOcY38F7eVwLQ4iB7JkOfCmgntK9nUoMukyhwsRY=
-github.com/maximhq/bifrost/plugins/mocker v1.5.13/go.mod h1:SoTaDzUU4PIsNgskBZiaFu3JtQ8HBKsDieXYqg3i4kY=
+github.com/maximhq/bifrost/plugins/mocker v1.5.15 h1:I9n/8BFC2mrTUkP1CZ6OnLX2QxvlTIcLMwNIdxwvOJI=
+github.com/maximhq/bifrost/plugins/mocker v1.5.15/go.mod h1:v769pFsggp1utwiI/sVMzA0lRxxWmojhG4O9G/+65vI=
 github.com/maximhq/bifrost/plugins/otel v1.2.15 h1:lPzYVlGT4zv4FSv+W1Md69WTq9zVnfm9Od+V1EZ4dPI=
 github.com/maximhq/bifrost/plugins/otel v1.2.15/go.mod h1:TJAltUhE3M0o8lqwTonRrBENdBEWnHMDaD/aILQc/UY=
 github.com/maximhq/bifrost/plugins/prompts v1.0.15 h1:Ur+nRu+ZUxYD9HdM+geJuSnxuQLlLhReJZU/NW9c478=
