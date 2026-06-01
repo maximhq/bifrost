@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -25,9 +26,12 @@ type ModelCatalog struct {
 	pricingURL         string
 	modelParametersURL string
 	syncInterval       time.Duration
-	disableSync        bool
 	lastSyncedAt       time.Time
 	syncMu             sync.RWMutex
+
+	// disableSync is read on every sync tick/fetch without holding syncMu,
+	// so it uses atomic semantics. Toggled at init and by UpdateSyncConfig.
+	disableSync atomic.Bool
 
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
@@ -79,10 +83,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
 	}
-	disableSync := false
-	if config.DisableSync != nil {
-		disableSync = *config.DisableSync
-	}
+	disableSync := config.DisableSync != nil && *config.DisableSync
 
 	// Log the active interval and the scheduler's actual check frequency so operators
 	// are not surprised that setting interval=1h does not mean checks happen every second.
@@ -96,7 +97,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		pricingURL:             pricingURL,
 		modelParametersURL:     modelParametersURL,
 		syncInterval:           syncInterval,
-		disableSync:            disableSync,
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
@@ -108,6 +108,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		done:                   make(chan struct{}),
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
+	mc.disableSync.Store(disableSync)
 
 	// Initialize syncCtx early so background startup goroutines can use it and
 	// Cleanup() can cancel them. startSyncWorker is still called at the end after
@@ -296,6 +297,8 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	if config.PricingSyncInterval != nil {
 		mc.syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
 	}
+
+	mc.disableSync.Store(config.DisableSync != nil && *config.DisableSync)
 
 	// Create new sync worker with updated configuration
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)

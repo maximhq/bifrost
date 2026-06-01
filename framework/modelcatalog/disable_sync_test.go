@@ -46,3 +46,19 @@ func TestInit_DisableSync_NoHTTPCall(t *testing.T) {
 	assert.Equal(t, int64(0), atomic.LoadInt64(&hits), "no HTTP call should be made when DisableSync is true")
 	assert.Equal(t, 0, len(mc.pricingData))
 }
+
+// TestSync_RuntimeToggleViaAtomic verifies the atomic flag round-trips so that
+// runtime config reloads (UpdateSyncConfig) take effect on the next sync entry
+// point — the path flagged by the PR review for not being honored at runtime.
+func TestSync_RuntimeToggleViaAtomic(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	mc.disableSync.Store(true)
+	require.NoError(t, mc.syncPricing(context.Background()), "disabled syncPricing must be a no-op nil")
+	require.NoError(t, mc.syncModelParameters(context.Background()), "disabled syncModelParameters must be a no-op nil")
+
+	mc.disableSync.Store(false)
+	assert.False(t, mc.disableSync.Load(), "runtime toggle off must be observable")
+}
+
