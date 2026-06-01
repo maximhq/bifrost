@@ -443,6 +443,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
+		OriginalClientBody:          pending.InitialData.OriginalClientBody,
 	}
 	if pending.ParentRequestID != "" {
 		entry.ParentRequestID = &pending.ParentRequestID

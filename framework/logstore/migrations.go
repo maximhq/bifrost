@@ -341,6 +341,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	// serving /api/logs/filterdata from it would surface "relation does not
 	// exist" during rolling deploys. A follow-up release wires it in once
 	// this one is fully rolled out. See the function's docstring.
+	if err := migrationAddOriginalClientBodyColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3330,6 +3333,36 @@ func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating filter users matview: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddOriginalClientBodyColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "logs_add_original_client_body_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "original_client_body") {
+				if err := migrator.AddColumn(&Log{}, "original_client_body"); err != nil {
+					return fmt.Errorf("failed to add original_client_body column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "original_client_body") {
+				if err := migrator.DropColumn(&Log{}, "original_client_body"); err != nil {
+					return fmt.Errorf("failed to drop original_client_body column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running logs_add_original_client_body_column migration: %s", err.Error())
 	}
 	return nil
 }

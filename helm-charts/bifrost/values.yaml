@@ -415,6 +415,7 @@ bifrost:
       config:
         disable_content_logging: false
         logging_headers: []
+        log_pre_transform_request_data: false
 
     governance:
       enabled: false

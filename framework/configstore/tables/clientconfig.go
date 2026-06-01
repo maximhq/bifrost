@@ -34,6 +34,7 @@ type TableClientConfig struct {
 	AsyncJobResultTTL                     int    `gorm:"default:3600" json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON                   string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	LoggingHeadersJSON                    string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
+	LogPreTransformRequestData            bool   `gorm:"default:false" json:"log_pre_transform_request_data"`             // Log original client HTTP body before Bifrost transformations
 	HideDeletedVirtualKeysInFilters       bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`       // Hide deleted virtual keys in logs filter dropdowns
 	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers

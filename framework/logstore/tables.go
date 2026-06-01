@@ -193,6 +193,7 @@ type Log struct {
 	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
 	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
+	OriginalClientBody      string    `gorm:"type:text" json:"original_client_body,omitempty"`      // Raw HTTP body as received from the client (pre-transformation)
 	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
 	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`               // JSON serialized plugin log entries grouped by plugin name
 	Metadata                *string   `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]interface{}

@@ -171,6 +171,11 @@
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         },
+        "log_pre_transform_request_data": {
+          "type": "boolean",
+          "description": "When true, the original HTTP request body received from the client is captured and stored in logs before any Bifrost transformations are applied.",
+          "default": false
+        },
         "whitelisted_routes": {
           "type": "array",
           "items": {
@@ -1330,6 +1335,11 @@
                         "type": "string"
                       },
                       "description": "List of headers to capture in log metadata"
+                    },
+                    "log_pre_transform_request_data": {
+                      "type": "boolean",
+                      "description": "When true, the original HTTP request body received from the client is captured and stored in logs before any Bifrost transformations are applied.",
+                      "default": false
                     }
                   },
                   "additionalProperties": false

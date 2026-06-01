@@ -498,6 +498,7 @@ export interface CoreConfig {
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
+	log_pre_transform_request_data: boolean;
 	whitelisted_routes: string[];
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
@@ -530,6 +531,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allowed_headers: [],
 	required_headers: [],
 	logging_headers: [],
+	log_pre_transform_request_data: false,
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
 	routing_chain_max_depth: 10,

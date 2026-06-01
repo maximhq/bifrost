@@ -638,6 +638,17 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, allowPerRequestStorageOverride)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, allowPerRequestRawOverride)
 
+	// Capture the raw client body before any transformations if the toggle is enabled.
+	// We copy the bytes because fasthttp reuses its internal buffer after the handler returns,
+	// and logging runs asynchronously after that point.
+	if store != nil && store.ShouldLogPreTransformRequestData() {
+		if body := ctx.Request.Body(); len(body) > 0 {
+			bodyCopy := make([]byte, len(body))
+			copy(bodyCopy, body)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyOriginalClientBody, bodyCopy)
+		}
+	}
+
 	// Direct key bypass: requires both the server-side AllowDirectKeys setting and the
 	// per-request x-bf-direct-key: true header. The server setting is the admin opt-in;
 	// the header is the per-request opt-in from the caller.

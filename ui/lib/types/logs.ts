@@ -558,6 +558,7 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	original_client_body?: string; // Raw HTTP body as received from the client (pre-transformation)
 	is_large_payload_request?: boolean; // true if request used large payload streaming
 	is_large_payload_response?: boolean; // true if response used large payload streaming
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)

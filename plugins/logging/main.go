@@ -279,6 +279,7 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	OriginalClientBody     string // Raw HTTP body as received from the client (pre-transformation)
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -288,16 +289,18 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 type Config struct {
-	DisableContentLogging *bool     `json:"disable_content_logging"`
-	LoggingHeaders        *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	DisableContentLogging      *bool     `json:"disable_content_logging"`
+	LoggingHeaders             *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	LogPreTransformRequestData *bool     `json:"log_pre_transform_request_data"` // Pointer to live config; log original client body before transformations
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
 	ctx                    context.Context
 	store                  logstore.LogStore
-	disableContentLogging  *bool
-	loggingHeaders         *[]string // Pointer to live config slice for headers to capture in metadata
+	disableContentLogging      *bool
+	loggingHeaders             *[]string // Pointer to live config slice for headers to capture in metadata
+	logPreTransformRequestData *bool     // Pointer to live config; when true, captures original client body
 	pricingManager         *modelcatalog.ModelCatalog
 	mcpCatalog             *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
 	mu                     sync.Mutex
@@ -345,8 +348,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		store:                 logsStore,
 		pricingManager:        pricingManager,
 		mcpCatalog:            mcpCatalog,
-		disableContentLogging: config.DisableContentLogging,
-		loggingHeaders:        config.LoggingHeaders,
+		disableContentLogging:      config.DisableContentLogging,
+		loggingHeaders:             config.LoggingHeaders,
+		logPreTransformRequestData: config.LogPreTransformRequestData,
 		done:                  make(chan struct{}),
 		logger:                logger,
 		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
@@ -702,6 +706,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
 	initialData.Metadata = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+
+	// Capture original client body if the toggle is enabled
+	if p.logPreTransformRequestData != nil && *p.logPreTransformRequestData {
+		if body, ok := ctx.Value(schemas.BifrostContextKeyOriginalClientBody).([]byte); ok && len(body) > 0 {
+			initialData.OriginalClientBody = string(body)
+		}
+	}
 
 	// System entries are set after so they take precedence over dynamic header values
 	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {

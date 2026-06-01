@@ -263,6 +263,7 @@ const (
 	BifrostContextKeyDropRawRequestFromClient            BifrostContextKey = "bifrost-drop-raw-request-from-client"             // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request should be stripped from the client-facing response
 	BifrostContextKeyDropRawResponseFromClient           BifrostContextKey = "bifrost-drop-raw-response-from-client"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw response should be stripped from the client-facing response
 	BifrostContextKeyShouldStoreRawInLogs                BifrostContextKey = "bifrost-should-store-raw-in-logs"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request/response should be persisted in log records
+	BifrostContextKeyOriginalClientBody                  BifrostContextKey = "bifrost-original-client-body"                     // []byte — raw HTTP body as received from the client (set by transport when log_pre_transform_request_data is enabled)
 	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))

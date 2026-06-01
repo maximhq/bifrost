@@ -51,6 +51,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		MetadataParsed:              data.Metadata,
 		VideoGenerationInputParsed:  data.VideoGenerationInput,
 		PassthroughRequestBody:      data.PassthroughRequestBody,
+		OriginalClientBody:          data.OriginalClientBody,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID

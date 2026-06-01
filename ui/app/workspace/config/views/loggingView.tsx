@@ -35,6 +35,7 @@ export default function LoggingView() {
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
+			localConfig.log_pre_transform_request_data !== config.log_pre_transform_request_data ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || [])
 		);
 	}, [config, localConfig]);
@@ -132,6 +133,29 @@ export default function LoggingView() {
 								onCheckedChange={(checked) => handleConfigChange("disable_content_logging", checked)}
 							/>
 						</div>
+					</div>
+				)}
+
+				{/* Log Pre-Transform Request Data - Only show when logging is enabled */}
+				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
+					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="log-pre-transform-request-data" className="text-sm font-medium">
+								Log Pre-Transform Request Data
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, the original HTTP request body sent by the client is captured before Bifrost applies any
+								transformations (e.g. compat conversions, prompt template injection). Stored as{" "}
+								<code className="text-xs">original_client_body</code> in log records and visible in the Raw tab of the log
+								detail view.
+							</p>
+						</div>
+						<Switch
+							id="log-pre-transform-request-data"
+							size="md"
+							checked={localConfig.log_pre_transform_request_data ?? false}
+							onCheckedChange={(checked) => handleConfigChange("log_pre_transform_request_data", checked)}
+						/>
 					</div>
 				)}
 

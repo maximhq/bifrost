@@ -93,6 +93,7 @@ type ClientConfig struct {
 	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                        []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	LogPreTransformRequestData            bool                             `json:"log_pre_transform_request_data"`       // Log the original client HTTP body before Bifrost transformations
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
@@ -141,6 +142,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("disableContentLogging:true"))
 	} else {
 		hash.Write([]byte("disableContentLogging:false"))
+	}
+
+	if c.LogPreTransformRequestData {
+		hash.Write([]byte("logPreTransformRequestData:true"))
+	} else {
+		hash.Write([]byte("logPreTransformRequestData:false"))
 	}
 
 	if c.DisableDBPingsInHealth {

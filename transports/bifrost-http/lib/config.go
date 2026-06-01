@@ -86,6 +86,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// ShouldLogPreTransformRequestData returns whether the original client HTTP body should be captured before transformations
+	ShouldLogPreTransformRequestData() bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -3531,6 +3533,11 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// ShouldLogPreTransformRequestData returns whether the original client body should be captured before transformations.
+func (c *Config) ShouldLogPreTransformRequestData() bool {
+	return c.ClientConfig.LogPreTransformRequestData
 }
 
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the

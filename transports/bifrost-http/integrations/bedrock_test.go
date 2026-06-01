@@ -61,6 +61,10 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldLogPreTransformRequestData() bool {
+	return false
+}
+
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 	return ""
 }

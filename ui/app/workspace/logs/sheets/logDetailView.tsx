@@ -559,6 +559,7 @@ export function LogDetailView({
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 	const rawRequest = log.raw_request;
 	const rawResponse = log.raw_response;
+	const originalClientBody = log.original_client_body;
 	const passthroughRequestBody = log.passthrough_request_body;
 	const passthroughResponseBody = log.passthrough_response_body;
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
@@ -2156,6 +2157,29 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="raw" className="space-y-3">
+					{originalClientBody && (
+						<>
+							<div className="text-muted-foreground text-[12px]">Original request body as received from the client (pre-transformation)</div>
+							<CollapsibleBox title="Original Client Body" onCopy={() => formatJsonSafe(originalClientBody)}>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={formatJsonSafe(originalClientBody)}
+									lang="json"
+									readonly={true}
+									options={{
+										collapsibleBlocks: true,
+										showVerticalScrollbar: true,
+										scrollBeyondLastLine: false,
+										lineNumbers: "off",
+										alwaysConsumeMouseWheel: false,
+									}}
+								/>
+							</CollapsibleBox>
+						</>
+					)}
 					{rawRequest && (
 						<>
 							<div className="text-muted-foreground text-[12px]">
@@ -2218,7 +2242,7 @@ export function LogDetailView({
 							</CollapsibleBox>
 						</>
 					)}
-					{!rawRequest && !rawResponse && !passthroughRequestBody && !passthroughResponseBody && (
+					{!rawRequest && !rawResponse && !originalClientBody && !passthroughRequestBody && !passthroughResponseBody && (
 						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>
 					)}
 				</TabsContent>
