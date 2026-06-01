@@ -381,6 +381,8 @@ export interface GetModelConfigsParams {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	scope?: string;
+	provider?: string;
 }
 
 // Response types for model configs
