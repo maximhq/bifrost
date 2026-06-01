@@ -163,7 +163,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 	const providerGovernance = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
 
 	// Check if any governance is configured
-	const hasGovernance = providerGovernance?.budget || providerGovernance?.rate_limit;
+	const hasGovernance = (providerGovernance?.budgets?.length ?? 0) > 0 || !!providerGovernance?.rate_limit;
 
 	if (isLoading) {
 		return (
@@ -185,10 +185,14 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 		return null;
 	}
 
-	const budget = providerGovernance?.budget;
+	const budgets = [...(providerGovernance?.budgets ?? [])].sort((a, b) => {
+		const aTime = a.created_at ? new Date(a.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+		const bTime = b.created_at ? new Date(b.created_at).getTime() : Number.MAX_SAFE_INTEGER;
+		return bTime - aTime;
+	});
 	const rateLimit = providerGovernance?.rate_limit;
+	const multipleBudgets = budgets.length > 1;
 
-	const isBudgetExhausted = !!(budget?.max_limit && budget.max_limit > 0 && budget.current_usage >= budget.max_limit);
 	const isTokenExhausted = !!(
 		rateLimit?.token_max_limit &&
 		rateLimit.token_max_limit > 0 &&
@@ -209,17 +213,24 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 			</CardHeader>
 
 			<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-				{/* Budget Card */}
-				{budget && (
-					<MetricCard
-						title="Budget"
-						value={budget.current_usage}
-						max={budget.max_limit}
-						unit="$"
-						resetDuration={budget.reset_duration}
-						isExhausted={isBudgetExhausted}
-					/>
-				)}
+				{/* Budget Cards — one per budget */}
+				{budgets.map((budget, i) => {
+					const isExhausted = !!(budget.max_limit > 0 && budget.current_usage >= budget.max_limit);
+					const title = multipleBudgets
+						? `Budget (${formatResetDuration(budget.reset_duration)})`
+						: "Budget";
+					return (
+						<MetricCard
+							key={budget.id ?? i}
+							title={title}
+							value={budget.current_usage}
+							max={budget.max_limit}
+							unit="$"
+							resetDuration={budget.reset_duration}
+							isExhausted={isExhausted}
+						/>
+					);
+				})}
 
 				{/* Token Rate Limit Card */}
 				{rateLimit?.token_max_limit && (

@@ -1,9 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Form, FormField, FormItem } from "@/components/ui/form";
-import { Label } from "@/components/ui/label";
+import { Form } from "@/components/ui/form";
+import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { DottedSeparator } from "@/components/ui/separator";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { resetDurationLabels } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
 	useDeleteProviderGovernanceMutation,
@@ -13,6 +13,7 @@ import {
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Label } from "@radix-ui/react-label";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -22,10 +23,14 @@ interface GovernanceFormFragmentProps {
 	provider: ModelProvider;
 }
 
+const budgetLineSchema = z.object({
+	id: z.string().optional(),
+	max_limit: z.number({ invalid_type_error: "Budget limit must be a number" }).nonnegative("Budget limit cannot be negative").optional(),
+	reset_duration: z.string({ required_error: "Reset duration is required" }),
+});
+
 const formSchema = z.object({
-	// Budget
-	budgetMaxLimit: z.number().nonnegative().optional(),
-	budgetResetDuration: z.string().optional(),
+	budgets: z.array(budgetLineSchema).optional(),
 	// Token limits
 	tokenMaxLimit: z.number().int().nonnegative().optional(),
 	tokenResetDuration: z.string().optional(),
@@ -37,8 +42,7 @@ const formSchema = z.object({
 type FormData = z.infer<typeof formSchema>;
 
 const DEFAULT_GOVERNANCE_FORM_VALUES: FormData = {
-	budgetMaxLimit: undefined,
-	budgetResetDuration: "1M",
+	budgets: [],
 	tokenMaxLimit: undefined,
 	tokenResetDuration: "1h",
 	requestMaxLimit: undefined,
@@ -58,61 +62,49 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 	// Find governance data for this provider
 	const providerGovernance = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
-	const hasExistingGovernance = !!(providerGovernance?.budget || providerGovernance?.rate_limit);
+	const hasExistingGovernance = !!(providerGovernance?.budgets?.length || providerGovernance?.rate_limit);
 
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
 		defaultValues: DEFAULT_GOVERNANCE_FORM_VALUES,
 	});
 
+	const governanceToFormValues = (pg: typeof providerGovernance): FormData => ({
+		budgets: pg?.budgets?.map((b) => ({ id: b.id, max_limit: b.max_limit, reset_duration: b.reset_duration })) ?? [],
+		tokenMaxLimit: pg?.rate_limit?.token_max_limit ?? undefined,
+		tokenResetDuration: pg?.rate_limit?.token_reset_duration || "1h",
+		requestMaxLimit: pg?.rate_limit?.request_max_limit ?? undefined,
+		requestResetDuration: pg?.rate_limit?.request_reset_duration || "1h",
+	});
+
 	// Update form values when provider governance data is loaded (polling)
 	useEffect(() => {
-		// Never reset form during polling if user is editing
 		if (providerGovernance && !form.formState.isDirty) {
-			form.reset({
-				budgetMaxLimit: providerGovernance.budget?.max_limit ?? undefined,
-				budgetResetDuration: providerGovernance.budget?.reset_duration || "1M",
-				tokenMaxLimit: providerGovernance.rate_limit?.token_max_limit ?? undefined,
-				tokenResetDuration: providerGovernance.rate_limit?.token_reset_duration || "1h",
-				requestMaxLimit: providerGovernance.rate_limit?.request_max_limit ?? undefined,
-				requestResetDuration: providerGovernance.rate_limit?.request_reset_duration || "1h",
-			});
+			form.reset(governanceToFormValues(providerGovernance));
 		}
 	}, [providerGovernance, form]);
 
 	// Reset form when provider changes
 	useEffect(() => {
-		// Never reset form if user is editing - just skip the reset
-		if (form.formState.isDirty) {
-			return;
-		}
+		if (form.formState.isDirty) return;
 		const newProvGov = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
-		form.reset({
-			budgetMaxLimit: newProvGov?.budget?.max_limit ?? undefined,
-			budgetResetDuration: newProvGov?.budget?.reset_duration || "1M",
-			tokenMaxLimit: newProvGov?.rate_limit?.token_max_limit ?? undefined,
-			tokenResetDuration: newProvGov?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: newProvGov?.rate_limit?.request_max_limit ?? undefined,
-			requestResetDuration: newProvGov?.rate_limit?.request_reset_duration || "1h",
-		});
+		form.reset(governanceToFormValues(newProvGov));
 	}, [provider.name, form]);
 
 	const onSubmit = async (data: FormData) => {
 		try {
-			// Determine if we need to send empty objects to signal removal
-			const hadBudget = !!providerGovernance?.budget;
-			const hasBudget = data.budgetMaxLimit !== undefined;
+			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
+			const validBudgets = (data.budgets ?? []).filter((b): b is BudgetLineEntry & { max_limit: number } => b.max_limit !== undefined);
+			const hasBudgets = validBudgets.length > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
 
-			let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
-			if (hasBudget) {
-				budgetPayload = {
-					max_limit: data.budgetMaxLimit,
-					reset_duration: data.budgetResetDuration || "1M",
-				};
-			} else if (hadBudget) {
-				budgetPayload = {};
+			// absent = no change; [] = remove all; [...] = set to this list
+			let budgetsPayload: { id?: string; max_limit: number; reset_duration: string }[] | undefined;
+			if (hasBudgets) {
+				budgetsPayload = validBudgets.map((b) => ({ id: b.id, max_limit: b.max_limit, reset_duration: b.reset_duration }));
+			} else if (hadBudgets) {
+				budgetsPayload = [];
 			}
 
 			let rateLimitPayload:
@@ -137,7 +129,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 			await updateProviderGovernance({
 				provider: provider.name,
 				data: {
-					budget: budgetPayload,
+					budgets: budgetsPayload,
 					rate_limit: rateLimitPayload,
 				},
 			}).unwrap();
@@ -165,32 +157,18 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		}
 	};
 
+	const watchedBudgets = form.watch("budgets") ?? [];
+
 	// Always show the form
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
 				{/* Budget Configuration */}
-				<div className="space-y-4">
-					<Label className="text-sm font-medium">Budget Configuration</Label>
-					<FormField
-						control={form.control}
-						name="budgetMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerBudgetMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Spend (USD)"
-									value={field.value}
-									selectValue={form.watch("budgetResetDuration") || "1M"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
-					/>
-				</div>
+				<MultiBudgetLines
+					data-testid="provider-budgets"
+					lines={watchedBudgets}
+					onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
+				/>
 
 				<DottedSeparator />
 
@@ -198,60 +176,59 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				<div className="space-y-4">
 					<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
 
-					<FormField
-						control={form.control}
-						name="tokenMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerTokenMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Tokens"
-									value={field.value}
-									selectValue={form.watch("tokenResetDuration") || "1h"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
+					<NumberAndSelect
+						id="providerTokenMaxLimit"
+						labelClassName="font-normal"
+						label="Maximum Tokens"
+						value={form.watch("tokenMaxLimit")}
+						selectValue={form.watch("tokenResetDuration") || "1h"}
+						onChangeNumber={(value) => form.setValue("tokenMaxLimit", value, { shouldDirty: true })}
+						onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
+						options={[
+							{ label: "per hour", value: "1h" },
+							{ label: "per day", value: "1d" },
+							{ label: "per week", value: "1w" },
+							{ label: "per month", value: "1M" },
+						]}
 					/>
 
-					<FormField
-						control={form.control}
-						name="requestMaxLimit"
-						render={({ field }) => (
-							<FormItem>
-								<NumberAndSelect
-									id="providerRequestMaxLimit"
-									labelClassName="font-normal"
-									label="Maximum Requests"
-									value={field.value}
-									selectValue={form.watch("requestResetDuration") || "1h"}
-									onChangeNumber={(value) => field.onChange(value)}
-									onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
-									options={resetDurationOptions}
-								/>
-							</FormItem>
-						)}
+					<NumberAndSelect
+						id="providerRequestMaxLimit"
+						labelClassName="font-normal"
+						label="Maximum Requests"
+						value={form.watch("requestMaxLimit")}
+						selectValue={form.watch("requestResetDuration") || "1h"}
+						onChangeNumber={(value) => form.setValue("requestMaxLimit", value, { shouldDirty: true })}
+						onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
+						options={[
+							{ label: "per hour", value: "1h" },
+							{ label: "per day", value: "1d" },
+							{ label: "per week", value: "1w" },
+							{ label: "per month", value: "1M" },
+						]}
 					/>
 				</div>
 
 				{/* Current Usage Display - only when editing existing */}
-				{hasExistingGovernance && (providerGovernance?.budget || providerGovernance?.rate_limit) && (
+				{hasExistingGovernance && (
 					<>
 						<DottedSeparator />
 						<div className="space-y-4">
 							<Label className="text-sm font-medium">Current Usage</Label>
 							<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
-								{providerGovernance?.budget && (
-									<div className="space-y-1">
-										<p className="text-muted-foreground text-xs">Budget Usage</p>
+								{[...(providerGovernance?.budgets ?? [])]
+								.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+								.map((budget, i) => (
+									<div key={budget.id ?? i} className="space-y-1">
+										<p className="text-muted-foreground text-xs">
+											Budget Usage
+											{(providerGovernance.budgets?.length ?? 0) > 1 && ` (${resetDurationLabels[budget.reset_duration] ?? budget.reset_duration})`}
+										</p>
 										<p className="text-sm font-medium">
-											${providerGovernance.budget.current_usage.toFixed(2)} / ${providerGovernance.budget.max_limit.toFixed(2)}
+											${budget.current_usage.toFixed(2)} / ${budget.max_limit.toFixed(2)}
 										</p>
 									</div>
-								)}
+								))}
 								{providerGovernance?.rate_limit?.token_max_limit && (
 									<div className="space-y-1">
 										<p className="text-muted-foreground text-xs">Token Usage</p>

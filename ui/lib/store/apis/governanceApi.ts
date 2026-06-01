@@ -747,7 +747,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Provider Governance
 		getProviderGovernance: builder.query<GetProviderGovernanceResponse, { fromMemory?: boolean } | void>({
 			query: (params) => ({
-				url: "/governance/providers",
+				url: "/v2/governance/providers",
 				params: { from_memory: params?.fromMemory ?? false },
 			}),
 			providesTags: ["ProviderGovernance"],
@@ -758,7 +758,7 @@ export const governanceApi = baseApi.injectEndpoints({
 			{ provider: string; data: UpdateProviderGovernanceRequest }
 		>({
 			query: ({ provider, data }) => ({
-				url: `/governance/providers/${encodeURIComponent(provider)}`,
+				url: `/v2/governance/providers/${encodeURIComponent(provider)}`,
 				method: "PUT",
 				body: data,
 			}),

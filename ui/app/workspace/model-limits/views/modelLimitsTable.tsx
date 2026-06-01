@@ -269,8 +269,10 @@ export default function ModelLimitsTable({
 								</TableRow>
 							) : (
 								modelConfigs.map((config) => {
-									// Model configs can own multiple budgets; show all (like the VK table).
-									const budgets = config.budgets ?? (config.budget ? [config.budget] : []);
+									// Model configs can own multiple budgets; show all newest-first (like the VK table).
+									const budgets = [...(config.budgets ?? (config.budget ? [config.budget] : []))].sort(
+										(a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
+									);
 									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 									const isRateLimitExhausted =
 										(config.rate_limit?.token_max_limit &&

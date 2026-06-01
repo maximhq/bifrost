@@ -841,60 +841,85 @@ type UpdateProviderGovernanceRequest struct {
 	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
-// RegisterRoutes registers all governance-related routes for the new hierarchical system
+// versionedRoute declares a single API route with optional v2 handler override.
+// path is relative to /api (e.g. "/governance/virtual-keys").
+// v2 nil means the route is absent from /api/v2 — callers get 404.
+type versionedRoute struct {
+	method string
+	path   string
+	v1     func(*fasthttp.RequestCtx)
+	v2     func(*fasthttp.RequestCtx)
+}
+
+// routes returns the full route table. Every entry is registered under /api (compat) and
+// /api/v1. Entries with a non-nil v2 field are also registered under /api/v2.
+// getVirtualKeyQuota is intentionally absent — it bypasses admin middlewares and is
+// registered separately in RegisterRoutes.
+func (h *GovernanceHandler) routes() []versionedRoute {
+	return []versionedRoute{
+		// Virtual Keys
+		{method: "GET", path: "/governance/virtual-keys", v1: h.getVirtualKeys},
+		{method: "POST", path: "/governance/virtual-keys", v1: h.createVirtualKey},
+		{method: "POST", path: "/governance/virtual-keys/rotate", v1: h.rotateVirtualKeys},
+		{method: "GET", path: "/governance/virtual-keys/{vk_id}", v1: h.getVirtualKey},
+		{method: "PUT", path: "/governance/virtual-keys/{vk_id}", v1: h.updateVirtualKey},
+		{method: "POST", path: "/governance/virtual-keys/{vk_id}/rotate", v1: h.rotateVirtualKey},
+		{method: "DELETE", path: "/governance/virtual-keys/{vk_id}", v1: h.deleteVirtualKey},
+		// Teams
+		{method: "GET", path: "/governance/teams", v1: h.getTeams},
+		{method: "POST", path: "/governance/teams", v1: h.createTeam},
+		{method: "GET", path: "/governance/teams/{team_id}", v1: h.getTeam},
+		{method: "PUT", path: "/governance/teams/{team_id}", v1: h.updateTeam},
+		{method: "DELETE", path: "/governance/teams/{team_id}", v1: h.deleteTeam},
+		// Customers
+		{method: "GET", path: "/governance/customers", v1: h.getCustomers},
+		{method: "POST", path: "/governance/customers", v1: h.createCustomer},
+		{method: "GET", path: "/governance/customers/{customer_id}", v1: h.getCustomer},
+		{method: "PUT", path: "/governance/customers/{customer_id}", v1: h.updateCustomer},
+		{method: "DELETE", path: "/governance/customers/{customer_id}", v1: h.deleteCustomer},
+		// Budgets and Rate Limits
+		{method: "GET", path: "/governance/budgets", v1: h.getBudgets},
+		{method: "GET", path: "/governance/rate-limits", v1: h.getRateLimits},
+		// Routing Rules
+		{method: "GET", path: "/governance/routing-rules", v1: h.getRoutingRules},
+		{method: "POST", path: "/governance/routing-rules", v1: h.createRoutingRule},
+		{method: "GET", path: "/governance/routing-rules/{rule_id}", v1: h.getRoutingRule},
+		{method: "PUT", path: "/governance/routing-rules/{rule_id}", v1: h.updateRoutingRule},
+		{method: "DELETE", path: "/governance/routing-rules/{rule_id}", v1: h.deleteRoutingRule},
+		// Model Configs
+		{method: "GET", path: "/governance/model-configs", v1: h.getModelConfigs},
+		{method: "POST", path: "/governance/model-configs", v1: h.createModelConfig},
+		{method: "GET", path: "/governance/model-configs/{mc_id}", v1: h.getModelConfig},
+		{method: "PUT", path: "/governance/model-configs/{mc_id}", v1: h.updateModelConfig},
+		{method: "DELETE", path: "/governance/model-configs/{mc_id}", v1: h.deleteModelConfig},
+		// Provider Governance — GET and PUT have v2 handlers; DELETE reuses v1.
+		{method: "GET", path: "/governance/providers", v1: h.getProviderGovernance, v2: h.getProviderGovernanceV2},
+		{method: "PUT", path: "/governance/providers/{provider_name}", v1: h.updateProviderGovernance, v2: h.updateProviderGovernanceV2},
+		{method: "DELETE", path: "/governance/providers/{provider_name}", v1: h.deleteProviderGovernance},
+		// Pricing Overrides
+		{method: "GET", path: "/governance/pricing-overrides", v1: h.getPricingOverrides},
+		{method: "POST", path: "/governance/pricing-overrides", v1: h.createPricingOverride},
+		{method: "PUT", path: "/governance/pricing-overrides/{id}", v1: h.updatePricingOverride},
+		{method: "DELETE", path: "/governance/pricing-overrides/{id}", v1: h.deletePricingOverride},
+	}
+}
+
+// RegisterRoutes registers all governance-related routes for the new hierarchical system.
+// Every route is registered under /api (compat, always = v1) and /api/v1 (explicit v1).
+// Routes with a non-nil v2 handler are also registered under /api/v2; all others return 404
+// under /api/v2 — no implicit v1 fallback.
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// Virtual Key CRUD operations
-	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
-	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
-	r.POST("/api/governance/virtual-keys/rotate", lib.ChainMiddlewares(h.rotateVirtualKeys, middlewares...))
-	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
-	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
-	r.POST("/api/governance/virtual-keys/{vk_id}/rotate", lib.ChainMiddlewares(h.rotateVirtualKey, middlewares...))
-	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
-
-	// Team CRUD operations
-	r.GET("/api/governance/teams", lib.ChainMiddlewares(h.getTeams, middlewares...))
-	r.POST("/api/governance/teams", lib.ChainMiddlewares(h.createTeam, middlewares...))
-	r.GET("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.getTeam, middlewares...))
-	r.PUT("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.updateTeam, middlewares...))
-	r.DELETE("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.deleteTeam, middlewares...))
-
-	// Customer CRUD operations
-	r.GET("/api/governance/customers", lib.ChainMiddlewares(h.getCustomers, middlewares...))
-	r.POST("/api/governance/customers", lib.ChainMiddlewares(h.createCustomer, middlewares...))
-	r.GET("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.getCustomer, middlewares...))
-	r.PUT("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.updateCustomer, middlewares...))
-	r.DELETE("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.deleteCustomer, middlewares...))
-
-	// Budget and Rate Limit GET operations
-	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
-	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
-
-	// Routing Rules CRUD operations
-	r.GET("/api/governance/routing-rules", lib.ChainMiddlewares(h.getRoutingRules, middlewares...))
-	r.POST("/api/governance/routing-rules", lib.ChainMiddlewares(h.createRoutingRule, middlewares...))
-	r.GET("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.getRoutingRule, middlewares...))
-	r.PUT("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRule, middlewares...))
-	r.DELETE("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRule, middlewares...))
-
-	// Model Config CRUD operations
-	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
-	r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
-	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
-	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
-	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
-
-	// Provider Governance operations
-	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
-	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
-	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
-
-	// Pricing override operations
-	r.GET("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.getPricingOverrides, middlewares...))
-	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
-	r.PUT("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.updatePricingOverride, middlewares...))
-	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
-
+	chain := func(fn func(*fasthttp.RequestCtx)) fasthttp.RequestHandler {
+		return lib.ChainMiddlewares(fn, middlewares...)
+	}
+	for _, route := range h.routes() {
+		v1h := chain(route.v1)
+		r.Handle(route.method, "/api"+route.path, v1h)
+		r.Handle(route.method, "/api/v1"+route.path, v1h)
+		if route.v2 != nil {
+			r.Handle(route.method, "/api/v2"+route.path, chain(route.v2))
+		}
+	}
 	// Self-service endpoint — no admin auth, VK in header is the credential.
 	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
@@ -3201,6 +3226,23 @@ type ProviderGovernanceResponse struct {
 	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
 }
 
+// ProviderGovernanceResponseV2 is the v2 response: exposes all budgets and calendar_aligned.
+type ProviderGovernanceResponseV2 struct {
+	Provider        string                            `json:"provider"`
+	Budgets         []configstoreTables.TableBudget   `json:"budgets,omitempty"`
+	RateLimit       *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+	CalendarAligned bool                              `json:"calendar_aligned"`
+}
+
+// UpdateProviderGovernanceRequestV2 is the v2 request body.
+// Budgets is *[]  so nil (field absent) means "no change" while a non-nil empty slice means
+// "remove all budgets" — a plain []T would collapse both cases to nil after JSON unmarshal.
+type UpdateProviderGovernanceRequestV2 struct {
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`
+	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
+}
+
 // modelConfigToProviderGovernance converts a model config to a ProviderGovernanceResponse.
 // Returns false if the config does not represent provider-level governance
 // (i.e. not scope=global, model_name="*", with a provider set).
@@ -3209,13 +3251,28 @@ func modelConfigToProviderGovernance(mc *configstoreTables.TableModelConfig) (Pr
 		mc.ModelName != configstoreTables.ModelConfigAllModels || mc.Provider == nil {
 		return ProviderGovernanceResponse{}, false
 	}
-	// Provider governance is single-budget by API; surface the first owned budget.
-	// This will be updated with the v2 endpoint, which can surface all budgets
+	// Provider governance is single-budget by the v1 API; surface the first owned budget.
 	var budget *configstoreTables.TableBudget
 	if len(mc.Budgets) > 0 {
 		budget = &mc.Budgets[0]
 	}
 	return ProviderGovernanceResponse{Provider: *mc.Provider, Budget: budget, RateLimit: mc.RateLimit}, true
+}
+
+// modelConfigToProviderGovernanceV2 is the v2 equivalent: returns all budgets and calendar_aligned.
+func modelConfigToProviderGovernanceV2(mc *configstoreTables.TableModelConfig) (ProviderGovernanceResponseV2, bool) {
+	if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeGlobal ||
+		mc.ModelName != configstoreTables.ModelConfigAllModels || mc.Provider == nil {
+		return ProviderGovernanceResponseV2{}, false
+	}
+	budgets := make([]configstoreTables.TableBudget, len(mc.Budgets))
+	copy(budgets, mc.Budgets)
+	return ProviderGovernanceResponseV2{
+		Provider:        *mc.Provider,
+		Budgets:         budgets,
+		RateLimit:       mc.RateLimit,
+		CalendarAligned: mc.CalendarAligned,
+	}, true
 }
 
 // getProviderGovernance handles GET /api/governance/providers - returns provider-level governance,
@@ -3243,6 +3300,41 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 		}
 		for i := range configs {
 			if r, ok := modelConfigToProviderGovernance(&configs[i]); ok {
+				result = append(result, r)
+			}
+		}
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"providers": result,
+		"count":     len(result),
+	})
+}
+
+// getProviderGovernanceV2 handles GET /api/v2/governance/providers — identical to v1 but returns
+// all budgets (ProviderGovernanceResponseV2) instead of a single budget.
+func (h *GovernanceHandler) getProviderGovernanceV2(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	var result []ProviderGovernanceResponseV2
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData(ctx)
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		for _, mc := range data.ModelConfigs {
+			if r, ok := modelConfigToProviderGovernanceV2(mc); ok {
+				result = append(result, r)
+			}
+		}
+	} else {
+		configs, err := h.configStore.GetProviderGovernanceModelConfigs(ctx)
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve providers")
+			return
+		}
+		for i := range configs {
+			if r, ok := modelConfigToProviderGovernanceV2(&configs[i]); ok {
 				result = append(result, r)
 			}
 		}
@@ -3464,6 +3556,175 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			resp.RateLimit = mc.RateLimit
 		} else if r, ok := modelConfigToProviderGovernance(reloaded); ok {
 			resp.Budget, resp.RateLimit = r.Budget, r.RateLimit
+		}
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message":  "Provider governance updated successfully",
+		"provider": resp,
+	})
+}
+
+// updateProviderGovernanceV2 handles PUT /api/v2/governance/providers/{provider_name}.
+// Differs from v1 in three ways: multi-budget via reconcileModelConfigBudgets, calendar_aligned
+// field, and ProviderGovernanceResponseV2 response shape.
+func (h *GovernanceHandler) updateProviderGovernanceV2(ctx *fasthttp.RequestCtx) {
+	providerName := ctx.UserValue("provider_name").(string)
+	var req UpdateProviderGovernanceRequestV2
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	providers, err := h.configStore.GetProviders(ctx)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve providers")
+		return
+	}
+	providerExists := false
+	for i := range providers {
+		if providers[i].Name == providerName {
+			providerExists = true
+			break
+		}
+	}
+	if !providerExists {
+		SendError(ctx, 404, "Provider not found")
+		return
+	}
+
+	existing, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
+	if err != nil && err != configstore.ErrNotFound {
+		logger.Error("failed to load provider governance: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to load provider governance: %v", err))
+		return
+	}
+	isNew := existing == nil
+	mc := configstoreTables.TableModelConfig{
+		ID:        uuid.NewString(),
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Provider:  &providerName,
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if existing != nil {
+		mc = *existing
+	}
+
+	deleted := false
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		var rateLimitIDToDelete string
+
+		// Rate limit lifecycle (same as v1 — resolve before the mc row is persisted).
+		if req.RateLimit != nil {
+			if isRateLimitRemovalRequest(req.RateLimit) {
+				if mc.RateLimitID != nil {
+					rateLimitIDToDelete = *mc.RateLimitID
+					mc.RateLimitID = nil
+					mc.RateLimit = nil
+				}
+			} else if mc.RateLimitID != nil {
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+					return err
+				}
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				mc.RateLimit = &rateLimit
+			} else {
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				mc.RateLimitID = &rateLimit.ID
+				mc.RateLimit = &rateLimit
+			}
+		}
+
+		if req.CalendarAligned != nil {
+			mc.CalendarAligned = *req.CalendarAligned
+		}
+
+		// nil Budgets = no change; non-nil empty = remove all; non-nil non-empty = set to that list.
+		willHaveBudget := (req.Budgets == nil && len(mc.Budgets) > 0) ||
+			(req.Budgets != nil && len(*req.Budgets) > 0)
+
+		hasGovernance := mc.RateLimitID != nil || willHaveBudget
+		switch {
+		case !hasGovernance && isNew:
+			return nil
+		case !hasGovernance && !isNew:
+			for i := range mc.Budgets {
+				if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
+					return err
+				}
+			}
+			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+				return err
+			}
+			deleted = true
+		case isNew:
+			if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
+				return err
+			}
+		default:
+			if err := h.configStore.UpdateModelConfig(ctx, &mc, tx); err != nil {
+				return err
+			}
+		}
+
+		// Multi-budget lifecycle — mc row exists at this point for create cases.
+		if !deleted && req.Budgets != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *req.Budgets); err != nil {
+				return err
+			}
+		}
+
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		logger.Error("failed to update provider governance: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to update provider governance: %v", err))
+		return
+	}
+
+	resp := ProviderGovernanceResponseV2{Provider: providerName}
+	if deleted {
+		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
+			logger.Error("failed to remove provider governance from memory: %v", err)
+		}
+	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil {
+		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
+			logger.Error("failed to reload provider governance in memory: %v", err)
+			budgets := make([]configstoreTables.TableBudget, len(mc.Budgets))
+			copy(budgets, mc.Budgets)
+			resp.Budgets = budgets
+			resp.RateLimit = mc.RateLimit
+			resp.CalendarAligned = mc.CalendarAligned
+		} else if r, ok := modelConfigToProviderGovernanceV2(reloaded); ok {
+			resp = r
 		}
 	}
 	SendJSON(ctx, map[string]interface{}{

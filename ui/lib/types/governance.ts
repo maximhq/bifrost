@@ -8,6 +8,7 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	created_at?: string; // ISO timestamp
 }
 
 export interface RateLimit {
@@ -522,18 +523,18 @@ export interface GetPricingOverridesResponse {
 	offset: number;
 }
 
-// Provider governance - for extending provider with budget/rate limit
+// Provider governance - for extending provider with budget/rate limit (v2: multi-budget)
 export interface ProviderGovernance {
 	provider: string;
-	budget_id?: string;
-	rate_limit_id?: string;
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateProviderGovernanceRequest {
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // absent = no change; [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

@@ -1510,6 +1510,355 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
+// ---- Provider Governance V2 tests ----
+
+// mockGovernanceManagerForProviderV2 implements only GetGovernanceData.
+type mockGovernanceManagerForProviderV2 struct {
+	GovernanceManager
+	data *governance.GovernanceData
+}
+
+func (m *mockGovernanceManagerForProviderV2) GetGovernanceData(_ context.Context) *governance.GovernanceData {
+	return m.data
+}
+
+// mockConfigStoreForProviderV2 implements only GetProviderGovernanceModelConfigs.
+type mockConfigStoreForProviderV2 struct {
+	configstore.ConfigStore
+	configs []configstoreTables.TableModelConfig
+	err     error
+}
+
+func (m *mockConfigStoreForProviderV2) GetProviderGovernanceModelConfigs(_ context.Context) ([]configstoreTables.TableModelConfig, error) {
+	return m.configs, m.err
+}
+
+func newProviderMC(provider string, budgets []configstoreTables.TableBudget, calendarAligned bool) *configstoreTables.TableModelConfig {
+	return &configstoreTables.TableModelConfig{
+		ID:              "mc-" + provider,
+		Scope:           configstoreTables.ModelConfigScopeGlobal,
+		ModelName:       configstoreTables.ModelConfigAllModels,
+		Provider:        &provider,
+		Budgets:         budgets,
+		CalendarAligned: calendarAligned,
+	}
+}
+
+func TestModelConfigToProviderGovernanceV2_FiltersNonProviderConfigs(t *testing.T) {
+	tests := []struct {
+		name    string
+		mc      *configstoreTables.TableModelConfig
+		wantOK  bool
+	}{
+		{name: "nil", mc: nil, wantOK: false},
+		{
+			name:   "wrong scope",
+			mc:     &configstoreTables.TableModelConfig{Scope: "virtual_key", ModelName: "*", Provider: strPtr("openai")},
+			wantOK: false,
+		},
+		{
+			name:   "wrong model name",
+			mc:     &configstoreTables.TableModelConfig{Scope: configstoreTables.ModelConfigScopeGlobal, ModelName: "gpt-4o", Provider: strPtr("openai")},
+			wantOK: false,
+		},
+		{
+			name:   "nil provider",
+			mc:     &configstoreTables.TableModelConfig{Scope: configstoreTables.ModelConfigScopeGlobal, ModelName: "*"},
+			wantOK: false,
+		},
+		{
+			name:   "valid provider config",
+			mc:     newProviderMC("openai", nil, false),
+			wantOK: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := modelConfigToProviderGovernanceV2(tt.mc)
+			if ok != tt.wantOK {
+				t.Fatalf("modelConfigToProviderGovernanceV2() ok = %v, want %v", ok, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestModelConfigToProviderGovernanceV2_MapsAllFields(t *testing.T) {
+	provider := "openai"
+	rl := &configstoreTables.TableRateLimit{ID: "rl-1"}
+	budgets := []configstoreTables.TableBudget{
+		{ID: "b-1", MaxLimit: 100, ResetDuration: "1d"},
+		{ID: "b-2", MaxLimit: 500, ResetDuration: "1w"},
+	}
+	mc := &configstoreTables.TableModelConfig{
+		Scope:           configstoreTables.ModelConfigScopeGlobal,
+		ModelName:       configstoreTables.ModelConfigAllModels,
+		Provider:        &provider,
+		Budgets:         budgets,
+		RateLimit:       rl,
+		CalendarAligned: true,
+	}
+
+	resp, ok := modelConfigToProviderGovernanceV2(mc)
+	if !ok {
+		t.Fatal("expected ok=true for valid config")
+	}
+	if resp.Provider != provider {
+		t.Errorf("Provider = %q, want %q", resp.Provider, provider)
+	}
+	if len(resp.Budgets) != 2 {
+		t.Fatalf("Budgets len = %d, want 2", len(resp.Budgets))
+	}
+	if resp.Budgets[0].ID != "b-1" || resp.Budgets[1].ID != "b-2" {
+		t.Errorf("Budgets IDs = %v/%v, want b-1/b-2", resp.Budgets[0].ID, resp.Budgets[1].ID)
+	}
+	if resp.RateLimit != rl {
+		t.Errorf("RateLimit not preserved")
+	}
+	if !resp.CalendarAligned {
+		t.Errorf("CalendarAligned = false, want true")
+	}
+}
+
+func TestModelConfigToProviderGovernanceV2_BudgetsAreCopied(t *testing.T) {
+	provider := "openai"
+	mc := newProviderMC(provider, []configstoreTables.TableBudget{{ID: "b-1", MaxLimit: 100}}, false)
+
+	resp, _ := modelConfigToProviderGovernanceV2(mc)
+	// Mutate the returned slice — original must not change.
+	resp.Budgets[0].MaxLimit = 999
+	if mc.Budgets[0].MaxLimit == 999 {
+		t.Fatal("modelConfigToProviderGovernanceV2 returned a slice alias; expected a copy")
+	}
+}
+
+func TestGetProviderGovernanceV2_FromMemory(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := "openai"
+	configs := []*configstoreTables.TableModelConfig{
+		newProviderMC(provider, []configstoreTables.TableBudget{
+			{ID: "b-1", MaxLimit: 100, ResetDuration: "1d"},
+			{ID: "b-2", MaxLimit: 500, ResetDuration: "1w"},
+		}, true),
+		// Non-provider config — should be filtered out.
+		{ID: "mc-vk", Scope: "virtual_key", ModelName: "*"},
+	}
+	h := &GovernanceHandler{
+		governanceManager: &mockGovernanceManagerForProviderV2{
+			data: &governance.GovernanceData{ModelConfigs: configs},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/v2/governance/providers?from_memory=true")
+
+	h.getProviderGovernanceV2(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	var resp struct {
+		Providers []ProviderGovernanceResponseV2 `json:"providers"`
+		Count     int                            `json:"count"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("count = %d, want 1", resp.Count)
+	}
+	p := resp.Providers[0]
+	if p.Provider != provider {
+		t.Errorf("provider = %q, want %q", p.Provider, provider)
+	}
+	if len(p.Budgets) != 2 {
+		t.Fatalf("budgets len = %d, want 2", len(p.Budgets))
+	}
+	if p.Budgets[0].ID != "b-1" || p.Budgets[1].ID != "b-2" {
+		t.Errorf("budget IDs = %v/%v, want b-1/b-2", p.Budgets[0].ID, p.Budgets[1].ID)
+	}
+	if !p.CalendarAligned {
+		t.Errorf("CalendarAligned = false, want true")
+	}
+}
+
+func TestGetProviderGovernanceV2_FromMemory_NilDataReturns500(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		governanceManager: &mockGovernanceManagerForProviderV2{data: nil},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/v2/governance/providers?from_memory=true")
+
+	h.getProviderGovernanceV2(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected 500, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestGetProviderGovernanceV2_FromDB(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := "anthropic"
+	mc := configstoreTables.TableModelConfig{
+		ID:        "mc-anthropic",
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Provider:  &provider,
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-1", MaxLimit: 200, ResetDuration: "1M"},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: &mockConfigStoreForProviderV2{configs: []configstoreTables.TableModelConfig{mc}},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/v2/governance/providers")
+
+	h.getProviderGovernanceV2(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	var resp struct {
+		Providers []ProviderGovernanceResponseV2 `json:"providers"`
+		Count     int                            `json:"count"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got count=%d len=%d", resp.Count, len(resp.Providers))
+	}
+	if len(resp.Providers[0].Budgets) != 1 || resp.Providers[0].Budgets[0].ID != "b-1" {
+		t.Errorf("unexpected budgets: %#v", resp.Providers[0].Budgets)
+	}
+}
+
+func TestGetProviderGovernanceV2_DBError(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore: &mockConfigStoreForProviderV2{err: errors.New("db down")},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/v2/governance/providers")
+
+	h.getProviderGovernanceV2(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected 500, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestUpdateProviderGovernanceRequestV2_BudgetsPointerSemantics(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            string
+		wantBudgetsNil  bool
+		wantBudgetsLen  int
+	}{
+		{
+			name:           "absent field leaves budgets nil (no change)",
+			body:           `{}`,
+			wantBudgetsNil: true,
+		},
+		{
+			name:           "explicit null leaves budgets nil (no change)",
+			body:           `{"budgets":null}`,
+			wantBudgetsNil: true,
+		},
+		{
+			name:           "empty array signals remove all",
+			body:           `{"budgets":[]}`,
+			wantBudgetsNil: false,
+			wantBudgetsLen: 0,
+		},
+		{
+			name:           "one budget entry",
+			body:           `{"budgets":[{"max_limit":100,"reset_duration":"1d"}]}`,
+			wantBudgetsNil: false,
+			wantBudgetsLen: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req UpdateProviderGovernanceRequestV2
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tt.wantBudgetsNil && req.Budgets != nil {
+				t.Fatalf("expected Budgets nil, got %#v", req.Budgets)
+			}
+			if !tt.wantBudgetsNil {
+				if req.Budgets == nil {
+					t.Fatal("expected Budgets non-nil")
+				}
+				if len(*req.Budgets) != tt.wantBudgetsLen {
+					t.Fatalf("budgets len = %d, want %d", len(*req.Budgets), tt.wantBudgetsLen)
+				}
+			}
+		})
+	}
+}
+
+func TestRoutesTable_V2ContractIsExplicit(t *testing.T) {
+	h := &GovernanceHandler{}
+	routes := h.routes()
+
+	// Every route must have a non-nil v1 handler.
+	for _, r := range routes {
+		if r.v1 == nil {
+			t.Errorf("route %s %s has nil v1 handler", r.method, r.path)
+		}
+	}
+
+	type routeKey struct{ method, path string }
+	byKey := make(map[routeKey]versionedRoute, len(routes))
+	for _, r := range routes {
+		byKey[routeKey{r.method, r.path}] = r
+	}
+
+	// Provider governance GET and PUT must have v2 handlers.
+	for _, want := range []routeKey{
+		{"GET", "/governance/providers"},
+		{"PUT", "/governance/providers/{provider_name}"},
+	} {
+		r, ok := byKey[want]
+		if !ok {
+			t.Errorf("route %s %s missing from table", want.method, want.path)
+			continue
+		}
+		if r.v2 == nil {
+			t.Errorf("route %s %s expected non-nil v2 handler", want.method, want.path)
+		}
+	}
+
+	// DELETE for provider governance must NOT have a v2 handler — DELETE semantics
+	// are unchanged and registering it under v2 would create a brittle implicit promise.
+	delKey := routeKey{"DELETE", "/governance/providers/{provider_name}"}
+	if r, ok := byKey[delKey]; ok && r.v2 != nil {
+		t.Errorf("DELETE /governance/providers/{provider_name} should have nil v2 (no v2 contract for delete)")
+	}
+
+	// No duplicate method+path pairs.
+	seen := make(map[routeKey]bool)
+	for _, r := range routes {
+		k := routeKey{r.method, r.path}
+		if seen[k] {
+			t.Errorf("duplicate route %s %s in routes table", r.method, r.path)
+		}
+		seen[k] = true
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 func TestValidateRoutingFallbacks(t *testing.T) {
 
 	tests := []struct {
