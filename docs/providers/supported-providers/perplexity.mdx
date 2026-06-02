@@ -72,25 +72,7 @@ Configure Perplexity as a provider.
 
 </Tab>
 <Tab title="API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-  "provider": "perplexity",
-  "keys": [
-    {
-      "name": "perplexity-key-1",
-      "value": "env.PERPLEXITY_API_KEY",
-      "models": [
-        "*"
-      ],
-      "weight": 1.0
-    }
-  ]
-}'
-```
-
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
