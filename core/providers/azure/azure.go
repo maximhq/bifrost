@@ -226,11 +226,10 @@ func (provider *AzureProvider) completeRequest(
 	}()
 
 	var url string
-	isAnthropicModel := schemas.IsAnthropicModel(model)
 
 	// Set any extra headers from network config.
 	// For Anthropic models, exclude anthropic-beta — it is merged and filtered explicitly below.
-	if isAnthropicModel {
+	if schemas.IsAnthropicModelFamily(ctx, model) {
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 	} else {
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -239,7 +238,7 @@ func (provider *AzureProvider) completeRequest(
 	req.Header.SetContentType("application/json")
 
 	// Get authentication headers
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, isAnthropicModel)
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModelFamily(ctx, model))
 	if bifrostErr != nil {
 		return nil, 0, nil, bifrostErr
 	}
@@ -249,13 +248,13 @@ func (provider *AzureProvider) completeRequest(
 		req.Header.Set(k, v)
 	}
 
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, 0, nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	if isAnthropicModel {
-		req.Header.Set("anthropic-version", AzureAnthropicAPIVersionDefault)
+	if schemas.IsAnthropicModelFamily(ctx, model) {
+		req.Header.Set("anthropic-version", resolveAnthropicVersion(ctx))
 		url = fmt.Sprintf("%s/%s", endpoint, path)
 
 		// Merge ExtraHeaders + context anthropic-beta, filter for Azure, then set as HTTP header
@@ -307,6 +306,11 @@ func (provider *AzureProvider) completeRequest(
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
 	// Create the request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -316,7 +320,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(key.AzureKeyConfig.Endpoint.GetValue() + providerUtils.GetPathFromContext(ctx, "/openai/v1/models"))
+	req.SetRequestURI(endpoint + providerUtils.GetPathFromContext(ctx, "/openai/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
@@ -460,7 +464,11 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	url := fmt.Sprintf("%s/openai/v1/completions", key.AzureKeyConfig.Endpoint.GetValue())
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	url := fmt.Sprintf("%s/openai/v1/completions", endpoint)
 
 	// Get Azure authentication headers
 	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
@@ -496,7 +504,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if schemas.IsAnthropicModel(request.Model) {
+			if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
 				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
 				if err != nil {
 					return nil, err
@@ -515,7 +523,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	}
 
 	var path string
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
 		path = "anthropic/v1/messages"
 	} else {
 		path = "openai/v1/chat/completions"
@@ -550,7 +558,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	var rawRequest interface{}
 	var rawResponse interface{}
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -586,14 +594,18 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
 	var url string
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, true)
 		if err != nil {
 			return nil, err
 		}
-		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
-		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint.GetValue())
+		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
+		url = fmt.Sprintf("%s/anthropic/v1/messages", endpoint)
 
 		jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -637,7 +649,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/chat/completions", key.AzureKeyConfig.Endpoint.GetValue())
+		url = fmt.Sprintf("%s/openai/v1/chat/completions", endpoint)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
@@ -669,7 +681,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	var jsonData []byte
 	var bifrostErr *schemas.BifrostError
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	} else {
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
@@ -685,10 +697,10 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	}
 
 	var path string
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		path = "anthropic/v1/messages"
 	} else {
-		path = fmt.Sprintf("openai/v1/responses?api-version=%s", AzureAPIVersionPreview)
+		path = fmt.Sprintf("openai/v1/responses?api-version=%s", resolveAPIVersion(ctx, AzureAPIVersionPreview))
 	}
 
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
@@ -720,7 +732,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	var rawRequest interface{}
 	var rawResponse interface{}
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -753,14 +765,18 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 
 // ResponsesStream performs a streaming responses request to Azure's API.
 func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
 	var url string
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, true)
 		if err != nil {
 			return nil, err
 		}
-		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
-		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint.GetValue())
+		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
+		url = fmt.Sprintf("%s/anthropic/v1/messages", endpoint)
 
 		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
@@ -790,7 +806,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/responses?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), AzureAPIVersionPreview)
+		url = fmt.Sprintf("%s/openai/v1/responses?api-version=%s", endpoint, resolveAPIVersion(ctx, AzureAPIVersionPreview))
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
@@ -881,7 +897,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 
 // Speech is not supported by the Azure provider.
 func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -922,13 +938,18 @@ func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key,
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
 func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
 	// Get Azure authentication headers
 	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 	if err != nil {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/openai/v1/audio/speech", key.AzureKeyConfig.Endpoint.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/audio/speech", endpoint)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1209,7 +1230,11 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, DefaultAzureAPIVersion)
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
@@ -1241,7 +1266,7 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1275,7 +1300,7 @@ func (provider *AzureProvider) ImageGenerationStream(
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1311,7 +1336,7 @@ func (provider *AzureProvider) ImageGenerationStream(
 
 // ImageEdit performs an image edit request to Azure's API.
 func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1338,7 +1363,7 @@ func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schema
 
 // ImageEditStream performs a streaming image edit request to Azure's API.
 func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1380,7 +1405,7 @@ func (provider *AzureProvider) ImageVariation(ctx *schemas.BifrostContext, key s
 // VideoGeneration creates a video using Azure's OpenAI-compatible Sora API.
 // This delegates to the OpenAI handler with Azure-specific URL and authentication.
 func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1415,7 +1440,7 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1450,7 +1475,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1525,7 +1550,7 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1554,7 +1579,7 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 
 // VideoList lists videos from Azure's OpenAI-compatible API.
 func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
@@ -1588,6 +1613,10 @@ func (provider *AzureProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.K
 
 // FileUpload uploads a file to Azure OpenAI.
 func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
@@ -1629,7 +1658,7 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL
-	requestURL := fmt.Sprintf("%s/openai/v1/files", key.AzureKeyConfig.Endpoint.GetValue())
+	requestURL := fmt.Sprintf("%s/openai/v1/files", endpoint)
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1700,6 +1729,11 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 		}, nil
 	}
 
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1707,7 +1741,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with query params
-	requestURL := fmt.Sprintf("%s/openai/v1/files", key.AzureKeyConfig.Endpoint.GetValue())
+	requestURL := fmt.Sprintf("%s/openai/v1/files", endpoint)
 	values := url.Values{}
 	if request.Purpose != "" {
 		values.Set("purpose", string(request.Purpose))
@@ -1803,12 +1837,17 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		endpoint := resolveAzureEndpoint(ctx, key)
+		if endpoint == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1887,12 +1926,17 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		endpoint := resolveAzureEndpoint(ctx, key)
+		if endpoint == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2000,12 +2044,17 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 	var lastErr *schemas.BifrostError
 
 	for _, key := range keys {
+		endpoint := resolveAzureEndpoint(ctx, key)
+		if endpoint == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s/content", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s/content", endpoint, url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2075,6 +2124,10 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 // BatchCreate creates a new batch job on Azure OpenAI.
 // Azure Batch API uses the same format as OpenAI but with Azure-specific URL patterns.
 func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
 	inputFileID := request.InputFileID
 
 	// If no file_id provided but inline requests are available, upload them first
@@ -2110,7 +2163,7 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL
-	requestURL := fmt.Sprintf("%s/openai/v1/batches", key.AzureKeyConfig.Endpoint.GetValue())
+	requestURL := fmt.Sprintf("%s/openai/v1/batches", endpoint)
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2209,6 +2262,11 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 		}, nil
 	}
 
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2216,7 +2274,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with query params
-	baseURL := fmt.Sprintf("%s/openai/v1/batches", key.AzureKeyConfig.Endpoint.GetValue())
+	baseURL := fmt.Sprintf("%s/openai/v1/batches", endpoint)
 	values := url.Values{}
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
@@ -2303,12 +2361,17 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		endpoint := resolveAzureEndpoint(ctx, key)
+		if endpoint == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s", endpoint, url.PathEscape(request.BatchID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2388,12 +2451,17 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		endpoint := resolveAzureEndpoint(ctx, key)
+		if endpoint == "" {
+			lastErr = providerUtils.NewConfigurationError("endpoint not set")
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s/cancel", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s/cancel", endpoint, url.PathEscape(request.BatchID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2729,8 +2797,9 @@ func (provider *AzureProvider) Compaction(ctx *schemas.BifrostContext, key schem
 
 // buildContainerURL constructs the Azure container API URL.
 // Container endpoints are not per-deployment, so they use the openai/v1 prefix directly.
-func (provider *AzureProvider) buildContainerURL(key schemas.Key, path string) string {
-	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
+// ctx carries the resolved alias so per-alias Endpoint overrides are honored.
+func (provider *AzureProvider) buildContainerURL(ctx *schemas.BifrostContext, key schemas.Key, path string) string {
+	endpoint := strings.TrimRight(resolveAzureEndpoint(ctx, key), "/")
 	return fmt.Sprintf("%s/openai/v1%s", endpoint, path)
 }
 
@@ -2742,7 +2811,7 @@ func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key 
 	if request.Name == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: name is required", nil)
 	}
-	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+	if resolveAzureEndpoint(ctx, key) == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
@@ -2779,7 +2848,7 @@ func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildContainerURL(key, "/containers"))
+	req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.SetBody(jsonBody)
@@ -2863,7 +2932,7 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
 		}
@@ -2872,7 +2941,7 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+url.PathEscape(request.ContainerID)))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -2969,7 +3038,7 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
 		}
@@ -2978,7 +3047,7 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+url.PathEscape(request.ContainerID)))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -3061,7 +3130,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file is required", nil)
 	}
-	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+	if resolveAzureEndpoint(ctx, key) == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
@@ -3084,7 +3153,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID))))
+	req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID))))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.SetBody(body.Bytes())
@@ -3169,11 +3238,11 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 	if !ok {
 		return &schemas.BifrostContainerFileListResponse{Object: "list", Data: []schemas.ContainerFileObject{}, HasMore: false}, nil
 	}
-	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+	if resolveAzureEndpoint(ctx, key) == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	requestURL := provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID)))
+	requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID)))
 	queryParams := url.Values{}
 	if request.Limit > 0 {
 		queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
@@ -3275,7 +3344,7 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
 		}
@@ -3284,7 +3353,7 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -3380,7 +3449,7 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
 		}
@@ -3389,7 +3458,7 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s/content", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s/content", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -3470,7 +3539,7 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() == "" {
+		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
 		}
@@ -3479,7 +3548,7 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
 		req.Header.SetMethod(http.MethodDelete)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -3556,7 +3625,10 @@ func (provider *AzureProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	url := provider.buildPassthroughURL(key, req.Path, req.RawQuery)
+	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -3572,7 +3644,7 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModel(req.Model))
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModelFamily(ctx, req.Model))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -3625,7 +3697,10 @@ func (provider *AzureProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	url := provider.buildPassthroughURL(key, req.Path, req.RawQuery)
+	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -3643,7 +3718,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	fasthttpReq.Header.Set("Connection", "close")
 
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModel(req.Model))
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModelFamily(ctx, req.Model))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -3686,7 +3761,7 @@ func (provider *AzureProvider) PassthroughStream(
 	}
 
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
-	if schemas.IsAnthropicModel(req.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
 		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
 	}
 	return providerUtils.StreamPassthrough(
@@ -3716,8 +3791,13 @@ func (provider *AzureProvider) PassthroughStream(
 }
 
 // buildPassthroughURL constructs the full Azure URL for a passthrough request.
-func (provider *AzureProvider) buildPassthroughURL(key schemas.Key, path, rawQuery string) string {
-	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+// ctx carries the resolved alias used to pick a per-alias api-version override
+// when the caller did not supply one in rawQuery.
+func (provider *AzureProvider) buildPassthroughURL(ctx *schemas.BifrostContext, key schemas.Key, path, rawQuery string) (string, error) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return "", fmt.Errorf("endpoint not set")
+	}
 
 	// Normalise paths emitted by the Azure SDK.
 	path = strings.Replace(path, "/openai/responses", "/openai/v1/responses", 1)
@@ -3734,14 +3814,14 @@ func (provider *AzureProvider) buildPassthroughURL(key schemas.Key, path, rawQue
 		// Responses API requires api-version=preview.
 		values, _ := url.ParseQuery(rawQuery)
 		if values.Get("api-version") == "" {
-			values.Set("api-version", AzureAPIVersionPreview)
+			values.Set("api-version", resolveAPIVersion(ctx, AzureAPIVersionPreview))
 			rawQuery = values.Encode()
 		}
 	case strings.Contains(path, "/openai/deployments/"):
 		// Classic /deployments/ routes require api-version. Inject a default if absent.
 		values, _ := url.ParseQuery(rawQuery)
 		if values.Get("api-version") == "" {
-			values.Set("api-version", DefaultAzureAPIVersion)
+			values.Set("api-version", resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 			rawQuery = values.Encode()
 		}
 	}
@@ -3750,7 +3830,7 @@ func (provider *AzureProvider) buildPassthroughURL(key schemas.Key, path, rawQue
 	if rawQuery != "" {
 		fullURL += "?" + rawQuery
 	}
-	return fullURL
+	return fullURL, nil
 }
 
 // extractAzurePassthroughUsage dispatches usage extraction by the upstream API the

@@ -6167,7 +6167,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-				resolvedModel = k.Aliases.Resolve(originalModelRequested)
+				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+					resolvedModel = aliasConfig.ModelID
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+				} else {
+					resolvedModel = originalModelRequested
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+				}
 				req.SetModel(resolvedModel)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
@@ -6226,7 +6232,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				resolvedModel = k.Aliases.Resolve(originalModelRequested)
+				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+					resolvedModel = aliasConfig.ModelID
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+				} else {
+					resolvedModel = originalModelRequested
+					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+				}
 				req.SetModel(resolvedModel)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
