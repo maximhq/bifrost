@@ -286,6 +286,27 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
 			return budgetResult
 		}
+
+		// 6. Check per-VK-scoped model config rate limits and budgets. These aggregate with
+		// the global model checks already enforced in EvaluateModelAndProviderRequest — the
+		// request must satisfy both (most-restrictive wins). Gated on a model being present,
+		// mirroring the global model checks.
+		if model != "" {
+			if decision, err := r.store.CheckVirtualKeyScopedModelRateLimit(ctx, vk, evaluationRequest, nil, nil); err != nil || isRateLimitViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level rate limit check failed (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
+			if decision, err := r.store.CheckVirtualKeyScopedModelBudget(ctx, vk, evaluationRequest, nil); err != nil || isBudgetViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level budget exceeded (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
+		}
 	}
 
 	// Find the provider config that matches the request's provider and apply key filtering
