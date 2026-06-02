@@ -3686,13 +3686,22 @@
         },
         "attributeTeamMappings": {
           "type": "array",
-          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "team": { "type": "string" }
+              "attribute": { "type": "string", "description": "JWT claim name" },
+              "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
+              "team": { "type": "string", "description": "Bifrost team slug to assign" },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "team"],
             "additionalProperties": false
@@ -3700,13 +3709,22 @@
         },
         "attributeBusinessUnitMappings": {
           "type": "array",
-          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "business_unit": { "type": "string" }
+              "attribute": { "type": "string", "description": "JWT claim name" },
+              "value": { "type": "string", "description": "Claim value to match" },
+              "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign" },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "business_unit"],
             "additionalProperties": false
