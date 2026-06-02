@@ -77,6 +77,10 @@ type Config struct {
 	// PluginSpanFilter is the DB-stored fallback when otel_plugin_span_filter is absent in config.json.
 	// The top-level config.json field takes precedence and is passed via Init's pluginSpanFilter param.
 	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
@@ -288,13 +292,16 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			return nil, fmt.Errorf("metrics_push_interval must be between 1 and 300 seconds, got %d", pushInterval)
 		}
 		metricsConfig := &MetricsConfig{
-			ServiceName:  config.ServiceName,
-			Endpoint:     config.MetricsEndpoint.GetValue(),
-			Headers:      p.headers,
-			Protocol:     config.Protocol,
-			TLSCACert:    config.TLSCACert,
-			Insecure:     config.Insecure,
-			PushInterval: pushInterval,
+			ServiceName:              config.ServiceName,
+			Endpoint:                 config.MetricsEndpoint.GetValue(),
+			Headers:                  p.headers,
+			Protocol:                 config.Protocol,
+			TLSCACert:                config.TLSCACert,
+			Insecure:                 config.Insecure,
+			PushInterval:             pushInterval,
+			LatencyBuckets:           config.LatencyBuckets,
+			FirstTokenLatencyBuckets: config.FirstTokenLatencyBuckets,
+			InterTokenLatencyBuckets: config.InterTokenLatencyBuckets,
 		}
 		p.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {

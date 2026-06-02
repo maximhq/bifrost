@@ -5,11 +5,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +31,10 @@ type MetricsConfig struct {
 	TLSCACert    string
 	Insecure     bool // Skip TLS when true; ignored if TLSCACert is set
 	PushInterval int  // in seconds
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64
+	FirstTokenLatencyBuckets []float64
+	InterTokenLatencyBuckets []float64
 }
 
 // MetricsExporter handles OTEL metrics export
@@ -151,54 +152,6 @@ var (
 	}
 )
 
-// parseBucketsFromEnv parses a comma-separated list of positive, increasing float64
-// bucket boundaries from an environment variable. Returns nil if unset or all values invalid.
-func parseBucketsFromEnv(envKey string) []float64 {
-	raw := os.Getenv(envKey)
-	if raw == "" {
-		return nil
-	}
-
-	warn := func(msg string, args ...any) {
-		if logger != nil {
-			logger.Warn(msg, args...)
-		}
-	}
-
-	parts := strings.Split(raw, ",")
-	buckets := make([]float64, 0, len(parts))
-	prev := 0.0
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		v, err := strconv.ParseFloat(p, 64)
-		if err != nil {
-			warn("otel: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
-			continue
-		}
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			warn("otel: %s bucket value %v is not finite (skipped)", envKey, v)
-			continue
-		}
-		if v <= 0 {
-			warn("otel: %s bucket value %v must be positive (skipped)", envKey, v)
-			continue
-		}
-		if v <= prev {
-			warn("otel: %s bucket value %v must be greater than previous value %v (skipped)", envKey, v, prev)
-			continue
-		}
-		buckets = append(buckets, v)
-		prev = v
-	}
-
-	if len(buckets) == 0 {
-		warn("otel: %s produced no valid buckets; using compiled-in defaults", envKey)
-		return nil
-	}
-	return buckets
-}
-
-
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
 type syncFloat64Histogram struct {
 	histogram  metric.Float64Histogram
@@ -290,7 +243,7 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	}
 
 	// Initialize metrics with lazy loading wrappers
-	m.initMetrics()
+	m.initMetrics(config)
 
 	return m, nil
 }
@@ -419,18 +372,18 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 	return otlpmetricgrpc.New(ctx, opts...)
 }
 
-func (m *MetricsExporter) initMetrics() {
+func (m *MetricsExporter) initMetrics(config *MetricsConfig) {
 	upstreamLatencyBuckets := upstreamLatencyBuckets
 	firstTokenLatencyBuckets := firstTokenLatencyBuckets
 	interTokenLatencyBuckets := interTokenLatencyBuckets
-	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS"); custom != nil {
-		upstreamLatencyBuckets = custom
+	if len(config.LatencyBuckets) > 0 {
+		upstreamLatencyBuckets = config.LatencyBuckets
 	}
-	if custom := parseBucketsFromEnv("BIFROST_FIRST_TOKEN_LATENCY_BUCKETS"); custom != nil {
-		firstTokenLatencyBuckets = custom
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
 	}
-	if custom := parseBucketsFromEnv("BIFROST_INTER_TOKEN_LATENCY_BUCKETS"); custom != nil {
-		interTokenLatencyBuckets = custom
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
 	}
 
 	// Bifrost upstream metrics

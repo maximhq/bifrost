@@ -6,7 +6,6 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -198,6 +197,10 @@ type Config struct {
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -227,47 +230,6 @@ var (
 	}
 )
 
-// parseBucketsFromEnv parses a comma-separated list of positive, increasing float64
-// bucket boundaries from an environment variable. Returns nil if unset or all values invalid.
-func parseBucketsFromEnv(envKey string, logger schemas.Logger) []float64 {
-	raw := os.Getenv(envKey)
-	if raw == "" {
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	buckets := make([]float64, 0, len(parts))
-	prev := 0.0
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		v, err := strconv.ParseFloat(p, 64)
-		if err != nil {
-			logger.Warn("telemetry: %s contains invalid bucket value %q (skipped): %v", envKey, p, err)
-			continue
-		}
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			logger.Warn("telemetry: %s bucket value %v is not finite (skipped)", envKey, v)
-			continue
-		}
-		if v <= 0 {
-			logger.Warn("telemetry: %s bucket value %v must be positive (skipped)", envKey, v)
-			continue
-		}
-		if v <= prev {
-			logger.Warn("telemetry: %s bucket value %v must be greater than previous value %v (skipped)", envKey, v, prev)
-			continue
-		}
-		buckets = append(buckets, v)
-		prev = v
-	}
-
-	if len(buckets) == 0 {
-		logger.Warn("telemetry: %s produced no valid buckets; using compiled-in defaults", envKey)
-		return nil
-	}
-	return buckets
-}
-
 // Init creates a new PrometheusPlugin with initialized metrics.
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -281,14 +243,14 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	upstreamLatencyBuckets := upstreamLatencyBuckets
 	firstTokenLatencyBuckets := firstTokenLatencyBuckets
 	interTokenLatencyBuckets := interTokenLatencyBuckets
-	if custom := parseBucketsFromEnv("BIFROST_LATENCY_BUCKETS", logger); custom != nil {
-		upstreamLatencyBuckets = custom
+	if len(config.LatencyBuckets) > 0 {
+		upstreamLatencyBuckets = config.LatencyBuckets
 	}
-	if custom := parseBucketsFromEnv("BIFROST_FIRST_TOKEN_LATENCY_BUCKETS", logger); custom != nil {
-		firstTokenLatencyBuckets = custom
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
 	}
-	if custom := parseBucketsFromEnv("BIFROST_INTER_TOKEN_LATENCY_BUCKETS", logger); custom != nil {
-		interTokenLatencyBuckets = custom
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
 	}
 
 	registry := config.Registry
