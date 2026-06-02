@@ -1033,58 +1033,30 @@ func schemaInt64Ptr(value *flexibleSchemaInt64) *int64 {
 // UnmarshalJSON accepts both the quoted integer format emitted by this struct's
 // JSON tags and standard numeric JSON Schema constraints used by SDKs.
 func (s *Schema) UnmarshalJSON(data []byte) error {
-	type schemaAlias struct {
-		AnyOf            []*Schema            `json:"anyOf,omitempty"`
-		Default          any                  `json:"default,omitempty"`
-		Description      string               `json:"description,omitempty"`
-		Enum             []string             `json:"enum,omitempty"`
-		Example          any                  `json:"example,omitempty"`
-		Format           string               `json:"format,omitempty"`
-		Items            *Schema              `json:"items,omitempty"`
-		MaxItems         *flexibleSchemaInt64 `json:"maxItems,omitempty"`
-		MaxLength        *flexibleSchemaInt64 `json:"maxLength,omitempty"`
-		MaxProperties    *flexibleSchemaInt64 `json:"maxProperties,omitempty"`
-		Maximum          *float64             `json:"maximum,omitempty"`
-		MinItems         *flexibleSchemaInt64 `json:"minItems,omitempty"`
-		MinLength        *flexibleSchemaInt64 `json:"minLength,omitempty"`
-		MinProperties    *flexibleSchemaInt64 `json:"minProperties,omitempty"`
-		Minimum          *float64             `json:"minimum,omitempty"`
-		Nullable         *bool                `json:"nullable,omitempty"`
-		Pattern          string               `json:"pattern,omitempty"`
-		Properties       map[string]*Schema   `json:"properties,omitempty"`
-		PropertyOrdering []string             `json:"propertyOrdering,omitempty"`
-		Required         []string             `json:"required,omitempty"`
-		Title            string               `json:"title,omitempty"`
-		Type             Type                 `json:"type,omitempty"`
+	type schemaAlias Schema
+	type schemaWithFlexibleConstraints struct {
+		*schemaAlias
+		MaxItems      *flexibleSchemaInt64 `json:"maxItems,omitempty"`
+		MaxLength     *flexibleSchemaInt64 `json:"maxLength,omitempty"`
+		MaxProperties *flexibleSchemaInt64 `json:"maxProperties,omitempty"`
+		MinItems      *flexibleSchemaInt64 `json:"minItems,omitempty"`
+		MinLength     *flexibleSchemaInt64 `json:"minLength,omitempty"`
+		MinProperties *flexibleSchemaInt64 `json:"minProperties,omitempty"`
 	}
 
 	var aux schemaAlias
-	if err := sonic.Unmarshal(data, &aux); err != nil {
+	withConstraints := schemaWithFlexibleConstraints{schemaAlias: &aux}
+	if err := sonic.Unmarshal(data, &withConstraints); err != nil {
 		return err
 	}
 
-	s.AnyOf = aux.AnyOf
-	s.Default = aux.Default
-	s.Description = aux.Description
-	s.Enum = aux.Enum
-	s.Example = aux.Example
-	s.Format = aux.Format
-	s.Items = aux.Items
-	s.MaxItems = schemaInt64Ptr(aux.MaxItems)
-	s.MaxLength = schemaInt64Ptr(aux.MaxLength)
-	s.MaxProperties = schemaInt64Ptr(aux.MaxProperties)
-	s.Maximum = aux.Maximum
-	s.MinItems = schemaInt64Ptr(aux.MinItems)
-	s.MinLength = schemaInt64Ptr(aux.MinLength)
-	s.MinProperties = schemaInt64Ptr(aux.MinProperties)
-	s.Minimum = aux.Minimum
-	s.Nullable = aux.Nullable
-	s.Pattern = aux.Pattern
-	s.Properties = aux.Properties
-	s.PropertyOrdering = aux.PropertyOrdering
-	s.Required = aux.Required
-	s.Title = aux.Title
-	s.Type = aux.Type
+	*s = Schema(aux)
+	s.MaxItems = schemaInt64Ptr(withConstraints.MaxItems)
+	s.MaxLength = schemaInt64Ptr(withConstraints.MaxLength)
+	s.MaxProperties = schemaInt64Ptr(withConstraints.MaxProperties)
+	s.MinItems = schemaInt64Ptr(withConstraints.MinItems)
+	s.MinLength = schemaInt64Ptr(withConstraints.MinLength)
+	s.MinProperties = schemaInt64Ptr(withConstraints.MinProperties)
 
 	return nil
 }

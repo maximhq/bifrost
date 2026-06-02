@@ -514,22 +514,24 @@ func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *test
 		})
 	}
 
-	var req gemini.GeminiGenerationRequest
-	err := sonic.Unmarshal([]byte(`{
-		"tools": [{
-			"functionDeclarations": [{
-				"name": "exa_web_search_exa",
-				"parameters": {
-					"type": "object",
-					"properties": {
-						"query": {"type": "string", "minLength": "many"}
+	t.Run("invalid string constraint", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		err := sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "minLength": "many"}
+						}
 					}
-				}
+				}]
 			}]
-		}]
-	}`), &req)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		}`), &req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid schema integer constraint")
+	})
 }
 
 // parseToolParams parses fd.ParametersJSONSchema (raw JSON Schema passthrough) into a
