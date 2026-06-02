@@ -16,6 +16,12 @@
       "enum": [1, 2],
       "default": 2
     },
+    "source_of_truth": {
+      "type": "string",
+      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched.",
+      "enum": ["split", "config.json"],
+      "default": "split"
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
