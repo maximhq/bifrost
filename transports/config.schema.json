@@ -469,9 +469,16 @@
                 "type": "string",
                 "description": "Customer name"
               },
+              "budgets": {
+                "type": "array",
+                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "items": {
+                  "$ref": "#/$defs/budget_line"
+                }
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Associated budget ID"
+                "description": "Single budget reference (pre-declared in governance.budgets). Deprecated in favour of inline budgets."
               },
               "rate_limit_id": {
                 "type": "string",
@@ -484,6 +491,9 @@
               }
             },
             "required": ["id", "name"],
+            "not": {
+              "required": ["budgets", "budget_id"]
+            },
             "additionalProperties": false
           }
         },
@@ -2931,7 +2941,13 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -3775,9 +3791,18 @@
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-              "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-              "role": { "type": "string", "description": "Bifrost role to assign on match" }
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              }
             },
             "required": ["attribute", "value", "role"],
             "additionalProperties": false
@@ -3789,9 +3814,18 @@
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string", "description": "JWT claim name" },
-              "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
-              "team": { "type": "string", "description": "Bifrost team slug to assign" },
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign"
+              },
               "attributeType": {
                 "type": "string",
                 "enum": ["user", "group"],
@@ -3812,9 +3846,18 @@
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string", "description": "JWT claim name" },
-              "value": { "type": "string", "description": "Claim value to match" },
-              "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign" },
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match"
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign"
+              },
               "attributeType": {
                 "type": "string",
                 "enum": ["user", "group"],
