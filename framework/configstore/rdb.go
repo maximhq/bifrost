@@ -2565,13 +2565,54 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
 }
 
+// virtualKeyInternalPageSize is the bounded page size used when loading every
+// virtual key with preloaded relationships. Keeping each page small avoids
+// PostgreSQL's extended protocol parameter limit during GORM preloads.
+const virtualKeyInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
-	var virtualKeys []tables.TableVirtualKey
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
 
-	// Preload all relationships for complete information
-	if err := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx)).
-		Order("created_at ASC").
+	for {
+		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(virtualKeys) == 0 {
+			return allVirtualKeys, nil
+		}
+
+		allVirtualKeys = append(allVirtualKeys, virtualKeys...)
+		last := virtualKeys[len(virtualKeys)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(virtualKeys) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
+}
+
+// getVirtualKeysPage retrieves one unfiltered page of virtual keys without a
+// COUNT query for internal all-key loading paths.
+func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, lastCreatedAt time.Time, lastID string, hasCursor bool) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+	query := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx))
+	if hasCursor {
+		query = query.Where(
+			"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+			lastCreatedAt,
+			lastCreatedAt,
+			lastID,
+		)
+	}
+	if err := query.
+		Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+		Limit(limit).
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
