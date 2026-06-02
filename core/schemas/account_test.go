@@ -125,9 +125,9 @@ func TestKeyAliasesMarshalLegacyShapeWhenOnlyModelIDSet(t *testing.T) {
 
 func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 	cases := map[string]struct {
-		ac          AliasConfig
-		wantKey     string
-		wantValue   any
+		ac        AliasConfig
+		wantKey   string
+		wantValue any
 	}{
 		"with_model_name":   {AliasConfig{ModelID: "x", ModelName: Ptr("canonical")}, "model_name", "canonical"},
 		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
@@ -222,29 +222,38 @@ func TestKeyAliasesResolveConfig(t *testing.T) {
 
 func TestKeyAliasesValidate(t *testing.T) {
 	madeUp := ModelFamily("made-up")
+	azureCfg := &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}
+	bedrockCfg := &BedrockAliasCfg{InferenceProfileARN: NewEnvVar("arn:aws:bedrock:...")}
+	vertexCfg := &VertexAliasCfg{ProjectID: NewEnvVar("my-gcp-project")}
+	replicateCfg := &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)}
 	cases := []struct {
-		name    string
-		ka      KeyAliases
-		wantErr string
+		name     string
+		provider ModelProvider
+		ka       KeyAliases
+		wantErr  string
 	}{
 		{
-			name: "ok",
-			ka:   KeyAliases{"k": {ModelID: "v"}},
+			name:     "ok",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v"}},
 		},
 		{
-			name:    "empty source",
-			ka:      KeyAliases{"": {ModelID: "v"}},
-			wantErr: "alias source cannot be empty",
+			name:     "empty source",
+			provider: OpenAI,
+			ka:       KeyAliases{"": {ModelID: "v"}},
+			wantErr:  "alias source cannot be empty",
 		},
 		{
-			name:    "empty model id",
-			ka:      KeyAliases{"k": {ModelID: ""}},
-			wantErr: "model_id cannot be empty",
+			name:     "empty model id",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: ""}},
+			wantErr:  "model_id cannot be empty",
 		},
 		{
-			name:    "whitespace source",
-			ka:      KeyAliases{" k ": {ModelID: "v"}},
-			wantErr: "leading or trailing whitespace",
+			name:     "whitespace source",
+			provider: OpenAI,
+			ka:       KeyAliases{" k ": {ModelID: "v"}},
+			wantErr:  "leading or trailing whitespace",
 		},
 		{
 			name:    "whitespace model_id",
@@ -262,14 +271,59 @@ func TestKeyAliasesValidate(t *testing.T) {
 			wantErr: "duplicate alias source",
 		},
 		{
-			name:    "invalid family",
-			ka:      KeyAliases{"k": {ModelID: "v", ModelFamily: &madeUp}},
-			wantErr: "invalid model_family",
+			name:     "invalid family",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", ModelFamily: &madeUp}},
+			wantErr:  "invalid model_family",
+		},
+		{
+			name:     "azure sub-config on azure key — ok",
+			provider: Azure,
+			ka:       KeyAliases{"k": {ModelID: "v", AzureAliasCfg: azureCfg}},
+		},
+		{
+			name:     "azure sub-config on non-azure key — error",
+			provider: Bedrock,
+			ka:       KeyAliases{"k": {ModelID: "v", AzureAliasCfg: azureCfg}},
+			wantErr:  "azure sub-config is only valid on Azure keys",
+		},
+		{
+			name:     "bedrock sub-config on bedrock key — ok",
+			provider: Bedrock,
+			ka:       KeyAliases{"k": {ModelID: "v", BedrockAliasCfg: bedrockCfg}},
+		},
+		{
+			name:     "bedrock sub-config on azure key — error",
+			provider: Azure,
+			ka:       KeyAliases{"k": {ModelID: "v", BedrockAliasCfg: bedrockCfg}},
+			wantErr:  "bedrock sub-config is only valid on Bedrock keys",
+		},
+		{
+			name:     "vertex sub-config on vertex key — ok",
+			provider: Vertex,
+			ka:       KeyAliases{"k": {ModelID: "v", VertexAliasCfg: vertexCfg}},
+		},
+		{
+			name:     "vertex sub-config on openai key — error",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", VertexAliasCfg: vertexCfg}},
+			wantErr:  "vertex sub-config is only valid on Vertex keys",
+		},
+		{
+			name:     "replicate sub-config on replicate key — ok",
+			provider: Replicate,
+			ka:       KeyAliases{"k": {ModelID: "v", ReplicateAliasCfg: replicateCfg}},
+		},
+		{
+			name:     "replicate sub-config on bedrock key — error",
+			provider: Bedrock,
+			ka:       KeyAliases{"k": {ModelID: "v", ReplicateAliasCfg: replicateCfg}},
+			wantErr:  "replicate sub-config is only valid on Replicate keys",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := c.ka.Validate()
+			err := c.ka.Validate(c.provider)
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("want ok, got %v", err)

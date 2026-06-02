@@ -1240,12 +1240,21 @@ func processProvider(
 ) error {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 
+	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
+		return err
+	}
+
+	baseProvider := provider
+	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = providerCfgInFile.CustomProviderConfig.BaseProviderType
+	}
+
 	// Process environment variables in keys (including key-level configs)
 	for i, providerKeyInFile := range providerCfgInFile.Keys {
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
-		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
 		}
 	}
@@ -1269,11 +1278,18 @@ func processAuthoritativeProvider(
 	providers map[schemas.ModelProvider]configstore.ProviderConfig,
 ) error {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
+	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
+		return err
+	}
+	baseProvider := provider
+	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = providerCfgInFile.CustomProviderConfig.BaseProviderType
+	}
 	for i, providerKeyInFile := range providerCfgInFile.Keys {
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
-		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
 		}
 	}
