@@ -2639,10 +2639,28 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	provider, modelName, err := resolveModelAndProvider(ctx, h.config, req.Model)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+	// model is optional on POST /v1/batches per the OpenAI spec — the model lives
+	// inside each JSONL request body. When omitted, resolve the provider from the
+	// x-model-provider header or ?provider= query param (same as fileUpload).
+	var provider schemas.ModelProvider
+	var modelName string
+	if req.Model != "" {
+		var err error
+		provider, modelName, err = resolveModelAndProvider(ctx, h.config, req.Model)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		p := string(ctx.QueryArgs().Peek("provider"))
+		if p == "" {
+			p = string(ctx.Request.Header.Peek("x-model-provider"))
+		}
+		if p == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required when model is not specified")
+			return
+		}
+		provider = schemas.ModelProvider(p)
 	}
 
 	// Validate that at least one of InputFileID or InputBlob or Requests is provided
