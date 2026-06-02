@@ -76,6 +76,13 @@ Tests all core scenarios using OpenAI SDK directly:
 64. Realtime client secret HTTP API - raw routes
 65. Realtime client secret HTTP API - OpenAI constructor base_url compatibility
 66. Realtime client secret HTTP API - unsupported provider
+xAI x_search tool tests (xAI-only):
+- xai_x_search_basic: x_search with no params, non-streaming
+- xai_x_search_with_handles: x_search with allowed_x_handles, non-streaming
+- xai_x_search_with_date_range: x_search with from_date/to_date, non-streaming
+- xai_x_search_all_params: x_search with all optional params, non-streaming
+- xai_x_search_streaming: x_search streaming, no params
+- xai_x_search_streaming_with_params: x_search streaming with handles + date range
 
 Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
@@ -83,6 +90,7 @@ Batch API uses OpenAI SDK with x-model-provider header to route to different pro
 import json
 import os
 import time
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -2504,6 +2512,234 @@ class TestOpenAIIntegration:
         assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
 
         print(f"Success: Reasoning streaming with summary completed ({chunk_count} chunks)")
+
+    # =========================================================================
+    # XAI x_search TOOL TEST CASES
+    # Tested via the OpenAI integration — model "xai/<model>" routes through
+    # Bifrost to xAI's API.  The openai_client fixture hits Bifrost's /openai
+    # endpoint; the "xai/" prefix in the model name selects the xAI provider.
+    # =========================================================================
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_basic(self, openai_client, test_config):
+        """xAI x_search: non-streaming, no extra params — verifies custom_tool_call items appear."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+
+        response = openai_client.responses.create(
+            model=model,
+            input="What are people saying about artificial intelligence on X today?",
+            tools=[{"type": "x_search"}],
+            max_output_tokens=500,
+        )
+
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "output") and len(response.output) > 0, "Output should not be empty"
+
+        x_search_calls = [
+            item for item in response.output
+            if getattr(item, "type", None) == "custom_tool_call"
+        ]
+        assert len(x_search_calls) > 0, (
+            f"Response should contain at least one custom_tool_call (x_semantic_search / "
+            f"x_keyword_search). Output types: {[getattr(i, 'type', None) for i in response.output]}"
+        )
+
+        for call in x_search_calls:
+            assert getattr(call, "name", None) in {"x_semantic_search", "x_keyword_search"}, (
+                f"Unexpected custom_tool_call name: {getattr(call, 'name', None)}"
+            )
+
+        message_content = ""
+        for item in response.output:
+            if getattr(item, "type", None) == "message" and hasattr(item, "content"):
+                for block in (item.content if isinstance(item.content, list) else []):
+                    if hasattr(block, "text") and block.text:
+                        message_content += block.text
+
+        assert len(message_content) > 20, (
+            f"Message content should be non-trivial. Got: {message_content!r}"
+        )
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_with_handles(self, openai_client, test_config):
+        """xAI x_search: non-streaming, restricted to specific X handles via allowed_x_handles."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+
+        response = openai_client.responses.create(
+            model=model,
+            input="What has xAI been posting about recently?",
+            tools=[
+                {
+                    "type": "x_search",
+                    "allowed_x_handles": ["xai", "grok"],
+                }
+            ],
+            tool_choice="required",
+            max_output_tokens=500,
+        )
+
+        assert response is not None
+        assert len(response.output) > 0
+
+        x_search_calls = [
+            item for item in response.output
+            if getattr(item, "type", None) == "custom_tool_call"
+        ]
+        assert len(x_search_calls) > 0, (
+            "Response should contain at least one x_search call when tool_choice=required"
+        )
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_with_date_range(self, openai_client, test_config):
+        """xAI x_search: non-streaming, with from_date/to_date filters."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+        _today = datetime.now().date()
+        _from_date = ((_today - timedelta(days=30)).isoformat())
+        _to_date = ((_today - timedelta(days=15)).isoformat())
+
+        response = openai_client.responses.create(
+            model=model,
+            input="What were people saying about machine learning on X recently?",
+            tools=[
+                {
+                    "type": "x_search",
+                    "from_date": _from_date,
+                    "to_date": _to_date,
+                }
+            ],
+            max_output_tokens=500,
+        )
+
+        assert response is not None
+        assert len(response.output) > 0
+
+        x_search_calls = [
+            item for item in response.output
+            if getattr(item, "type", None) == "custom_tool_call"
+        ]
+        assert len(x_search_calls) > 0, "Response should contain x_search calls"
+
+        message_content = ""
+        for item in response.output:
+            if getattr(item, "type", None) == "message" and hasattr(item, "content"):
+                for block in (item.content if isinstance(item.content, list) else []):
+                    if hasattr(block, "text") and block.text:
+                        message_content += block.text
+
+        assert len(message_content) > 20, f"Expected text content, got: {message_content!r}"
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_all_params(self, openai_client, test_config):
+        """xAI x_search: non-streaming, all optional parameters (exact repro of the bug report)."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+        _today = datetime.now().date()
+        _from_date = ((_today - timedelta(days=30)).isoformat())
+        _to_date = ((_today - timedelta(days=15)).isoformat())
+
+        response = openai_client.responses.create(
+            model=model,
+            input="Find recent tweets about artificial intelligence developments.",
+            tools=[
+                {
+                    "type": "x_search",
+                    "allowed_x_handles": ["xai", "openai", "GoogleAI"],
+                    "from_date": _from_date,
+                    "to_date": _to_date,
+                    "enable_image_understanding": False,
+                    "enable_video_understanding": False,
+                }
+            ],
+            tool_choice="required",
+            max_output_tokens=500,
+        )
+
+        assert response is not None
+        assert len(response.output) > 0, "Output should not be empty"
+
+        x_search_calls = [
+            item for item in response.output
+            if getattr(item, "type", None) == "custom_tool_call"
+        ]
+        assert len(x_search_calls) > 0, (
+            "tool_choice=required with x_search must produce at least one custom_tool_call"
+        )
+
+        if hasattr(response, "usage") and response.usage is not None:
+            if hasattr(response.usage, "total_tokens"):
+                assert response.usage.total_tokens > 0, "Token usage should be reported"
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_streaming(self, openai_client, test_config):
+        """xAI x_search: streaming, no extra params — verifies custom_tool_call events flow through."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+
+        stream = openai_client.responses.create(
+            model=model,
+            input="What are people saying about xAI on X?",
+            tools=[{"type": "x_search"}],
+            max_output_tokens=500,
+            stream=True,
+        )
+
+        content, chunk_count, _tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        assert chunk_count > 0, "Should receive at least one streaming chunk"
+        assert len(content) > 10, f"Should receive substantive text content. Got: {content!r}"
+
+        has_x_search_events = (
+            event_types.get("response.custom_tool_call_input.delta", 0) > 0
+            or event_types.get("response.custom_tool_call_input.done", 0) > 0
+            or any("custom_tool_call" in evt for evt in event_types)
+        )
+        has_output_item_events = event_types.get("response.output_item.added", 0) > 0
+
+        assert has_x_search_events or has_output_item_events, (
+            f"Expected x_search-related streaming events. Got: {list(event_types.keys())}"
+        )
+
+    @skip_if_no_api_key("xai")
+    def test_xai_x_search_streaming_with_params(self, openai_client, test_config):
+        """xAI x_search: streaming with allowed_x_handles, date range, and tool_choice=required."""
+        model = format_provider_model("xai", get_config().get_provider_model("xai", "chat"))
+        _today = datetime.now().date()
+        _from_date = ((_today - timedelta(days=30)).isoformat())
+        _to_date = ((_today - timedelta(days=15)).isoformat())
+
+        stream = openai_client.responses.create(
+            model=model,
+            input="What has the xAI team been posting about recently?",
+            tools=[
+                {
+                    "type": "x_search",
+                    "allowed_x_handles": ["xai", "grok"],
+                    "from_date": _from_date,
+                    "to_date": _to_date,
+                    "enable_image_understanding": False,
+                    "enable_video_understanding": False,
+                }
+            ],
+            tool_choice="required",
+            max_output_tokens=500,
+            stream=True,
+        )
+
+        content, chunk_count, _tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        assert chunk_count > 0, "Should receive at least one chunk"
+
+        has_output_events = any(
+            "output_item" in evt or "output_text" in evt or "custom_tool_call" in evt
+            for evt in event_types
+        )
+        assert has_output_events, (
+            f"Expected output-related events in stream. Got: {list(event_types.keys())}"
+        )
+
+        assert len(content) > 0, "Streaming response should contain content from x_search results"
 
     # =========================================================================
     # TEXT COMPLETIONS API TEST CASES
