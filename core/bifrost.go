@@ -29,6 +29,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/gigachat"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/mistral"
@@ -3932,6 +3933,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return cerebras.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
+	case schemas.GigaChat:
+		return gigachat.NewGigaChatProvider(config, bifrost.logger)
 	case schemas.OpenRouter:
 		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
 	case schemas.Elevenlabs:
