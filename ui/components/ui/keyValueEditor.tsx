@@ -48,14 +48,28 @@ export function KeyValueEditor({
 	const [pairs, setPairs] = useState<KeyValuePair[]>(() => recordToPairs(value));
 	const nextId = useRef(pairs.length);
 	const isFirstRender = useRef(true);
+	const suppressOnChange = useRef(false);
+	const onChangeRef = useRef(onChange);
+	onChangeRef.current = onChange;
+
+	useEffect(() => {
+		const nextPairs = recordToPairs(value);
+		suppressOnChange.current = true;
+		nextId.current = nextPairs.length;
+		setPairs(nextPairs);
+	}, [value]);
 
 	useEffect(() => {
 		if (isFirstRender.current) {
 			isFirstRender.current = false;
 			return;
 		}
-		onChange(pairsToRecord(pairs));
-	}, [pairs, onChange]);
+		if (suppressOnChange.current) {
+			suppressOnChange.current = false;
+			return;
+		}
+		onChangeRef.current(pairsToRecord(pairs));
+	}, [pairs]);
 
 	const addPair = useCallback(() => {
 		setPairs((prev) => {
@@ -113,6 +127,8 @@ export function KeyValueEditor({
 						size="icon"
 						className={index === 0 ? "mt-5" : "mt-0"}
 						onClick={() => removePair(index)}
+						aria-label={`Remove key-value pair ${index + 1}`}
+						title="Remove entry"
 					>
 						<Trash2 className="h-4 w-4" />
 					</Button>

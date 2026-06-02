@@ -1,4 +1,3 @@
-import { Command as CommandPrimitive } from "cmdk";
 import { CheckIcon, ChevronDown, X } from "lucide-react";
 import * as React from "react";
 
@@ -133,12 +132,4 @@ function MultiSelectItem({ children, className, value, ...props }: { children: R
 	);
 }
 
-function MultiSelectTrigger({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-	return <>{children}</>;
-}
-
-function MultiSelectValue({ placeholder }: { placeholder?: string }) {
-	return null;
-}
-
-export { MultiSelect, MultiSelectContent, MultiSelectGroup, MultiSelectItem, MultiSelectTrigger, MultiSelectValue };
+export { MultiSelect, MultiSelectContent, MultiSelectGroup, MultiSelectItem };
