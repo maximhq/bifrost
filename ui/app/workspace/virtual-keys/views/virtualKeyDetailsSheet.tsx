@@ -1,3 +1,4 @@
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -17,11 +18,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import {
   calculateUsagePercentage,
   formatCurrency,
@@ -83,11 +85,17 @@ function UsageLine({
 interface VirtualKeyDetailSheetProps {
   virtualKey: VirtualKey;
   onClose: () => void;
+  onNavigate?: (direction: "prev" | "next") => void;
+  hasPrev?: boolean;
+  hasNext?: boolean;
 }
 
 export default function VirtualKeyDetailSheet({
   virtualKey,
   onClose,
+  onNavigate,
+  hasPrev = false,
+  hasNext = false,
 }: VirtualKeyDetailSheetProps) {
   const {
     assignedUsers,
@@ -97,6 +105,13 @@ export default function VirtualKeyDetailSheet({
     displayBudgets,
     displayRateLimit,
   } = useVirtualKeyUsage(virtualKey);
+
+  const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+    enabled: true,
+    hasPrev,
+    hasNext,
+    onNavigate: (direction) => onNavigate?.(direction),
+  });
 
   const getEntityInfo = () => {
     if (virtualKey.team) {
@@ -117,21 +132,30 @@ export default function VirtualKeyDetailSheet({
     (displayRateLimit?.token_current_usage &&
       displayRateLimit?.token_max_limit &&
       displayRateLimit.token_current_usage >=
-        displayRateLimit.token_max_limit) ||
+      displayRateLimit.token_max_limit) ||
     (displayRateLimit?.request_current_usage &&
       displayRateLimit?.request_max_limit &&
       displayRateLimit.request_current_usage >=
-        displayRateLimit.request_max_limit);
+      displayRateLimit.request_max_limit);
 
   return (
     <Sheet open onOpenChange={onClose}>
       <SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl">
-        <SheetHeader className="flex flex-col items-start p-0">
-          <SheetTitle>{virtualKey.name}</SheetTitle>
-          <SheetDescription>
-            {virtualKey.description ||
-              "Virtual key details and usage information"}
-          </SheetDescription>
+        <SheetHeader className="flex flex-row items-center justify-between p-0">
+          <div className="flex flex-col items-start">
+            <SheetTitle>{virtualKey.name}</SheetTitle>
+            <SheetDescription>
+              {virtualKey.description || "Virtual key details and usage information"}
+            </SheetDescription>
+          </div>
+          <SheetNavigationButtons
+            hasPrev={hasPrev}
+            hasNext={hasNext}
+            onNavigate={(dir) => onNavigate?.(dir)}
+            prevKeys={prevKeys}
+            nextKeys={nextKeys}
+            entityLabel="virtual key"
+          />
         </SheetHeader>
 
         <div className="space-y-6">
@@ -223,7 +247,7 @@ export default function VirtualKeyDetailSheet({
 
             <div className="space-y-3">
               {!virtualKey.provider_configs ||
-              virtualKey.provider_configs.length === 0 ? (
+                virtualKey.provider_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No providers configured (deny-by-default)
                 </span>
@@ -503,7 +527,7 @@ export default function VirtualKeyDetailSheet({
 
             <div className="space-y-3">
               {!virtualKey.mcp_configs ||
-              virtualKey.mcp_configs.length === 0 ? (
+                virtualKey.mcp_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No MCP clients configured (deny-by-default)
                 </span>

@@ -2346,6 +2346,299 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
 
+// TestToBedrockResponsesRequest_GuardrailConfig verifies that guardrailConfig in ExtraParams
+// is extracted into BedrockConverseRequest.GuardrailConfig (Responses path fix).
+func TestToBedrockResponsesRequest_GuardrailConfig(t *testing.T) {
+	trace := testTrace
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"guardrailConfig": map[string]interface{}{
+					"guardrailIdentifier": "test-guardrail-id",
+					"guardrailVersion":    "DRAFT",
+					"trace":               trace,
+				},
+			},
+		},
+	}
+
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	require.NotNil(t, bedrockReq.GuardrailConfig, "GuardrailConfig must be set from ExtraParams")
+	assert.Equal(t, "test-guardrail-id", bedrockReq.GuardrailConfig.GuardrailIdentifier)
+	assert.Equal(t, "DRAFT", bedrockReq.GuardrailConfig.GuardrailVersion)
+	require.NotNil(t, bedrockReq.GuardrailConfig.Trace)
+	assert.Equal(t, trace, *bedrockReq.GuardrailConfig.Trace)
+	// guardrailConfig must be removed from ExtraParams so it is not double-sent
+	assert.Nil(t, bedrockReq.ExtraParams)
+}
+
+// TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields verifies that
+// ToBifrostResponsesResponse carries guardrail trace in ProviderExtraFields.
+func TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields(t *testing.T) {
+	action := "BLOCKED"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	input := &bedrock.BedrockConverseResponse{
+		StopReason: "guardrail_intervened",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role:    bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{},
+			},
+		},
+		Trace: &bedrock.BedrockConverseTrace{
+			Guardrail: &bedrock.BedrockGuardrailTrace{
+				Action: &action,
+			},
+		},
+	}
+
+	bifrostResp, err := input.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostResp)
+
+	require.NotNil(t, bifrostResp.ProviderExtraFields, "ProviderExtraFields must be set when trace is present")
+	traceData, ok := bifrostResp.ProviderExtraFields["trace"]
+	require.True(t, ok, "trace key must exist in ProviderExtraFields")
+	trace, ok := traceData.(*bedrock.BedrockConverseTrace)
+	require.True(t, ok, "trace must be *BedrockConverseTrace")
+	require.NotNil(t, trace.Guardrail)
+	assert.Equal(t, action, *trace.Guardrail.Action)
+}
+
+// TestBifrostToBedrockResponse_TraceRestoredFromProviderExtraFields verifies that
+// ToBedrockConverseResponse restores trace from ProviderExtraFields (round-trip).
+func TestBifrostToBedrockResponse_TraceRestoredFromProviderExtraFields(t *testing.T) {
+	outputMsg := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("blocked")},
+				},
+			},
+		},
+	}
+
+	t.Run("TypedPointer", func(t *testing.T) {
+		action := "BLOCKED"
+		input := &schemas.BifrostResponsesResponse{
+			Output: outputMsg,
+			ProviderExtraFields: map[string]interface{}{
+				"trace": &bedrock.BedrockConverseTrace{
+					Guardrail: &bedrock.BedrockGuardrailTrace{Action: &action},
+				},
+			},
+		}
+		resp, err := bedrock.ToBedrockConverseResponse(input)
+		require.NoError(t, err)
+		require.NotNil(t, resp.Trace, "Trace must be restored from typed pointer")
+		require.NotNil(t, resp.Trace.Guardrail)
+		assert.Equal(t, action, *resp.Trace.Guardrail.Action)
+	})
+
+	t.Run("JSONDecodedMap", func(t *testing.T) {
+		// Simulates ProviderExtraFields["trace"] after a JSON round-trip (e.g. async
+		// job retrieval), where sonic.Unmarshal produces map[string]interface{}.
+		input := &schemas.BifrostResponsesResponse{
+			Output: outputMsg,
+			ProviderExtraFields: map[string]interface{}{
+				"trace": map[string]interface{}{
+					"guardrail": map[string]interface{}{
+						"action": "INTERVENED",
+					},
+				},
+			},
+		}
+		resp, err := bedrock.ToBedrockConverseResponse(input)
+		require.NoError(t, err)
+		require.NotNil(t, resp.Trace, "Trace must be restored from JSON-decoded map")
+		require.NotNil(t, resp.Trace.Guardrail)
+		require.NotNil(t, resp.Trace.Guardrail.Action)
+		assert.Equal(t, "INTERVENED", *resp.Trace.Guardrail.Action)
+	})
+}
+
+// TestFinalizeBedrockStream_WithTrace verifies that a guardrail trace captured mid-stream
+// is included in the response.completed event's ProviderExtraFields.
+func TestFinalizeBedrockStream_WithTrace(t *testing.T) {
+	action := "BLOCKED"
+	trace := &bedrock.BedrockConverseTrace{
+		Guardrail: &bedrock.BedrockGuardrailTrace{
+			Action: &action,
+		},
+	}
+
+	state := bedrock.NewBedrockResponsesStreamState()
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, trace)
+	require.NotEmpty(t, finalResponses)
+
+	// The last event must be response.completed
+	completed := finalResponses[len(finalResponses)-1]
+	require.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, completed.Type)
+	require.NotNil(t, completed.Response)
+	require.NotNil(t, completed.Response.ProviderExtraFields, "ProviderExtraFields must be set when trace is present")
+
+	traceData, ok := completed.Response.ProviderExtraFields["trace"]
+	require.True(t, ok)
+	restoredTrace, ok := traceData.(*bedrock.BedrockConverseTrace)
+	require.True(t, ok)
+	require.NotNil(t, restoredTrace.Guardrail)
+	assert.Equal(t, action, *restoredTrace.Guardrail.Action)
+}
+
+// TestGuardrailConfigRequestRoundTrip verifies the full guardrailConfig request round-trip:
+//
+//	BedrockConverseRequest.GuardrailConfig
+//	  → ToBifrostResponsesRequest  (stored as ExtraParams["guardrailConfig"])
+//	  → ToBedrockResponsesRequest  (extracted back to BedrockConverseRequest.GuardrailConfig)
+//
+// This is the regression path for the bug where guardrailConfig was silently
+// dropped by ToBedrockResponsesRequest.
+func TestGuardrailConfigRequestRoundTrip(t *testing.T) {
+	trace := testTrace
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role:    bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Hello")}},
+			},
+		},
+		GuardrailConfig: &bedrock.BedrockGuardrailConfig{
+			GuardrailIdentifier: "test-guardrail-id",
+			GuardrailVersion:    "DRAFT",
+			Trace:               &trace,
+		},
+	}
+
+	// Step 1: BedrockConverseRequest → BifrostResponsesRequest
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.Params)
+	require.NotNil(t, bifrostReq.Params.ExtraParams)
+	_, hasGuardrail := bifrostReq.Params.ExtraParams["guardrailConfig"]
+	require.True(t, hasGuardrail, "guardrailConfig must be present in ExtraParams after ToBifrostResponsesRequest")
+
+	// Step 2: BifrostResponsesRequest → BedrockConverseRequest
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result.GuardrailConfig, "GuardrailConfig must survive the round-trip through Bifrost")
+	assert.Equal(t, original.GuardrailConfig.GuardrailIdentifier, result.GuardrailConfig.GuardrailIdentifier)
+	assert.Equal(t, original.GuardrailConfig.GuardrailVersion, result.GuardrailConfig.GuardrailVersion)
+	require.NotNil(t, result.GuardrailConfig.Trace)
+	assert.Equal(t, trace, *result.GuardrailConfig.Trace)
+	// guardrailConfig must be removed from ExtraParams after extraction
+	assert.Nil(t, result.ExtraParams, "ExtraParams should be nil after all keys are extracted")
+}
+
+// TestGuardrailTraceResponseRoundTrip verifies the full trace response round-trip:
+//
+//	BedrockConverseResponse.Trace
+//	  → ToBifrostResponsesResponse  (stored in ProviderExtraFields["trace"])
+//	  → ToBedrockConverseResponse   (restored to BedrockConverseResponse.Trace)
+//
+// This is the regression path for the bug where response.Trace was dropped
+// by ToBifrostResponsesResponse, making it invisible to callers.
+func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("ConversePath_ActionReason", func(t *testing.T) {
+		// Converse (non-streaming) returns actionReason, not action
+		actionReason := "Guardrail blocked."
+		original := &bedrock.BedrockConverseResponse{
+			StopReason: "guardrail_intervened",
+			Output: &bedrock.BedrockConverseOutput{
+				Message: &bedrock.BedrockMessage{
+					Role:    bedrock.BedrockMessageRoleAssistant,
+					Content: []bedrock.BedrockContentBlock{},
+				},
+			},
+			Trace: &bedrock.BedrockConverseTrace{
+				Guardrail: &bedrock.BedrockGuardrailTrace{
+					ActionReason: &actionReason,
+				},
+			},
+		}
+
+		bifrostResp, err := original.ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostResp.ProviderExtraFields)
+		_, hasTrace := bifrostResp.ProviderExtraFields["trace"]
+		require.True(t, hasTrace)
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		require.NotNil(t, result.Trace, "Trace must survive round-trip")
+		require.NotNil(t, result.Trace.Guardrail)
+		require.NotNil(t, result.Trace.Guardrail.ActionReason)
+		assert.Equal(t, actionReason, *result.Trace.Guardrail.ActionReason)
+	})
+
+	t.Run("StreamPath_Action", func(t *testing.T) {
+		// ConverseStream returns action (enum), not actionReason
+		action := "INTERVENED"
+		original := &bedrock.BedrockConverseResponse{
+			StopReason: "guardrail_intervened",
+			Output: &bedrock.BedrockConverseOutput{
+				Message: &bedrock.BedrockMessage{
+					Role:    bedrock.BedrockMessageRoleAssistant,
+					Content: []bedrock.BedrockContentBlock{},
+				},
+			},
+			Trace: &bedrock.BedrockConverseTrace{
+				Guardrail: &bedrock.BedrockGuardrailTrace{
+					Action: &action,
+				},
+			},
+		}
+
+		bifrostResp, err := original.ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostResp.ProviderExtraFields)
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		require.NotNil(t, result.Trace)
+		require.NotNil(t, result.Trace.Guardrail)
+		require.NotNil(t, result.Trace.Guardrail.Action)
+		assert.Equal(t, action, *result.Trace.Guardrail.Action)
+	})
+
+	t.Run("JSONDecodedMap", func(t *testing.T) {
+		// Simulates the async-job-retrieval path where ProviderExtraFields["trace"]
+		// has been JSON-decoded into map[string]interface{} instead of *BedrockConverseTrace.
+		// extractBedrockTrace must fall back to the sonic marshal/unmarshal path.
+		bifrostResp := &schemas.BifrostResponsesResponse{
+			ProviderExtraFields: map[string]interface{}{
+				"trace": map[string]interface{}{
+					"guardrail": map[string]interface{}{
+						"action": "INTERVENED",
+					},
+				},
+			},
+		}
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		require.NotNil(t, result.Trace, "Trace must be restored from JSON-decoded map")
+		require.NotNil(t, result.Trace.Guardrail)
+		require.NotNil(t, result.Trace.Guardrail.Action)
+		assert.Equal(t, "INTERVENED", *result.Trace.Guardrail.Action)
+	})
+}
+
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
 	schemaObj := any(schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
@@ -5045,6 +5338,236 @@ func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolC
 	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice)
 	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected forced tool_choice for non-Llama models")
 	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestToBedrockChatCompletionRequest_AliasesLongMCPToolNames(t *testing.T) {
+	toolName := "mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests"
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("use devtools")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        toolName,
+					Description: schemas.Ptr("List network requests"),
+				},
+			}},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: toolName},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	require.LessOrEqual(t, len(alias), 64)
+	assert.NotEqual(t, toolName, alias)
+	assert.Contains(t, alias, "_list_network_requests")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestToBedrockChatCompletionRequest_AliasesToolNamesWithInvalidChars(t *testing.T) {
+	// Short name (<=64 chars) but with characters disallowed by Bedrock's
+	// `[a-zA-Z0-9_-]{1,64}` tool-name pattern. It must still be aliased into a
+	// Bedrock-valid name rather than passed through unchanged.
+	toolName := "search files/in dir:now.fast"
+	require.LessOrEqual(t, len(toolName), 64)
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("search")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        toolName,
+					Description: schemas.Ptr("Search files"),
+				},
+			}},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: toolName},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	assert.NotEqual(t, toolName, alias, "name with disallowed chars must be aliased")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestBedrockToBifrostChatResponse_RestoresAliasedToolName(t *testing.T) {
+	toolName := "mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests"
+	req := &schemas.BifrostChatRequest{
+		Model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("use devtools")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: toolName},
+			}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{
+					ToolUse: &bedrock.BedrockToolUse{
+						ToolUseID: "tooluse_123",
+						Name:      alias,
+						Input:     json.RawMessage(`{"limit":10}`),
+					},
+				}},
+			},
+		},
+	}
+
+	converted, err := response.ToBifrostChatResponse(ctx, req.Model)
+	require.NoError(t, err)
+	require.Len(t, converted.Choices, 1)
+	toolCalls := converted.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
+	require.Len(t, toolCalls, 1)
+	require.NotNil(t, toolCalls[0].Function.Name)
+	assert.Equal(t, toolName, *toolCalls[0].Function.Name)
+}
+
+func TestToBedrockResponsesRequest_AliasesLongMCPToolNames(t *testing.T) {
+	toolName := "mcp__bifrost-this-is-imp-nasdkjadk-kanbsdjkabdkjbaskjdbasdaskjdbajksdkas__notion-notion-search"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-opus-4-7",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("search docs for openai"),
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:        schemas.ResponsesToolTypeFunction,
+				Name:        &toolName,
+				Description: schemas.Ptr("Search Notion"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: schemas.NewOrderedMap(),
+					},
+				},
+			}},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolName,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.ToolConfig)
+	require.Len(t, result.ToolConfig.Tools, 1)
+
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+	require.LessOrEqual(t, len(alias), 64)
+	assert.NotEqual(t, toolName, alias)
+	assert.Contains(t, alias, "_notion-notion-search")
+	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
+	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	require.NotNil(t, result.ToolConfig.ToolChoice)
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
+	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
+}
+
+func TestBedrockToBifrostResponsesResponse_RestoresAliasedToolName(t *testing.T) {
+	toolName := "mcp__bifrost-this-is-imp-nasdkjadk-kanbsdjkabdkjbaskjdbasdaskjdbajksdkas__notion-notion-search"
+	req := &schemas.BifrostResponsesRequest{
+		Model: "us.anthropic.claude-opus-4-7",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("search docs for openai"),
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  &toolName,
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	alias := result.ToolConfig.Tools[0].ToolSpec.Name
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{
+					ToolUse: &bedrock.BedrockToolUse{
+						ToolUseID: "tooluse_456",
+						Name:      alias,
+						Input:     json.RawMessage(`{"query":"openai"}`),
+					},
+				}},
+			},
+		},
+	}
+
+	converted, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.Len(t, converted.Output, 1)
+	require.NotNil(t, converted.Output[0].ResponsesToolMessage)
+	require.NotNil(t, converted.Output[0].ResponsesToolMessage.Name)
+	assert.Equal(t, toolName, *converted.Output[0].ResponsesToolMessage.Name)
 }
 
 // ---------------------------------------------------------------------------

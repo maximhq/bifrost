@@ -41,6 +41,170 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
+	store := newTestStore(t)
+	loggingHeaders := []string{"x-custom-log"}
+	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-error-no-pending")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"x-bf-lh-tenant": "acme",
+		"x-custom-log":   "custom-value",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{
+		"region": "us-east",
+	})
+	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr)
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-error-no-pending")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Status != "error" {
+		t.Fatalf("expected error status, got %q", logEntry.Status)
+	}
+	if logEntry.MetadataParsed == nil {
+		t.Fatalf("expected metadata to be persisted")
+	}
+	if got := logEntry.MetadataParsed["tenant"]; got != "acme" {
+		t.Fatalf("expected tenant metadata acme, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["x-custom-log"]; got != "custom-value" {
+		t.Fatalf("expected configured header metadata custom-value, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["region"]; got != "us-east" {
+		t.Fatalf("expected dimension metadata us-east, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
+		t.Fatalf("expected async metadata true, got %#v", got)
+	}
+}
+
+func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
+	store := newTestStore(t)
+	loggingHeaders := []string{"x-custom-log"}
+	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-stream-error-metadata")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"x-custom-log":   "custom-value",
+		"x-bf-lh-user":   `{"device_id":"device-1","session_id":"session-1"}`,
+		"x-bf-lh-tag":    "from-header",
+		"x-bf-lh-shared": "from-header",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{
+		"environment": "staging",
+	})
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-opus-4-7",
+			Params:   &schemas.ResponsesParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "stream failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ResponsesStreamRequest,
+			Provider:               schemas.Bedrock,
+			OriginalModelRequested: "us.anthropic.claude-opus-4-7",
+			ResolvedModelUsed:      "us.anthropic.claude-opus-4-7",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-stream-error-metadata")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Status != "error" {
+		t.Fatalf("expected error status, got %q", logEntry.Status)
+	}
+	if logEntry.MetadataParsed == nil {
+		t.Fatalf("expected metadata to be persisted")
+	}
+	if got := logEntry.MetadataParsed["user"]; got != `{"device_id":"device-1","session_id":"session-1"}` {
+		t.Fatalf("expected user metadata from header, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["tag"]; got != "from-header" {
+		t.Fatalf("expected tag metadata from header, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["x-custom-log"]; got != "custom-value" {
+		t.Fatalf("expected configured header metadata custom-value, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["shared"]; got != "from-header" {
+		t.Fatalf("expected shared metadata from header, got %#v", got)
+	}
+	if got := logEntry.MetadataParsed["environment"]; got != "staging" {
+		t.Fatalf("expected dimension metadata staging, got %#v", got)
+	}
+}
+
+func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
+	metadata := map[string]any{"tenant": "acme"}
+	entry := buildInitialLogEntry(&PendingLogData{
+		RequestID:     "req-initial-metadata",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider: string(schemas.OpenAI),
+			Model:    "gpt-4o",
+			Object:   string(schemas.ChatCompletionRequest),
+			Metadata: metadata,
+		},
+	})
+
+	if entry.MetadataParsed == nil {
+		t.Fatalf("expected metadata on initial log entry")
+	}
+	if got := entry.MetadataParsed["tenant"]; got != "acme" {
+		t.Fatalf("expected tenant metadata acme, got %#v", got)
+	}
+}
+
 // TestMCPHooksDeferDBWriteUntilPostHookBatch verifies MCP logs are kept in
 // memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
 func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
@@ -215,6 +379,45 @@ func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 	}
 	if !strings.Contains(logEntry.ErrorDetailsParsed.Error.Message, "pending log TTL") {
 		t.Fatalf("expected stale MCP timeout message, got %q", logEntry.ErrorDetailsParsed.Error.Message)
+	}
+}
+
+// TestPreMCPHookSkipsPrefixedCodemodeTool verifies that PreMCP skips codemode
+// meta-tools invoked with a client prefix (e.g. "myclient-executeToolCode"),
+// not just bare names. Otherwise PostMCP — which sees the stripped bare name —
+// would silently skip and leave the pending row to expire as a fake TTL error.
+func TestPreMCPHookSkipsPrefixedCodemodeTool(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-prefixed-codemode")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-prefixed-codemode")
+
+	toolName := "myclient-executeToolCode"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+
+	if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-prefixed-codemode"); ok {
+		t.Fatal("expected PreMCPHook to skip prefixed codemode tool, but a pending row was created")
 	}
 }
 

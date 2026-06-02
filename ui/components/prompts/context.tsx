@@ -1,6 +1,7 @@
-import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type VariableMap } from "@/lib/message";
+import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type ToolCall, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
+import { v4 as uuidv4 } from "uuid";
 import {
 	useDeleteFolderMutation,
 	useDeletePromptMutation,
@@ -16,7 +17,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { executePrompt } from "./utils/executor";
+import { executePrompt, executeToolCall, MCPAuthRequiredError } from "./utils/executor";
 
 interface PromptContextValue {
 	// Data
@@ -94,7 +95,12 @@ interface PromptContextValue {
 	handleDeleteFolder: () => Promise<void>;
 	handleDeletePrompt: () => Promise<void>;
 	handleSendMessage: (pendingMessage?: Message) => Promise<void>;
+	handleStopStreaming: () => void;
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
+	handleExecuteToolCall: (afterIndex: number, toolCall: ToolCall) => Promise<void>;
+	handleSubmitAllToolResults: (afterIndex: number, results: { toolCallId: string; content: string }[]) => Promise<void>;
+	handleExecuteAllToolCalls: (afterIndex: number, toolCalls: ToolCall[]) => Promise<{ toolCallId: string; content: string }[] | undefined>;
+	fetchToolResult: (toolCall: ToolCall) => Promise<string>;
 
 	// RBAC permissions
 	canCreate: boolean;
@@ -160,6 +166,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
+	const abortRef = useRef<AbortController | null>(null);
 	const [variables, setVariables] = useState<VariableMap>({});
 	const [customHeaders, setCustomHeaders] = useState<Record<string, string>>({});
 
@@ -457,6 +464,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		async (pendingMessage?: Message) => {
 			const runToken = Symbol();
 			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
 			const isActive = () => activeRunRef.current === runToken;
 
 			setIsStreaming(true);
@@ -512,6 +521,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						setIsStreaming(false);
 					},
 				},
+				abortController.signal,
 			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
@@ -521,9 +531,11 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		async (afterIndex: number, toolCallId: string, content: string) => {
 			const runToken = Symbol();
 			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
 			const isActive = () => activeRunRef.current === runToken;
 
-			const toolResultMsg = new Message(crypto.randomUUID(), 0, MessageType.ToolResult, {
+			const toolResultMsg = new Message(uuidv4(), 0, MessageType.ToolResult, {
 				role: MessageRole.TOOL,
 				content,
 				tool_call_id: toolCallId,
@@ -591,9 +603,177 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 						setIsStreaming(false);
 					},
 				},
+				abortController.signal,
 			);
 		},
 		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders],
+	);
+
+	const handleExecuteToolCall = useCallback(
+		async (afterIndex: number, toolCall: ToolCall) => {
+			try {
+				const content = await executeToolCall(toolCall, { apiKeyId, customHeaders });
+				await handleSubmitToolResult(afterIndex, toolCall.id, content);
+			} catch (err) {
+				if (err instanceof MCPAuthRequiredError) throw err;
+				toast.error("Failed to execute tool", {
+					description: getErrorMessage(err),
+				});
+			}
+		},
+		[apiKeyId, customHeaders, handleSubmitToolResult],
+	);
+
+	const handleSubmitAllToolResults = useCallback(
+		async (afterIndex: number, results: { toolCallId: string; content: string }[]) => {
+			if (results.length === 0) return;
+			if (results.length === 1) {
+				return handleSubmitToolResult(afterIndex, results[0].toolCallId, results[0].content);
+			}
+
+			const runToken = Symbol();
+			activeRunRef.current = runToken;
+			const abortController = new AbortController();
+			abortRef.current = abortController;
+			const isActive = () => activeRunRef.current === runToken;
+
+			const newMessages = [...messages];
+			let insertAt = afterIndex + 1;
+			while (insertAt < newMessages.length && newMessages[insertAt].type === MessageType.ToolResult) {
+				insertAt++;
+			}
+			for (const { toolCallId, content } of results) {
+				const toolResultMsg = new Message(uuidv4(), 0, MessageType.ToolResult, {
+					role: MessageRole.TOOL,
+					content,
+					tool_call_id: toolCallId,
+				});
+				newMessages.splice(insertAt, 0, toolResultMsg);
+				insertAt++;
+			}
+			setMessages(newMessages);
+
+			setIsStreaming(true);
+			await executePrompt(
+				newMessages,
+				undefined,
+				{ provider, model, modelParams, apiKeyId, variables, customHeaders },
+				{
+					onStreamingStart: (allMessages, placeholder) => {
+						if (!isActive()) return;
+						setMessages([...allMessages, placeholder]);
+					},
+					onStreamChunk: (content) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							const last = updated[updated.length - 1];
+							const clone = last.clone();
+							clone.content = content;
+							updated[updated.length - 1] = clone;
+							return updated;
+						});
+					},
+					onComplete: (content, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.response(content, 0, usage);
+							return updated;
+						});
+					},
+					onToolCallComplete: (content, toolCalls, usage) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const updated = [...prev];
+							updated[updated.length - 1] = Message.toolCallResponse(content, toolCalls, 0, usage);
+							return updated;
+						});
+					},
+					onEmptyResponse: () => {
+						if (!isActive()) return;
+						setMessages((prev) => prev.slice(0, -1));
+					},
+					onError: (error) => {
+						if (!isActive()) return;
+						setMessages((prev) => {
+							const withoutPlaceholder = prev.slice(0, -1);
+							return [...withoutPlaceholder, Message.error(error)];
+						});
+					},
+					onFinally: () => {
+						if (!isActive()) return;
+						setIsStreaming(false);
+					},
+				},
+				abortController.signal,
+			);
+		},
+		[messages, provider, model, modelParams, apiKeyId, variables, customHeaders, handleSubmitToolResult],
+	);
+
+	const handleExecuteAllToolCalls = useCallback(
+		async (afterIndex: number, toolCalls: ToolCall[]): Promise<{ toolCallId: string; content: string }[] | undefined> => {
+			if (toolCalls.length === 0) return undefined;
+			if (toolCalls.length === 1) {
+				await handleExecuteToolCall(afterIndex, toolCalls[0]);
+				return undefined;
+			}
+
+			const settled = await Promise.allSettled(
+				toolCalls.map(async (tc) => {
+					const content = await executeToolCall(tc, { apiKeyId, customHeaders });
+					return { toolCallId: tc.id, content };
+				}),
+			);
+
+			const successes = settled
+				.filter((r): r is PromiseFulfilledResult<{ toolCallId: string; content: string }> => r.status === "fulfilled")
+				.map((r) => r.value);
+
+			const failures = settled
+				.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+				.map((r) => getErrorMessage(r.reason));
+
+			if (failures.length > 0) {
+				const detail = failures.length <= 3
+					? failures.join("; ")
+					: `${failures.slice(0, 2).join("; ")} and ${failures.length - 2} more`;
+				toast.error(`${failures.length} of ${toolCalls.length} tool executions failed`, {
+					description: failures.length === toolCalls.length
+						? detail
+						: `${detail}. Successful results were kept — fill the rest manually.`,
+				});
+			}
+
+			if (successes.length === toolCalls.length) {
+				try {
+					await handleSubmitAllToolResults(afterIndex, successes);
+				} catch (err) {
+					toast.error("Failed to submit tool results", {
+						description: getErrorMessage(err),
+					});
+				}
+				return undefined;
+			}
+
+			return successes.length > 0 ? successes : undefined;
+		},
+		[apiKeyId, customHeaders, handleExecuteToolCall, handleSubmitAllToolResults],
+	);
+
+	const handleStopStreaming = useCallback(() => {
+		abortRef.current?.abort();
+		abortRef.current = null;
+		activeRunRef.current = null;
+		setIsStreaming(false);
+	}, []);
+
+	const fetchToolResult = useCallback(
+		async (toolCall: ToolCall): Promise<string> => {
+			return executeToolCall(toolCall, { apiKeyId, customHeaders });
+		},
+		[apiKeyId, customHeaders],
 	);
 
 	const value: PromptContextValue = {
@@ -649,7 +829,12 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		handleDeleteFolder,
 		handleDeletePrompt,
 		handleSendMessage,
+		handleStopStreaming,
 		handleSubmitToolResult,
+		handleExecuteToolCall,
+		handleSubmitAllToolResults,
+		handleExecuteAllToolCalls,
+		fetchToolResult,
 		canCreate,
 		canUpdate,
 		canDelete,

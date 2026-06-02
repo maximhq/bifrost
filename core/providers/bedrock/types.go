@@ -509,11 +509,22 @@ type BedrockConverseTrace struct {
 	Guardrail *BedrockGuardrailTrace `json:"guardrail,omitempty"` // Guardrail trace details
 }
 
-// BedrockGuardrailTrace represents detailed guardrail trace information
+// BedrockGuardrailTrace represents detailed guardrail trace information.
+// Bedrock uses two different shapes depending on the call path:
+//   - Converse (non-streaming): actionReason + inputAssessment (map keyed by guardrail ID)
+//   - ConverseStream: action (enum) + inputAssessments / outputAssessments (arrays)
+//
+// Both shapes are captured here so the struct round-trips faithfully in both cases.
 type BedrockGuardrailTrace struct {
-	Action            *string                      `json:"action,omitempty"`            // Action taken by guardrail
-	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments
-	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments
+	// Converse (non-streaming) fields
+	ActionReason    *string                        `json:"actionReason,omitempty"`    // Human-readable reason the guardrail acted
+	InputAssessment map[string]interface{}         `json:"inputAssessment,omitempty"` // Map of guardrail ID → assessment detail
+	ModelOutput     []interface{}                  `json:"modelOutput,omitempty"`     // Model output after guardrail evaluation
+
+	// ConverseStream fields
+	Action            *string                      `json:"action,omitempty"`            // Action taken by guardrail (NONE | INTERVENED)
+	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments (streaming)
+	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments (streaming)
 	Trace             *BedrockGuardrailTraceDetail `json:"trace,omitempty"`             // Detailed trace information
 }
 

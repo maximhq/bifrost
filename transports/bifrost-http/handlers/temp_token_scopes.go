@@ -32,6 +32,25 @@ var mcpAuthScope = temptoken.Scope{
 	MaxTTL:           15 * time.Minute,
 }
 
+// mcpHeadersAuthScope declares the routes the mcp_headers_auth scope grants
+// access to. The flow ID is substituted into {id} at validation time,
+// binding each token to exactly one headers submission flow. Mirrors
+// mcpAuthScope structurally — same TTL, same {id} binding pattern.
+//
+// The page makes flowDetail then flowSubmit; both routes must remain valid
+// for multiple requests within the TTL. Invalidation isn't single-use —
+// it happens at submission completion when the submit handler deletes the
+// flow row (and the token by resource_id alongside it).
+var mcpHeadersAuthScope = temptoken.Scope{
+	Name: temptoken.MCPHeadersAuthScopeName,
+	AllowedRoutes: []temptoken.RoutePattern{
+		{Method: "GET", Path: "/api/mcp/per-user-headers/flows/{id}"},
+		{Method: "PUT", Path: "/api/mcp/per-user-headers/flows/{id}"},
+	},
+	ResourceIDInPath: "{id}",
+	MaxTTL:           15 * time.Minute,
+}
+
 // RegisterTempTokenScopes registers every scope owned by this handlers
 // package on the given service. Called at server startup once the service
 // has been constructed. Returns an error if any scope is invalid or has
@@ -42,6 +61,9 @@ func RegisterTempTokenScopes(svc *temptoken.Service) error {
 	}
 	if err := svc.Registry().Register(mcpAuthScope); err != nil {
 		return fmt.Errorf("temp_token_scopes: register mcp_auth: %w", err)
+	}
+	if err := svc.Registry().Register(mcpHeadersAuthScope); err != nil {
+		return fmt.Errorf("temp_token_scopes: register mcp_headers_auth: %w", err)
 	}
 	return nil
 }

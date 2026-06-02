@@ -974,6 +974,17 @@ export const mcpClientUpdateSchema = z.object({
 			message: "Client name cannot start with a number",
 		}),
 	headers: z.record(z.string(), envVarSchema).optional().nullable(),
+	per_user_header_keys: z
+		.array(z.string().trim().min(1, "Header name cannot be empty"))
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers) return true;
+				const normalized = headers.map((h) => h.trim().toLowerCase());
+				return normalized.length === new Set(normalized).size;
+			},
+			{ message: "Duplicate header names are not allowed" },
+		),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -1027,6 +1038,12 @@ export const mcpClientUpdateSchema = z.object({
 		.object({
 			client_id: envVarSchema.optional(),
 			client_secret: envVarSchema.optional(),
+		})
+		.optional(),
+	tls_config: z
+		.object({
+			insecure_skip_verify: z.boolean().optional(),
+			ca_cert_pem: envVarSchema.optional(),
 		})
 		.optional(),
 });

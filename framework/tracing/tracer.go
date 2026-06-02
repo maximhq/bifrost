@@ -248,7 +248,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	respAttrs := PopulateResponseAttributes(resp)
 	for k, v := range respAttrs {
 		if k == schemas.AttrFinishReasons {
-			// llm.call span gets the singular finish_reason (first element only)
+			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
+			span.SetAttribute(schemas.AttrFinishReasons, v)
+			// legacy: also expose the singular scalar finish_reason (first element) for back-compat.
 			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
 				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
 			}

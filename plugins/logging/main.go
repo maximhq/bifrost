@@ -825,6 +825,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
 			}
+			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
+				if entry.MetadataParsed == nil {
+					entry.MetadataParsed = make(map[string]interface{})
+				}
+				entry.MetadataParsed["isAsyncRequest"] = true
+			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 				entry.ErrorDetails = string(data)
@@ -1294,10 +1301,6 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	fullToolName := req.GetToolName()
 	arguments := req.GetToolArguments()
-	// Skip execution for codemode tools
-	if bifrost.IsCodemodeTool(fullToolName) {
-		return req, nil, nil
-	}
 
 	// Extract server label from tool name (format: {client}-{tool_name})
 	// The first part before hyphen is the client/server label
@@ -1314,6 +1317,13 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				serverLabel = "codemode"
 			}
 		}
+	}
+	// Skip logging for codemode meta-tools. Check both the full name (bare,
+	// e.g. "executeToolCode") and the suffix after the client prefix (e.g.
+	// "myclient-executeToolCode") so PreMCP and PostMCP agree on what to skip
+	// and we never leave an orphan pending row to expire via the TTL path.
+	if bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName) {
+		return req, nil, nil
 	}
 
 	// Get virtual key information from context - using same method as normal LLM logging

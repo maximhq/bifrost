@@ -1016,6 +1016,10 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
+func (m *MockConfigStore) UpsertModelPricingAttributes(ctx context.Context, model, provider string, attrs map[string]string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	return []tables.TablePricingOverride{}, nil
 }
@@ -1265,11 +1269,11 @@ func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) 
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
 	return nil, nil
 }
 
@@ -1279,6 +1283,65 @@ func (m *MockConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (i
 
 func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
+}
+
+// Per-user MCP header credentials
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+func (m *MockConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	return nil
 }
 
 // Routing rules
@@ -15702,6 +15765,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance.teams": {
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
+	},
+	"governance.virtual_keys": {
+		"access_profile_id": true, // Enterprise access-profile assignment; not on OSS TableVirtualKey
 	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately

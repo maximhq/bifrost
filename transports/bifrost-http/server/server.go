@@ -39,6 +39,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"gorm.io/gorm"
 )
 
 // Constants
@@ -73,6 +74,11 @@ type ServerCallbacks interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	// UpsertModelPricingAttributes writes the additional_attributes JSON on
+	// pricing rows. Enterprise wraps this so that after the local DB write
+	// succeeds it can broadcast a peer reload via the existing pricing
+	// EntityTypeModelCatalog/ActionReloadFromDB gossip path.
+	UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -105,6 +111,8 @@ type ServerCallbacks interface {
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	// VerifyHeadersConnection verifies an MCP server using user-supplied header values and discovers tools.
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 	ReconnectMCPClient(ctx context.Context, id string) error
@@ -213,7 +221,7 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 	if err != nil {
 		return err
 	}
-	if err := s.Client.AddMCPClient(clientConfig); err != nil {
+	if err := s.Client.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
@@ -275,6 +283,12 @@ func (s *BifrostHTTPServer) EnableMCPClient(ctx context.Context, id string) erro
 		logger.Warn("failed to sync MCP servers after enabling client: %v", err)
 	}
 	return nil
+}
+
+// VerifyHeadersConnection delegates to the Bifrost client to verify an MCP
+// server with caller-supplied header values and discover its tools.
+func (s *BifrostHTTPServer) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+	return s.Client.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
 // VerifyPerUserOAuthConnection delegates to the Bifrost client to verify an MCP
@@ -937,6 +951,44 @@ func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string
 	return nil
 }
 
+// UpsertModelPricingAttributes writes the additional_attributes JSON for the
+// pricing rows keyed by (model, provider) for every entry in the batch. The
+// whole batch is wrapped in a single transaction so a missing pricing row
+// rolls back the lot. After a successful commit the in-memory pricing cache
+// is reloaded once. Enterprise overrides this method to broadcast a peer
+// reload after commit.
+func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	if s.Config.ConfigStore == nil {
+		return fmt.Errorf("model catalog requires a config store")
+	}
+	var missing []string
+	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for _, e := range entries {
+			rows, err := s.Config.ConfigStore.UpsertModelPricingAttributes(ctx, e.Model, e.Provider, e.AdditionalAttributes, tx)
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				missing = append(missing, fmt.Sprintf("%s/%s", e.Provider, e.Model))
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("no pricing row for one or more (model, provider) entries: %s", strings.Join(missing, ", "))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.Config.ModelCatalog.ReloadPricing(ctx); err != nil {
+		return fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
+	}
+	return nil
+}
+
 // ReloadProxyConfig reloads the proxy configuration
 func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
 	if s.Config == nil {
@@ -1186,6 +1238,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
+	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
 	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
@@ -1196,6 +1249,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1418,6 +1472,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
 		MCPConfig:          mcpConfig,
 		OAuth2Provider:     s.Config.OAuthProvider,
+		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 	})
@@ -1514,6 +1569,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
 			s.Config.OAuthProvider.SetTempTokenService(s.TempTokens)
+		}
+		// Same wiring for the per-user-headers provider — mints
+		// mcp_headers_auth tokens on the headers submission URL.
+		if s.Config.MCPHeadersProvider != nil {
+			s.Config.MCPHeadersProvider.SetTempTokenService(s.TempTokens)
 		}
 		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
 		if err != nil {

@@ -1023,6 +1023,10 @@ func (p *LoggerPlugin) GetModelRankings(ctx context.Context, filters logstore.Se
 	return p.store.GetModelRankings(ctx, filters)
 }
 
+func (p *LoggerPlugin) GetDimensionRankings(ctx context.Context, filters logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	return p.store.GetDimensionRankings(ctx, filters, dimension)
+}
+
 // GetAvailableModels returns all unique models from logs.
 // Uses DISTINCT to avoid loading all rows (28K+) when only unique values are needed.
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {

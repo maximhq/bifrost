@@ -688,7 +688,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	if schemas.IsAnthropicModel(request.Model) {
 		path = "anthropic/v1/messages"
 	} else {
-		path = "openai/v1/responses"
+		path = fmt.Sprintf("openai/v1/responses?api-version=%s", AzureAPIVersionPreview)
 	}
 
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
@@ -790,7 +790,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/responses", key.AzureKeyConfig.Endpoint.GetValue())
+		url = fmt.Sprintf("%s/openai/v1/responses?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), AzureAPIVersionPreview)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
@@ -1209,7 +1209,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	url := fmt.Sprintf("%s/openai/v1/audio/transcriptions", key.AzureKeyConfig.Endpoint.GetValue())
+	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, DefaultAzureAPIVersion)
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
@@ -3700,13 +3700,25 @@ func (provider *AzureProvider) buildPassthroughURL(key schemas.Key, path, rawQue
 	path = strings.Replace(path, "/openai/responses", "/openai/v1/responses", 1)
 	path = strings.Replace(path, "/openai/videos", "/openai/v1/videos", 1)
 
-	// v1 routes and Anthropic routes do not accept api-version — strip it if
-	if rawQuery != "" &&
-		(strings.HasPrefix(path, "/anthropic/") ||
-			strings.Contains(path, "/openai/v1/responses") ||
-			strings.HasPrefix(path, "/openai/v1/videos")) {
+	switch {
+	case strings.HasPrefix(path, "/anthropic/") || strings.HasPrefix(path, "/openai/v1/videos"):
+		// Anthropic and video routes do not accept api-version — strip it if present.
 		if values, err := url.ParseQuery(rawQuery); err == nil {
 			values.Del("api-version")
+			rawQuery = values.Encode()
+		}
+	case strings.Contains(path, "/openai/v1/responses"):
+		// Responses API requires api-version=preview.
+		values, _ := url.ParseQuery(rawQuery)
+		if values.Get("api-version") == "" {
+			values.Set("api-version", AzureAPIVersionPreview)
+			rawQuery = values.Encode()
+		}
+	case strings.Contains(path, "/openai/deployments/"):
+		// Classic /deployments/ routes require api-version. Inject a default if absent.
+		values, _ := url.ParseQuery(rawQuery)
+		if values.Get("api-version") == "" {
+			values.Set("api-version", DefaultAzureAPIVersion)
 			rawQuery = values.Encode()
 		}
 	}

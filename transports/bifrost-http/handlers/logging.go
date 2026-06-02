@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -41,13 +42,18 @@ type LoggingHandler struct {
 const sessionLogPageLimit = 500
 
 // filterDataCacheTTL is short enough that newly used models/keys appear in
-// dropdowns within ~half a minute — matview refresh runs every 30s anyway, so a
-// longer TTL would just hide stale results.
+// dropdowns promptly without hiding results beyond the matview refresh cadence.
 const filterDataCacheTTL = 30 * time.Second
 
 const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
+
+// shouldUseFilterDataCache reports whether a filterdata response can be shared
+// across callers without bypassing DAC-scoped query constraints.
+func shouldUseFilterDataCache(ctx context.Context, query string) bool {
+	return strings.TrimSpace(query) == "" && queryscope.FromContext(ctx) == nil
+}
 
 // Filter dimension names accepted by the ?dimensions= query param on
 // /api/logs/filterdata. Each maps to one DB call and one response field.
@@ -235,6 +241,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
+	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.getDimensionRankings, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 
@@ -1080,6 +1087,29 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, result)
 }
 
+func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
+	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
+	if dim == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, user")
+		return
+	}
+	if !logstore.ValidRankingDimensions[dim] {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, user", dim))
+		return
+	}
+
+	filters := parseHistogramFilters(ctx)
+
+	result, err := h.logManager.GetDimensionRankings(ctx, filters, dim)
+	if err != nil {
+		logger.Error("failed to get dimension rankings: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
 // getAvailableFilterData handles GET /api/logs/filterdata - Get all unique filter data from logs
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
@@ -1087,7 +1117,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
@@ -1896,7 +1926,7 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {

@@ -24,11 +24,40 @@ export interface ModelResponse {
 	name: string;
 	provider: string;
 	accessible_by_keys?: string[];
+	additional_attributes?: Record<string, string>;
 }
 
 export interface ListModelsResponse {
 	models: ModelResponse[];
 	total: number;
+}
+
+// ModelDetails is the shape returned by /api/models/details — used by the
+// model-catalog Models tab to list (model, provider) entries with their
+// additional_attributes.
+export interface ModelDetails {
+	name: string;
+	provider: string;
+	context_length?: number;
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	architecture?: unknown;
+	additional_attributes?: Record<string, string>;
+	accessible_by_keys?: string[];
+}
+
+export interface ListModelDetailsResponse {
+	models: ModelDetails[];
+	total: number;
+}
+
+// ModelPricingAttributesEntry is the body element for PUT /api/models/catalog.
+// (model, provider) is the natural key on governance_model_pricing. An empty
+// or omitted additional_attributes clears the column for that row.
+export interface ModelPricingAttributesEntry {
+	model: string;
+	provider: string;
+	additional_attributes?: Record<string, string>;
 }
 
 export interface GetModelsRequest {
@@ -346,6 +375,38 @@ export const providersApi = baseApi.injectEndpoints({
 				return { data: result.data as ModelDatasheetResponse };
 			},
 		}),
+
+		// List models with capability metadata + additional_attributes via the
+		// existing /api/models/details endpoint. Backs the model-catalog
+		// Models tab. Server filters by model-name substring (`query`) and by
+		// exact provider; the high default limit covers the typical catalog
+		// size (under 1500 rows).
+		getModelDetails: builder.query<ListModelDetailsResponse, { query?: string; provider?: string; limit?: number; offset?: number; unfiltered?: boolean }>({
+			query: ({ query, provider, limit, offset, unfiltered }) => {
+				const params = new URLSearchParams();
+				if (query) params.append("query", query);
+				if (provider) params.append("provider", provider);
+				if (limit !== undefined) params.append("limit", String(limit));
+				if (offset !== undefined && offset > 0) params.append("offset", String(offset));
+				if (unfiltered !== undefined) params.append("unfiltered", String(unfiltered));
+				const qs = params.toString();
+				return `/models/details${qs ? `?${qs}` : ""}`;
+			},
+			providesTags: ["Models"],
+		}),
+
+		// Batch upsert additional_attributes on existing pricing rows. The
+		// pricing row must already exist for each (model, provider); a missing
+		// row surfaces as a 400. An entry with an empty additional_attributes
+		// map clears the column for that row.
+		upsertModelCatalogEntries: builder.mutation<void, ModelPricingAttributesEntry[]>({
+			query: (entries) => ({
+				url: "/models/catalog",
+				method: "PUT",
+				body: entries,
+			}),
+			invalidatesTags: ["Models"],
+		}),
 	}),
 });
 
@@ -372,4 +433,7 @@ export const {
 	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
+	useGetModelDetailsQuery,
+	useLazyGetModelDetailsQuery,
+	useUpsertModelCatalogEntriesMutation,
 } = providersApi;

@@ -57,6 +57,10 @@ func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
+	return false
+}
+
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 	return ""
 }

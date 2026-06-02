@@ -10,16 +10,18 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// MCPOpFunc is the closure each call site provides to runWithPluginPipeline. It receives the
+// MCPOpFunc is the closure each call site provides to RunWithPluginPipeline. It receives the
 // (possibly mutated) request that flowed through PreHooks and is responsible for
 // performing the wire call (including any internal retries) and building a
 // BifrostMCPResponse from the outcome. The plain Go error returned here is wrapped
 // into a BifrostError by the gate before being handed to PostMCPHooks.
 type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
-// runWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
+// RunWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
 // with the plugin pipeline. It is the single source of truth for the MCP plugin gate
-// pattern — handleMCPToolExecution in core/bifrost.go calls into this same function.
+// pattern — handleMCPToolExecution in core/bifrost.go calls into this same function,
+// and the Starlark codemode sandbox calls into it via the ClientManager interface for
+// nested tool calls.
 //
 //  1. Acquire pipeline (no-op pass-through if none configured)
 //  2. Run PreMCPHooks — plugins may mutate the request or short-circuit
@@ -34,7 +36,7 @@ type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRespo
 //
 // Returns *BifrostError so callers can preserve rich error fields (AllowFallbacks,
 // MCPAuthRequired).
-func (m *MCPManager) runWithPluginPipeline(
+func (m *MCPManager) RunWithPluginPipeline(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostMCPRequest,
 	op MCPOpFunc,
@@ -361,7 +363,7 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
 
-	resp, bErr := m.runWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	resp, bErr := m.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		detailed, opErr := retrieveExternalToolsDetailed(ctx, conn, clientName, m.logger)
 		if opErr != nil {
 			return nil, opErr
@@ -402,7 +404,7 @@ func (chm *ClientHealthMonitor) runPingWithHooks(ctx context.Context, conn *clie
 	}
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
-	_, bErr := chm.manager.runWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	_, bErr := chm.manager.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		if pingErr := conn.Ping(ctx); pingErr != nil {
 			return nil, pingErr
 		}

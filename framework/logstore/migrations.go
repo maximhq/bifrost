@@ -31,13 +31,10 @@ const (
 	// does not block other pods from running their (fast) migrations on startup.
 	indexAdvisoryLockKey = 1000002
 
-	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
-	// refreshes across cluster nodes so only one replica refreshes at a time.
+	// matviewRefreshAdvisoryLockKey serializes materialized view maintenance
+	// across cluster nodes. Startup create/repair and periodic refresh both use
+	// this key so they never overlap.
 	matviewRefreshAdvisoryLockKey = 1000005
-
-	// matviewEnsureAdvisoryLockKey serializes startup materialized view
-	// creation/repair without contending with the periodic refresh lock.
-	matviewEnsureAdvisoryLockKey = 1000006
 
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second

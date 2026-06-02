@@ -1249,6 +1249,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET mcp_disable_auto_tool_inject = false WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.mcp_enable_temp_token_auth
+  if column_exists_postgres "config_client" "mcp_enable_temp_token_auth"; then
+    echo "UPDATE config_client SET mcp_enable_temp_token_auth = false WHERE id = 1;" >> "$output_file"
+  fi
+
   # config_client.whitelisted_routes_json (added in v1.5.0)
   if column_exists_postgres "config_client" "whitelisted_routes_json"; then
     echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
@@ -2252,6 +2257,11 @@ append_dynamic_columns_sqlite() {
     # config_client.mcp_disable_auto_tool_inject (added in v1.5.0)
     if column_exists_sqlite "$config_db" "config_client" "mcp_disable_auto_tool_inject"; then
       echo "UPDATE config_client SET mcp_disable_auto_tool_inject = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.mcp_enable_temp_token_auth
+    if column_exists_sqlite "$config_db" "config_client" "mcp_enable_temp_token_auth"; then
+      echo "UPDATE config_client SET mcp_enable_temp_token_auth = 0 WHERE id = 1;" >> "$output_file"
     fi
 
     # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
@@ -4063,9 +4073,29 @@ compare_postgres_snapshots() {
       fi
     done
 
-    # Extract and sort data for comparison
-    tail -n +2 "$before_file" | cut -d'|' -f"$before_cut_cols" | sort > "$before_comparable"
-    tail -n +2 "$after_file" | cut -d'|' -f"$after_cut_cols" | sort > "$after_comparable"
+    # Extract and sort data for comparison.
+    # awk is used instead of `cut -f` because cut always emits fields in
+    # ascending position order regardless of the spec, which misaligns rows
+    # when before/after physical column orders differ (e.g. a column that
+    # was dropped and then re-added via ALTER TABLE ADD COLUMN ends up at
+    # the end of the table in the after-schema even though its logical
+    # position is in the middle).
+    tail -n +2 "$before_file" | awk -F'|' -v cols="$before_cut_cols" '
+      BEGIN { n = split(cols, idx, ",") }
+      {
+        out = $idx[1]
+        for (i = 2; i <= n; i++) out = out "|" $idx[i]
+        print out
+      }
+    ' | sort > "$before_comparable"
+    tail -n +2 "$after_file" | awk -F'|' -v cols="$after_cut_cols" '
+      BEGIN { n = split(cols, idx, ",") }
+      {
+        out = $idx[1]
+        for (i = 2; i <= n; i++) out = out "|" $idx[i]
+        print out
+      }
+    ' | sort > "$after_comparable"
 
     # Compare the extracted data
     if ! diff -q "$before_comparable" "$after_comparable" > /dev/null 2>&1; then

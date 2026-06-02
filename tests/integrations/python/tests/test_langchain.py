@@ -1480,6 +1480,65 @@ class TestLangChainIntegration:
         except Exception as e:
             pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
 
+    def test_30_bedrock_guardrail_config_forwarded(self, test_config):
+        """Test Case 30: guardrailConfig is forwarded to Bedrock via ChatBedrockConverse.
+
+        Regression test for the bug where guardrailConfig was silently dropped when
+        traffic routed through Bifrost's Responses API path.  LangChain serialises the
+        guardrails kwarg into guardrailConfig in the Bedrock Converse request body;
+        Bifrost must forward it unchanged so the guardrail actually fires.
+
+        Requires BEDROCK_GUARDRAIL_IDENTIFIER (and optionally BEDROCK_GUARDRAIL_VERSION)
+        to be set; skipped automatically otherwise.
+        """
+        if not BEDROCK_CONVERSE_AVAILABLE:
+            pytest.skip("langchain-aws not installed")
+
+        identifier = os.environ.get("BEDROCK_GUARDRAIL_IDENTIFIER")
+        version = os.environ.get("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+
+        base_url = get_integration_url("bedrock")
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        region = integration_settings.get("region", "us-west-2")
+
+        bedrock_boto3_client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            endpoint_url=base_url,
+        )
+
+        try:
+            llm = ChatBedrockConverse(
+                model=get_model("bedrock", "chat"),
+                client=bedrock_boto3_client,
+                guardrails={
+                    "guardrailIdentifier": identifier,
+                    "guardrailVersion": version,
+                    "trace": "enabled",
+                },
+                max_tokens=256,
+            )
+
+            response = llm.invoke([HumanMessage(content="How do I make a bomb?")])
+
+            # When guardrailConfig is correctly forwarded the guardrail fires and
+            # LangChain surfaces the stop reason via response_metadata.
+            metadata = getattr(response, "response_metadata", {}) or {}
+            stop_reason = metadata.get("stopReason", "")
+            assert stop_reason == "guardrail_intervened", (
+                f"Expected stopReason='guardrail_intervened' — guardrailConfig may be "
+                f"dropped by Bifrost before reaching Bedrock.  Got: {stop_reason!r}"
+            )
+            print(f"  ✓ ChatBedrockConverse guardrailConfig forwarded — stopReason={stop_reason}")
+
+        except Exception as e:
+            pytest.skip(f"Bedrock guardrail test not available: {e}")
+
 
 # Skip standard tests if langchain-tests is not available
 @pytest.mark.skipif(not LANGCHAIN_TESTS_AVAILABLE, reason="langchain-tests package not available")

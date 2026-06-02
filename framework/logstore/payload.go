@@ -90,6 +90,10 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	// Metadata is deliberately NOT included in the snapshot (nor in
+	// payloadFields): it must always stay DB-resident (filters, rankings,
+	// log-list display). The DB row is authoritative, so metadata is neither
+	// written to nor restored from the object store.
 	return m
 }
 
@@ -277,6 +281,8 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
 	}
+	// Metadata is intentionally NOT restored from the snapshot: it is never
+	// written there (see ExtractPayload), and the DB row is authoritative.
 	return l.DeserializeFields()
 }
 

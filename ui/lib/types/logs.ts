@@ -1173,6 +1173,29 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
+export type RankingDimension = "team" | "customer" | "business_unit" | "user";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
+}
+
 // Date utility functions for URL state management
 export const dateUtils = {
 	/**

@@ -11,6 +11,7 @@ import (
 )
 
 func TestExtractPayload_RoundTrip(t *testing.T) {
+	metadata := `{"cortex-user-id":"user-123"}`
 	log := &Log{
 		ID:                      "test-1",
 		InputHistory:            `[{"role":"user","content":"hello"}]`,
@@ -45,6 +46,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		PassthroughRequestBody:  `body-req`,
 		PassthroughResponseBody: `body-resp`,
 		RoutingEngineLogs:       `routing log`,
+		Metadata:                &metadata,
 	}
 
 	payload := ExtractPayload(log)
@@ -52,6 +54,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
+	assert.NotContains(t, payload, "metadata", "metadata is DB-resident and must not be written to the snapshot")
 
 	// Clear and verify.
 	ClearPayload(log)
@@ -59,16 +62,28 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Empty(t, log.OutputMessage)
 	assert.Empty(t, log.RawRequest)
 	assert.Empty(t, log.RoutingEngineLogs)
+	require.NotNil(t, log.Metadata)
+	assert.Equal(t, metadata, *log.Metadata)
 
 	// Marshal and merge back.
 	data, err := MarshalPayload(payload)
 	require.NoError(t, err)
 
+	// Metadata is DB-authoritative: the snapshot carries a backup copy, but
+	// MergePayloadFromJSON must NOT override the live DB value with it. Simulate
+	// a DB row whose metadata was updated after the snapshot was written, then
+	// confirm the merge leaves it untouched.
+	dbMetadata := `{"cortex-user-id":"user-456"}`
+	log.Metadata = &dbMetadata
+	log.MetadataParsed = nil
 	err = MergePayloadFromJSON(log, data)
 	require.NoError(t, err)
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, log.InputHistory)
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, log.OutputMessage)
 	assert.Equal(t, `routing log`, log.RoutingEngineLogs)
+	require.NotNil(t, log.Metadata)
+	assert.Equal(t, dbMetadata, *log.Metadata, "merge must not override DB-authoritative metadata with the snapshot")
+	assert.Equal(t, "user-456", log.MetadataParsed["cortex-user-id"])
 }
 
 func TestClearPayload_DoesNotTouchIndexFields(t *testing.T) {

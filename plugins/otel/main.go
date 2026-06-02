@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"go.opentelemetry.io/otel/attribute"
@@ -421,9 +422,35 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 	return req, nil, nil
 }
 
-// PostLLMHook is a no-op - tracing is handled via the Inject method.
-// The OTEL plugin receives completed traces from TracingMiddleware.
-func (p *OtelPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook records the cache-hit metric. Every other metric is derived from the
+// completed trace in recordMetricsFromTrace, but semantic-cache hits short-circuit the
+// request in a PreHook before any llm.call span exists, so the cache signal never reaches
+// a span. We therefore read CacheDebug straight off the response here, mirroring how the
+// Prometheus telemetry plugin and the Datadog plugin emit this metric.
+//
+// This is the ONLY place RecordCacheHit is called — do not also emit it from
+// recordMetricsFromTrace, or cache hits will double-count.
+func (p *OtelPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if p.metricsExporter == nil || resp == nil {
+		return resp, bifrostErr, nil
+	}
+	extra := resp.GetExtraFields()
+	if extra == nil || extra.CacheDebug == nil || !extra.CacheDebug.CacheHit {
+		return resp, bifrostErr, nil
+	}
+
+	cacheType := "unknown"
+	if extra.CacheDebug.HitType != nil && *extra.CacheDebug.HitType != "" {
+		cacheType = *extra.CacheDebug.HitType
+	}
+
+	// Same dimensions as the trace-derived metrics (so the cache-hit counter shares labels
+	// with every other bifrost_* OTEL metric), but sourced from context — a short-circuited
+	// cache hit has no span to read.
+	attrs := append(buildContextAttrs(ctx, resp, bifrostErr), attribute.String("cache_type", cacheType))
+
+	p.metricsExporter.RecordCacheHit(ctx, attrs...)
+
 	return resp, bifrostErr, nil
 }
 
@@ -515,6 +542,31 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	)
 }
 
+// buildContextAttrs builds the same metric dimension attrs as buildSpanAttrs, but sourced
+// from the request context and response instead of a completed span. Used by hook-based
+// metrics (e.g. cache hits) that fire without a provider-attempt span to read from.
+func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) []attribute.KeyValue {
+	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(resp, bifrostErr)
+	model := originalModel
+	if resolvedModel != "" {
+		model = resolvedModel
+	}
+	return BuildBifrostAttributes(
+		string(provider),
+		model,
+		string(requestType),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
+		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
+	)
+}
+
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
 // via the OTEL metrics exporter. This is called from Inject after trace emission.
 //
@@ -596,6 +648,33 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 	if ttft > 0 {
 		// Convert from nanoseconds to seconds if needed (check the unit)
 		p.metricsExporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
+	}
+
+	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the
+	// cache-hit counter, these ride real upstream calls, so the values are on the final
+	// attempt span just like input/output tokens. The read/write totals share unified
+	// span-attr keys across the chat and responses APIs; the 5m/1h breakdown uses
+	// API-family-specific keys that are mutually exclusive per request, so a fallback read
+	// covers both.
+	if n := getIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
+		p.metricsExporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
+	}
+	if n := getIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
+		p.metricsExporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
+	}
+	cacheWrite5m := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
+	if cacheWrite5m == 0 {
+		cacheWrite5m = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
+	}
+	if cacheWrite5m > 0 {
+		p.metricsExporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
+	}
+	cacheWrite1h := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
+	if cacheWrite1h == 0 {
+		cacheWrite1h = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
+	}
+	if cacheWrite1h > 0 {
+		p.metricsExporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)
 	}
 }
 

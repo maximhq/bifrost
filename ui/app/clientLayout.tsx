@@ -14,7 +14,10 @@ import {
   useIsAuthEnabledQuery,
 } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
-import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
+import {
+  RbacProvider,
+  useRbacContext,
+} from "@enterprise/lib/contexts/rbacContext";
 import { useLocation, useMatches } from "@tanstack/react-router";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -96,6 +99,14 @@ function AppContent({ children }: { children: React.ReactNode }) {
     },
   );
 
+  // Permissions are restored from sessionStorage (async) and refreshed from the
+  // API. Until that first resolve, useRbac() returns false for everything, which
+  // would briefly collapse the sidebar to a single tab and flash NoPermissionView
+  // on the active route. Gate the full dashboard chrome on it; the cached read is
+  // a single frame so this is imperceptible. Minimal/public shells don't use RBAC
+  // and are handled by the early returns below.
+  const { isLoading: rbacLoading } = useRbacContext();
+
   useEffect(() => {
     if (error) {
       toast.error(getErrorMessage(error));
@@ -110,6 +121,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
   }
   if (useMinimalShell) {
     return <MinimalShell>{children}</MinimalShell>;
+  }
+
+  if (rbacLoading) {
+    return <FullPageLoader />;
   }
 
   return (

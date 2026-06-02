@@ -20,6 +20,7 @@ type TableMCPClient struct {
 	ConnectionType          string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString        *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
 	StdioConfigJSON         *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
 	ToolsToExecuteJSON      string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	ToolsToAutoExecuteJSON  string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	HeadersJSON             string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
@@ -33,9 +34,15 @@ type TableMCPClient struct {
 	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
+
+	// Per-user-headers schema: admin-declared list of header *names* that each
+	// caller must supply. Empty/null for all other auth types. Used by both
+	// the resolver (intersect with persisted user values) and by
+	// utils.StaticConfigHeaders (strip from plugin-visible static headers).
+	PerUserHeaderKeysJSON string `gorm:"type:text" json:"-"` // JSON serialized []string
 
 	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
@@ -51,6 +58,7 @@ type TableMCPClient struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
 	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
 	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
@@ -58,6 +66,7 @@ type TableMCPClient struct {
 	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
 	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
 	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
+	PerUserHeaderKeys         []string                    `gorm:"-" json:"per_user_header_keys"`
 }
 
 // TableName sets the table name for each model
@@ -76,6 +85,17 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.StdioConfigJSON = &config
 	} else {
 		c.StdioConfigJSON = nil
+	}
+
+	if c.TLSConfig != nil {
+		data, err := c.TLSConfig.MarshalForStorage()
+		if err != nil {
+			return err
+		}
+		config := string(data)
+		c.TLSConfigJSON = &config
+	} else {
+		c.TLSConfigJSON = nil
 	}
 
 	if c.ToolsToExecute != nil {
@@ -161,6 +181,16 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolNameMappingJSON = string(data)
 	}
 
+	if c.PerUserHeaderKeys != nil {
+		data, err := json.Marshal(c.PerUserHeaderKeys)
+		if err != nil {
+			return err
+		}
+		c.PerUserHeaderKeysJSON = string(data)
+	} else {
+		c.PerUserHeaderKeysJSON = ""
+	}
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
@@ -214,6 +244,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		}
 		c.StdioConfig = &config
 	}
+	if c.TLSConfigJSON != nil {
+		var config schemas.MCPTLSConfig
+		if err := sonic.Unmarshal([]byte(*c.TLSConfigJSON), &config); err != nil {
+			return err
+		}
+		c.TLSConfig = &config
+	}
 	if c.ToolsToExecuteJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {
 			return err
@@ -246,6 +283,11 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	}
 	if c.ToolNameMappingJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
+			return err
+		}
+	}
+	if c.PerUserHeaderKeysJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
 			return err
 		}
 	}

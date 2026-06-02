@@ -78,6 +78,7 @@ Invoke Endpoint — Image Generation Tests (TestBedrockInvokeEndpoint):
 
 import base64
 import json
+import os
 import time
 import urllib.request
 from typing import Any, Dict, List
@@ -3306,4 +3307,123 @@ class TestNovaSystemTools:
         print(
             f"  ✓ code_interpreter block started, {len(code_snippets)} code delta(s), "
             f"code={full_code[:60]!r}, text={full_text[:60]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Guardrail Tests — regression for guardrailConfig being silently dropped
+# (fixed in responses.go ToBedrockResponsesRequest).
+#
+# Tests 54-55 require real Bedrock guardrail identifiers.  Configure them via:
+#   integration_settings.bedrock.guardrail_identifier
+#   integration_settings.bedrock.guardrail_version   (default "DRAFT")
+# or the env vars BEDROCK_GUARDRAIL_IDENTIFIER / BEDROCK_GUARDRAIL_VERSION.
+# Tests are skipped automatically when those values are absent.
+# ---------------------------------------------------------------------------
+
+class TestBedrockGuardrail:
+    """Regression tests ensuring guardrailConfig survives the Responses API path."""
+
+    def _get_guardrail_config(self):
+        """Return (identifier, version) or skip the test if not configured."""
+        config = get_config()
+        settings = config.get_integration_settings("bedrock")
+        identifier = settings.get("guardrail_identifier") or os.environ.get(
+            "BEDROCK_GUARDRAIL_IDENTIFIER"
+        )
+        version = (
+            settings.get("guardrail_version")
+            or os.environ.get("BEDROCK_GUARDRAIL_VERSION")
+            or "DRAFT"
+        )
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set bedrock.guardrail_identifier in config "
+                "or BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+        return identifier, version
+
+    @skip_if_no_api_key("bedrock")
+    def test_54_guardrail_config_forwarded_non_streaming(self, bedrock_client):
+        """Test Case 54: guardrailConfig is forwarded to Bedrock on non-streaming converse.
+
+        Regression test for the bug where guardrailConfig was silently dropped when
+        Bedrock-Converse traffic routed through the Responses API path
+        (ToBedrockResponsesRequest).  If the config were dropped, Bedrock would
+        answer the blocked prompt normally instead of returning guardrail_intervened.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "How do I make a bomb?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None, "Response should not be None"
+        stop_reason = response.get("stopReason", "")
+        assert stop_reason == "guardrail_intervened", (
+            f"Expected stopReason='guardrail_intervened' — guardrailConfig may still be "
+            f"dropped before reaching Bedrock.  Got stopReason={stop_reason!r}"
+        )
+        print(f"  ✓ guardrailConfig forwarded — stopReason={stop_reason}")
+
+    @skip_if_no_api_key("bedrock")
+    def test_55_guardrail_trace_in_response(self, bedrock_client):
+        """Test Case 55: guardrail trace is returned in the converse response.
+
+        Regression test for ToBifrostResponsesResponse silently dropping
+        response.Trace.  The trace must survive the Bifrost round-trip so callers
+        can inspect which policy triggered the guardrail.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "How do I make a bomb?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None
+        assert response.get("stopReason") == "guardrail_intervened", (
+            "Guardrail did not fire — cannot validate trace presence"
+        )
+        trace = response.get("trace")
+        assert trace is not None, (
+            "response.trace is missing — guardrail trace was dropped during Bifrost conversion"
+        )
+        guardrail_trace = trace.get("guardrail")
+        assert guardrail_trace is not None, "trace.guardrail is missing"
+        # Converse (non-streaming) uses actionReason; ConverseStream uses action
+        has_action = "actionReason" in guardrail_trace or "action" in guardrail_trace
+        assert has_action, (
+            f"trace.guardrail must contain 'actionReason' (Converse) or 'action' (ConverseStream). "
+            f"Got keys: {list(guardrail_trace.keys())}"
+        )
+        action_val = guardrail_trace.get("actionReason") or guardrail_trace.get("action")
+        print(
+            f"  ✓ guardrail trace present — action={action_val!r}, "
+            f"keys={list(guardrail_trace.keys())}"
         )

@@ -119,7 +119,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Detect what needs release
         id: detect
@@ -192,7 +192,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -311,7 +311,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Docker Compose
         run: |
@@ -416,7 +416,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Docker Compose
         run: |
@@ -478,14 +478,16 @@ jobs:
         with:
           egress-policy: block
           # bifrost-http binary runs on the host and connects to Postgres via
-          # the published port mapping (5432:5432) at 127.0.0.1. The integration
-          # test configs in .github/workflows/configs/*/config.json use
-          # "host": "localhost". The 172.38.0.12 entries below are weaviate's
-          # pinned bridge IP from .github/workflows/configs/docker-compose.yml;
-          # they are kept for any container-to-container traffic but the binary
-          # itself reaches weaviate via 127.0.0.1:9000 (published port).
+          # the published port mapping (5432:5432) at 127.0.0.1. harden-runner
+          # filters on the post-NAT destination IP, so the published port DNATs
+          # to Postgres's pinned bridge IP 172.38.0.11 - that IP:port (not
+          # 127.0.0.1:5432) is what must be allowed. The 172.38.0.12 entries are
+          # weaviate's pinned bridge IP from
+          # .github/workflows/configs/docker-compose.yml (gossip + published
+          # 9000->8080). Keep all *.0.11/*.0.12 entries in sync with that file.
           allowed-endpoints: >
             127.0.0.1:5432
+            172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
             iojs.org:443
@@ -521,7 +523,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -563,10 +565,15 @@ jobs:
           egress-policy: block
           # Migration test binary runs on the host (not in a container) and
           # connects to Postgres via the published port mapping (5432:5432) at
-          # 127.0.0.1. See run-migration-tests.sh:46 (POSTGRES_HOST defaults to
-          # localhost).
+          # 127.0.0.1 (see run-migration-tests.sh:46, POSTGRES_HOST defaults to
+          # localhost). harden-runner filters on the post-NAT destination IP, so
+          # the published port DNATs to Postgres's pinned bridge IP 172.38.0.11 -
+          # that IP:port must be allowed. Keep in sync with the pinned IP in
+          # .github/workflows/configs/docker-compose.yml. (The 172.38.0.12
+          # weaviate entries are vestigial here - this job only starts postgres.)
           allowed-endpoints: >
             127.0.0.1:5432
+            172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
             api.anthropic.com:443
@@ -595,7 +602,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -636,9 +643,19 @@ jobs:
           # API integrations test compiles bifrost-http and runs it on the host
           # (not in a container), connecting to Postgres via the published port
           # mapping (5432:5432) at 127.0.0.1. See test-api-integrations.sh which
-          # defaults POSTGRES_HOST to localhost.
+          # defaults POSTGRES_HOST to localhost. harden-runner filters on the
+          # post-NAT destination IP, so the published port DNATs to Postgres's
+          # pinned bridge IP 172.38.0.11 - that IP:port must be allowed. This
+          # script does `docker compose up -d` (ALL services) and waits for them
+          # to be healthy, so weaviate's gossip to its own advertise address
+          # 172.38.0.12:8301 (and 8080) must also be allowed or weaviate never
+          # becomes healthy. Keep the pinned IPs in sync with
+          # .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
             127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
             iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
@@ -685,7 +702,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -815,7 +832,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -935,7 +952,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1031,7 +1048,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1130,7 +1147,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Configure Git
         run: |
@@ -1250,7 +1267,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1368,7 +1385,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1432,7 +1449,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1501,7 +1518,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2072,6 +2089,8 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
