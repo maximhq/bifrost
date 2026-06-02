@@ -496,17 +496,23 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Block localhost and loopback addresses
-	if network.IsLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
-	}
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
 	}
 	for _, ip := range ips {
-		if network.IsPrivateIP(ip) {
+		if ip.IsLoopback() {
+			continue
+		}
+		// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
+		}
+		if network.IsLinkLocal(ip) {
+			return fmt.Errorf("link-local IP addresses are not allowed")
+		}
+		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
