@@ -69,28 +69,7 @@ Configure OpenAI as a provider.
 
 </Tab>
 <Tab title="API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-  "provider": "openai",
-  "keys": [
-    {
-      "name": "openai-key-1",
-      "value": "env.OPENAI_API_KEY",
-      "models": [
-        "*"
-      ],
-      "weight": 1.0
-    }
-  ],
-  "openai_config": {
-    "disable_store": false
-  }
-}'
-```
-
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
