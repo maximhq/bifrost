@@ -74,6 +74,10 @@ function isEnvVarSet(v: { value?: string; env_var?: string } | undefined): boole
 	return !!v.value?.trim() || !!v.env_var?.trim();
 }
 
+function isStringSet(v: string | undefined): boolean {
+	return !!v?.trim();
+}
+
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
@@ -227,6 +231,62 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+export const gigachatKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["credentials", "access_token", "password"]).optional(),
+		credentials: envVarSchema.optional(),
+		scope: z.string().optional(),
+		user: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		access_token: envVarSchema.optional(),
+		auth_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
+		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
+		cert_file: z.string().optional(),
+		key_file: z.string().optional(),
+		key_file_password: envVarSchema.optional(),
+		ca_bundle_file: z.string().optional(),
+	})
+	.superRefine((data, ctx) => {
+		const hasUser = isEnvVarSet(data.user);
+		const hasPassword = isEnvVarSet(data.password);
+		if (hasUser !== hasPassword) {
+			ctx.addIssue({
+				code: "custom",
+				message: "User and password must both be provided",
+				path: ["user"],
+			});
+		}
+
+		const hasCertFile = isStringSet(data.cert_file);
+		const hasKeyFile = isStringSet(data.key_file);
+		if (hasCertFile !== hasKeyFile) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Certificate file and key file must both be provided",
+				path: ["cert_file"],
+			});
+		}
+
+		if (isEnvVarSet(data.key_file_password)) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Encrypted GigaChat client private keys are not supported",
+				path: ["key_file_password"],
+			});
+		}
+	});
+
+function isGigaChatAuthConfigured(config: z.infer<typeof gigachatKeyConfigSchema> | undefined): boolean {
+	if (!config) return false;
+	if (isEnvVarSet(config.credentials) || isEnvVarSet(config.access_token)) {
+		return true;
+	}
+	if (isEnvVarSet(config.user) && isEnvVarSet(config.password)) {
+		return true;
+	}
+	return false;
+}
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -261,44 +321,57 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		gigachat_key_config: gigachatKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
-	.refine(
-		(data) => {
-			// Providers with dedicated config that never need a top-level API key
-			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
-				return true;
+	.superRefine((data, ctx) => {
+		// Providers with dedicated config that never need a top-level API key.
+		if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+			return;
+		}
+		if (data.gigachat_key_config) {
+			if (isGigaChatAuthConfigured(data.gigachat_key_config) || isEnvVarSet(data.value)) {
+				return;
 			}
-			// Azure requires API key only when using api_key auth
-			if (data.azure_key_config) {
-				if (data.azure_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
-				}
-				return true;
+			const authIssuePath =
+				data.gigachat_key_config._auth_type === "access_token"
+					? ["gigachat_key_config", "access_token"]
+					: data.gigachat_key_config._auth_type === "password"
+						? ["gigachat_key_config", "user"]
+						: ["gigachat_key_config", "credentials"];
+			ctx.addIssue({
+				code: "custom",
+				message: "GigaChat credentials, access token, user/password, or key value access token is required",
+				path: authIssuePath,
+			});
+			return;
+		}
+		// Azure requires API key only when using api_key auth.
+		if (data.azure_key_config) {
+			if (data.azure_key_config._auth_type === "api_key" && !isEnvVarSet(data.value)) {
+				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
 			}
-			// Bedrock only requires API key when using api_key auth
-			if (data.bedrock_key_config) {
-				if (data.bedrock_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
-				}
-				return true;
+			return;
+		}
+		// Bedrock only requires API key when using api_key auth.
+		if (data.bedrock_key_config) {
+			if (data.bedrock_key_config._auth_type === "api_key" && !isEnvVarSet(data.value)) {
+				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
 			}
-			// Vertex requires API key only when using api_key auth
-			if (data.vertex_key_config) {
-				if (data.vertex_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
-				}
-				return true;
+			return;
+		}
+		// Vertex requires API key only when using api_key auth.
+		if (data.vertex_key_config) {
+			if (data.vertex_key_config._auth_type === "api_key" && !isEnvVarSet(data.value)) {
+				ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
 			}
-			// Otherwise, value is required
-			return isEnvVarSet(data.value);
-		},
-		{
-			message: "API Key is required",
-			path: ["value"],
-		},
-	);
+			return;
+		}
+		if (!isEnvVarSet(data.value)) {
+			ctx.addIssue({ code: "custom", message: "API Key is required", path: ["value"] });
+		}
+	});
 
 // Network config schema
 export const networkConfigSchema = z

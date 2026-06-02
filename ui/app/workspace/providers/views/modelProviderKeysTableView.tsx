@@ -86,8 +86,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
+	const isGigaChat = providerName === "gigachat";
+	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : isGigaChat ? "credential" : "key";
+	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : isGigaChat ? "credentials" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -188,7 +189,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						</colgroup>
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
+								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : isGigaChat ? "Credential" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -237,6 +238,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															key.vertex_key_config?.region?.from_env ||
 															key.bedrock_key_config?.region?.from_env ||
 															key.vllm_key_config?.url?.from_env ||
+															key.gigachat_key_config?.credentials?.from_env ||
+															key.gigachat_key_config?.access_token?.from_env ||
+															key.gigachat_key_config?.user?.from_env ||
+															key.gigachat_key_config?.password?.from_env ||
+															key.gigachat_key_config?.key_file_password?.from_env ||
 															key.value?.from_env;
 														const isEnvResolutionError =
 															hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);
