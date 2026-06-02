@@ -792,6 +792,18 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
 			if extractedProvider == "" && !skipModelCatalogProviderSelection {
 				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
+				existingProviders, hasExistingProviders := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+				if hasExistingProviders {
+					if len(existingProviders) == 0 {
+						availableProviders = []schemas.ModelProvider{}
+					} else if len(availableProviders) == 0 {
+						availableProviders = existingProviders
+					} else {
+						availableProviders = slices.DeleteFunc(availableProviders, func(provider schemas.ModelProvider) bool {
+							return !slices.Contains(existingProviders, provider)
+						})
+					}
+				}
 				availableProvidersStrs := make([]string, len(availableProviders))
 				for i, p := range availableProviders {
 					availableProvidersStrs[i] = string(p)
@@ -814,6 +826,8 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 						))
 					}
 					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+				} else if hasExistingProviders {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 				}
 				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 			}
@@ -912,7 +926,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		// Extract and parse fallbacks from the request if present
-		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+		if err := g.extractAndParseFallbacks(bifrostCtx, req, bifrostReq); err != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
