@@ -8382,6 +8382,150 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	}
 }
 
+// TestSQLite_VirtualKey_ConfigFileAppendOnRestart verifies that adding a new
+// virtual key to config.json after an initial DB-backed startup is visible after
+// the next startup in both DB and in-memory governance state.
+func TestSQLite_VirtualKey_ConfigFileAppendOnRestart(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}
+
+	initialVKs := []tables.TableVirtualKey{
+		makeVirtualKey("vk-1", "first-vk", "sk-bf-first123"),
+		makeVirtualKey("vk-2", "second-vk", "sk-bf-second456"),
+	}
+	configData := makeConfigDataWithVirtualKeysAndDir(providers, initialVKs, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config1.GovernanceConfig)
+	require.Len(t, config1.GovernanceConfig.VirtualKeys, 2)
+
+	dbVKs1, err := config1.ConfigStore.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbVKs1, 2)
+	config1.Close(ctx)
+
+	updatedVKs := []tables.TableVirtualKey{
+		makeVirtualKey("vk-1", "first-vk", "sk-bf-first123"),
+		makeVirtualKey("vk-2", "second-vk", "sk-bf-second456"),
+		makeVirtualKey("vk-3", "third-vk", "sk-bf-third789"),
+	}
+	configData.Governance.VirtualKeys = updatedVKs
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	expectedVKValues := map[string]string{
+		"vk-1": "sk-bf-first123",
+		"vk-2": "sk-bf-second456",
+		"vk-3": "sk-bf-third789",
+	}
+
+	dbVKs2, err := config2.ConfigStore.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbVKs2, 3)
+	requireVirtualKeyIDs(t, dbVKs2, "vk-1", "vk-2", "vk-3")
+	requireVirtualKeyValues(t, dbVKs2, expectedVKValues)
+
+	paginatedVKs, totalCount, err := config2.ConfigStore.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+		Limit:  25,
+		Offset: 0,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, totalCount)
+	require.Len(t, paginatedVKs, 3)
+	requireVirtualKeyIDs(t, paginatedVKs, "vk-1", "vk-2", "vk-3")
+	requireVirtualKeyValues(t, paginatedVKs, expectedVKValues)
+
+	require.NotNil(t, config2.GovernanceConfig)
+	require.Len(t, config2.GovernanceConfig.VirtualKeys, 3)
+	requireVirtualKeyIDs(t, config2.GovernanceConfig.VirtualKeys, "vk-1", "vk-2", "vk-3")
+	requireVirtualKeyValues(t, config2.GovernanceConfig.VirtualKeys, expectedVKValues)
+}
+
+// TestSQLite_VirtualKey_ConfigFileAppendWithMissingEnvFails verifies that a
+// config-file VK with an unresolved env value fails startup instead of being
+// silently skipped during reconciliation.
+func TestSQLite_VirtualKey_ConfigFileAppendWithMissingEnvFails(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	oldValue, hadValue := os.LookupEnv("VK_D")
+	require.NoError(t, os.Unsetenv("VK_D"))
+	defer func() {
+		if hadValue {
+			require.NoError(t, os.Setenv("VK_D", oldValue))
+		} else {
+			require.NoError(t, os.Unsetenv("VK_D"))
+		}
+	}()
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}
+
+	configData := makeConfigDataWithVirtualKeysAndDir(providers, []tables.TableVirtualKey{
+		makeVirtualKey("vk-a", "vk-a", "vk_a123"),
+		makeVirtualKey("vk-b", "vk-b", "vk_b456"),
+	}, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	configData.Governance.VirtualKeys = append(configData.Governance.VirtualKeys, tables.TableVirtualKey{
+		ID:          "vk-c",
+		Name:        "vk-c",
+		Description: "Third virtual key with missing env value",
+		Value:       "env.VK_D",
+		IsActive:    schemas.Ptr(true),
+	})
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.Error(t, err)
+	require.Nil(t, config2)
+	require.Contains(t, err.Error(), "virtual key vk-c")
+	require.Contains(t, err.Error(), "environment variable VK_D not found")
+}
+
+// requireVirtualKeyIDs asserts that all expected virtual key IDs are present
+// in a returned virtual key slice.
+func requireVirtualKeyIDs(t *testing.T, virtualKeys []tables.TableVirtualKey, expectedIDs ...string) {
+	t.Helper()
+	actual := make(map[string]bool, len(virtualKeys))
+	for _, vk := range virtualKeys {
+		actual[vk.ID] = true
+	}
+	for _, id := range expectedIDs {
+		require.Truef(t, actual[id], "expected virtual key %q in %#v", id, actual)
+	}
+}
+
+// requireVirtualKeyValues asserts that each expected virtual key ID maps to the
+// expected Value in the returned slice. This guards against the normalization
+// path (normalizeVirtualKeyValueFromConfig) silently regenerating a VK value.
+func requireVirtualKeyValues(t *testing.T, virtualKeys []tables.TableVirtualKey, expected map[string]string) {
+	t.Helper()
+	actual := make(map[string]string, len(virtualKeys))
+	for _, vk := range virtualKeys {
+		actual[vk.ID] = vk.Value
+	}
+	for id, value := range expected {
+		require.Equalf(t, value, actual[id], "expected virtual key %q to preserve value %q", id, value)
+	}
+}
+
 // TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys tests that when a NEW VK with ProviderConfigs
 // that reference specific Keys is added via merge path, the Keys many-to-many association is properly persisted.
 //
