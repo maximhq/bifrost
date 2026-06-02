@@ -59,7 +59,7 @@ func TestGetModelPathStripsRegion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
-			got, _ := provider.getModelPathAndRegion(tc.basePath, tc.model, key)
+			got, _ := provider.getModelPathAndRegion(nil, tc.basePath, tc.model, key)
 			assert.Equal(t, tc.wantPath, got)
 		})
 	}
@@ -91,9 +91,95 @@ func TestGetModelPathStripsRegionWithARN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
-			got, _ := provider.getModelPathAndRegion("converse", tc.model, key)
+			got, _ := provider.getModelPathAndRegion(nil, "converse", tc.model, key)
 			assert.Equal(t, tc.wantPath, got)
 		})
+	}
+}
+
+// TestResolveBedrockRegion_AliasOverride verifies the per-alias Region
+// override slots between the model-string prefix (highest priority) and the
+// key-level Region (lower priority).
+func TestResolveBedrockRegion_AliasOverride(t *testing.T) {
+	keyRegion := "us-east-1"
+	aliasRegion := "us-west-2"
+	key := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region: schemas.NewEnvVar(keyRegion),
+		},
+	}
+
+	// Build ctx carrying an alias with Region override.
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+			Region:  schemas.NewEnvVar(aliasRegion),
+		},
+	})
+
+	// Bare model — alias.Region wins over key.Region.
+	if got := resolveBedrockRegion(ctx, key, "anthropic.claude-3-5-sonnet-20241022-v2:0"); got != aliasRegion {
+		t.Errorf("alias override should win over key region: got %q, want %q", got, aliasRegion)
+	}
+
+	// Model string with explicit region prefix — wins over alias override.
+	if got := resolveBedrockRegion(ctx, key, "eu-west-1/anthropic.claude-v2"); got != "eu-west-1" {
+		t.Errorf("model-string region should win over alias override: got %q", got)
+	}
+
+	// No alias in ctx — falls through to key.Region.
+	emptyCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveBedrockRegion(emptyCtx, key, "anthropic.claude-v2"); got != keyRegion {
+		t.Errorf("no alias: should use key.Region: got %q, want %q", got, keyRegion)
+	}
+}
+
+// TestResolveBedrockARN_AliasOverride verifies the BedrockAliasCfg
+// InferenceProfileARN override takes precedence over key.BedrockKeyConfig.ARN.
+func TestResolveBedrockARN_AliasOverride(t *testing.T) {
+	keyARN := "arn:aws:bedrock:us-east-1:1234567890:resource-config/default"
+	aliasARN := "arn:aws:bedrock:us-east-1:1234567890:inference-profile/us.anthropic.claude-3-7-sonnet"
+	key := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			ARN: schemas.NewEnvVar(keyARN),
+		},
+	}
+
+	// No alias — falls back to key.ARN.
+	if got := resolveBedrockARN(nil, key); got != keyARN {
+		t.Errorf("nil ctx: got %q, want key ARN %q", got, keyARN)
+	}
+
+	// Alias with InferenceProfileARN override wins.
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "anthropic.claude-3-7-sonnet-20250219-v1:0",
+			BedrockAliasCfg: &schemas.BedrockAliasCfg{
+				InferenceProfileARN: schemas.NewEnvVar(aliasARN),
+			},
+		},
+	})
+	if got := resolveBedrockARN(ctx, key); got != aliasARN {
+		t.Errorf("alias override should win: got %q, want %q", got, aliasARN)
+	}
+
+	// Empty alias ARN — falls through to key.ARN.
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			BedrockAliasCfg: &schemas.BedrockAliasCfg{
+				InferenceProfileARN: schemas.NewEnvVar(""),
+			},
+		},
+	})
+	if got := resolveBedrockARN(ctx2, key); got != keyARN {
+		t.Errorf("empty alias ARN should fall through to key ARN: got %q, want %q", got, keyARN)
 	}
 }
 
@@ -119,7 +205,7 @@ func TestResolveBedrockRegion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			got := resolveBedrockRegion(tc.key, tc.model)
+			got := resolveBedrockRegion(nil, tc.key, tc.model)
 			assert.Equal(t, tc.wantRegion, got)
 		})
 	}

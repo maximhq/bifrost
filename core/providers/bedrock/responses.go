@@ -1921,7 +1921,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					continue
 				}
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, schemas.ResponsesTool{Type: toolType})
-			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+			} else if tool.CachePoint != nil && !schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				// add cache control to last tool in tools array
 				if len(bifrostReq.Params.Tools) > 0 {
 					bifrostReq.Params.Tools[len(bifrostReq.Params.Tools)-1].CacheControl = &schemas.CacheControl{
@@ -2018,7 +2018,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 							if request.InferenceConfig != nil && request.InferenceConfig.MaxTokens != nil {
 								defaultMaxTokens = *request.InferenceConfig.MaxTokens
 							}
-							if schemas.IsAnthropicModel(bifrostReq.Model) {
+							if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 								minBudgetTokens = anthropic.MinimumReasoningMaxTokens
 							}
 							effort := providerUtils.GetReasoningEffortFromBudgetTokens(maxTokens, minBudgetTokens, defaultMaxTokens)
@@ -2151,7 +2151,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
 		input := bifrostReq.Input
-		if schemas.IsAnthropicModel(bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 			trimmed := len(input)
 			for trimmed > 0 && input[trimmed-1].Role != nil && *input[trimmed-1].Role == schemas.ResponsesInputMessageRoleAssistant {
 				trimmed--
@@ -2180,7 +2180,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// Trim trailing whitespace from the last assistant message text blocks
 		// (only for Anthropic models which use text-based prefill)
 		lastMsgIndex := len(bedrockReq.Messages) - 1
-		if schemas.IsAnthropicModel(bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
+		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
 			blocks := bedrockReq.Messages[lastMsgIndex].Content
 			for j := len(blocks) - 1; j >= 0; j-- {
 				if blocks[j].Text != nil {
@@ -2217,15 +2217,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					// setting it to default max tokens
 					tokenBudget = anthropic.MinimumReasoningMaxTokens
 				}
-				if schemas.IsAnthropicModel(bifrostReq.Model) && tokenBudget < anthropic.MinimumReasoningMaxTokens {
+				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && tokenBudget < anthropic.MinimumReasoningMaxTokens {
 					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 				}
-				if schemas.IsAnthropicModel(bifrostReq.Model) {
+				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type":          "enabled",
 						"budget_tokens": tokenBudget,
 					})
-				} else if schemas.IsNovaModel(bifrostReq.Model) {
+				} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					minBudgetTokens := MinimumReasoningMaxTokens
 					modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					defaultMaxTokens := modelDefaultMaxTokens
@@ -2258,7 +2258,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					if schemas.IsNovaModel(bifrostReq.Model) {
+					if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 						effort := *bifrostReq.Params.Reasoning.Effort
 						typeStr := "enabled"
 						switch effort {
@@ -2283,7 +2283,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						}
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
-					} else if schemas.IsAnthropicModel(bifrostReq.Model) {
+					} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
@@ -2338,11 +2338,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						})
 					}
 				} else {
-					if schemas.IsAnthropicModel(bifrostReq.Model) {
+					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 							"type": "disabled",
 						})
-					} else if schemas.IsNovaModel(bifrostReq.Model) {
+					} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
@@ -2449,7 +2449,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)
 
-				if tool.CacheControl != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+				if tool.CacheControl != nil && !schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					bedrockTools = append(bedrockTools, BedrockTool{
 						CachePoint: &BedrockCachePoint{
 							Type: BedrockCachePointTypeDefault,
@@ -2480,7 +2480,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// behavior. See per-model support matrix at
 		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
 		// (mirrors the gate in convertToolConfigFromFiltered for ChatCompletions).
-		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModel(bifrostReq.Model) {
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModelFamily(ctx, bifrostReq.Model) {
 			bedrockToolChoice = nil
 		}
 		if bedrockToolChoice != nil {
@@ -2510,7 +2510,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
+		if !schemas.IsLlamaModelFamily(ctx, bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responsesStructuredOutputTool.ToolSpec.Name,
