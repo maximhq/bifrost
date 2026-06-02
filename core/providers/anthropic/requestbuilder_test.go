@@ -125,6 +125,37 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 	})
 
+	t.Run("azure_strips_claude_code_diagnostics", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    "claude-opus-4-7",
+			RawRequestBody: []byte(`{
+				"model":"claude-opus-4-7",
+				"max_tokens":64000,
+				"messages":[{"role":"user","content":"hi"}],
+				"diagnostics":{"previous_message_id":null}
+			}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider:   schemas.Azure,
+			Deployment: "my-azure-deployment",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if providerUtils.JSONFieldExists(result, "diagnostics") {
+			t.Fatalf("expected diagnostics to be stripped for Azure, got: %s", string(result))
+		}
+		if providerUtils.GetJSONField(result, "model").String() != "my-azure-deployment" {
+			t.Fatalf("expected Azure deployment model rewrite, got: %s", string(result))
+		}
+	})
+
 	t.Run("adds_max_tokens_if_missing", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
