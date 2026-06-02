@@ -197,7 +197,7 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // 1. If deployments or allowedModels are configured, return those (no API call needed)
 // 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -426,7 +426,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			var extraParams map[string]interface{}
 			var err error
 
-			if schemas.IsAnthropicModel(request.Model) {
+			if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
 				// Inline any URL documents to base64 before the converter runs.
 				if err := inlineDocumentURLs(ctx, request); err != nil {
@@ -467,7 +467,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				if err != nil {
 					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
-			} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+			} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
 				if err != nil {
 					return nil, err
@@ -508,25 +508,25 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
 			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
-	if schemas.IsAnthropicModel(request.Model) && jsonBody != nil {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
 		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, request.Model)
 		if remapErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
@@ -547,7 +547,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	var completeURL string
 	if schemas.IsAllDigitsASCII(request.Model) {
 		// Custom Fine-tuned models use OpenAPI endpoint
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -555,13 +555,13 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
-	} else if schemas.IsAnthropicModel(request.Model) {
+	} else if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Claude models use Anthropic publisher — model-aware host for multi-region support
 		completeURL = getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":rawPredict")
-	} else if schemas.IsMistralModel(request.Model) {
+	} else if schemas.IsMistralModelFamily(ctx, request.Model) {
 		// Mistral models use mistralai publisher with rawPredict
 		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":rawPredict")
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsGemmaModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		// Gemini models support api key
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
@@ -584,7 +584,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+	if (schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
 		request.Params != nil && request.Params.ServiceTier != nil {
 		if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
 			req.Header.Set(VertexServiceTierHeader, v)
@@ -653,7 +653,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}, nil
 	}
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Create response object from pool
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
@@ -682,7 +682,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -734,17 +734,17 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // Returns a channel of BifrostStreamChunk objects for streaming results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use Anthropic-style streaming for Claude models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -859,7 +859,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			provider.logger,
 			postHookSpanFinalizer,
 		)
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		// Use Gemini-style streaming for Gemini models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -888,7 +888,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -909,7 +909,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			"Cache-Control": "no-cache",
 		}
 
-		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+		if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
 				if request.Params != nil && request.Params.ServiceTier != nil {
 					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
@@ -955,7 +955,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		authQuery := ""
 		// Determine the URL based on model type
 		var completeURL string
-		if schemas.IsMistralModel(request.Model) {
+		if schemas.IsMistralModelFamily(ctx, request.Model) {
 			// Mistral models use mistralai publisher with streamRawPredict
 			completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":streamRawPredict")
 		} else {
@@ -1009,17 +1009,17 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		projectID := resolveVertexProjectID(ctx, key)
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		region := key.VertexKeyConfig.Region.GetValue()
+		region := resolveVertexRegion(ctx, key)
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
 		}
@@ -1128,7 +1128,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -1153,12 +1153,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 
-		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		projectID := resolveVertexProjectID(ctx, key)
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		region := key.VertexKeyConfig.Region.GetValue()
+		region := resolveVertexRegion(ctx, key)
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
 		}
@@ -1169,7 +1169,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -1189,7 +1189,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
-		if (schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
+		if (schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
 			request.Params != nil && request.Params.ServiceTier != nil {
 			if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
 				req.Header.Set(VertexServiceTierHeader, v)
@@ -1290,13 +1290,13 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if schemas.IsAnthropicModel(request.Model) {
-		region := key.VertexKeyConfig.Region.GetValue()
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		region := resolveVertexRegion(ctx, key)
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		projectID := resolveVertexProjectID(ctx, key)
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
@@ -1344,13 +1344,13 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			provider.logger,
 			postHookSpanFinalizer,
 		)
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
-		region := key.VertexKeyConfig.Region.GetValue()
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+		region := resolveVertexRegion(ctx, key)
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		projectID := resolveVertexProjectID(ctx, key)
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
@@ -1387,7 +1387,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -1407,7 +1407,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			"Cache-Control": "no-cache",
 		}
 
-		if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+		if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
 				if request.Params != nil && request.Params.ServiceTier != nil {
 					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
@@ -1463,12 +1463,12 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 // All Vertex AI embedding models use the same response format regardless of the model type.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -1485,7 +1485,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// For custom/fine-tuned models, validate projectNumber is set
-	projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+	projectNumber := resolveVertexProjectNumber(ctx, key)
 	if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
@@ -1617,7 +1617,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 // Rerank performs a rerank request using Vertex Discovery Engine ranking API.
 func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	projectID := strings.TrimSpace(key.VertexKeyConfig.ProjectID.GetValue())
+	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
@@ -1771,7 +1771,7 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate model type before processing
-	if !schemas.IsGeminiModel(request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModel(request.Model) {
+	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image generation is only supported for Gemini and Imagen models, got: %s", request.Model))
 	}
 
@@ -1783,7 +1783,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			var extraParams map[string]interface{}
 			var err error
 
-			if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+			if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 				reqBody := gemini.ToGeminiImageGenerationRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image generation input is not provided")
@@ -1796,7 +1796,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-			} else if schemas.IsImagenModel(request.Model) {
+			} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 				reqBody := gemini.ToImagenImageGenerationRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image generation input is not provided")
@@ -1821,12 +1821,12 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -1837,7 +1837,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	var completeURL string
 	if schemas.IsAllDigitsASCII(request.Model) {
 		// Custom Fine-tuned models use OpenAPI endpoint
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -1846,13 +1846,13 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		}
 		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
 
-	} else if schemas.IsImagenModel(request.Model) {
+	} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 		// Imagen models are published models, use publishers/google/models path
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
 		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
-	} else if schemas.IsGeminiModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) {
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
@@ -1932,7 +1932,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		}, nil
 	}
 
-	if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -1991,7 +1991,7 @@ func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 // Returns a BifrostResponse containing the images and any error that occurred.
 func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate model type before processing
-	if !schemas.IsGeminiModel(request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModel(request.Model) {
+	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image edit is only supported for Gemini and Imagen models, got: %s", request.Model))
 	}
 
@@ -2003,7 +2003,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			var extraParams map[string]interface{}
 			var err error
 
-			if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+			if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 				reqBody := gemini.ToGeminiImageEditRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image edit input is not provided")
@@ -2016,7 +2016,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-			} else if schemas.IsImagenModel(request.Model) {
+			} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 				reqBody := gemini.ToImagenImageEditRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("image edit input is not provided")
@@ -2041,12 +2041,12 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		return nil, bifrostErr
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -2058,14 +2058,14 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 	var completeURL string
 	if schemas.IsAllDigitsASCII(request.Model) {
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
 		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, gemini.NormalizeModelName(request.Model), ":generateContent")
-	} else if schemas.IsImagenModel(request.Model) {
+	} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
-	} else if schemas.IsGeminiModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) {
 		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
 	}
 
@@ -2140,7 +2140,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
-	if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
+	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -2206,7 +2206,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	providerName := provider.GetProviderKey()
 
 	// Only Gemini models support video generation in Vertex
-	if !schemas.IsVeoModel(bifrostReq.Model) && !schemas.IsAllDigitsASCII(bifrostReq.Model) {
+	if !schemas.IsVeoModelFamily(ctx, bifrostReq.Model) && !schemas.IsAllDigitsASCII(bifrostReq.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("video generation is only supported for Veo models in Vertex, got: %s", bifrostReq.Model))
 	}
 
@@ -2222,12 +2222,12 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -2239,7 +2239,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	}
 
 	// For custom/fine-tuned models, validate projectNumber is set
-	projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+	projectNumber := resolveVertexProjectNumber(ctx, key)
 	if schemas.IsAllDigitsASCII(bifrostReq.Model) && projectNumber == "" {
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
@@ -2328,7 +2328,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -2682,7 +2682,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		bifrostErr *schemas.BifrostError
 	)
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, true, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -2713,12 +2713,12 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -2726,17 +2726,17 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	authQuery := ""
 	var completeURL string
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use model-aware host based on request.Model, but URL path uses "count-tokens"
 		effectiveRegion := getVertexEffectiveRegion(region, request.Model)
 		baseURL := getVertexModelAwareAPIBaseURL(region, "v1", request.Model)
 		completeURL = fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, "anthropic", "count-tokens", ":rawPredict")
-	} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModel(request.Model) {
+	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 
-		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+		projectNumber := resolveVertexProjectNumber(ctx, key)
 		if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
@@ -2816,7 +2816,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}, nil
 	}
 
-	if schemas.IsAnthropicModel(request.Model) {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		anthropicResponse := &anthropic.AnthropicCountTokensResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -2911,12 +2911,12 @@ func (provider *VertexProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	projectID := strings.TrimSpace(key.VertexKeyConfig.ProjectID.GetValue())
+	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	keyRegion := key.VertexKeyConfig.Region.GetValue()
+	keyRegion := resolveVertexRegion(ctx, key)
 	if keyRegion == "" {
 		keyRegion = "global"
 	}
@@ -3060,12 +3060,12 @@ func (provider *VertexProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	projectID := strings.TrimSpace(key.VertexKeyConfig.ProjectID.GetValue())
+	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 
-	keyRegion := key.VertexKeyConfig.Region.GetValue()
+	keyRegion := resolveVertexRegion(ctx, key)
 	if keyRegion == "" {
 		keyRegion = "global"
 	}

@@ -115,11 +115,11 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, providerUtils.NewBifrostOperationError("model is required for cached content create", nil)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in vertex key config")
 	}
@@ -210,11 +210,11 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
 	}
@@ -292,11 +292,11 @@ func (provider *VertexProvider) CachedContentList(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
 	}
@@ -372,11 +372,11 @@ func (provider *VertexProvider) CachedContentRetrieve(ctx *schemas.BifrostContex
 }
 
 func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
 	}
@@ -482,11 +482,11 @@ func (provider *VertexProvider) CachedContentUpdate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
 		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
 	}
