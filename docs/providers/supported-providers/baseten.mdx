@@ -1,0 +1,149 @@
+---
+title: "Baseten"
+description: "Baseten API conversion guide - OpenAI-compatible format, streaming support, tool calling, and parameter handling"
+icon: "b"
+---
+
+## Overview
+
+Baseten is an **OpenAI-compatible provider** offering high-performance inference through its Model APIs. Bifrost delegates to the OpenAI implementation with standard parameter handling. Key characteristics:
+- **OpenAI API compatibility** - Identical request/response format
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Complete function definition and execution
+- **Responses API** - Fallback to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Baseten Model APIs. These return `UnsupportedOperationError`.
+</Note>
+
+The default base URL is `https://inference.baseten.co`. Requests are routed to Baseten's OpenAI-compatible Model APIs endpoint (`/v1/chat/completions`).
+
+## Setup & Configuration
+
+Configure Baseten as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Baseten** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Baseten**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.BASETEN_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+  "provider": "baseten",
+  "keys": [
+    {
+      "name": "baseten-key-1",
+      "value": "env.BASETEN_API_KEY",
+      "models": [
+        "*"
+      ],
+      "weight": 1.0
+    }
+  ]
+}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Baseten:
+    return []schemas.Key{{
+        Name:   "baseten-key-1",
+        Value:  *schemas.NewEnvVar("env.BASETEN_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Baseten supports the standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Baseten supports standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support as Chat Completions.
+
+---
+
+# 3. List Models
+
+Lists available Baseten models with capabilities and context information.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Baseten Model APIs |
+| Embedding | Not offered by Baseten Model APIs |
+| Image Generation | Not offered by Baseten Model APIs |
+| Speech/TTS | Not offered by Baseten Model APIs |
+| Transcription/STT | Not offered by Baseten Model APIs |
+| Batch Operations | Not offered by Baseten Model APIs |
+| File Management | Not offered by Baseten Model APIs |

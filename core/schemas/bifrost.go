@@ -47,6 +47,7 @@ const (
 	Groq        ModelProvider = "groq"
 	SGL         ModelProvider = "sgl"
 	Parasail    ModelProvider = "parasail"
+	Baseten     ModelProvider = "baseten"
 	Perplexity  ModelProvider = "perplexity"
 	Cerebras    ModelProvider = "cerebras"
 	Gemini      ModelProvider = "gemini"
@@ -76,6 +77,7 @@ var SupportedBaseProviders = []ModelProvider{
 var StandardProviders = []ModelProvider{
 	Anthropic,
 	Azure,
+	Baseten,
 	Bedrock,
 	Cerebras,
 	Cohere,
