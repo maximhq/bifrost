@@ -253,6 +253,131 @@ func TestKeyAliasesValidate(t *testing.T) {
 	}
 }
 
+func TestResolveFamilyPrecedence(t *testing.T) {
+	familyAnthropic := ModelFamilyAnthropic
+	familyOpenAI := ModelFamilyOpenAI
+
+	// Helper to build a BifrostContext carrying a ResolvedAlias.
+	withAlias := func(ra *ResolvedAlias) *BifrostContext {
+		bc := NewBifrostContext(nil, NoDeadline)
+		if ra != nil {
+			bc.SetValue(BifrostContextKeyResolvedAlias, ra)
+		}
+		return bc
+	}
+
+	cases := []struct {
+		name     string
+		ra       *ResolvedAlias
+		fallback string
+		want     ModelFamily
+	}{
+		{
+			name: "tier 1: explicit ModelFamily wins over everything",
+			ra: &ResolvedAlias{
+				Key: "some-claude-name",
+				Config: &AliasConfig{
+					ModelID:     "opaque-id",
+					ModelFamily: &familyOpenAI, // wins despite name/key smelling like Claude
+				},
+			},
+			fallback: "claude-3-5-sonnet",
+			want:     ModelFamilyOpenAI,
+		},
+		{
+			name: "tier 2: ModelName substring when no explicit family",
+			ra: &ResolvedAlias{
+				Key: "best-model",
+				Config: &AliasConfig{
+					ModelID:   "opaque-id",
+					ModelName: ptrStr("claude-3-5-sonnet"),
+				},
+			},
+			fallback: "opaque-id",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name: "tier 3: ModelID substring when name absent",
+			ra: &ResolvedAlias{
+				Key: "best-model",
+				Config: &AliasConfig{
+					ModelID: "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+				},
+			},
+			fallback: "best-model",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name: "tier 4: alias key substring when nothing else hits — the legacy 'best-claude→opaque-deployment-id' case the refactor is specifically meant to fix",
+			ra: &ResolvedAlias{
+				Key: "best-claude",
+				Config: &AliasConfig{
+					ModelID: "12345-azure-deployment",
+				},
+			},
+			fallback: "12345-azure-deployment",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name:     "no alias matched: fall back to substring on fallbackModel — preserves pre-refactor behavior",
+			ra:       nil,
+			fallback: "claude-3-5-sonnet",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name:     "no alias and no substring hit anywhere",
+			ra:       nil,
+			fallback: "totally-unknown-model",
+			want:     "",
+		},
+		{
+			name: "explicit empty ModelFamily pointer is treated as absent (falls through to name)",
+			ra: &ResolvedAlias{
+				Key: "x",
+				Config: &AliasConfig{
+					ModelID:     "opaque-id",
+					ModelName:   ptrStr("claude-3-5-sonnet"),
+					ModelFamily: ptrFamily(""),
+				},
+			},
+			fallback: "x",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name: "first matching candidate wins (ModelName matches Anthropic before ModelID could match anything else)",
+			ra: &ResolvedAlias{
+				Key: "x",
+				Config: &AliasConfig{
+					ModelID:   "mistral-large-2407", // would match Mistral but ModelName is checked first
+					ModelName: ptrStr("claude-3-5-sonnet"),
+				},
+			},
+			fallback: "x",
+			want:     ModelFamilyAnthropic,
+		},
+		{
+			name: "uses fallback when ResolvedAlias.Config is nil (defensive)",
+			ra:   &ResolvedAlias{Key: "x", Config: nil},
+			// With Config==nil the candidates list is empty for the alias branch,
+			// so we drop to fallback substring matching.
+			fallback: "claude-3-haiku",
+			want:     ModelFamilyAnthropic,
+		},
+	}
+	_ = familyAnthropic // silence unused-var if all cases removed
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ResolveFamily(withAlias(c.ra), c.fallback)
+			if got != c.want {
+				t.Fatalf("ResolveFamily: got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func ptrStr(s string) *string              { return &s }
+func ptrFamily(f ModelFamily) *ModelFamily { return &f }
+
 func TestModelFamilyIsValid(t *testing.T) {
 	valid := []ModelFamily{
 		ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
