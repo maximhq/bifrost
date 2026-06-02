@@ -1002,6 +1002,12 @@ components:
       description: |
         Bearer token authentication. Use your provider API key or Bifrost authentication token.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    ManagementBearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.
+        Virtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.
     BasicAuth:
       type: http
       scheme: basic
@@ -1021,6 +1027,15 @@ components:
       description: |
         API key authentication via the `x-api-key` header.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: token
+      description: |
+        Dashboard session authentication via the HTTPOnly `token` cookie that is
+        set by `POST /api/session/login`. Used by the Bifrost UI for same-origin
+        requests in place of an `Authorization` header. Accepted on session
+        endpoints (`logout`, `ws-ticket`) as an alternative to the management API key.
 
   parameters:
     AsyncJobId:
