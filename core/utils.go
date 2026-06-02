@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -494,7 +495,7 @@ func ValidateExternalURL(urlStr string) error {
 		return fmt.Errorf("URL must have a hostname")
 	}
 	// Block localhost and loopback addresses
-	if isLocalhost(hostname) {
+	if network.IsLocalhost(hostname) {
 		return fmt.Errorf("localhost and loopback addresses are not allowed")
 	}
 	// Resolve hostname to IP addresses
@@ -504,50 +505,11 @@ func ValidateExternalURL(urlStr string) error {
 	}
 	// Check if any resolved IP is private
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if network.IsPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
 	return nil
-}
-
-// isLocalhost checks if a hostname is localhost or a loopback address
-func isLocalhost(hostname string) bool {
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "::"
-}
-
-// isPrivateIP checks if an IP address is in a private range
-func isPrivateIP(ip net.IP) bool {
-	// Private IPv4 ranges
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // Link-local
-		"127.0.0.0/8",    // Loopback
-	}
-	for _, cidr := range privateRanges {
-		_, subnet, _ := net.ParseCIDR(cidr)
-		if subnet.Contains(ip) {
-			return true
-		}
-	}
-	// Check for private IPv6
-	if ip.To4() == nil {
-		// Check for IPv6 loopback and link-local
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return true
-		}
-		// Check for IPv6 unique local addresses (fc00::/7)
-		if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-			return true
-		}
-	}
-	return false
 }
 
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
