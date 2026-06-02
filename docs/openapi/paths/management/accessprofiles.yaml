@@ -29,6 +29,8 @@ access-profiles:
         in: query
         schema:
           type: boolean
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -53,6 +55,8 @@ access-profiles:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/CreateAccessProfileRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Profile created
@@ -80,6 +84,8 @@ access-profiles-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -113,6 +119,8 @@ access-profiles-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/UpdateAccessProfileRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Profile updated
@@ -141,6 +149,8 @@ access-profiles-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Profile deleted
@@ -168,6 +178,8 @@ access-profiles-activate:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Profile is active.
@@ -193,6 +205,8 @@ access-profiles-deactivate:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Profile is inactive.
@@ -224,6 +238,8 @@ access-profiles-clone:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/CloneProfileRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Cloned profile created.
@@ -261,6 +277,8 @@ access-profiles-propagate:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/PropagateRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Propagation result.
@@ -296,6 +314,8 @@ access-profiles-roles:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/AttachRolesRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Roles attached.
@@ -327,6 +347,8 @@ access-profiles-role-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Role detached.
@@ -351,6 +373,8 @@ access-profiles-versions:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -378,6 +402,8 @@ access-profiles-version-by-number:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -419,6 +445,8 @@ access-profiles-audit-logs-by-id:
         in: query
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -452,6 +480,8 @@ access-profiles-audit-logs-all:
         in: query
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -474,6 +504,8 @@ users-access-profiles:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -502,6 +534,8 @@ users-access-profile-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Profile detached.
@@ -537,6 +571,8 @@ users-access-profile-virtual-keys:
         application/json:
           schema:
             $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Virtual key created.
@@ -566,6 +602,8 @@ users-access-profile-virtual-key-by-id:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Virtual key deleted.
