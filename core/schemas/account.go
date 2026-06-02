@@ -261,7 +261,15 @@ func (ac AliasConfig) MarshalJSON() ([]byte, error) {
 // ModelName / ModelFamily / provider sub-configs are populated explicitly.
 type KeyAliases map[string]AliasConfig
 
-func (ka KeyAliases) Validate() error {
+// Validate checks that every entry in the alias map is well-formed and that
+// any provider-specific sub-configs (AzureAliasCfg, VertexAliasCfg,
+// BedrockAliasCfg, ReplicateAliasCfg) are only set when the owning Key
+// actually belongs to that provider. Catches misconfigurations like an
+// AzureAliasCfg attached to a Bedrock key.
+//
+// providerKey is the provider this Key is registered under (e.g. schemas.Azure
+// for keys in the azure provider config).
+func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 	seen := make(map[string]struct{}, len(ka))
 	for from, ac := range ka {
 		if strings.TrimSpace(from) == "" {
@@ -281,6 +289,18 @@ func (ka KeyAliases) Validate() error {
 		}
 		if ac.ModelFamily != nil && !ac.ModelFamily.IsValid() {
 			return fmt.Errorf("alias %q: invalid model_family %q", from, *ac.ModelFamily)
+		}
+		if ac.AzureAliasCfg != nil && providerKey != Azure {
+			return fmt.Errorf("alias %q: azure sub-config is only valid on Azure keys (got provider %q)", from, providerKey)
+		}
+		if ac.VertexAliasCfg != nil && providerKey != Vertex {
+			return fmt.Errorf("alias %q: vertex sub-config is only valid on Vertex keys (got provider %q)", from, providerKey)
+		}
+		if ac.BedrockAliasCfg != nil && providerKey != Bedrock {
+			return fmt.Errorf("alias %q: bedrock sub-config is only valid on Bedrock keys (got provider %q)", from, providerKey)
+		}
+		if ac.ReplicateAliasCfg != nil && providerKey != Replicate {
+			return fmt.Errorf("alias %q: replicate sub-config is only valid on Replicate keys (got provider %q)", from, providerKey)
 		}
 		normalized := strings.ToLower(from)
 		if _, ok := seen[normalized]; ok {
