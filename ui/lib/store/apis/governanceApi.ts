@@ -501,6 +501,8 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.limit && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
+					...(params?.scope && { scope: params.scope }),
+					...(params?.provider && { provider: params.provider }),
 				},
 			}),
 			providesTags: ["ModelConfigs"],
@@ -524,15 +526,18 @@ export const governanceApi = baseApi.injectEndpoints({
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
+					const mc = data.model_config;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
-						const search = entry.originalArgs?.search as string | undefined;
-						if (search && !data.model_config.model_name.toLowerCase().includes(search.toLowerCase())) continue;
+						const args = entry.originalArgs as GetModelConfigsParams | undefined;
+						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
+						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) draft.model_configs = [];
-								draft.model_configs.unshift(data.model_config);
+								draft.model_configs.unshift(mc);
 								draft.count = (draft.count || 0) + 1;
 								draft.total_count = (draft.total_count || 0) + 1;
 							}),
