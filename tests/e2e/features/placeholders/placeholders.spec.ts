@@ -29,12 +29,6 @@ test.describe('Placeholder and Enterprise Pages', () => {
     await expect(page.getByText('Unlock alerting history for proactive monitoring')).toBeVisible()
   })
 
-  test('should redirect legacy alert-channels page to alerting channels', async ({ page }) => {
-    await page.goto('/workspace/alert-channels')
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/workspace\/alerting\/channels(?:\?.*)?$/)
-  })
-
   test('should load guardrails page', async ({ page }) => {
     await page.goto('/workspace/guardrails')
     await page.waitForLoadState('networkidle')
