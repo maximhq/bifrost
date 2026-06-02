@@ -775,7 +775,7 @@ func TestEncryptPlaintextKeys_BedrockFields_EncryptsAndDecryptsCorrectly(t *test
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/bedrock", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
+	assert.Equal(t, "profile-claude", found.Aliases["claude-3"].ModelID)
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
 	assert.Equal(t, "my-bucket", found.BedrockKeyConfig.BatchS3Config.Buckets[0].BucketName)

@@ -14,7 +14,7 @@ func ToBifrostListModelsResponse(
 	providerKey schemas.ModelProvider,
 	allowedModels schemas.WhiteList,
 	blacklistedModels schemas.BlackList,
-	aliases map[string]string,
+	aliases schemas.KeyAliases,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
