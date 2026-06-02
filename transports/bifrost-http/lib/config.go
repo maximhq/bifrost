@@ -636,6 +636,24 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 		team := &configData.Governance.Teams[i]
 		promoteCalendarAligned(&team.CalendarAligned, team.Budgets, team.RateLimit)
 	}
+	for i := range configData.Governance.Customers {
+		customer := &configData.Governance.Customers[i]
+		// Customers reference budget/rate-limit by ID in config.json (no inline objects),
+		// so Budget and RateLimit are normally nil here. Handle the singular pointer
+		// directly rather than wrapping in a slice to avoid copy-and-clear issues.
+		if customer.Budget != nil {
+			if customer.Budget.CalendarAlignedInput != nil && *customer.Budget.CalendarAlignedInput {
+				customer.CalendarAligned = true
+			}
+			customer.Budget.CalendarAlignedInput = nil
+		}
+		if customer.RateLimit != nil && customer.RateLimit.CalendarAlignedInput != nil {
+			if *customer.RateLimit.CalendarAlignedInput {
+				customer.CalendarAligned = true
+			}
+			customer.RateLimit.CalendarAlignedInput = nil
+		}
+	}
 }
 
 // promoteCalendarAligned ORs each child's legacy calendar_aligned input into

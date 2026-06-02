@@ -476,6 +476,11 @@
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id", "name"],
