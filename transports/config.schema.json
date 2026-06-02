@@ -379,15 +379,23 @@
               },
               "virtual_key_id": {
                 "type": "string",
-                "description": "ID of the virtual key this budget belongs to (mutually exclusive with provider_config_id)"
+                "description": "ID of the virtual key this budget belongs to (mutually exclusive with team_id, provider_config_id, model_config_id, and customer_id)"
               },
               "provider_config_id": {
                 "type": "integer",
-                "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
+                "description": "ID of the provider config this budget belongs to (mutually exclusive with team_id, virtual_key_id, model_config_id, and customer_id)"
               },
               "team_id": {
                 "type": "string",
-                "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
+                "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id, provider_config_id, model_config_id, and customer_id)"
+              },
+              "model_config_id": {
+                "type": "string",
+                "description": "ID of the model config this budget belongs to (mutually exclusive with team_id, virtual_key_id, provider_config_id, and customer_id)"
+              },
+              "customer_id": {
+                "type": "string",
+                "description": "ID of the customer this budget belongs to (mutually exclusive with team_id, virtual_key_id, provider_config_id, and model_config_id)"
               },
               "calendar_aligned": {
                 "type": "boolean",
@@ -396,7 +404,25 @@
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "oneOf": [
+              { "required": ["virtual_key_id"] },
+              { "required": ["provider_config_id"] },
+              { "required": ["team_id"] },
+              { "required": ["model_config_id"] },
+              { "required": ["customer_id"] },
+              {
+                "not": {
+                  "anyOf": [
+                    { "required": ["virtual_key_id"] },
+                    { "required": ["provider_config_id"] },
+                    { "required": ["team_id"] },
+                    { "required": ["model_config_id"] },
+                    { "required": ["customer_id"] }
+                  ]
+                }
+              }
+            ]
           }
         },
         "rate_limits": {
