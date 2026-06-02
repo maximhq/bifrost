@@ -14,6 +14,11 @@ const (
 	ModelConfigScopeVirtualKey = "virtual_key"
 )
 
+// ModelConfigAllModels is the model_name sentinel meaning "all models". Combined with a
+// specific provider it expresses provider-level governance (all models on that provider);
+// with a nil provider it means all models on all providers.
+const ModelConfigAllModels = "*"
+
 // validModelConfigScopes is the set of accepted scope values.
 var validModelConfigScopes = map[string]bool{
 	ModelConfigScopeGlobal:     true,
