@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/bytedance/sonic"
 )
 
 type KeyStatusType string
@@ -175,7 +177,7 @@ func (mf *ModelFamily) IsValid() bool {
 type AzureAliasCfg struct {
 	APIVersion       *string `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
 	AnthropicVersion *string `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
-	Endpoint         *EnvVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias (allows one credential to span multiple Azure resources)
+	Endpoint         *EnvVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
@@ -301,6 +303,83 @@ func (ka KeyAliases) Resolve(model string) string {
 	return model
 }
 
+// ResolvedAlias is what core stashes in BifrostContext after key-level alias
+// resolution. Key is the user-facing model name the client sent (LHS of the
+// alias map). Config is the matched AliasConfig.
+//
+// Carrying the alias key alongside the config lets providers consult it as
+// the lowest-precedence tier for family detection — common case: an admin
+// names their alias "best-claude" but the wire ModelID is an opaque Azure
+// deployment ID, so neither the config fields nor request.Model carry the
+// "claude" substring; the alias key does.
+type ResolvedAlias struct {
+	Key    string
+	Config *AliasConfig
+}
+
+// GetResolvedAlias returns the ResolvedAlias that core stashed in ctx after
+// key-level alias resolution, or nil if no alias matched or ctx is nil.
+//
+// This is set by bifrost.go alongside req.SetModel(resolved). Plugins must
+// not write to this key directly.
+func GetResolvedAlias(ctx *BifrostContext) *ResolvedAlias {
+	if ctx == nil {
+		return nil
+	}
+	v := ctx.Value(BifrostContextKeyResolvedAlias)
+	if v == nil {
+		return nil
+	}
+	ra, _ := v.(*ResolvedAlias)
+	return ra
+}
+
+// ResolveFamily returns the model family for the current attempt, walking
+// the precedence: explicit alias ModelFamily → alias ModelName → alias
+// ModelID → alias Key. When no alias matched, falls back to substring
+// matching against fallbackModel (typically request.Model), preserving
+// pre-refactor behavior.
+//
+// Returns an empty ModelFamily if nothing matches.
+func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
+	ra := GetResolvedAlias(ctx)
+	var candidates []string
+	if ra != nil && ra.Config != nil {
+		if ra.Config.ModelFamily != nil && *ra.Config.ModelFamily != "" {
+			return *ra.Config.ModelFamily
+		}
+		if ra.Config.ModelName != nil {
+			candidates = append(candidates, *ra.Config.ModelName)
+		}
+		candidates = append(candidates, ra.Config.ModelID, ra.Key)
+	} else {
+		candidates = append(candidates, fallbackModel)
+	}
+	for _, s := range candidates {
+		switch {
+		case IsAnthropicModel(s):
+			return ModelFamilyAnthropic
+		case IsMistralModel(s):
+			return ModelFamilyMistral
+		case IsGeminiModel(s):
+			return ModelFamilyGemini
+		case IsNovaModel(s):
+			return ModelFamilyNova
+		}
+	}
+	return ""
+}
+
+// IsAnthropicModelFamily reports whether the current attempt resolves to the
+// Anthropic model family. Thin wrapper over ResolveFamily so provider code
+// reads uniformly at the many call sites that branch on Anthropic vs
+// non-Anthropic (request shape, response parsing, anthropic-version header,
+// URL path construction). model is passed as the substring-match fallback
+// used when no alias is resolved in ctx — typically request.Model.
+func IsAnthropicModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyAnthropic
+}
+
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
 // or nil if no alias matches. Case-insensitive fallback matches Resolve.
 func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
@@ -328,7 +407,7 @@ func (ka *KeyAliases) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	result := make(KeyAliases, len(raw))
@@ -341,13 +420,13 @@ func (ka *KeyAliases) UnmarshalJSON(data []byte) error {
 		case '"':
 			// Legacy string value — promote to AliasConfig{ModelID: ...}.
 			var modelID string
-			if err := json.Unmarshal(entry, &modelID); err != nil {
+			if err := sonic.Unmarshal(entry, &modelID); err != nil {
 				return fmt.Errorf("alias %q: %w", k, err)
 			}
 			result[k] = AliasConfig{ModelID: modelID}
 		case '{':
 			var ac AliasConfig
-			if err := json.Unmarshal(entry, &ac); err != nil {
+			if err := sonic.Unmarshal(entry, &ac); err != nil {
 				return fmt.Errorf("alias %q: %w", k, err)
 			}
 			result[k] = ac
