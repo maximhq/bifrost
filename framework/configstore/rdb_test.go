@@ -3,7 +3,9 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1257,6 +1259,34 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, configs, 1)
 	assert.Equal(t, "openai", configs[0].Provider)
+}
+
+// TestGetVirtualKeysUsesInternalPagination verifies that the unpaginated
+// virtual-key API still returns every row when the result spans multiple
+// internal preload pages.
+func TestGetVirtualKeysUsesInternalPagination(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	totalVirtualKeys := virtualKeyInternalPageSize + 5
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < totalVirtualKeys; i++ {
+		vk := &tables.TableVirtualKey{
+			ID:        fmt.Sprintf("vk-page-%04d", i),
+			Name:      fmt.Sprintf("Virtual Key %04d", i),
+			Value:     fmt.Sprintf("vk-value-%04d", i),
+			IsActive:  schemas.Ptr(true),
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	virtualKeys, err := store.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	require.Len(t, virtualKeys, totalVirtualKeys)
+	require.Equal(t, "vk-page-0000", virtualKeys[0].ID)
+	require.Equal(t, fmt.Sprintf("vk-page-%04d", totalVirtualKeys-1), virtualKeys[len(virtualKeys)-1].ID)
 }
 
 // =============================================================================

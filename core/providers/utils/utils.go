@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -278,10 +279,48 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
 		default:
-			conn, err = (&net.Dialer{
+			// resolve DNS ourselves, reject private IPs, then dial
+			// the IP literal directly — closes the DNS rebinding window that exists
+			// between ValidateExternalURL (save time) and this connection.
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			if network.IsLocalhost(host) {
+				return nil, fmt.Errorf("connection to %s is not allowed", host)
+			}
+			// Bound DNS resolution with the same timeout that governs the TCP
+			resolveCtx := context.Background()
+			if client.ReadTimeout > 0 {
+				var cancel context.CancelFunc
+				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
+				defer cancel()
+			}
+			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			dialer := &net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}).Dial("tcp", addr)
+			}
+			var lastErr error
+			for _, ip := range ips {
+				if network.IsPrivateIP(ip) {
+					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				}
+				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					break
+				}
+				lastErr = err
+			}
+			if conn == nil {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, fmt.Errorf("no usable address resolved for %s", host)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -506,6 +545,9 @@ var providerResponseFilterHeaders = map[string]bool{
 	"proxy-authenticate":               true,
 	"proxy-authorization":              true,
 	"authorization":                    true,
+	"x-goog-api-key":                   true,
+	"x-api-key":                        true,
+	"api-key":                          true,
 	"cookie":                           true,
 	"set-cookie":                       true,
 	"set-cookie2":                      true,
@@ -518,7 +560,6 @@ var providerResponseFilterHeaders = map[string]bool{
 	"server":                           true,
 	"alt-svc":                          true,
 	"strict-transport-security":        true,
-	"content-type":                     true,
 	"access-control-allow-origin":      true,
 	"access-control-allow-methods":     true,
 	"access-control-allow-headers":     true,
@@ -993,21 +1034,55 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
-// If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
-// non-line-delimited data. Returns true if body was drained (caller should skip scanner).
-// We intentionally do not touch valid SSE bodies here: callers must continue reading from
-// the reader returned by DecompressStreamBody, and draining SSE in this helper would consume
-// the stream before the scanner/manual event loop starts.
-func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
+// text/event-stream. In that case, peek at the first field prefix without consuming
+// it so the downstream SSE parser sees the full stream.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
 	if strings.Contains(ct, "text/event-stream") {
+		return reader, false
+	}
+	if reader == nil {
+		return nil, true
+	}
+
+	br := bufio.NewReaderSize(reader, sseInitialBufSize)
+	if hasSSEPrefix(br) {
+		return br, false
+	}
+
+	_, _ = io.Copy(io.Discard, br)
+	return nil, true
+}
+
+func hasSSEPrefix(reader *bufio.Reader) bool {
+	first, err := reader.Peek(1)
+	if err != nil || len(first) == 0 {
 		return false
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		_, _ = io.Copy(io.Discard, bodyStream)
+	switch first[0] {
+	case ':', '\n', '\r':
+		return true
+	case 'd':
+		return peekHasPrefix(reader, []byte("data:"))
+	case 'e':
+		return peekHasPrefix(reader, []byte("event:"))
+	case 'i':
+		return peekHasPrefix(reader, []byte("id:"))
+	case 'r':
+		return peekHasPrefix(reader, []byte("retry:"))
+	default:
+		return false
 	}
-	return true
+}
+
+func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
+	n := min(reader.Buffered(), len(prefix))
+	if n == 0 {
+		return false
+	}
+	peeked, err := reader.Peek(n)
+	return err == nil && bytes.Equal(peeked, prefix[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.

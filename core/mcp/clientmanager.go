@@ -1691,10 +1691,18 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 
 	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 
-	// Check if environment variables are set (envs are not plugin-mutable)
+	// Check referenced environment variables are set. Inline KEY=value
+	// assignments are passed directly to the stdio transport.
 	for _, env := range config.StdioConfig.Envs {
-		if os.Getenv(env) == "" {
-			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", env, config.Name)
+		envName, _, hasInlineValue := strings.Cut(env, "=")
+		if envName == "" {
+			return nil, nil, fmt.Errorf("environment variable name is empty for MCP client %s", config.Name)
+		}
+		if hasInlineValue {
+			continue
+		}
+		if os.Getenv(envName) == "" {
+			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", envName, config.Name)
 		}
 	}
 
