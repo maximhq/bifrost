@@ -7,6 +7,8 @@ folders:
     description: Returns all prompt folders.
     tags:
       - Prompt Repository
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -34,6 +36,8 @@ folders:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/CreateFolderRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Folder created
@@ -62,6 +66,8 @@ folders-by-id:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -99,6 +105,8 @@ folders-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/UpdateFolderRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Folder updated
@@ -132,6 +140,8 @@ folders-by-id:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Folder deleted
@@ -161,6 +171,8 @@ prompts:
         description: Filter by folder ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -188,6 +200,8 @@ prompts:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/CreatePromptRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Prompt created
@@ -216,6 +230,8 @@ prompts-by-id:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -253,6 +269,8 @@ prompts-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/UpdatePromptRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Prompt updated
@@ -280,6 +298,8 @@ prompts-by-id:
         required: true
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Prompt deleted
@@ -310,6 +330,8 @@ prompt-versions:
         description: Prompt ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -344,6 +366,8 @@ prompt-versions:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/CreateVersionRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Version created
@@ -373,6 +397,8 @@ versions-by-id:
         description: Version ID
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -405,6 +431,8 @@ versions-by-id:
         description: Version ID
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Version deleted
@@ -435,6 +463,8 @@ prompt-sessions:
         description: Prompt ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -469,6 +499,8 @@ prompt-sessions:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/CreateSessionRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session created
@@ -498,6 +530,8 @@ sessions-by-id:
         description: Session ID
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -536,6 +570,8 @@ sessions-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/UpdateSessionRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session updated
@@ -564,6 +600,8 @@ sessions-by-id:
         description: Session ID
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session deleted
@@ -600,6 +638,8 @@ sessions-rename:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/RenameSessionRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session renamed
@@ -635,6 +675,8 @@ sessions-commit:
         application/json:
           schema:
             $ref: '../../schemas/management/prompts.yaml#/CommitSessionRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Version created from session

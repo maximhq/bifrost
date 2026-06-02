@@ -65,6 +65,8 @@ virtual-keys:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -87,6 +89,8 @@ virtual-keys:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreateVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Virtual key created successfully
@@ -110,6 +114,8 @@ virtual-keys-quota:
       The virtual key value itself (provided via header) is the credential.
     tags:
       - Governance
+    # Self-service: the virtual key value is the credential, accepted via the
+    # x-bf-vk / Authorization: Bearer / x-api-key headers. Not admin-protected.
     security:
       - VirtualKeyAuth: []
       - BearerAuth: []
@@ -153,6 +159,8 @@ virtual-keys-by-id:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -193,6 +201,8 @@ virtual-keys-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Virtual key updated successfully
@@ -224,6 +234,8 @@ virtual-keys-by-id:
         description: Virtual key ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Virtual key deleted successfully
@@ -261,6 +273,8 @@ teams:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -283,6 +297,8 @@ teams:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreateTeamRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team created successfully
@@ -315,6 +331,8 @@ teams-by-id:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -353,6 +371,8 @@ teams-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateTeamRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team updated successfully
@@ -384,6 +404,8 @@ teams-by-id:
         description: Team ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team deleted successfully
@@ -416,6 +438,8 @@ customers:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -438,6 +462,8 @@ customers:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreateCustomerRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Customer created successfully
@@ -470,6 +496,8 @@ customers-by-id:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -508,6 +536,8 @@ customers-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateCustomerRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Customer updated successfully
@@ -539,6 +569,8 @@ customers-by-id:
         description: Customer ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Customer deleted successfully
@@ -571,6 +603,8 @@ budgets:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -595,6 +629,8 @@ rate-limits:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -625,6 +661,8 @@ routing-rules:
         description: Filter routing rules by scope ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -647,6 +685,8 @@ routing-rules:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Routing rule created successfully
@@ -673,6 +713,8 @@ routing-rules-by-id:
         description: Routing rule ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -711,6 +753,8 @@ routing-rules-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Routing rule updated successfully
@@ -742,6 +786,8 @@ routing-rules-by-id:
         description: Routing rule ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Routing rule deleted successfully
@@ -767,6 +813,8 @@ model-configs:
     description: Returns a list of all model configurations with their budget and rate limit settings.
     tags:
       - Governance
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -789,6 +837,8 @@ model-configs:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreateModelConfigRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Model config created successfully
@@ -815,6 +865,8 @@ model-configs-by-id:
         description: Model config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -853,6 +905,8 @@ model-configs-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateModelConfigRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Model config updated successfully
@@ -884,6 +938,8 @@ model-configs-by-id:
         description: Model config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Model config deleted successfully
@@ -909,6 +965,8 @@ provider-governance:
     description: Returns a list of all providers with their governance settings (budget and rate limits).
     tags:
       - Governance
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -939,6 +997,8 @@ provider-governance-by-name:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Provider governance updated successfully
@@ -970,6 +1030,8 @@ provider-governance-by-name:
         description: Provider name
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Provider governance deleted successfully
@@ -1022,6 +1084,8 @@ pricing-overrides:
         description: Filter by provider key ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -1044,6 +1108,8 @@ pricing-overrides:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Pricing override created successfully
@@ -1076,6 +1142,8 @@ pricing-overrides-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Pricing override updated successfully
@@ -1107,6 +1175,8 @@ pricing-overrides-by-id:
         description: Pricing override ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Pricing override deleted successfully
