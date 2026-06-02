@@ -1082,6 +1082,11 @@ func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
 	writeHashField(hash, "scope_id", derefStr(m.ScopeID))
 	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	sortedBudgetIDs := append([]string(nil), m.BudgetIDs...)
+	sort.Strings(sortedBudgetIDs)
+	for _, id := range sortedBudgetIDs {
+		writeHashField(hash, "budget_ids", id)
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

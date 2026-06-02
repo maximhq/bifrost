@@ -385,6 +385,34 @@ func findExistingBudget(request CreateBudgetRequest, byID map[string]configstore
 	return existing, found, nil
 }
 
+// coerceLegacyBudget converts a single UpdateBudgetRequest into a *[]CreateBudgetRequest
+// so it can be handled uniformly via reconcileModelConfigBudgets. Returns nil when the
+// request carries no actionable change (e.g. only one field set but no existing budget to
+// merge with, leaving the budget list unchanged).
+func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.TableBudget) *[]CreateBudgetRequest {
+	if isBudgetRemovalRequest(req) {
+		empty := []CreateBudgetRequest{}
+		return &empty
+	}
+	b := CreateBudgetRequest{}
+	if existing != nil {
+		b.ID = existing.ID
+		b.MaxLimit = existing.MaxLimit
+		b.ResetDuration = existing.ResetDuration
+	}
+	if req.MaxLimit != nil {
+		b.MaxLimit = *req.MaxLimit
+	}
+	if req.ResetDuration != nil {
+		b.ResetDuration = *req.ResetDuration
+	}
+	if b.MaxLimit == 0 || b.ResetDuration == "" {
+		return nil
+	}
+	result := []CreateBudgetRequest{b}
+	return &result
+}
+
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
@@ -837,8 +865,10 @@ type UpdateModelConfigRequest struct {
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
 type UpdateProviderGovernanceRequest struct {
-	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`          // deprecated; use budgets
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`         // nil=no change, []=remove all
+	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
@@ -3210,9 +3240,11 @@ func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
 
 // ProviderGovernanceResponse represents a provider with its governance settings
 type ProviderGovernanceResponse struct {
-	Provider  string                            `json:"provider"`
-	Budget    *configstoreTables.TableBudget    `json:"budget,omitempty"`
-	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+	Provider        string                            `json:"provider"`
+	Budget          *configstoreTables.TableBudget    `json:"budget,omitempty"` // deprecated: use budgets
+	Budgets         []configstoreTables.TableBudget   `json:"budgets,omitempty"`
+	RateLimit       *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+	CalendarAligned bool                              `json:"calendar_aligned"`
 }
 
 // modelConfigToProviderGovernance converts a model config to a ProviderGovernanceResponse.
@@ -3223,13 +3255,19 @@ func modelConfigToProviderGovernance(mc *configstoreTables.TableModelConfig) (Pr
 		mc.ModelName != configstoreTables.ModelConfigAllModels || mc.Provider == nil {
 		return ProviderGovernanceResponse{}, false
 	}
-	// Provider governance is single-budget by API; surface the first owned budget.
-	// This will be updated with the v2 endpoint, which can surface all budgets
 	var budget *configstoreTables.TableBudget
 	if len(mc.Budgets) > 0 {
 		budget = &mc.Budgets[0]
 	}
-	return ProviderGovernanceResponse{Provider: *mc.Provider, Budget: budget, RateLimit: mc.RateLimit}, true
+	budgets := make([]configstoreTables.TableBudget, len(mc.Budgets))
+	copy(budgets, mc.Budgets)
+	return ProviderGovernanceResponse{
+		Provider:        *mc.Provider,
+		Budget:          budget,
+		Budgets:         budgets,
+		RateLimit:       mc.RateLimit,
+		CalendarAligned: mc.CalendarAligned,
+	}, true
 }
 
 // getProviderGovernance handles GET /api/governance/providers - returns provider-level governance,
@@ -3273,6 +3311,10 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if req.Budget != nil && req.Budgets != nil {
+		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
 	}
 	// Validate the provider exists.
@@ -3320,7 +3362,12 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 	deleted := false
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		var budgetIDToDelete, rateLimitIDToDelete string
+		var rateLimitIDToDelete string
+
+		// Apply CalendarAligned if provided.
+		if req.CalendarAligned != nil {
+			mc.CalendarAligned = *req.CalendarAligned
+		}
 
 		// Rate limit lifecycle (mc references it via RateLimitID, so resolve it before
 		// persisting the model config below).
@@ -3368,15 +3415,22 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		// Determine the budget outcome (without writing yet — budgets reference the mc,
-		// which may not exist yet for a new provider governance row).
-		removeBudget := req.Budget != nil && isBudgetRemovalRequest(req.Budget)
-		willHaveBudget := existingBudget != nil && !removeBudget
-		if req.Budget != nil && !removeBudget && existingBudget == nil {
-			if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-				return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+		// Determine effective budgets: budgets field takes priority; budget field is coerced
+		// into a single-element slice for backward compatibility.
+		effectiveBudgets := req.Budgets
+		if effectiveBudgets == nil && req.Budget != nil {
+			if len(mc.Budgets) > 1 {
+				return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
 			}
-			willHaveBudget = true
+			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
+				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
+			}
+		}
+
+		willHaveBudget := len(mc.Budgets) > 0
+		if effectiveBudgets != nil {
+			willHaveBudget = len(*effectiveBudgets) > 0
 		}
 
 		hasGovernance := mc.RateLimitID != nil || willHaveBudget
@@ -3385,16 +3439,18 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			// Nothing to persist (removal request on a provider with no governance).
 			return nil
 		case !hasGovernance && !isNew:
-			// All governance removed → delete the model config and its owned/orphaned rows.
-			if existingBudget != nil {
-				budgetIDToDelete = existingBudget.ID
+			// All governance removed → delete the model config and its owned budgets.
+			for _, b := range mc.Budgets {
+				if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", b.ID).Error; err != nil {
+					return err
+				}
 			}
 			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 				return err
 			}
 			deleted = true
 		case isNew:
-			// Create the model config first so its budget can reference it.
+			// Create the model config first so its budgets can reference it.
 			if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
 				return err
 			}
@@ -3404,53 +3460,14 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		// Budget lifecycle (owned via ModelConfigID; the mc row now exists for create cases).
-		if !deleted && req.Budget != nil {
-			if removeBudget {
-				if existingBudget != nil {
-					budgetIDToDelete = existingBudget.ID
-					mc.Budgets = nil
-				}
-			} else if existingBudget != nil {
-				budget := *existingBudget
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				mc.Budgets = []configstoreTables.TableBudget{budget}
-			} else {
-				budget := configstoreTables.TableBudget{
-					ID:            uuid.NewString(),
-					MaxLimit:      *req.Budget.MaxLimit,
-					ResetDuration: *req.Budget.ResetDuration,
-					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
-					CurrentUsage:  0,
-					ModelConfigID: &mc.ID,
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				mc.Budgets = []configstoreTables.TableBudget{budget}
-			}
-		}
-
-		// Delete orphaned budget/rate-limit rows after the FK references are gone.
-		if budgetIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+		// Budget reconciliation (mc row exists at this point for create cases).
+		if !deleted && effectiveBudgets != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets); err != nil {
 				return err
 			}
 		}
+
+		// Delete orphaned rate-limit row if it was unlinked.
 		if rateLimitIDToDelete != "" {
 			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
 				return err
@@ -3458,6 +3475,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		}
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		logger.Error("failed to update provider governance: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to update provider governance: %v", err))
 		return
@@ -3472,12 +3494,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil {
 		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to reload provider governance in memory: %v", err)
-			if len(mc.Budgets) > 0 {
-				resp.Budget = &mc.Budgets[0]
+			if r, ok := modelConfigToProviderGovernance(&mc); ok {
+				resp = r
 			}
-			resp.RateLimit = mc.RateLimit
 		} else if r, ok := modelConfigToProviderGovernance(reloaded); ok {
-			resp.Budget, resp.RateLimit = r.Budget, r.RateLimit
+			resp = r
 		}
 	}
 	SendJSON(ctx, map[string]interface{}{

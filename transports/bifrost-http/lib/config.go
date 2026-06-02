@@ -2717,6 +2717,11 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.CreateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
 			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Update model configs (config.json changed)
@@ -2726,6 +2731,11 @@ func updateGovernanceConfigInStore(
 			}
 			if err := config.ConfigStore.UpdateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to update model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2797,6 +2807,50 @@ func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstore
 	}
 	if err := validateRateLimitLinkOwnership(tx, modelConfig.RateLimitID, "model config", modelConfig.ID); err != nil {
 		return err
+	}
+	for _, budgetID := range modelConfig.BudgetIDs {
+		id := budgetID
+		if err := validateBudgetLinkOwnership(tx, &id, "model config", modelConfig.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkModelConfigBudgets sets model_config_id on each budget in budgetIDs, and clears it from
+// any budgets previously owned by mcID that are no longer in the list.
+func linkModelConfigBudgets(tx *gorm.DB, mcID string, budgetIDs []string) error {
+	// Normalize: trim whitespace and deduplicate.
+	seen := make(map[string]struct{}, len(budgetIDs))
+	normalized := make([]string, 0, len(budgetIDs))
+	for _, raw := range budgetIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+
+	// Clear ownership from budgets that are no longer referenced.
+	unlinkQ := tx.Model(&configstoreTables.TableBudget{}).
+		Where("model_config_id = ?", mcID)
+	if len(normalized) > 0 {
+		unlinkQ = unlinkQ.Where("id NOT IN ?", normalized)
+	}
+	if err := unlinkQ.Update("model_config_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to unlink stale budgets from model config %q: %w", mcID, err)
+	}
+	// Link the declared budgets.
+	for _, id := range normalized {
+		if err := tx.Model(&configstoreTables.TableBudget{}).
+			Where("id = ?", id).
+			Update("model_config_id", mcID).Error; err != nil {
+			return fmt.Errorf("failed to link budget %q to model config %q: %w", id, mcID, err)
+		}
 	}
 	return nil
 }
@@ -2995,6 +3049,11 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 		for i := range config.GovernanceConfig.Providers {
