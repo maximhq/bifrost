@@ -263,6 +263,14 @@ func buildModelConfig(id, modelName string, provider *string, budget *configstor
 	return mc
 }
 
+// buildVKScopedModelConfig builds a model config scoped to a specific virtual key.
+func buildVKScopedModelConfig(id, modelName string, provider *string, vkID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
+	mc := buildModelConfig(id, modelName, provider, budget, rateLimit)
+	mc.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	mc.ScopeID = &vkID
+	return mc
+}
+
 func buildProviderWithGovernance(name string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableProvider {
 	provider := &configstoreTables.TableProvider{
 		Name:      name,

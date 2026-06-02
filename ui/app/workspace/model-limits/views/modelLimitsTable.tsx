@@ -28,6 +28,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
+import { getScopeLabel } from "@/lib/utils/labels";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -246,6 +247,7 @@ export default function ModelLimitsTable({
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="font-medium">Model</TableHead>
 								<TableHead className="font-medium">Provider</TableHead>
+								<TableHead className="font-medium">Scope</TableHead>
 								<TableHead className="font-medium">Budget</TableHead>
 								<TableHead className="font-medium">Rate Limit</TableHead>
 								<TableHead className="w-[100px]"></TableHead>
@@ -254,7 +256,7 @@ export default function ModelLimitsTable({
 						<TableBody>
 							{modelConfigs.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={5} className="h-24 text-center">
+									<TableCell colSpan={6} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching model limits found.</span>
 									</TableCell>
 								</TableRow>
@@ -310,6 +312,9 @@ export default function ModelLimitsTable({
 												) : (
 													<span className="text-muted-foreground text-sm">All Providers</span>
 												)}
+											</TableCell>
+											<TableCell>
+												<Badge variant="secondary">{getScopeLabel(config.scope ?? "global")}</Badge>
 											</TableCell>
 											<TableCell className="min-w-[180px]">
 												{config.budget ? (

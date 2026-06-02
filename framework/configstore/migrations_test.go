@@ -2381,3 +2381,64 @@ func assertNoCorruptedFKReferences(t *testing.T, db *gorm.DB) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestMigrationAddModelConfigScopeColumns verifies the existing-install transition:
+// adding scope/scope_id columns, backfilling existing rows to "global", and swapping the
+// (model_name, provider) unique index for the composite (scope, scope_id, model_name, provider) one.
+func TestMigrationAddModelConfigScopeColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create the OLD governance_model_configs schema: no scope/scope_id columns,
+	// with a unique index on (model_name, provider).
+	require.NoError(t, db.Exec(`
+		CREATE TABLE governance_model_configs (
+			id varchar(255) PRIMARY KEY,
+			model_name varchar(255) NOT NULL,
+			provider varchar(50),
+			budget_id varchar(255),
+			rate_limit_id varchar(255),
+			config_hash varchar(255),
+			created_at datetime NOT NULL,
+			updated_at datetime NOT NULL
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_model_provider ON governance_model_configs (model_name, provider)`).Error)
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`
+		INSERT INTO governance_model_configs (id, model_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+	`, "mc-existing", "gpt-4", now, now).Error)
+
+	mc := &tables.TableModelConfig{}
+
+	// Pre-migration state.
+	assert.False(t, db.Migrator().HasColumn(mc, "scope"), "scope column should not exist yet")
+	assert.False(t, db.Migrator().HasColumn(mc, "scope_id"), "scope_id column should not exist yet")
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_provider"), "old index should exist before migration")
+
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+
+	// Post-migration state.
+	assert.True(t, db.Migrator().HasColumn(mc, "scope"), "scope column should exist after migration")
+	assert.True(t, db.Migrator().HasColumn(mc, "scope_id"), "scope_id column should exist after migration")
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"), "new composite index should exist after migration")
+	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"), "old index should be dropped after migration")
+
+	// Existing row should be backfilled to the global scope.
+	var scope string
+	require.NoError(t, db.Table("governance_model_configs").Select("scope").Where("id = ?", "mc-existing").Scan(&scope).Error)
+	assert.Equal(t, tables.ModelConfigScopeGlobal, scope, "existing row should be backfilled to the global scope")
+
+	// Global-scope rows must have NULL scope_id for the composite unique index to work correctly.
+	var scopeID *string
+	require.NoError(t, db.Table("governance_model_configs").Select("scope_id").Where("id = ?", "mc-existing").Scan(&scopeID).Error)
+	assert.Nil(t, scopeID, "global scope rows must have NULL scope_id")
+
+	// Idempotency: running again must be a no-op (no error, state unchanged).
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+	assert.True(t, db.Migrator().HasColumn(mc, "scope"))
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"))
+	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"))
+}

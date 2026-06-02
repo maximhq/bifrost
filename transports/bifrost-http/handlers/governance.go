@@ -392,11 +392,15 @@ type UpdateCustomerRequest struct {
 type CreateModelConfigRequest struct {
 	ModelName string                  `json:"model_name" validate:"required"`
 	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means all providers
+	Scope     string                  `json:"scope,omitempty"`    // Defaults to "global" if not provided
+	ScopeID   *string                 `json:"scope_id,omitempty"` // Required for non-global scopes (e.g. the virtual key ID)
 	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
 	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
-// UpdateModelConfigRequest represents the request body for updating a model config
+// UpdateModelConfigRequest represents the request body for updating a model config.
+// Scope and scope_id are part of a config's identity and are intentionally not
+// editable here (mirroring model_name/provider) — change them by recreating the config.
 type UpdateModelConfigRequest struct {
 	ModelName *string                 `json:"model_name,omitempty"`
 	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
@@ -2489,6 +2493,33 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData(ctx)
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		// Copy into a value slice before enriching: never mutate ScopeName on the
+		// pointers returned here, so we don't risk racing the in-memory store regardless
+		// of whether the manager hands back shared pointers or clones.
+		modelConfigs := make([]configstoreTables.TableModelConfig, 0, len(data.ModelConfigs))
+		for _, mc := range data.ModelConfigs {
+			if mc != nil {
+				modelConfigs = append(modelConfigs, *mc)
+			}
+		}
+		h.enrichModelConfigScopeNames(ctx, modelConfigs)
+		SendJSON(ctx, map[string]any{
+			"model_configs": modelConfigs,
+			"count":         len(modelConfigs),
+			"total_count":   len(modelConfigs),
+			"limit":         len(modelConfigs),
+			"offset":        0,
+		})
+		return
+	}
+
 	// Check for pagination parameters
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
@@ -2531,6 +2562,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Failed to retrieve model configs")
 			return
 		}
+		h.enrichModelConfigScopeNames(ctx, modelConfigs)
 		SendJSON(ctx, map[string]any{
 			"model_configs": modelConfigs,
 			"count":         len(modelConfigs),
@@ -2548,6 +2580,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve model configs")
 		return
 	}
+	h.enrichModelConfigScopeNames(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{
 		"model_configs": modelConfigs,
 		"count":         len(modelConfigs),
@@ -2569,9 +2602,36 @@ func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
 	}
+	h.resolveModelConfigScopeName(ctx, mc, map[string]string{})
 	SendJSON(ctx, map[string]interface{}{
 		"model_config": mc,
 	})
+}
+
+// resolveModelConfigScopeName populates the transient ScopeName for a single non-global
+// model config (currently resolves a virtual_key scope_id to the VK's name). The cache
+// lets callers dedupe lookups across many configs. Resolution failures are non-fatal.
+func (h *GovernanceHandler) resolveModelConfigScopeName(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]string) {
+	if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeVirtualKey || mc.ScopeID == nil {
+		return
+	}
+	id := *mc.ScopeID
+	name, ok := cache[id]
+	if !ok {
+		if vk, err := h.configStore.GetVirtualKey(ctx, id); err == nil && vk != nil {
+			name = vk.Name
+		}
+		cache[id] = name
+	}
+	mc.ScopeName = name
+}
+
+// enrichModelConfigScopeNames populates ScopeName for each non-global config in the slice.
+func (h *GovernanceHandler) enrichModelConfigScopeNames(ctx context.Context, configs []configstoreTables.TableModelConfig) {
+	cache := map[string]string{}
+	for i := range configs {
+		h.resolveModelConfigScopeName(ctx, &configs[i], cache)
+	}
 }
 
 // createModelConfig handles POST /api/governance/model-configs - Create a new model config
@@ -2586,18 +2646,51 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Model name is required")
 		return
 	}
-	// Check if model config with same (model_name, provider) already exists
-	existing, err := h.configStore.GetModelConfig(ctx, req.ModelName, req.Provider)
+	// Default and validate scope. Global is the implicit default (preserves
+	// pre-scope behavior). Non-global scopes require a scope_id naming the target.
+	if req.Scope == "" {
+		req.Scope = configstoreTables.ModelConfigScopeGlobal
+	}
+	if !configstoreTables.IsValidModelConfigScope(req.Scope) {
+		SendError(ctx, 400, fmt.Sprintf("Invalid scope %q", req.Scope))
+		return
+	}
+	if req.Scope == configstoreTables.ModelConfigScopeGlobal {
+		req.ScopeID = nil // normalize: global configs must not carry a scope_id
+	} else {
+		if req.ScopeID == nil || *req.ScopeID == "" {
+			SendError(ctx, 400, "scope_id is required when scope is not global")
+			return
+		}
+		// For the virtual_key scope, the scope_id must reference an existing VK.
+		if req.Scope == configstoreTables.ModelConfigScopeVirtualKey {
+			if _, vkErr := h.configStore.GetVirtualKey(ctx, *req.ScopeID); vkErr != nil {
+				if errors.Is(vkErr, configstore.ErrNotFound) {
+					SendError(ctx, 400, fmt.Sprintf("Virtual key '%s' not found", *req.ScopeID))
+				} else {
+					logger.Error("failed to verify virtual key for model config scope: %v", vkErr)
+					SendError(ctx, 500, "Failed to verify virtual key")
+				}
+				return
+			}
+		}
+	}
+	// Check if a model config with the same identity (scope, scope_id, model_name, provider) already exists
+	existing, err := h.configStore.GetModelConfig(ctx, req.Scope, req.ScopeID, req.ModelName, req.Provider)
 	if err != nil && err != configstore.ErrNotFound {
 		logger.Error("failed to check existing model config: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to check existing model config: %v", err))
 		return
 	}
 	if existing != nil {
+		scopeDesc := "global"
+		if req.Scope != configstoreTables.ModelConfigScopeGlobal {
+			scopeDesc = fmt.Sprintf("%s '%s'", req.Scope, *req.ScopeID)
+		}
 		if req.Provider != nil {
-			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' with provider '%s' already exists", req.ModelName, *req.Provider))
+			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' with provider '%s' (%s) already exists", req.ModelName, *req.Provider, scopeDesc))
 		} else {
-			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' (global) already exists", req.ModelName))
+			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' (%s) already exists", req.ModelName, scopeDesc))
 		}
 		return
 	}
@@ -2618,6 +2711,8 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			ID:        uuid.NewString(),
 			ModelName: req.ModelName,
 			Provider:  req.Provider,
+			Scope:     req.Scope,
+			ScopeID:   req.ScopeID,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
@@ -2674,6 +2769,7 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to reload model config in memory: %v", err)
 		preloadedMC = &mc
 	}
+	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
@@ -2846,6 +2942,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to reload model config in memory: %v", err)
 		updatedMC = mc
 	}
+	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
