@@ -704,7 +704,12 @@
               },
               "budget_id": {
                 "type": "string",
-                "description": "Budget ID to associate with this model"
+                "description": "Deprecated — single budget reference. Use budget_ids instead."
+              },
+              "budget_ids": {
+                "type": "array",
+                "description": "List of budget IDs (from governance.budgets) to associate with this model config. Supports multiple budgets (e.g. daily + monthly). Replaces budget_id.",
+                "items": { "type": "string" }
               },
               "rate_limit_id": {
                 "type": "string",

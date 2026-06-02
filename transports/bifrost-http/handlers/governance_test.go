@@ -1510,6 +1510,225 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
+func TestCoerceLegacyBudget(t *testing.T) {
+	existing := &configstoreTables.TableBudget{ID: "bud-1", MaxLimit: 50, ResetDuration: "1d"}
+
+	tests := []struct {
+		name     string
+		req      *UpdateBudgetRequest
+		existing *configstoreTables.TableBudget
+		// nil wantResult means coerce returns nil (no actionable change)
+		wantNil    bool
+		wantEmpty  bool // non-nil but empty slice (removal)
+		wantID     string
+		wantLimit  float64
+		wantPeriod string
+	}{
+		{
+			name:      "empty object → removal, returns empty slice",
+			req:       &UpdateBudgetRequest{},
+			existing:  nil,
+			wantEmpty: true,
+		},
+		{
+			name:      "both fields set, no existing → new budget entry, no ID",
+			req:       &UpdateBudgetRequest{MaxLimit: schemas.Ptr(100.0), ResetDuration: schemas.Ptr("1w")},
+			existing:  nil,
+			wantLimit: 100,
+			wantPeriod: "1w",
+		},
+		{
+			name:       "update max_limit only, existing budget → merges ID and reset_duration",
+			req:        &UpdateBudgetRequest{MaxLimit: schemas.Ptr(200.0)},
+			existing:   existing,
+			wantID:     "bud-1",
+			wantLimit:  200,
+			wantPeriod: "1d",
+		},
+		{
+			name:       "update reset_duration only, existing budget → merges ID and max_limit",
+			req:        &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1w")},
+			existing:   existing,
+			wantID:     "bud-1",
+			wantLimit:  50,
+			wantPeriod: "1w",
+		},
+		{
+			name:     "max_limit only, no existing → cannot build valid budget, returns nil",
+			req:      &UpdateBudgetRequest{MaxLimit: schemas.Ptr(100.0)},
+			existing: nil,
+			wantNil:  true,
+		},
+		{
+			name:     "reset_duration only, no existing → cannot build valid budget, returns nil",
+			req:      &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1d")},
+			existing: nil,
+			wantNil:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := coerceLegacyBudget(tt.req, tt.existing)
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if tt.wantEmpty {
+				if len(*got) != 0 {
+					t.Fatalf("expected empty slice, got %+v", *got)
+				}
+				return
+			}
+			if len(*got) != 1 {
+				t.Fatalf("expected 1-element slice, got %d elements", len(*got))
+			}
+			b := (*got)[0]
+			if b.ID != tt.wantID {
+				t.Errorf("ID = %q, want %q", b.ID, tt.wantID)
+			}
+			if b.MaxLimit != tt.wantLimit {
+				t.Errorf("MaxLimit = %v, want %v", b.MaxLimit, tt.wantLimit)
+			}
+			if b.ResetDuration != tt.wantPeriod {
+				t.Errorf("ResetDuration = %q, want %q", b.ResetDuration, tt.wantPeriod)
+			}
+		})
+	}
+}
+
+func TestModelConfigToProviderGovernanceNewFields(t *testing.T) {
+	provider := "openai"
+	base := configstoreTables.TableModelConfig{
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Provider:  &provider,
+	}
+
+	t.Run("nil mc returns false", func(t *testing.T) {
+		if _, ok := modelConfigToProviderGovernance(nil); ok {
+			t.Fatal("expected false for nil mc")
+		}
+	})
+
+	t.Run("wrong scope returns false", func(t *testing.T) {
+		mc := base
+		mc.Scope = "virtual_key"
+		if _, ok := modelConfigToProviderGovernance(&mc); ok {
+			t.Fatal("expected false for non-global scope")
+		}
+	})
+
+	t.Run("no budgets: Budget nil, Budgets empty, CalendarAligned false", func(t *testing.T) {
+		mc := base
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget != nil {
+			t.Errorf("Budget should be nil, got %+v", r.Budget)
+		}
+		if len(r.Budgets) != 0 {
+			t.Errorf("Budgets should be empty, got %+v", r.Budgets)
+		}
+		if r.CalendarAligned {
+			t.Error("CalendarAligned should be false")
+		}
+	})
+
+	t.Run("single budget: Budget points to first, Budgets has one entry", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{{ID: "b1", MaxLimit: 100, ResetDuration: "1d"}}
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget == nil || r.Budget.ID != "b1" {
+			t.Errorf("Budget = %+v, want ID=b1", r.Budget)
+		}
+		if len(r.Budgets) != 1 || r.Budgets[0].ID != "b1" {
+			t.Errorf("Budgets = %+v, want 1 entry with ID=b1", r.Budgets)
+		}
+	})
+
+	t.Run("multiple budgets: Budget is first, Budgets contains all", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{
+			{ID: "b1", MaxLimit: 100, ResetDuration: "1d"},
+			{ID: "b2", MaxLimit: 500, ResetDuration: "1w"},
+		}
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget == nil || r.Budget.ID != "b1" {
+			t.Errorf("Budget should point to first budget, got %+v", r.Budget)
+		}
+		if len(r.Budgets) != 2 {
+			t.Fatalf("Budgets len = %d, want 2", len(r.Budgets))
+		}
+		if r.Budgets[0].ID != "b1" || r.Budgets[1].ID != "b2" {
+			t.Errorf("Budgets = %+v", r.Budgets)
+		}
+	})
+
+	t.Run("calendar_aligned is propagated", func(t *testing.T) {
+		mc := base
+		mc.CalendarAligned = true
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if !r.CalendarAligned {
+			t.Error("CalendarAligned should be true")
+		}
+	})
+
+	t.Run("Budgets slice is a copy, not a reference to mc.Budgets", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{{ID: "b1", MaxLimit: 100, ResetDuration: "1d"}}
+		r, _ := modelConfigToProviderGovernance(&mc)
+		r.Budgets[0].MaxLimit = 999
+		if mc.Budgets[0].MaxLimit == 999 {
+			t.Error("mutating response Budgets should not affect the original mc")
+		}
+	})
+}
+
+func TestUpdateProviderGovernance_BudgetMutualExclusion(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("provider_name", "openai")
+	ctx.Request.SetBodyString(`{
+		"budget":  {"max_limit": 100, "reset_duration": "1d"},
+		"budgets": [{"max_limit": 100, "reset_duration": "1d"}]
+	}`)
+
+	h.updateProviderGovernance(ctx)
+
+	if ctx.Response.StatusCode() != 400 {
+		t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var resp struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse error response: %v", err)
+	}
+	if !strings.Contains(resp.Error.Message, "budget") {
+		t.Errorf("error message should mention 'budget', got: %q", resp.Error.Message)
+	}
+}
+
 func TestValidateRoutingFallbacks(t *testing.T) {
 
 	tests := []struct {
