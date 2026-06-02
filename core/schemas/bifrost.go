@@ -1432,6 +1432,7 @@ type BifrostResponseExtraFields struct {
 	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
 	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath          string             `json:"passthrough_path,omitempty"`             // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type BifrostMCPResponseExtraFields struct {

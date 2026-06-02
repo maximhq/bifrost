@@ -1819,8 +1819,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
 				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			case result.PassthroughResponse != nil:
+				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+					tokensUsed = su.LLMUsage.TotalTokens
+				}
 			}
 		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			VirtualKey:   virtualKey,
@@ -1833,7 +1838,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+			HasUsageData: tokensUsed > 0 || cost > 0,
 		}
 
 		// Queue usage update asynchronously using tracker
