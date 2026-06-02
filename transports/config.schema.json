@@ -693,6 +693,15 @@
                 "type": "string",
                 "description": "Optional provider name to scope this config"
               },
+              "scope": {
+                "type": "string",
+                "description": "Scope where this config applies: \"global\" (default) or \"virtual_key\"",
+                "default": "global"
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "Target entity ID for non-global scopes (e.g. virtual key ID). Required when scope != \"global\""
+              },
               "budget_id": {
                 "type": "string",
                 "description": "Budget ID to associate with this model"

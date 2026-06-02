@@ -1,14 +1,20 @@
+import { getModelLimitScope } from "@/lib/registries/modelLimitScopes";
+
 /**
- * Gets a friendly display name for a scope
- * @param scope - The scope value (global|team|customer|virtual_key)
- * @returns Friendly display name
+ * Gets a friendly display name for a scope.
+ *
+ * Consults the model_limit scope registry first.
+ * Falls back to a small built-in map of historical labels,
+ * then to the raw scope value.
  */
 export function getScopeLabel(scope: string): string {
-	const labels: Record<string, string> = {
-		global: "Global",
+	const entry = getModelLimitScope(scope);
+	if (entry) {
+		return entry.label;
+	}
+	const legacy: Record<string, string> = {
 		team: "Team",
 		customer: "Customer",
-		virtual_key: "Virtual Key",
 	};
-	return labels[scope] || scope;
+	return legacy[scope] || scope;
 }
