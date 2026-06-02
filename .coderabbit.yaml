@@ -9,6 +9,8 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    base_branches:
+      - ".*"
   path_instructions:
     - path: "core/**"
       instructions: |
