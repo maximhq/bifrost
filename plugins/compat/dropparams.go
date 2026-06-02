@@ -38,7 +38,9 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.LogProbs = nil
 			dropped = append(dropped, "logprobs")
 		}
-		if params.MaxCompletionTokens != nil && !isSupported["max_completion_tokens"] {
+		// max_tokens is converted to max_completion_tokens before compat plugin's PreLLMHook is called.
+		// so if either max_tokens or max_completion_tokens is supported, we let max_completion_tokens pass through.
+		if params.MaxCompletionTokens != nil && !isSupported["max_completion_tokens"] && !isSupported["max_tokens"] {
 			params.MaxCompletionTokens = nil
 			dropped = append(dropped, "max_completion_tokens")
 		}
