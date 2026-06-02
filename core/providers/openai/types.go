@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 const MinMaxCompletionTokens = 16
@@ -340,7 +341,11 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
+			data, err := providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
+			if err != nil {
+				return nil, err
+			}
+			return stripCompactionItemSummary(data, r.OpenAIResponsesRequestInputArray), nil
 		}
 
 		// Only copy messages that have CacheControl
@@ -498,9 +503,29 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		return providerUtils.MarshalSorted(messagesCopy)
+		data, err := providerUtils.MarshalSorted(messagesCopy)
+		if err != nil {
+			return nil, err
+		}
+		return stripCompactionItemSummary(data, messagesCopy), nil
 	}
 	return providerUtils.MarshalSorted(nil)
+}
+
+// stripCompactionItemSummary removes the "summary" field from compaction input items.
+// OpenAI's Responses API rejects "summary" on a compaction item ("Unknown parameter:
+// input[N].summary"). Bifrost has no first-class compaction item model, so the item's
+// encrypted_content rides the embedded *ResponsesReasoning, whose (no-omitempty) Summary
+// re-injects "summary": null. Reasoning items legitimately carry summary and are left intact.
+func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) []byte {
+	for i, msg := range items {
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction {
+			if updated, err := sjson.DeleteBytes(data, fmt.Sprintf("%d.summary", i)); err == nil {
+				data = updated
+			}
+		}
+	}
+	return data
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks

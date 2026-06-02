@@ -40,7 +40,7 @@ import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
-import LogChatMessageView from "../views/logChatMessageView";
+import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
 import OCRView from "../views/ocrView";
 import PluginLogsView from "../views/pluginLogsView";
@@ -1706,6 +1706,17 @@ export function LogDetailView({
 															if (!src) return null;
 															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
 														})}
+												{text &&
+													Array.isArray(message.content) &&
+													(message.content as ContentBlock[])
+														.filter((b) => b.type === "file" && b.file)
+														.map((b, i) => (
+															<LogChatFileBlockView
+																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																block={b}
+																className="mt-2"
+															/>
+														))}
 												{hasToolCalls && text ? (
 													<div className="text-muted-foreground mt-2 text-[11px]">
 														{message

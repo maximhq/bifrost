@@ -146,6 +146,28 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				if !isReasoning {
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
+				// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
+				// string value is rejected ("expected an array ... got a string"). Replayed
+				// reasoning items can arrive with content as a string (e.g. an empty "" round-tripped
+				// through the response path). message is a value copy, so reassign its Content pointer
+				// without mutating the caller's input: drop empty strings, promote non-empty ones to a block.
+				if message.Content != nil {
+					switch {
+					case message.Content.ContentStr != nil:
+						if text := *message.Content.ContentStr; text == "" {
+							message.Content = nil
+						} else {
+							message.Content = &schemas.ResponsesMessageContent{
+								ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+									Text: schemas.Ptr(text),
+								}},
+							}
+						}
+					case len(message.Content.ContentBlocks) == 0:
+						message.Content = nil
+					}
+				}
 				messages = append(messages, message)
 			}
 		} else if message.ResponsesToolMessage != nil &&
