@@ -170,6 +170,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Perplexity,
 		schemas.Cerebras,
 		schemas.Gemini,
+		schemas.GigaChat,
 		schemas.OpenRouter,
 		schemas.HuggingFace,
 		schemas.Nebius,
@@ -201,6 +202,37 @@ func replicateProviderTestKeys() []schemas.Key {
 			UseForBatchAPI:     bifrost.Ptr(true),
 			ReplicateKeyConfig: nil,
 		},
+	}
+}
+
+func gigaChatProviderTestKey() schemas.Key {
+	keyConfig := &schemas.GigaChatKeyConfig{
+		Scope:        getEnvWithDefault("GIGACHAT_SCOPE", schemas.DefaultGigaChatScope),
+		AuthURL:      os.Getenv("GIGACHAT_AUTH_URL"),
+		BaseURL:      os.Getenv("GIGACHAT_BASE_URL"),
+		CABundleFile: os.Getenv("GIGACHAT_CA_BUNDLE_FILE"),
+	}
+	if certFile, keyFile := os.Getenv("GIGACHAT_CERT_FILE"), os.Getenv("GIGACHAT_KEY_FILE"); certFile != "" && keyFile != "" {
+		keyConfig.CertFile = certFile
+		keyConfig.KeyFile = keyFile
+	}
+
+	switch {
+	case os.Getenv("GIGACHAT_ACCESS_TOKEN") != "":
+		keyConfig.AccessToken = schemas.NewEnvVar("env.GIGACHAT_ACCESS_TOKEN")
+	case os.Getenv("GIGACHAT_USER") != "" && os.Getenv("GIGACHAT_PASSWORD") != "" && os.Getenv("GIGACHAT_BASE_URL") != "":
+		keyConfig.User = schemas.NewEnvVar("env.GIGACHAT_USER")
+		keyConfig.Password = schemas.NewEnvVar("env.GIGACHAT_PASSWORD")
+	default:
+		keyConfig.Credentials = schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS")
+	}
+
+	return schemas.Key{
+		Name:              "gigachat-inference",
+		Models:            []string{"*"},
+		Weight:            1.0,
+		UseForBatchAPI:    bifrost.Ptr(true),
+		GigaChatKeyConfig: keyConfig,
 	}
 }
 
@@ -437,6 +469,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
+		}, nil
+	case schemas.GigaChat:
+		return []schemas.Key{
+			gigaChatProviderTestKey(),
 		}, nil
 	case schemas.OpenRouter:
 		return []schemas.Key{
@@ -762,6 +798,20 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  20,
 			},
 		}, nil
+	case schemas.GigaChat:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("GIGACHAT_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                20 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -855,6 +905,65 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
+	}
+}
+
+// GigaChatComprehensiveTestConfig returns the provider checklist scenarios for GigaChat.
+func GigaChatComprehensiveTestConfig() ComprehensiveTestConfig {
+	return ComprehensiveTestConfig{
+		Provider:       schemas.GigaChat,
+		ChatModel:      getEnvWithDefault("GIGACHAT_CHAT_MODEL", "GigaChat-2"),
+		TextModel:      "",
+		EmbeddingModel: getEnvWithDefault("GIGACHAT_EMBEDDING_MODEL", "Embeddings"),
+		Scenarios: TestScenarios{
+			TextCompletion:             false,
+			TextCompletionStream:       false,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          false,
+			MultipleToolCallsStreaming: false,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false,
+			ImageBase64:                false,
+			MultipleImages:             false,
+			FileBase64:                 false,
+			FileURL:                    false,
+			CompleteEnd2End:            true,
+			SpeechSynthesis:            false,
+			SpeechSynthesisStream:      false,
+			Transcription:              false,
+			TranscriptionStream:        false,
+			Embedding:                  true,
+			Reasoning:                  false, // Partial passthrough only; the generic suite sends unsupported Responses reasoning fields.
+			ListModels:                 true,
+			ImageGeneration:            false,
+			ImageGenerationStream:      false,
+			ImageEdit:                  false,
+			ImageEditStream:            false,
+			ImageVariation:             false,
+			ImageVariationStream:       false,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                false,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                true,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			StructuredOutputs:          true,
+			WebSearchTool:              false,
+			PassthroughAPI:             false,
+			WebSocketResponses:         false,
+			Realtime:                   false,
+		},
 	}
 }
 
@@ -1378,6 +1487,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	},
+	GigaChatComprehensiveTestConfig(),
 	{
 		Provider:  schemas.OpenRouter,
 		ChatModel: "openai/gpt-4o",
