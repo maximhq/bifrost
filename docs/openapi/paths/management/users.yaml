@@ -26,6 +26,8 @@ users:
         description: Search by name or email
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -48,6 +50,8 @@ users:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/CreateUserRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: User created successfully
@@ -88,6 +92,8 @@ users-email-virtual-keys:
         schema:
           type: string
           format: email
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -123,6 +129,8 @@ users-by-id:
         description: User ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: User deleted successfully
@@ -155,6 +163,8 @@ users-me-permissions:
       permissions associated with the user's assigned role.
     tags:
       - Users
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -199,6 +209,8 @@ users-role:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/AssignUserRoleRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Role assigned successfully
@@ -231,6 +243,8 @@ users-teams:
         description: User ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -270,6 +284,8 @@ users-teams:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/UpdateUserTeamsRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Teams updated successfully
@@ -322,6 +338,8 @@ teams:
         description: Search by team name
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -344,6 +362,8 @@ teams:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/CreateTeamRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team created successfully
@@ -376,6 +396,8 @@ teams-by-id:
         description: Team ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -411,6 +433,8 @@ teams-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/UpdateTeamRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team updated successfully
@@ -446,6 +470,8 @@ teams-by-id:
         description: Team ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Team deleted successfully
@@ -478,6 +504,8 @@ team-members:
         description: Team ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -515,6 +543,8 @@ team-members:
         application/json:
           schema:
             $ref: '../../schemas/management/users.yaml#/AddTeamMemberRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Member added successfully
@@ -557,6 +587,8 @@ team-member-by-id:
         description: User ID to remove
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Member removed successfully
