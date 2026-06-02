@@ -831,16 +831,18 @@ type UpdateTeamRequest struct {
 
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
-	Name      string                  `json:"name" validate:"required"`
-	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"` // Customer can have its own rate limit
+	Name            string                  `json:"name" validate:"required"`
+	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
 
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
-	Name      *string                 `json:"name,omitempty"`
-	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	Name            *string                 `json:"name,omitempty"`
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
 
 // CreateModelConfigRequest represents the request body for creating a model config
@@ -865,8 +867,8 @@ type UpdateModelConfigRequest struct {
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
 type UpdateProviderGovernanceRequest struct {
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`          // deprecated; use budgets
-	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`         // nil=no change, []=remove all
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // deprecated; use budgets
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
@@ -2363,8 +2365,9 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	var customer configstoreTables.TableCustomer
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		customer = configstoreTables.TableCustomer{
-			ID:   uuid.NewString(),
-			Name: req.Name,
+			ID:              uuid.NewString(),
+			Name:            req.Name,
+			CalendarAligned: req.CalendarAligned,
 		}
 
 		if req.Budget != nil {
@@ -2372,7 +2375,7 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 				ID:            uuid.NewString(),
 				MaxLimit:      req.Budget.MaxLimit,
 				ResetDuration: req.Budget.ResetDuration,
-				LastReset:     budgetLastReset(false, req.Budget.ResetDuration),
+				LastReset:     budgetLastReset(req.CalendarAligned, req.Budget.ResetDuration),
 				CurrentUsage:  0,
 			}
 			if err := validateBudget(&budget); err != nil {
@@ -2461,6 +2464,11 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		if req.Name != nil {
 			customer.Name = *req.Name
 		}
+		wasCalendarAligned := customer.CalendarAligned
+		if req.CalendarAligned != nil {
+			customer.CalendarAligned = *req.CalendarAligned
+		}
+		calendarAlignmentJustEnabled := !wasCalendarAligned && customer.CalendarAligned
 		// Handle budget updates
 		if req.Budget != nil {
 			// Check if budget removal is requested (all fields nil)
@@ -2506,7 +2514,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
-					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
+					LastReset:     budgetLastReset(customer.CalendarAligned, *req.Budget.ResetDuration),
 					CurrentUsage:  0,
 				}
 				if err := validateBudget(&budget); err != nil {
@@ -2566,6 +2574,37 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				}
 				customer.RateLimitID = &rateLimit.ID
 				customer.RateLimit = &rateLimit
+			}
+		}
+		// Snap budget and rate limit to the current calendar period when calendar
+		// alignment transitions false -> true in this request.
+		if calendarAlignmentJustEnabled {
+			now := time.Now()
+			if customer.Budget != nil && configstoreTables.IsCalendarAlignableDuration(customer.Budget.ResetDuration) {
+				customer.Budget.LastReset = configstoreTables.GetCalendarPeriodStart(customer.Budget.ResetDuration, now)
+				customer.Budget.CurrentUsage = 0
+				if err := h.configStore.UpdateBudget(ctx, customer.Budget, tx); err != nil {
+					return fmt.Errorf("failed to snap customer budget on calendar-align enable: %w", err)
+				}
+			}
+			if customer.RateLimit != nil {
+				rl := customer.RateLimit
+				snapped := false
+				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenCurrentUsage = 0
+					snapped = true
+				}
+				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestCurrentUsage = 0
+					snapped = true
+				}
+				if snapped {
+					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
+						return fmt.Errorf("failed to snap customer rate limit on calendar-align enable: %w", err)
+					}
+				}
 			}
 		}
 		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
@@ -3365,9 +3404,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		var rateLimitIDToDelete string
 
 		// Apply CalendarAligned if provided.
+		wasCalendarAligned := mc.CalendarAligned
 		if req.CalendarAligned != nil {
 			mc.CalendarAligned = *req.CalendarAligned
 		}
+		calendarAlignmentJustEnabled := !wasCalendarAligned && mc.CalendarAligned
 
 		// Rate limit lifecycle (mc references it via RateLimitID, so resolve it before
 		// persisting the model config below).
@@ -3464,6 +3505,43 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		if !deleted && effectiveBudgets != nil {
 			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets); err != nil {
 				return err
+			}
+		}
+
+		// Snap budgets and rate limit to the current calendar period when calendar
+		// alignment transitions false → true. Runs after reconciliation so combined
+		// "toggle + budgets" requests see the final reconciled state.
+		if !deleted && calendarAlignmentJustEnabled {
+			now := time.Now()
+			for i := range mc.Budgets {
+				b := &mc.Budgets[i]
+				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+					continue
+				}
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.CurrentUsage = 0
+				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
+					return fmt.Errorf("failed to snap provider budget %s on calendar-align enable: %w", b.ID, err)
+				}
+			}
+			if mc.RateLimit != nil {
+				rl := mc.RateLimit
+				snapped := false
+				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenCurrentUsage = 0
+					snapped = true
+				}
+				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestCurrentUsage = 0
+					snapped = true
+				}
+				if snapped {
+					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
+						return fmt.Errorf("failed to snap provider rate limit on calendar-align enable: %w", err)
+					}
+				}
 			}
 		}
 

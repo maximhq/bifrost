@@ -2954,10 +2954,12 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	}
 	// Create associated budget if exists
 	if customer.Budget != nil {
+		customer.Budget.IsCalendarAligned = customer.CalendarAligned
 		gs.budgets.Store(customer.Budget.ID, customer.Budget)
 	}
 	// Create associated rate limit if exists
 	if customer.RateLimit != nil {
+		customer.RateLimit.IsCalendarAligned = customer.CalendarAligned
 		gs.rateLimits.Store(customer.RateLimit.ID, customer.RateLimit)
 	}
 	gs.customers.Store(customer.ID, customer)
@@ -2979,6 +2981,7 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 
 		// Handle budget updates with consistent logic
 		if clone.Budget != nil {
+			clone.Budget.IsCalendarAligned = clone.CalendarAligned
 			// Preserve existing usage from memory when updating customer budget config
 			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
 				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
@@ -2999,6 +3002,7 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 
 		// Handle rate limit updates with consistent logic
 		if clone.RateLimit != nil {
+			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
 			// Preserve existing usage from memory when updating customer rate limit config
 			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
 				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {

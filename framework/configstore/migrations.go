@@ -843,6 +843,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCustomerCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9459,6 +9462,39 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB)
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_additional_attributes_to_pricing migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerCalendarAlignedColumn adds calendar_aligned to governance_customers
+// so customer-level calendar alignment can be persisted. No backfill is needed: the
+// legacy per-budget/per-rate-limit calendar_aligned columns were dropped by
+// drop_legacy_calendar_aligned_columns before this migration runs, and calendar_aligned
+// never worked for customers, so there is no prior behavior to preserve.
+func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_customer_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableCustomer{}, "CalendarAligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to governance_customers: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				return mig.DropColumn(&tables.TableCustomer{}, "calendar_aligned")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_customer_calendar_aligned_column migration: %s", err.Error())
 	}
 	return nil
 }

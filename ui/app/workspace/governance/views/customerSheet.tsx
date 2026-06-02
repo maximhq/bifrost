@@ -1,11 +1,22 @@
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
 import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
@@ -31,6 +42,7 @@ interface CustomerFormData {
 	tokenResetDuration: string;
 	requestMaxLimit: number | undefined;
 	requestResetDuration: string;
+	calendarAligned: boolean;
 	isDirty: boolean;
 }
 
@@ -43,6 +55,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
 		requestMaxLimit: customer?.rate_limit?.request_max_limit ?? undefined,
 		requestResetDuration: customer?.rate_limit?.request_reset_duration || "1h",
+		calendarAligned: customer?.calendar_aligned ?? false,
 	};
 };
 
@@ -53,6 +66,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		...createInitialState(customer),
 		isDirty: false,
 	});
+
+	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -70,6 +85,14 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		}
 	}, [open, customer]);
 
+	const handleCalendarAlignedChange = (checked: boolean) => {
+		if (checked && isEditing && !initialState.calendarAligned) {
+			setShowCalendarAlignWarning(true);
+		} else {
+			updateField("calendarAligned", checked);
+		}
+	};
+
 	useEffect(() => {
 		const currentData = {
 			name: formData.name,
@@ -79,6 +102,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			tokenResetDuration: formData.tokenResetDuration,
 			requestMaxLimit: formData.requestMaxLimit,
 			requestResetDuration: formData.requestResetDuration,
+			calendarAligned: formData.calendarAligned,
 		};
 		setFormData((prev) => ({
 			...prev,
@@ -92,6 +116,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		formData.tokenResetDuration,
 		formData.requestMaxLimit,
 		formData.requestResetDuration,
+		formData.calendarAligned,
 		initialState,
 	]);
 
@@ -142,6 +167,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			if (isEditing && customer) {
 				const updateData: UpdateCustomerRequest = {
 					name: formData.name,
+					calendar_aligned: formData.calendarAligned,
 				};
 
 				const hadBudget = !!customer.budget;
@@ -176,6 +202,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			} else {
 				const createData: CreateCustomerRequest = {
 					name: formData.name,
+					calendar_aligned: formData.calendarAligned,
 				};
 
 				if (budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null) {
@@ -277,6 +304,68 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								onChangeSelect={(value) => updateField("requestResetDuration", value)}
 								options={resetDurationOptions}
 							/>
+
+							{/* Calendar alignment toggle — only shown when there's an alignable budget or rate limit */}
+							{(() => {
+								const hasAlignableBudget =
+									formData.budgetMaxLimit !== undefined &&
+									formData.budgetMaxLimit !== null &&
+									supportsCalendarAlignment(formData.budgetResetDuration);
+								const hasAlignableRateLimit =
+									(formData.tokenMaxLimit !== undefined &&
+										formData.tokenMaxLimit !== null &&
+										supportsCalendarAlignment(formData.tokenResetDuration)) ||
+									(formData.requestMaxLimit !== undefined &&
+										formData.requestMaxLimit !== null &&
+										supportsCalendarAlignment(formData.requestResetDuration));
+								if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
+								return (
+									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+										<div className="space-y-0.5">
+											<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
+												Align to calendar cycle
+											</Label>
+											<p className="text-muted-foreground text-xs">
+												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from
+												creation date. Applies to durations of a day or longer.
+											</p>
+										</div>
+										<Switch
+											id="customer-calendar-aligned-toggle"
+											checked={formData.calendarAligned}
+											onCheckedChange={handleCalendarAlignedChange}
+											data-testid="customer-calendar-aligned-toggle"
+										/>
+									</div>
+								);
+							})()}
+
+							{/* Warning dialog shown when enabling calendar alignment on an existing customer */}
+							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+								<AlertDialogContent>
+									<AlertDialogHeader>
+										<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+										<AlertDialogDescription>
+											Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+											token/request rate-limit counters to <span className="font-semibold">0</span> for this customer, then snap
+											each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage
+											reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save.
+										</AlertDialogDescription>
+									</AlertDialogHeader>
+									<AlertDialogFooter>
+										<AlertDialogCancel data-testid="customer-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+										<AlertDialogAction
+											data-testid="customer-calendar-align-enable-btn"
+											onClick={() => {
+												updateField("calendarAligned", true);
+												setShowCalendarAlignWarning(false);
+											}}
+										>
+											Enable Calendar Alignment
+										</AlertDialogAction>
+									</AlertDialogFooter>
+								</AlertDialogContent>
+							</AlertDialog>
 
 							{isEditing && (customer?.budget || customer?.rate_limit) && (
 								<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
