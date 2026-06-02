@@ -288,6 +288,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Validate MCP library catalog URL override (only when set and non-default)
+	if payload.FrameworkConfig.MCPLibraryURL != nil && *payload.FrameworkConfig.MCPLibraryURL != "" && *payload.FrameworkConfig.MCPLibraryURL != modelcatalog.DefaultMCPLibraryURL {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.MCPLibraryURL); err != nil {
+			logger.Warn("failed to check the accessibility of the MCP library URL: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the MCP library URL: %v", err))
+			return
+		}
+	}
+	// Checking the MCP library sync interval
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
+		logger.Warn("MCP library sync interval must be greater than 0")
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
+		return
+	}
+
 	// Get current config with proper locking
 	currentConfig := h.store.ClientConfig
 	updatedConfig := currentConfig
@@ -533,10 +548,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// if framework config is nil, we will use the default pricing config
 	if frameworkConfig == nil {
 		frameworkConfig = &configstoreTables.TableFrameworkConfig{
-			ID:                  0,
-			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
-			ModelParametersURL:  bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
+			ID:                     0,
+			PricingURL:             bifrost.Ptr(modelcatalog.DefaultPricingURL),
+			PricingSyncInterval:    bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			ModelParametersURL:     bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
+			MCPLibraryURL:          bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL),
+			MCPLibrarySyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
 		}
 	}
 	// Handling individual nil cases
@@ -548,6 +565,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if frameworkConfig.ModelParametersURL == nil {
 		frameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
+	}
+	if frameworkConfig.MCPLibraryURL == nil {
+		frameworkConfig.MCPLibraryURL = bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL)
+	}
+	if frameworkConfig.MCPLibrarySyncInterval == nil {
+		frameworkConfig.MCPLibrarySyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -584,6 +607,23 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.MCPLibraryURL != nil {
+		effectiveMCPLibraryURL := *payload.FrameworkConfig.MCPLibraryURL
+		if effectiveMCPLibraryURL == "" {
+			effectiveMCPLibraryURL = modelcatalog.DefaultMCPLibraryURL
+		}
+		if frameworkConfig.MCPLibraryURL == nil || effectiveMCPLibraryURL != *frameworkConfig.MCPLibraryURL {
+			frameworkConfig.MCPLibraryURL = &effectiveMCPLibraryURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil {
+		syncInterval := *payload.FrameworkConfig.MCPLibrarySyncInterval
+		if frameworkConfig.MCPLibrarySyncInterval == nil || syncInterval != *frameworkConfig.MCPLibrarySyncInterval {
+			frameworkConfig.MCPLibrarySyncInterval = &syncInterval
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -594,9 +634,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
-				PricingURL:          frameworkConfig.PricingURL,
-				PricingSyncInterval: &syncSeconds,
-				ModelParametersURL:  frameworkConfig.ModelParametersURL,
+				PricingURL:             frameworkConfig.PricingURL,
+				PricingSyncInterval:    &syncSeconds,
+				ModelParametersURL:     frameworkConfig.ModelParametersURL,
+				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
+				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 			},
 		}
 		// Saving framework config

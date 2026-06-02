@@ -3843,8 +3843,11 @@ func ResolveFrameworkPricingConfig(
 	filePricingURL := (*string)(nil)
 	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
+	fileMCPLibraryURL := (*string)(nil)
+	fileMCPLibrarySyncSeconds := (*int64)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
+	skipMCPLibraryURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
 			raw := *fileConfig.Pricing.PricingURL
@@ -3894,6 +3897,39 @@ func ResolveFrameworkPricingConfig(
 				fileSyncSeconds = &val
 			}
 		}
+		if fileConfig.Pricing.MCPLibraryURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.MCPLibraryURL)
+			if raw == "" {
+				// Blank is treated as "not set"; fall back to default.
+			} else if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("mcp_library_url: env variable not found (%v); keeping original value %q", err, raw)
+					fileMCPLibraryURL = &raw
+					skipMCPLibraryURLBackfill = true
+				} else {
+					resolved := strings.TrimSpace(resolvedURL)
+					if resolved != "" {
+						fileMCPLibraryURL = &resolved
+					}
+				}
+			} else {
+				fileMCPLibraryURL = &raw
+			}
+		}
+		if fileConfig.Pricing.MCPLibrarySyncInterval != nil {
+			val := *fileConfig.Pricing.MCPLibrarySyncInterval
+			switch {
+			case val <= 0:
+				logger.Warn("mcp_library_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
+			case val < modelcatalog.MinimumPricingSyncIntervalSec:
+				clamped := modelcatalog.MinimumPricingSyncIntervalSec
+				logger.Warn("mcp_library_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
+				fileMCPLibrarySyncSeconds = &clamped
+			default:
+				fileMCPLibrarySyncSeconds = &val
+			}
+		}
 	}
 
 	// --- Phase 2: apply file config over defaults ---
@@ -3901,6 +3937,11 @@ func ResolveFrameworkPricingConfig(
 	resolvedPricingURL := &defaultPricingURL
 	resolvedModelParametersURL := &defaultModelParametersURL
 	resolvedSyncSeconds := &defaultSyncSeconds
+
+	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
+	defaultMCPLibrarySyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	resolvedMCPLibraryURL := &defaultMCPLibraryURL
+	resolvedMCPLibrarySyncInterval := &defaultMCPLibrarySyncSeconds
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
@@ -3915,6 +3956,16 @@ func ResolveFrameworkPricingConfig(
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
 
+	// MCP library catalog sync source mirrors the datasheet URL handling for
+	// defaults, env substitution, interval validation, and hash-gated config.json
+	// changes. DB precedence is applied in Phase 3 below.
+	if fileMCPLibraryURL != nil {
+		resolvedMCPLibraryURL = fileMCPLibraryURL
+	}
+	if fileMCPLibrarySyncSeconds != nil {
+		resolvedMCPLibrarySyncInterval = fileMCPLibrarySyncSeconds
+	}
+
 	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
 
 	needsDBUpdate := false
@@ -3922,8 +3973,22 @@ func ResolveFrameworkPricingConfig(
 
 	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
 	fileHash := ""
-	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil) {
-		h, err := configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
+	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
+		var h string
+		var err error
+		if fileHasHashableMCPConfig {
+			mcpHashURL := fileMCPLibraryURL
+			if skipMCPLibraryURLBackfill {
+				mcpHashURL = nil
+			}
+			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds, configstore.FrameworkConfigHashOptions{
+				MCPLibraryURL:          mcpHashURL,
+				MCPLibrarySyncInterval: fileMCPLibrarySyncSeconds,
+			})
+		} else {
+			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
+		}
 		if err != nil {
 			logger.Warn("failed to compute framework config hash: %v", err)
 		} else {
@@ -3977,6 +4042,48 @@ func ResolveFrameworkPricingConfig(
 		} else {
 			needsDBUpdate = true
 		}
+
+		// MCP library config follows the same hash-gated config.json precedence as
+		// datasheet config: DB wins while the file is unchanged; file wins and is
+		// backfilled when the file changed since the last persisted hash.
+		if dbConfig.MCPLibraryURL != nil {
+			if trimmed := strings.TrimSpace(*dbConfig.MCPLibraryURL); trimmed != "" {
+				if fileChanged && fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill {
+					logger.Info("mcp_library_url from config.json overrides DB (file hash changed) — updating DB")
+					needsDBUpdate = true
+				} else {
+					resolvedMCPLibraryURL = &trimmed
+				}
+			} else if !skipMCPLibraryURLBackfill {
+				needsDBUpdate = true
+			}
+		} else if !skipMCPLibraryURLBackfill {
+			needsDBUpdate = true
+		}
+		if dbConfig.MCPLibrarySyncInterval != nil {
+			val := *dbConfig.MCPLibrarySyncInterval
+			switch {
+			case val <= 0:
+				logger.Warn("mcp_library_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedMCPLibrarySyncInterval)
+				needsDBUpdate = true
+			case val < modelcatalog.MinimumPricingSyncIntervalSec:
+				logger.Warn("mcp_library_sync_interval in DB is below minimum (%d seconds) — backfilling", val)
+				if !fileChanged || fileMCPLibrarySyncSeconds == nil {
+					clamped := modelcatalog.MinimumPricingSyncIntervalSec
+					resolvedMCPLibrarySyncInterval = &clamped
+				}
+				needsDBUpdate = true
+			default:
+				if fileChanged && fileMCPLibrarySyncSeconds != nil {
+					logger.Info("mcp_library_sync_interval from config.json overrides DB (file hash changed): file=%d db=%d seconds — updating DB", *fileMCPLibrarySyncSeconds, val)
+					needsDBUpdate = true
+				} else {
+					resolvedMCPLibrarySyncInterval = dbConfig.MCPLibrarySyncInterval
+				}
+			}
+		} else {
+			needsDBUpdate = true
+		}
 	}
 
 	// --- Phase 4: nil guard ---
@@ -3992,6 +4099,12 @@ func ResolveFrameworkPricingConfig(
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
 		resolvedSyncSeconds = &defaultSyncSeconds
 	}
+	if resolvedMCPLibraryURL == nil {
+		resolvedMCPLibraryURL = &defaultMCPLibraryURL
+	}
+	if resolvedMCPLibrarySyncInterval == nil {
+		resolvedMCPLibrarySyncInterval = &defaultMCPLibrarySyncSeconds
+	}
 
 	// Only update the stored hash when the file actually changed; preserve the
 	// existing hash for correction-only DB updates (null backfill, corruption fix).
@@ -4004,15 +4117,19 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                  configID,
-			PricingURL:          resolvedPricingURL,
-			PricingSyncInterval: resolvedSyncSeconds,
-			ModelParametersURL:  resolvedModelParametersURL,
-			ConfigHash:          persistedHash,
+			ID:                     configID,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			ConfigHash:             persistedHash,
 		}, &modelcatalog.Config{
-			PricingURL:          resolvedPricingURL,
-			PricingSyncInterval: resolvedSyncSeconds,
-			ModelParametersURL:  resolvedModelParametersURL,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		}, needsDBUpdate
 }
 
