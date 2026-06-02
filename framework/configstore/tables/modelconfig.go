@@ -3,6 +3,7 @@ package tables
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -12,6 +13,7 @@ import (
 const (
 	ModelConfigScopeGlobal     = "global"
 	ModelConfigScopeVirtualKey = "virtual_key"
+	ModelConfigScopeUser       = "user"
 )
 
 // ModelConfigAllModels is the model_name sentinel meaning "all models". Combined with a
@@ -19,14 +21,36 @@ const (
 // with a nil provider it means all models on all providers.
 const ModelConfigAllModels = "*"
 
-// validModelConfigScopes is the set of accepted scope values.
-var validModelConfigScopes = map[string]bool{
-	ModelConfigScopeGlobal:     true,
-	ModelConfigScopeVirtualKey: true,
+// validModelConfigScopes is the runtime registry of accepted scope values.
+// OSS seeds it with global + virtual_key; downstream consumers (e.g. the
+// enterprise build registering "user") extend it at startup via
+// RegisterModelConfigScope. Guarded by validModelConfigScopesMu.
+var (
+	validModelConfigScopesMu sync.RWMutex
+	validModelConfigScopes   = map[string]bool{
+		ModelConfigScopeGlobal:     true,
+		ModelConfigScopeVirtualKey: true,
+	}
+)
+
+// RegisterModelConfigScope adds scope to the allow-list consulted by
+// IsValidModelConfigScope and TableModelConfig.BeforeSave. Intended to be
+// called once at process startup; safe to call concurrently. Whitespace-
+// only input is ignored.
+func RegisterModelConfigScope(scope string) {
+	s := strings.TrimSpace(scope)
+	if s == "" {
+		return
+	}
+	validModelConfigScopesMu.Lock()
+	validModelConfigScopes[s] = true
+	validModelConfigScopesMu.Unlock()
 }
 
 // IsValidModelConfigScope reports whether scope is a recognized model config scope.
 func IsValidModelConfigScope(scope string) bool {
+	validModelConfigScopesMu.RLock()
+	defer validModelConfigScopesMu.RUnlock()
 	return validModelConfigScopes[scope]
 }
 

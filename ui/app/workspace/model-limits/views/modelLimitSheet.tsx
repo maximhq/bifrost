@@ -7,15 +7,17 @@ import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ComboboxSelect } from "@/components/ui/combobox";
-import { MODEL_LIMIT_SCOPES, resetDurationOptions } from "@/lib/constants/governance";
+import { resetDurationOptions } from "@/lib/constants/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+// Side-effect import: pulls in downstream scope registrations (e.g. enterprise
+// registers "user" + user picker). The OSS-build fallback is an empty module.
+import "@enterprise/lib/registrations/modelLimitScopes";
 import {
 	getErrorMessage,
 	useCreateModelConfigMutation,
 	useGetProvidersQuery,
-	useGetVirtualKeysQuery,
 	useLazyGetModelsQuery,
 	useUpdateModelConfigMutation,
 } from "@/lib/store";
@@ -77,7 +79,6 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const { data: providersData } = useGetProvidersQuery();
-	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
@@ -221,7 +222,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					model_name: data.modelName,
 					provider,
 					scope: data.scope || "global",
-					scope_id: data.scope === "virtual_key" ? data.scopeId : undefined,
+					// Any scope with a registered PickerComponent carries a target;
+					// global (no picker) sends no scope_id. Mirrors the registry
+					// shape, so adding a new scope (e.g. enterprise's "user")
+					// doesn't need a branch here.
+					scope_id: getModelLimitScope(data.scope || "global")?.PickerComponent ? data.scopeId : undefined,
 					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
 					rate_limit:
 						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
@@ -357,7 +362,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												{MODEL_LIMIT_SCOPES.map((option) => (
+												{getModelLimitScopes().map((option) => (
 													<SelectItem key={option.value} value={option.value}>
 														{option.label}
 													</SelectItem>
@@ -369,40 +374,41 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								)}
 							/>
 
-							{/* Virtual Key picker (only for the Virtual Key scope) */}
-							{form.watch("scope") === "virtual_key" && (
-								<FormField
-									control={form.control}
-									name="scopeId"
-									render={({ field }) => (
-										<FormItem>
-											<FormLabel>Virtual Key</FormLabel>
-											<FormControl>
-												<div data-testid="model-limit-scope-id-select">
-													<ComboboxSelect
-														options={[
-															// Guarantee the currently-selected VK is selectable even if it
-															// falls outside the first page of fetched virtual keys.
-															...(modelConfig?.scope_id && modelConfig?.scope_name
-																? [{ label: modelConfig.scope_name, value: modelConfig.scope_id }]
-																: []),
-															...vksData.virtual_keys
-																.filter((vk) => vk.id !== modelConfig?.scope_id)
-																.map((vk) => ({ label: vk.name, value: vk.id })),
-														]}
-														value={field.value || null}
-														onValueChange={(value) => field.onChange(value ?? "")}
-														placeholder="Select a virtual key..."
-														disabled={isEditing}
-														noPortal
-													/>
-												</div>
-											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-							)}
+							{/* Scope-target picker — driven by the scope registry.
+								Each non-global scope (virtual_key, user, …) registers its
+								own PickerComponent; we render whichever the current scope
+								provides. */}
+							{(() => {
+								const scopeEntry = getModelLimitScope(form.watch("scope") || "global");
+								const Picker = scopeEntry?.PickerComponent;
+								if (!Picker) return null;
+								return (
+									<FormField
+										control={form.control}
+										name="scopeId"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{scopeEntry.label}</FormLabel>
+												<FormControl>
+													<div data-testid="model-limit-scope-id-select">
+														<Picker
+															value={field.value || ""}
+															onChange={(v) => field.onChange(v ?? "")}
+															disabled={isEditing}
+															fallbackOption={
+																modelConfig?.scope === scopeEntry.value && modelConfig?.scope_id && modelConfig?.scope_name
+																	? { value: modelConfig.scope_id, label: modelConfig.scope_name }
+																	: null
+															}
+														/>
+													</div>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								);
+							})()}
 
 							<DottedSeparator />
 
