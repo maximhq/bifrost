@@ -1366,10 +1366,22 @@
                     "type": "string"
                   },
                   "model_name": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Model name, or \"*\" to match all models"
                   },
                   "provider": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Provider name; omit to apply to all providers"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": ["global", "virtual_key"],
+                    "default": "global",
+                    "description": "Scope where this limit applies"
+                  },
+                  "scope_id": {
+                    "type": "string",
+                    "description": "Target entity ID — required when scope is \"virtual_key\""
                   },
                   "budget_id": {
                     "type": "string"
