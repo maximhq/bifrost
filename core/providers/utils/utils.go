@@ -560,7 +560,6 @@ var providerResponseFilterHeaders = map[string]bool{
 	"server":                           true,
 	"alt-svc":                          true,
 	"strict-transport-security":        true,
-	"content-type":                     true,
 	"access-control-allow-origin":      true,
 	"access-control-allow-methods":     true,
 	"access-control-allow-headers":     true,
