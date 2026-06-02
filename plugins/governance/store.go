@@ -118,12 +118,18 @@ type GovernanceStore interface {
 	// Model-level governance checks
 	CheckModelBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckModelRateLimit(ctx context.Context, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
+	// Per-VK-scoped model-level governance checks (aggregate with the global model checks above)
+	CheckVirtualKeyScopedModelBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
+	CheckVirtualKeyScopedModelRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
 	// VK-level governance checks
 	CheckVirtualKeyBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckVirtualKeyRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
 	// In-memory usage updates (for VK-level)
 	UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error
 	UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
+	// In-memory usage updates for per-VK-scoped model configs (mirror the global model updates)
+	UpdateVirtualKeyScopedModelBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, model string, provider schemas.ModelProvider, cost float64) error
+	UpdateVirtualKeyScopedModelRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context) []*configstoreTables.TableBudget
@@ -1003,27 +1009,58 @@ func (gs *LocalGovernanceStore) CheckProviderRateLimit(ctx context.Context, requ
 	return gs.CheckRateLimit(ctx, EntityWiseRateLimits{providerKey: []*configstoreTables.TableRateLimit{rateLimit}}, tokensBaselines, requestsBaselines)
 }
 
-// findModelOnlyConfig looks up a model-only config (no provider) with cross-provider model name normalization.
-// Returns the matching config and the display name for error messages.
-func (gs *LocalGovernanceStore) findModelOnlyConfig(ctx context.Context, model string) (*configstoreTables.TableModelConfig, string) {
-	// If modelMatcher is available, try normalized base model name first (cross-provider matching)
+// modelConfigStoreKey builds the in-memory cache key for a model config.
+func modelConfigStoreKey(scope, scopeID, modelKey string, provider *string) string {
+	base := modelKey
+	if provider != nil {
+		base = fmt.Sprintf("%s:%s", modelKey, *provider)
+	}
+	if scope == "" || scope == configstoreTables.ModelConfigScopeGlobal {
+		return base
+	}
+	return fmt.Sprintf("%s:%s:%s", scope, scopeID, base)
+}
+
+// modelConfigScope is one level of the model-config scope chain (name + target ID).
+type modelConfigScope struct {
+	name string
+	id   string
+}
+
+// nonGlobalModelConfigScopeChain returns the non-global scopes that apply to a request
+// made with the given virtual key, most specific first. The global scope is intentionally
+// excluded because it is enforced separately (and unconditionally) by EvaluateModelAndProviderRequest.
+func nonGlobalModelConfigScopeChain(vk *configstoreTables.TableVirtualKey) []modelConfigScope {
+	if vk == nil {
+		return nil
+	}
+	return []modelConfigScope{{name: configstoreTables.ModelConfigScopeVirtualKey, id: vk.ID}}
+}
+
+// findScopedModelOnlyConfig looks up a model-only config (no provider) within a specific
+// scope, preserving cross-provider model-name normalization. scope=="global" reproduces the
+// historical global lookup exactly. Returns the matching config and the display name.
+func (gs *LocalGovernanceStore) findScopedModelOnlyConfig(ctx context.Context, scope, scopeID, model string) (*configstoreTables.TableModelConfig, string) {
+	tryKey := func(modelKey string) (*configstoreTables.TableModelConfig, string) {
+		key := modelConfigStoreKey(scope, scopeID, modelKey, nil)
+		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
+				return mc, modelKey
+			}
+		}
+		return nil, ""
+	}
+	// If modelCatalog is available, try normalized base model name first (cross-provider matching)
 	if gs.modelCatalog != nil {
 		baseName := gs.modelCatalog.GetBaseModelName(model)
 		if baseName != model {
-			if value, exists := gs.modelConfigs.Load(baseName); exists && value != nil {
-				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
-					return mc, baseName
-				}
+			if mc, name := tryKey(baseName); mc != nil {
+				return mc, name
 			}
 		}
 	}
 	// Always try direct lookup by original model name as fallback
-	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
-		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
-			return mc, model
-		}
-	}
-	return nil, ""
+	return tryKey(model)
 }
 
 // CheckModelBudget performs budget checking for model-level configs (lock-free for high performance)
@@ -1224,6 +1261,96 @@ func (gs *LocalGovernanceStore) CheckModelRateLimit(ctx context.Context, request
 	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
 }
 
+// CheckVirtualKeyScopedModelBudget enforces budgets from model configs scoped to the
+// request's virtual key. These are checked in addition to the global model budgets. A request
+// must satisfy both the global model config and any matching per-VK model config.
+func (gs *LocalGovernanceStore) CheckVirtualKeyScopedModelBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
+	if vk == nil {
+		return DecisionAllow, nil
+	}
+	if baselines == nil {
+		baselines = map[string]float64{}
+	}
+	var model string
+	var providerStr *string
+	if request != nil {
+		model = request.Model
+		if request.Provider != "" {
+			p := string(request.Provider)
+			providerStr = &p
+		}
+	}
+	entityWiseBudgets := EntityWiseBudgets{}
+	for _, scope := range nonGlobalModelConfigScopeChain(vk) {
+		// Scoped model+provider config first (more specific) - if provider is provided
+		if providerStr != nil {
+			key := modelConfigStoreKey(scope.name, scope.id, model, providerStr)
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.Budget != nil {
+					if budget := gs.LoadBudget(ctx, *mc.BudgetID); budget != nil {
+						ewKey := fmt.Sprintf("Model:%s:Provider:%s:%s:%s", mc.ModelName, *providerStr, scope.name, scope.id)
+						entityWiseBudgets[ewKey] = []*configstoreTables.TableBudget{budget}
+					}
+				}
+			}
+		}
+		// Always check scoped model-only config (cross-provider normalization preserved)
+		if mc, _ := gs.findScopedModelOnlyConfig(ctx, scope.name, scope.id, model); mc != nil && mc.Budget != nil {
+			if budget := gs.LoadBudget(ctx, *mc.BudgetID); budget != nil {
+				ewKey := fmt.Sprintf("Model:%s:%s:%s", mc.ModelName, scope.name, scope.id)
+				entityWiseBudgets[ewKey] = []*configstoreTables.TableBudget{budget}
+			}
+		}
+	}
+	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
+}
+
+// CheckVirtualKeyScopedModelRateLimit enforces rate limits from model configs scoped to the
+// request's virtual key, in addition to the global model rate limits.
+func (gs *LocalGovernanceStore) CheckVirtualKeyScopedModelRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
+	if vk == nil {
+		return DecisionAllow, nil
+	}
+	if tokensBaselines == nil {
+		tokensBaselines = map[string]int64{}
+	}
+	if requestsBaselines == nil {
+		requestsBaselines = map[string]int64{}
+	}
+	var model string
+	var providerStr *string
+	if request != nil {
+		model = request.Model
+		if request.Provider != "" {
+			p := string(request.Provider)
+			providerStr = &p
+		}
+	}
+	entityWiseRateLimits := make(EntityWiseRateLimits)
+	for _, scope := range nonGlobalModelConfigScopeChain(vk) {
+		// Scoped model+provider config first - if provider is provided
+		if providerStr != nil {
+			key := modelConfigStoreKey(scope.name, scope.id, model, providerStr)
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+					if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
+						ewKey := fmt.Sprintf("Model:%s:Provider:%s:%s:%s", mc.ModelName, *providerStr, scope.name, scope.id)
+						entityWiseRateLimits[ewKey] = []*configstoreTables.TableRateLimit{rateLimit}
+					}
+				}
+			}
+		}
+		// Always check scoped model-only config (cross-provider normalization preserved)
+		if mc, configKey := gs.findScopedModelOnlyConfig(ctx, scope.name, scope.id, model); mc != nil && mc.RateLimitID != nil {
+			if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
+				ewKey := fmt.Sprintf("Model:%s:%s:%s", configKey, scope.name, scope.id)
+				entityWiseRateLimits[ewKey] = []*configstoreTables.TableRateLimit{rateLimit}
+			}
+		}
+	}
+	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
+}
+
 // CheckUserRateLimit checks if user's rate limit allows the request (enterprise-only)
 // Community build: silent no-op so user-governance absence never silently denies requests.
 func (gs *LocalGovernanceStore) CheckUserRateLimit(ctx context.Context, userID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
@@ -1343,6 +1470,73 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx
 		}
 	}
 
+	return nil
+}
+
+// UpdateVirtualKeyScopedModelBudgetUsageInMemory bumps budget usage for model configs scoped
+// to the request's virtual key. This is the post-response counterpart to
+// CheckVirtualKeyScopedModelBudget — without it, scoped budgets never increase and never trip.
+func (gs *LocalGovernanceStore) UpdateVirtualKeyScopedModelBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, model string, provider schemas.ModelProvider, cost float64) error {
+	if vk == nil || model == "" {
+		return nil
+	}
+	var providerStr *string
+	if provider != "" {
+		p := string(provider)
+		providerStr = &p
+	}
+	for _, scope := range nonGlobalModelConfigScopeChain(vk) {
+		// Scoped model+provider config first (more specific) - if provider is set
+		if providerStr != nil {
+			key := modelConfigStoreKey(scope.name, scope.id, model, providerStr)
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.BudgetID != nil {
+					if err := gs.BumpBudgetUsage(ctx, *mc.BudgetID, cost); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		// Always bump scoped model-only config (cross-provider normalization preserved)
+		if mc, _ := gs.findScopedModelOnlyConfig(ctx, scope.name, scope.id, model); mc != nil && mc.BudgetID != nil {
+			if err := gs.BumpBudgetUsage(ctx, *mc.BudgetID, cost); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// UpdateVirtualKeyScopedModelRateLimitUsageInMemory bumps rate limit counters for model configs
+// scoped to the request's virtual key. Post-response counterpart to CheckVirtualKeyScopedModelRateLimit.
+func (gs *LocalGovernanceStore) UpdateVirtualKeyScopedModelRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
+	if vk == nil || model == "" {
+		return nil
+	}
+	var providerStr *string
+	if provider != "" {
+		p := string(provider)
+		providerStr = &p
+	}
+	for _, scope := range nonGlobalModelConfigScopeChain(vk) {
+		// Scoped model+provider config first (more specific) - if provider is set
+		if providerStr != nil {
+			key := modelConfigStoreKey(scope.name, scope.id, model, providerStr)
+			if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+					if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		// Always bump scoped model-only config (cross-provider normalization preserved)
+		if mc, _ := gs.findScopedModelOnlyConfig(ctx, scope.name, scope.id, model); mc != nil && mc.RateLimitID != nil {
+			if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1944,22 +2138,29 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		gs.virtualKeys.Store(vk.Value, vk)
 	}
 
-	// Build model configs map
-	// Key format: "modelName" for global configs, "modelName:provider" for provider-specific configs
+	// Build model configs map.
+	// Key format (global scope): "modelName" for all-provider configs, "modelName:provider"
+	// for provider-specific configs. Non-global scopes (e.g. virtual_key) prefix the key with
+	// "<scope>:<scopeID>:" via modelConfigStoreKey so they never collide with global configs.
 	// Model names are normalized using GetBaseModelName to prevent duplicate config leakage
-	// (e.g., "openai/gpt-4o" and "gpt-4o" both store under key "gpt-4o")
+	// (e.g., "openai/gpt-4o" and "gpt-4o" both store under base "gpt-4o").
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
+		scopeID := ""
+		if mc.ScopeID != nil {
+			scopeID = *mc.ScopeID
+		}
 		if mc.Provider != nil {
-			// Store under provider-specific key
-			key := fmt.Sprintf("%s:%s", mc.ModelName, *mc.Provider)
+			// Provider-specific: store under (scope-prefixed) "modelName:provider" key
+			key := modelConfigStoreKey(mc.Scope, scopeID, mc.ModelName, mc.Provider)
 			gs.modelConfigs.Store(key, mc)
 		} else {
-			// Global config (applies to all providers) - store under normalized model name
-			key := mc.ModelName
+			// All-provider config - store under normalized (scope-prefixed) model name
+			modelKey := mc.ModelName
 			if gs.modelCatalog != nil {
-				key = gs.modelCatalog.GetBaseModelName(mc.ModelName)
+				modelKey = gs.modelCatalog.GetBaseModelName(mc.ModelName)
 			}
+			key := modelConfigStoreKey(mc.Scope, scopeID, modelKey, nil)
 			gs.modelConfigs.Store(key, mc)
 		}
 	}
@@ -2593,6 +2794,26 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 		}
 		return true // continue iteration
 	})
+
+	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
+	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store
+	// consistent even when the VK entry was already removed.
+	gs.modelConfigs.Range(func(key, value any) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && *mc.ScopeID == vkID {
+			if mc.BudgetID != nil {
+				gs.DeleteBudget(ctx, *mc.BudgetID)
+			}
+			if mc.RateLimitID != nil {
+				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
+			}
+			gs.modelConfigs.Delete(key)
+		}
+		return true
+	})
 }
 
 // CreateTeamInMemory adds a new team to the in-memory store (lock-free)
@@ -2913,16 +3134,22 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
-	// Determine the key based on whether provider is specified
-	// Key format: "modelName" for global configs, "modelName:provider" for provider-specific configs
+	// Determine the (scope-aware) key. Global scope keeps the historical key format;
+	// non-global scopes are namespaced by modelConfigStoreKey. Scope/scope_id are part of
+	// a config's identity and do not change on update, so this matches the stored key.
+	scopeID := ""
+	if clone.ScopeID != nil {
+		scopeID = *clone.ScopeID
+	}
 	if clone.Provider != nil {
-		key := fmt.Sprintf("%s:%s", clone.ModelName, *clone.Provider)
+		key := modelConfigStoreKey(clone.Scope, scopeID, clone.ModelName, clone.Provider)
 		gs.modelConfigs.Store(key, &clone)
 	} else {
-		key := clone.ModelName
+		modelKey := clone.ModelName
 		if gs.modelCatalog != nil {
-			key = gs.modelCatalog.GetBaseModelName(clone.ModelName)
+			modelKey = gs.modelCatalog.GetBaseModelName(clone.ModelName)
 		}
+		key := modelConfigStoreKey(clone.Scope, scopeID, modelKey, nil)
 		gs.modelConfigs.Store(key, &clone)
 	}
 

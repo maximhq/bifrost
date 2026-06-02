@@ -2956,6 +2956,32 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 			return err
 		}
+		// Delete model configs scoped to this virtual key, along with their owned
+		// budgets/rate-limits. scope_id has no FK constraint, so this cleanup must be
+		// explicit; otherwise per-VK model limits would orphan and leak budget/rate-limit rows.
+		// Model configs are deleted first (matching DeleteModelConfig order) before their
+		// owned budget/rate-limit rows.
+		var scopedModelConfigs []tables.TableModelConfig
+		if err := txDB.WithContext(ctx).
+			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
+			Find(&scopedModelConfigs).Error; err != nil {
+			return err
+		}
+		budgetIDs := make([]string, 0, len(scopedModelConfigs))
+		rateLimitIDs := make([]string, 0, len(scopedModelConfigs))
+		for _, mc := range scopedModelConfigs {
+			if mc.BudgetID != nil {
+				budgetIDs = append(budgetIDs, *mc.BudgetID)
+			}
+			if mc.RateLimitID != nil {
+				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+			}
+		}
+		if err := txDB.WithContext(ctx).
+			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
+			Delete(&tables.TableModelConfig{}).Error; err != nil {
+			return err
+		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
@@ -4228,7 +4254,7 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if err := baseQuery.
 		Preload("Budget").
 		Preload("RateLimit").
-		Order("created_at ASC, id ASC").
+		Order("created_at DESC, id DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&modelConfigs).Error; err != nil {
@@ -4237,10 +4263,16 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	return modelConfigs, totalCount, nil
 }
 
-// GetModelConfig retrieves a specific model config from the database by model name and optional provider.
-func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+// GetModelConfig retrieves a specific model config from the database by its identity:
+// scope, optional scope ID, model name, and optional provider.
+func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName)
+	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName).Where("scope = ?", scope)
+	if scopeID != nil {
+		query = query.Where("scope_id = ?", *scopeID)
+	} else {
+		query = query.Where("scope_id IS NULL")
+	}
 	if provider != nil {
 		query = query.Where("provider = ?", *provider)
 	} else {

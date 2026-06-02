@@ -828,6 +828,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelConfigScopeColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3828,6 +3831,64 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add provider governance columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigScopeColumns adds the scope and scope_id columns to
+// governance_model_configs and swaps the unique index from (model_name, provider)
+// to (scope, scope_id, model_name, provider). Existing rows are backfilled to the
+// "global" scope, preserving pre-scope behavior. The new index is created before
+// the old one is dropped so uniqueness is never unenforced during the migration.
+func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_scope_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			modelConfig := &tables.TableModelConfig{}
+
+			// Add scope column (NOT NULL DEFAULT 'global' backfills existing rows).
+			if !migrator.HasColumn(modelConfig, "scope") {
+				if err := migrator.AddColumn(modelConfig, "scope"); err != nil {
+					return fmt.Errorf("failed to add scope column: %w", err)
+				}
+			}
+			// Add scope_id column (nullable).
+			if !migrator.HasColumn(modelConfig, "scope_id") {
+				if err := migrator.AddColumn(modelConfig, "scope_id"); err != nil {
+					return fmt.Errorf("failed to add scope_id column: %w", err)
+				}
+			}
+			// Belt-and-suspenders backfill in case the column default did not populate
+			// existing rows on this dialect.
+			if err := tx.Exec("UPDATE governance_model_configs SET scope = ? WHERE scope IS NULL OR scope = ''", tables.ModelConfigScopeGlobal).Error; err != nil {
+				return fmt.Errorf("failed to backfill scope: %w", err)
+			}
+
+			// Create the new composite unique index BEFORE dropping the old one. The
+			// composite index is strictly more selective, so already-unique rows stay
+			// unique under it; this ordering avoids any window where uniqueness is
+			// unenforced. CreateIndex reads the struct tags so it is dialect-safe.
+			if !migrator.HasIndex(modelConfig, "idx_model_scope_provider") {
+				if err := migrator.CreateIndex(modelConfig, "idx_model_scope_provider"); err != nil {
+					return fmt.Errorf("failed to create idx_model_scope_provider: %w", err)
+				}
+			}
+			// Drop the now-superseded (model_name, provider) unique index.
+			if migrator.HasIndex(modelConfig, "idx_model_provider") {
+				if err := migrator.DropIndex(modelConfig, "idx_model_provider"); err != nil {
+					return fmt.Errorf("failed to drop idx_model_provider: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_model_config_scope_columns is non-rollbackable: scope-aware rows and the previous uniqueness invariant cannot be restored safely")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add model config scope columns migration: %s", err.Error())
 	}
 	return nil
 }

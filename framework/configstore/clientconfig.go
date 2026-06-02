@@ -1068,10 +1068,18 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 // This is used to detect changes to model configs between config.json and database.
 // Skips: CreatedAt, UpdatedAt, and relationship objects (dynamic fields)
 func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
+	// Normalize an empty scope to "global" so a config.json entry that omits scope
+	// hashes identically to the defaulted DB row.
+	scope := m.Scope
+	if scope == "" {
+		scope = tables.ModelConfigScopeGlobal
+	}
 	hash := sha256.New()
 	writeHashField(hash, "id", m.ID)
 	writeHashField(hash, "model_name", m.ModelName)
 	writeHashField(hash, "provider", derefStr(m.Provider))
+	writeHashField(hash, "scope", scope)
+	writeHashField(hash, "scope_id", derefStr(m.ScopeID))
 	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
 	return hex.EncodeToString(hash.Sum(nil)), nil
