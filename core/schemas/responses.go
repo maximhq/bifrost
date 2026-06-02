@@ -814,6 +814,7 @@ const (
 	ResponsesMessageTypeReasoning            ResponsesMessageType = "reasoning"
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
+	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
