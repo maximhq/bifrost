@@ -2565,13 +2565,54 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
 }
 
+// virtualKeyInternalPageSize is the bounded page size used when loading every
+// virtual key with preloaded relationships. Keeping each page small avoids
+// PostgreSQL's extended protocol parameter limit during GORM preloads.
+const virtualKeyInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
-	var virtualKeys []tables.TableVirtualKey
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
 
-	// Preload all relationships for complete information
-	if err := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx)).
-		Order("created_at ASC").
+	for {
+		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(virtualKeys) == 0 {
+			return allVirtualKeys, nil
+		}
+
+		allVirtualKeys = append(allVirtualKeys, virtualKeys...)
+		last := virtualKeys[len(virtualKeys)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(virtualKeys) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
+}
+
+// getVirtualKeysPage retrieves one unfiltered page of virtual keys without a
+// COUNT query for internal all-key loading paths.
+func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, lastCreatedAt time.Time, lastID string, hasCursor bool) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+	query := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx))
+	if hasCursor {
+		query = query.Where(
+			"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+			lastCreatedAt,
+			lastCreatedAt,
+			lastID,
+		)
+	}
+	if err := query.
+		Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+		Limit(limit).
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
@@ -3427,39 +3468,38 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 // DeleteTeam deletes a team from the database.
 // Owned budgets cascade via the governance_budgets.team_id FK.
 // Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
-func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var team tables.TableTeam
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set team_id to null for all virtual keys associated with the team
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
-			return err
-		}
-		rateLimitID := team.RateLimitID
-		// Delete the team — owned budgets cascade via FK on governance_budgets.team_id
-		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the team's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteTeam(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var team tables.TableTeam
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Set team_id to null for all virtual keys associated with the team
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
+		return err
+	}
+	rateLimitID := team.RateLimitID
+	// Delete the team - owned budgets cascade via FK on governance_budgets.team_id
+	if err := txDB.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Delete the team's rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3560,51 +3600,50 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 }
 
 // DeleteCustomer deletes a customer from the database.
-func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var customer tables.TableCustomer
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set customer_id to null for all virtual keys associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Set customer_id to null for all teams associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Store the budget and rate limit IDs before deleting the customer
-		budgetID := customer.BudgetID
-		rateLimitID := customer.RateLimitID
-		// Delete the customer first
-		if err := tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the customer's budget if it exists
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the customer's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteCustomer(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var customer tables.TableCustomer
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Set customer_id to null for all virtual keys associated with the customer
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	// Set customer_id to null for all teams associated with the customer
+	if err := txDB.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	// Store the budget and rate limit IDs before deleting the customer
+	budgetID := customer.BudgetID
+	rateLimitID := customer.RateLimitID
+	// Delete the customer first
+	if err := txDB.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Delete the customer's budget if it exists
+	if budgetID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
+			return err
+		}
+	}
+	// Delete the customer's rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -4286,40 +4325,45 @@ func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []
 }
 
 // DeleteModelConfig deletes a model config from the database.
-func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// First fetch the model config to get budget and rate limit IDs
-		var modelConfig tables.TableModelConfig
-		if err := dbForUpdate(tx).First(&modelConfig, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
+func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteModelConfig(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	// First fetch the model config to get budget and rate limit IDs
+	var modelConfig tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).First(&modelConfig, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Store the budget and rate limit IDs before deleting
+	budgetID := modelConfig.BudgetID
+	rateLimitID := modelConfig.RateLimitID
+	// Delete the model config first
+	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return s.parseGormError(err)
+	}
+	// Delete the budget if it exists
+	if budgetID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
 			return err
 		}
-		// Store the budget and rate limit IDs before deleting
-		budgetID := modelConfig.BudgetID
-		rateLimitID := modelConfig.RateLimitID
-		// Delete the model config first
-		if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return s.parseGormError(err)
+	}
+	// Delete the rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
 		}
-		// Delete the budget if it exists
-		if budgetID != nil {
-			if err := tx.Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // GetGovernanceConfig retrieves the governance configuration from the database.

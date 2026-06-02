@@ -656,6 +656,18 @@ bifrost:
       #   - attribute: "groups"
       #     value: "*"            # pass-through: every group becomes a team
       #     team: ""              # ignored when value is "*"
+      #   # SCIM provisioning: match by SCIM user attribute
+      #   - attribute: "department"
+      #     value: "engineering"
+      #     team: "eng-team"
+      #     attributeType: "user"     # "user" = SCIM User push, "group" = SCIM Group push
+      #     attributeValue: "engineering"
+      #   # SCIM provisioning: match by SCIM group (displayName)
+      #   - attribute: "groups"
+      #     value: "Engineering"
+      #     team: "eng-team"
+      #     attributeType: "group"
+      #     attributeValue: "displayName"   # always "displayName" for group type
       # attributeBusinessUnitMappings:
       #   - attribute: "department"
       #     value: "platform"

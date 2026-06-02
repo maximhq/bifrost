@@ -16,6 +16,12 @@
       "enum": [1, 2],
       "default": 2
     },
+    "source_of_truth": {
+      "type": "string",
+      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched.",
+      "enum": ["split", "config.json"],
+      "default": "split"
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
@@ -3692,13 +3698,22 @@
         },
         "attributeTeamMappings": {
           "type": "array",
-          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "team": { "type": "string" }
+              "attribute": { "type": "string", "description": "JWT claim name" },
+              "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
+              "team": { "type": "string", "description": "Bifrost team slug to assign" },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "team"],
             "additionalProperties": false
@@ -3706,13 +3721,22 @@
         },
         "attributeBusinessUnitMappings": {
           "type": "array",
-          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "business_unit": { "type": "string" }
+              "attribute": { "type": "string", "description": "JWT claim name" },
+              "value": { "type": "string", "description": "Claim value to match" },
+              "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign" },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "business_unit"],
             "additionalProperties": false

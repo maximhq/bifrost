@@ -475,7 +475,8 @@
                 { "name": "bedrock/global.anthropic.claude-opus-4-7",       "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "bedrock/us.amazon.nova-lite-v1:0",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
-                { "name": "azure/gpt-4o",                                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
+                { "name": "azure/gpt-4o",                                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
+                { "name": "xai/grok-4-0709",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
               ]
             },
             {
@@ -592,7 +593,8 @@
                 { "name": "gemini/gemini-2.5-flash",                        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "vertex/gemini-2.5-flash",                        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "bedrock/us.amazon.nova-lite-v1:0",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
-                { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
+                { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
+                { "name": "xai/grok-4-0709",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
               ]
             },
             {
@@ -815,6 +817,216 @@
                 { "name": "8.6.4.A native chat → anthropic/claude-opus-4-8 (thinking)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"max_tokens\": 2048,\n  \"thinking\": { \"type\": \"adaptive\" }\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.A native chat → gemini/gemini-2.5-flash (reasoning_effort translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}" }, "url": { "raw": "{{baseUrl}}/anthropic/v1/messages", "host": ["{{baseUrl}}"], "path": ["anthropic", "v1", "messages"] } } }
+              ]
+            },
+            {
+              "name": "8.6.5 xAI x_search (server-side tool)",
+              "description": "xAI-native x_search tool tests via the native /v1/responses endpoint.\n\nThe x_search tool is a server-side search tool exclusive to xAI (grok models). When invoked the model internally calls x_semantic_search and/or x_keyword_search, returning custom_tool_call output items. The final message output_text content block carries url_citation annotations pointing at the source tweets/posts.\n\nDocs: https://docs.x.ai/developers/tools/x-search\n\nCovered here:\n  8.6.5.A – basic x_search, no extra params → verifies custom_tool_call items + final message\n  8.6.5.B – x_search with allowed_x_handles filter → tool_choice=required, verifies sub-tool name\n  8.6.5.C – x_search with from_date/to_date → date-range filtering passes through\n  8.6.5.D – x_search with all optional params (exact bug-report repro)\n  8.6.5.E – x_search streaming → custom_tool_call_input events flow through the SSE stream\n  8.6.5.F – x_search with url_citation annotations → verifies annotations array in output_text block",
+              "item": [
+                {
+                  "name": "8.6.5.A x_search basic (no params)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search: output contains at least one custom_tool_call', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call in output').to.be.above(0);",
+                          "  calls.forEach(function(c) {",
+                          "    pm.expect(c.name, 'sub-tool name must start with x_').to.match(/^x_/);",
+                          "  });",
+                          "});",
+                          "pm.test('x_search: output contains a final message with text', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'expected a message item in output').to.exist;",
+                          "  var hasText = (msg.content || []).some(function(c) { return c.type === 'output_text' && c.text && c.text.length > 0; });",
+                          "  pm.expect(hasText, 'message should contain non-empty output_text').to.be.true;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about artificial intelligence on X today?\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.B x_search with allowed_x_handles (tool_choice=required)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search handles: at least one custom_tool_call present', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'tool_choice=required must produce ≥1 custom_tool_call').to.be.above(0);",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What has xAI been posting about recently?\",\n  \"tools\": [{ \"type\": \"x_search\", \"allowed_x_handles\": [\"xai\", \"grok\"] }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.C x_search with from_date/to_date",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search date range: custom_tool_call present', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call').to.be.above(0);",
+                          "});",
+                          "pm.test('x_search date range: final message has content', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'expected a message item').to.exist;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What were people saying about machine learning on X recently?\",\n  \"tools\": [{ \"type\": \"x_search\", \"from_date\": \"2025-12-01\", \"to_date\": \"2025-12-15\" }],\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.D x_search all optional params (bug-report repro)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search all params: tool present in request and custom_tool_call in output', function () {",
+                          "  var j = pm.response.json();",
+                          "  pm.expect(j.output, 'output should be a non-empty array').to.be.an('array').with.length.above(0);",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'tool_choice=required must yield ≥1 custom_tool_call').to.be.above(0);",
+                          "});",
+                          "pm.test('x_search all params: usage reports x_search_calls > 0', function () {",
+                          "  var j = pm.response.json();",
+                          "  pm.expect(j.usage, 'response must include usage').to.exist;",
+                          "  if (j.usage.server_side_tool_usage_details) {",
+                          "    pm.expect(j.usage.server_side_tool_usage_details.x_search_calls, 'x_search_calls should be > 0').to.be.above(0);",
+                          "  }",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Find recent tweets about artificial intelligence developments.\",\n  \"tools\": [{\n    \"type\": \"x_search\",\n    \"allowed_x_handles\": [\"xai\", \"openai\", \"GoogleAI\"],\n    \"from_date\": \"2025-12-10\",\n    \"to_date\": \"2025-12-15\",\n    \"enable_image_understanding\": false,\n    \"enable_video_understanding\": false\n  }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.E x_search streaming",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Streaming responses return text/event-stream — the collection-level content check skips those.",
+                          "// We verify only that Bifrost emits a 200 and the SSE prefix.",
+                          "pm.test('x_search stream: 200 with SSE content-type', function () {",
+                          "  pm.expect(pm.response.code).to.equal(200);",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.expect(ct, 'expected text/event-stream').to.include('text/event-stream');",
+                          "});",
+                          "pm.test('x_search stream: body includes x_search tool event', function () {",
+                          "  var body = pm.response.text() || '';",
+                          "  var hasToolEvent = body.indexOf('custom_tool_call_input') !== -1 || body.indexOf('\"type\":\"custom_tool_call\"') !== -1;",
+                          "  pm.expect(hasToolEvent, 'expected x_search tool event (custom_tool_call_input or custom_tool_call) in SSE body').to.be.true;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about xAI on X?\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500,\n  \"stream\": true\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.F x_search url_citation annotations",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// x_search grounds its answer in real X posts and surfaces them as url_citation",
+                          "// annotations on the output_text content block. Verify the annotation array is",
+                          "// present and each entry has the required url/start_index/end_index fields.",
+                          "pm.test('x_search citations: output_text block has url_citation annotations', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'output must contain a message item').to.exist;",
+                          "  var textBlock = (msg.content || []).find(function(c) { return c.type === 'output_text'; });",
+                          "  pm.expect(textBlock, 'message must have an output_text block').to.exist;",
+                          "  pm.expect(textBlock.annotations, 'output_text must have annotations array').to.be.an('array').with.length.above(0);",
+                          "  textBlock.annotations.forEach(function(a) {",
+                          "    pm.expect(a.type, 'annotation type must be url_citation').to.equal('url_citation');",
+                          "    pm.expect(a.url, 'url_citation must have a url').to.be.a('string').with.length.above(0);",
+                          "    pm.expect(a).to.have.property('start_index');",
+                          "    pm.expect(a).to.have.property('end_index');",
+                          "  });",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about xAI on X? Summarise with sources.\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 600\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                }
               ]
             }
           ]

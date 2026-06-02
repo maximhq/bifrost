@@ -755,6 +755,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
 		return body, nil
@@ -818,9 +819,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	var allowedProviders []string
+	allowedModelProviders := make([]schemas.ModelProvider, 0, len(allowedProviderConfigs))
 	for _, pc := range allowedProviderConfigs {
 		allowedProviders = append(allowedProviders, pc.Provider)
+		allowedModelProviders = append(allowedModelProviders, schemas.ModelProvider(pc.Provider))
 	}
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, allowedModelProviders)
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
@@ -1819,8 +1823,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
 				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			case result.PassthroughResponse != nil:
+				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+					tokensUsed = su.LLMUsage.TotalTokens
+				}
 			}
 		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			VirtualKey:   virtualKey,
@@ -1833,7 +1842,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+			HasUsageData: tokensUsed > 0 || cost > 0,
 		}
 
 		// Queue usage update asynchronously using tracker
