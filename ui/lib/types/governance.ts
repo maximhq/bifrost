@@ -350,10 +350,11 @@ export interface ModelConfig {
 	scope?: string; // "global" (default) or "virtual_key"
 	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
 	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
-	budget_id?: string;
+	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
+	budget?: Budget; // Deprecated: superseded by budgets (kept for back-compat reads)
 	rate_limit?: RateLimit;
 	created_at: string;
 	updated_at: string;
@@ -365,14 +366,14 @@ export interface CreateModelConfigRequest {
 	provider?: string; // Optional provider - if empty/null, applies to all providers
 	scope?: string; // Defaults to "global" if omitted
 	scope_id?: string; // Required for non-global scopes (e.g. the virtual key ID)
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateModelConfigRequest {
 	model_name?: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
 }
 
