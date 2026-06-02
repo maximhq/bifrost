@@ -50,6 +50,7 @@ const (
 	Perplexity  ModelProvider = "perplexity"
 	Cerebras    ModelProvider = "cerebras"
 	Gemini      ModelProvider = "gemini"
+	GigaChat    ModelProvider = "gigachat"
 	OpenRouter  ModelProvider = "openrouter"
 	Elevenlabs  ModelProvider = "elevenlabs"
 	HuggingFace ModelProvider = "huggingface"
@@ -80,6 +81,7 @@ var StandardProviders = []ModelProvider{
 	Cerebras,
 	Cohere,
 	Gemini,
+	GigaChat,
 	Groq,
 	Mistral,
 	Ollama,
