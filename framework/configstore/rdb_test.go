@@ -692,6 +692,47 @@ func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
 	assert.Equal(t, int64(0), rlCount, "owned rate limit should be deleted")
 }
 
+func TestDeleteProvider_CleansUpProviderModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	require.NoError(t, store.DB().Create(&tables.TableProvider{Name: "openai", CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableBudget{ID: "pb", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableRateLimit{ID: "prl", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+
+	providerName := "openai"
+	mc := &tables.TableModelConfig{
+		ID:          "mc-wildcard",
+		ModelName:   tables.ModelConfigAllModels,
+		Provider:    &providerName,
+		Scope:       tables.ModelConfigScopeGlobal,
+		BudgetID:    schemas.Ptr("pb"),
+		RateLimitID: schemas.Ptr("prl"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	require.NoError(t, store.DeleteProvider(ctx, schemas.ModelProvider("openai")))
+
+	// The provider's wildcard model config and its owned budget/rate-limit are cleaned up.
+	_, err := store.GetModelConfigByID(ctx, "mc-wildcard")
+	assert.Error(t, err, "provider-scoped model config should be deleted with the provider")
+	for _, q := range []struct {
+		model any
+		id    string
+		label string
+	}{
+		{&tables.TableBudget{}, "pb", "budget"},
+		{&tables.TableRateLimit{}, "prl", "rate limit"},
+	} {
+		var count int64
+		require.NoError(t, store.DB().Model(q.model).Where("id = ?", q.id).Count(&count).Error)
+		assert.Equal(t, int64(0), count, "owned "+q.label+" should be deleted")
+	}
+}
+
 // =============================================================================
 // Virtual Key Provider Config Tests
 // =============================================================================

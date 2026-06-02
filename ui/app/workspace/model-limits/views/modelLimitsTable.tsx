@@ -295,7 +295,9 @@ export default function ModelLimitsTable({
 										>
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
-													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
+													<span className="truncate font-mono text-sm font-medium">
+														{config.model_name === "*" ? "All Models" : config.model_name}
+													</span>
 													{isExhausted && (
 														<Badge variant="destructive" className="w-fit text-xs">
 															Limit Reached
