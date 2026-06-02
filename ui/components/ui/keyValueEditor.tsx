@@ -97,7 +97,6 @@ export function KeyValueEditor({
 	const [keyErrors, setKeyErrors] = useState<FieldErrors>({});
 	const isFirstRender = useRef(true);
 	const suppressOnChange = useRef(false);
-
 	// Last record we emitted to (or received from) the parent. Used to ignore
 	// the parent echoing our own onChange back as a new object reference, which
 	// would otherwise drop an in-progress empty row and regenerate IDs.
@@ -128,12 +127,10 @@ export function KeyValueEditor({
 			isFirstRender.current = false;
 			return;
 		}
-
 		if (suppressOnChange.current) {
 			suppressOnChange.current = false;
 			return;
 		}
-
 		const record = validation.record;
 		lastSyncedRef.current = record;
 		onChangeRef.current(record);
