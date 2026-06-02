@@ -741,6 +741,8 @@ export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({
+		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
+		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
 		trace_type: z
@@ -763,6 +765,9 @@ export const otelConfigSchema = z
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 	})
 	.superRefine((data, ctx) => {
+		// A disabled profile is not sent anywhere, so skip all validation for it.
+		if (data.enabled === false) return;
+
 		const protocol = data.protocol;
 		const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
 
@@ -812,6 +817,15 @@ export const otelConfigSchema = z
 			return true;
 		};
 
+		// Collector address is required for an enabled profile.
+		if (!isEnvVarSet(data.collector_url)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["collector_url"],
+				message: "Collector address is required",
+			});
+		}
+
 		// Validate collector_url format — skip format check for env var references
 		const collectorUrl = (data.collector_url?.value || "").trim();
 		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
@@ -837,23 +851,12 @@ export const otelConfigSchema = z
 		}
 	});
 
-// OTEL form schema for the OtelFormFragment
-export const otelFormSchema = z
-	.object({
-		enabled: z.boolean().default(true),
-		otel_config: otelConfigSchema,
-	})
-	.superRefine((data, ctx) => {
-		if (data.enabled) {
-			if (!isEnvVarSet(data.otel_config.collector_url)) {
-				ctx.addIssue({
-					code: "custom",
-					path: ["otel_config", "collector_url"],
-					message: "Collector address is required",
-				});
-			}
-		}
-	});
+// OTEL form schema for the OtelFormFragment. The plugin itself is gated by `enabled`;
+// it carries one or more export profiles, each independently enable-able.
+export const otelFormSchema = z.object({
+	enabled: z.boolean().default(true),
+	profiles: z.array(otelConfigSchema).min(1, "At least one profile is required"),
+});
 
 // Maxim Configuration Schema
 export const maximConfigSchema = z.object({

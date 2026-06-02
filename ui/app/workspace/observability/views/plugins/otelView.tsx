@@ -1,5 +1,6 @@
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
-import { OtelConfigSchema, OtelFormSchema } from "@/lib/types/schemas";
+import { OtelFormSchema } from "@/lib/types/schemas";
+import { toHeaderStringMap } from "@/lib/utils/envVarForm";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
@@ -11,20 +12,23 @@ interface OtelViewProps {
 
 export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-	const currentConfig = useMemo(
-		() => ({ ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
-		[selectedPlugin],
-	);
+	const currentConfig = useMemo(() => ({ config: selectedPlugin?.config, enabled: selectedPlugin?.enabled }), [selectedPlugin]);
 	const [updatePlugin] = useUpdatePluginMutation();
-	const baseUrl = `${window.location.protocol}//${window.location.host}`;
 
 	const handleOtelConfigSave = (config: OtelFormSchema): Promise<void> => {
+		// The backend stores headers as a plain "env.VAR"/literal string map, so flatten the
+		// EnvVar form values here. The config is sent as the { profiles: [...] } wrapper.
+		const profiles = config.profiles.map((profile) => ({
+			...profile,
+			headers: toHeaderStringMap(profile.headers),
+		}));
+
 		return new Promise((resolve, reject) => {
 			updatePlugin({
 				name: "otel",
 				data: {
 					enabled: config.enabled,
-					config: config.otel_config,
+					config: { profiles },
 				},
 			})
 				.unwrap()
