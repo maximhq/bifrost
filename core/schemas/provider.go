@@ -63,6 +63,7 @@ type NetworkConfig struct {
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
+	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -86,6 +87,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -104,6 +106,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
+	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -175,6 +178,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -190,6 +194,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
+		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
 	}
 	if nc.CACertPEM != nil {
 		alias.CACertPEM = EnvVarAsString(nc.CACertPEM)

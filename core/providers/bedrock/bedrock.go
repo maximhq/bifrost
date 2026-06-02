@@ -135,7 +135,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
-	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient)
+	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig.AllowPrivateNetwork)
 	mantleFasthttpClient = providerUtils.ConfigureTLS(mantleFasthttpClient, config.NetworkConfig, logger)
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 
