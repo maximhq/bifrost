@@ -155,6 +155,7 @@ const (
 	ModelFamilyMistral   ModelFamily = "mistral"
 	ModelFamilyCohere    ModelFamily = "cohere"
 	ModelFamilyGemini    ModelFamily = "gemini"
+	ModelFamilyLlama     ModelFamily = "llama"
 	ModelFamilyNova      ModelFamily = "nova"
 	ModelFamilyTitan     ModelFamily = "titan"
 )
@@ -166,7 +167,8 @@ func (mf *ModelFamily) IsValid() bool {
 	}
 	switch *mf {
 	case ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
-		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyNova, ModelFamilyTitan:
+		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyLlama,
+		ModelFamilyNova, ModelFamilyTitan:
 		return true
 	}
 	return false
@@ -363,8 +365,14 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 			return ModelFamilyMistral
 		case IsGeminiModel(s):
 			return ModelFamilyGemini
+		case IsLlamaModel(s):
+			return ModelFamilyLlama
 		case IsNovaModel(s):
 			return ModelFamilyNova
+		case IsTitanModel(s):
+			return ModelFamilyTitan
+		case IsCohereModel(s):
+			return ModelFamilyCohere
 		}
 	}
 	return ""
@@ -378,6 +386,40 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 // used when no alias is resolved in ctx — typically request.Model.
 func IsAnthropicModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyAnthropic
+}
+
+// IsMistralModelFamily reports whether the current attempt resolves to the
+// Mistral model family. See IsAnthropicModelFamily for usage notes.
+func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyMistral
+}
+
+// IsLlamaModelFamily reports whether the current attempt resolves to the
+// Llama model family. Used by Bedrock to gate tool_choice handling — AWS
+// Bedrock Converse rejects toolConfig.toolChoice.tool on Meta Llama variants.
+func IsLlamaModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyLlama
+}
+
+// IsNovaModelFamily reports whether the current attempt resolves to the
+// Amazon Nova model family. Used by Bedrock to gate cache-point insertion
+// and tool shaping that differs from Anthropic.
+func IsNovaModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyNova
+}
+
+// IsCohereModelFamily reports whether the current attempt resolves to the
+// Cohere model family. Used by Bedrock to pick the Cohere request/response
+// shape for embeddings (vs. the Titan envelope).
+func IsCohereModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyCohere
+}
+
+// IsTitanModelFamily reports whether the current attempt resolves to the
+// Amazon Titan model family. Used by Bedrock to pick the Titan embedding
+// request/response envelope.
+func IsTitanModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyTitan
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
