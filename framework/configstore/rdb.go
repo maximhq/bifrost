@@ -1163,27 +1163,34 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	if err := txDB.WithContext(ctx).Preload("Budgets").Where("provider = ?", string(provider)).Find(&providerModelConfigs).Error; err != nil {
 		return err
 	}
-	for _, mc := range providerModelConfigs {
-		for i := range mc.Budgets {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", mc.Budgets[i].ID).Error; err != nil {
-				return err
-			}
-		}
-		if mc.BudgetID != nil {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *mc.BudgetID).Error; err != nil {
-				return err
-			}
-		}
-		if mc.RateLimitID != nil {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *mc.RateLimitID).Error; err != nil {
-				return err
-			}
-		}
-	}
 	if len(providerModelConfigs) > 0 {
 		var mcIDs []string
+		var budgetIDs []string
+		var rateLimitIDs []string
+		for i := range providerModelConfigs {
+			mcIDs = append(mcIDs, providerModelConfigs[i].ID)
+			for j := range providerModelConfigs[i].Budgets {
+				budgetIDs = append(budgetIDs, providerModelConfigs[i].Budgets[j].ID)
+			}
+			if providerModelConfigs[i].BudgetID != nil {
+				budgetIDs = append(budgetIDs, *providerModelConfigs[i].BudgetID)
+			}
+			if providerModelConfigs[i].RateLimitID != nil {
+				rateLimitIDs = append(rateLimitIDs, *providerModelConfigs[i].RateLimitID)
+			}
+		}
 		if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
 			return err
+		}
+		if len(budgetIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+				return err
+			}
+		}
+		if len(rateLimitIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+				return err
+			}
 		}
 	}
 
@@ -3002,12 +3009,6 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		budgetIDs := make([]string, 0, len(scopedModelConfigs))
 		rateLimitIDs := make([]string, 0, len(scopedModelConfigs))
 		for _, mc := range scopedModelConfigs {
-			// Owned budgets via ModelConfigID plus the legacy single BudgetID for safety.
-			for i := range mc.Budgets {
-				if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", mc.Budgets[i].ID).Error; err != nil {
-					return err
-				}
-			}
 			if mc.BudgetID != nil {
 				budgetIDs = append(budgetIDs, *mc.BudgetID)
 			}
@@ -3019,6 +3020,16 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
 			Delete(&tables.TableModelConfig{}).Error; err != nil {
 			return err
+		}
+		if len(budgetIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+				return err
+			}
+		}
+		if len(rateLimitIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+				return err
+			}
 		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
@@ -4256,6 +4267,20 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
 	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
+// GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
+func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+	if len(scopeIDs) == 0 {
+		return nil, nil
+	}
+	var modelConfigs []tables.TableModelConfig
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
+		Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
 	return modelConfigs, nil

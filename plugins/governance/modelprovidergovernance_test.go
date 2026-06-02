@@ -2247,7 +2247,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_NilVK(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	decision, err := store.CheckVirtualKeyScopedModelBudget(context.Background(), nil, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	decision, err := store.CheckScopedModelBudget(context.Background(), "", "", &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2258,7 +2258,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
-	decision, err := store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2274,7 +2274,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err, "Should allow when per-VK model budget is within limit")
 }
 
@@ -2289,7 +2289,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_Exceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.Error(t, err, "Should reject when per-VK model budget is exceeded")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -2307,7 +2307,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_OnlyAppliesToMatchingVK(t *testi
 	require.NoError(t, err)
 
 	// A request made with a DIFFERENT virtual key must not be affected by vk1's scoped config.
-	decision, err := store.CheckVirtualKeyScopedModelBudget(context.Background(), otherVK, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, otherVK.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2326,7 +2326,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_IgnoresGlobalConfig(t *testing.T
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.NoError(t, err, "Scoped check must not pick up the global config")
 	assert.Equal(t, DecisionAllow, decision)
 
@@ -2346,7 +2346,7 @@ func TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded(t *testing
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := store.CheckVirtualKeyScopedModelRateLimit(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
 	assert.Error(t, err, "Should reject when per-VK model token limit is exceeded")
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
@@ -2362,7 +2362,7 @@ func TestStore_CheckVirtualKeyScopedModelRateLimit_WithinLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := store.CheckVirtualKeyScopedModelRateLimit(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2384,16 +2384,16 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips(t *testing.
 	req := &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}
 
 	// Initially within limit.
-	decision, err := store.CheckVirtualKeyScopedModelRateLimit(context.Background(), vk, req, nil, nil)
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, DecisionAllow, decision)
 
 	// Record usage above the limit (what the tracker does post-response). Provider differs from
 	// the config's (which is all-providers), exercising the model-only scoped lookup.
-	require.NoError(t, store.UpdateVirtualKeyScopedModelRateLimitUsageInMemory(context.Background(), vk, "claude-opus-4-7", schemas.Anthropic, 150, true, true))
+	require.NoError(t, store.UpdateScopedModelRateLimitUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 150, true, true))
 
 	// Now the scoped check must trip.
-	decision, err = store.CheckVirtualKeyScopedModelRateLimit(context.Background(), vk, req, nil, nil)
+	decision, err = store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil, nil)
 	assert.Error(t, err)
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
@@ -2411,13 +2411,13 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_BudgetTrips(t *testing.T) {
 
 	req := &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}
 
-	decision, err := store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, req, nil)
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil)
 	require.NoError(t, err)
 	require.Equal(t, DecisionAllow, decision)
 
-	require.NoError(t, store.UpdateVirtualKeyScopedModelBudgetUsageInMemory(context.Background(), vk, "claude-opus-4-7", schemas.Anthropic, 15.0))
+	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 15.0))
 
-	_, err = store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, req, nil)
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil)
 	assert.Error(t, err, "scoped budget should trip once usage exceeds the cap")
 }
 
@@ -2440,7 +2440,7 @@ func TestStore_VKGovernanceBudget_NoDoubleCount(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mirror tracker.UpdateUsage: scoped-model path + hierarchy path, same request/cost.
-	require.NoError(t, store.UpdateVirtualKeyScopedModelBudgetUsageInMemory(context.Background(), vk, "gpt-4", schemas.OpenAI, 10.0))
+	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "gpt-4", schemas.OpenAI, 10.0))
 	require.NoError(t, store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 10.0))
 
 	b := store.LoadBudget(context.Background(), "vkb")
@@ -2473,6 +2473,6 @@ func TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks(t 
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = store.CheckVirtualKeyScopedModelBudget(context.Background(), vk, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
 	assert.Error(t, err, "an exceeded budget among several on a VK-scoped config must block")
 }

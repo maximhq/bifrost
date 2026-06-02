@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -56,12 +57,52 @@ type GovernanceManager interface {
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
+// ScopeNameResolver returns the human-readable name for a non-global model
+// config scope target (e.g. a virtual key's Name given its ID). The second
+// return value is false when no name could be resolved; the UI then falls
+// back to rendering the raw scope_id. Implementations must be safe to call
+// concurrently.
+type ScopeNameResolver func(ctx context.Context, scopeID string) (string, bool)
+
+// scopeNameResolvers is the package-level registry consulted by
+// resolveModelConfigScopeName. OSS seeds it (virtual_key) the first time a
+// GovernanceHandler is constructed; downstream builds extend it via
+// RegisterScopeNameResolver at startup. Guarded by scopeNameResolversMu.
+var (
+	scopeNameResolversMu sync.RWMutex
+	scopeNameResolvers   = map[string]ScopeNameResolver{}
+)
+
+// RegisterScopeNameResolver wires a resolver for a model_config scope value.
+// Intended to be called once at process startup, before serving requests
+// (e.g. an enterprise build registering a "user" resolver). Overwrites any
+// previously registered resolver for the same scope. Safe to call
+// concurrently.
+func RegisterScopeNameResolver(scope string, fn ScopeNameResolver) {
+	if scope == "" || fn == nil {
+		return
+	}
+	scopeNameResolversMu.Lock()
+	scopeNameResolvers[scope] = fn
+	scopeNameResolversMu.Unlock()
+}
+
+func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
+	scopeNameResolversMu.RLock()
+	defer scopeNameResolversMu.RUnlock()
+	fn, ok := scopeNameResolvers[scope]
+	return fn, ok
+}
+
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
 }
 
-// NewGovernanceHandler creates a new governance handler instance
+// NewGovernanceHandler creates a new governance handler instance.
+// Side effect: ensures the default virtual_key scope-name resolver is
+// registered against the supplied configStore, so resolveModelConfigScopeName
+// can render VK names for OSS-only builds without further wiring.
 func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
@@ -69,6 +110,13 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	if configStore == nil {
 		return nil, fmt.Errorf("config store is required")
 	}
+	RegisterScopeNameResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeID string) (string, bool) {
+		vk, err := configStore.GetVirtualKey(ctx, scopeID)
+		if err != nil || vk == nil {
+			return "", false
+		}
+		return vk.Name, true
+	})
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
@@ -411,11 +459,11 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 	return nil
 }
 
-// vkWildcardDesired is the desired governance state for one VK-scoped all-models wildcard
-// model config (provider=nil for the VK top-level, or a specific provider). The *Provided
-// flags distinguish "leave unchanged" (false, used by partial VK updates) from "set to the
-// given value" (true). The rateLimit carries only the limit/duration fields (no ID/usage).
-type vkWildcardDesired struct {
+// vkModelConfigDesired is the desired governance state for one VK-scoped model config tier
+// (provider=nil for the VK top-level, or a specific provider). The *Provided flags distinguish
+// "leave unchanged" (false, used by partial VK updates) from "set to the given value" (true).
+// The rateLimit carries only the limit/duration fields (no ID/usage).
+type vkModelConfigDesired struct {
 	provider          *string
 	budgetsProvided   bool
 	budgets           []CreateBudgetRequest
@@ -425,14 +473,14 @@ type vkWildcardDesired struct {
 }
 
 // syncVKGovernanceToModelConfigs folds a virtual key's governance (top-level + per-provider
-// budgets/rate-limits) into VK-scoped all-models wildcard model configs, the single source of
-// truth. It upserts the top-level and per-provider wildcards and deletes wildcards for
-// providers no longer configured. Must run inside the VK create/update transaction.
-// reconcileProviders controls per-provider handling: true treats perProvider as the full
-// desired set (upserting them and deleting wildcards for absent providers); false leaves all
-// per-provider wildcards untouched (for a partial VK update that omits provider_configs).
-func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, top vkWildcardDesired, perProvider []vkWildcardDesired, reconcileProviders bool) error {
-	if err := h.upsertVKWildcard(ctx, tx, vk, top); err != nil {
+// budgets/rate-limits) into VK-scoped model configs, the single source of truth. It reconciles
+// the top-level and per-provider configs and removes configs for providers no longer configured.
+// Must run inside the VK create/update transaction. reconcileProviders controls per-provider
+// handling: true treats perProvider as the full desired set (reconciling and removing absent
+// providers); false leaves all per-provider configs untouched (for a partial VK update that
+// omits provider_configs).
+func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, top vkModelConfigDesired, perProvider []vkModelConfigDesired, reconcileProviders bool) error {
+	if err := h.reconcileVKModelConfig(ctx, tx, vk, top); err != nil {
 		return err
 	}
 	if !reconcileProviders {
@@ -444,11 +492,11 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 			continue
 		}
 		keep[*pg.provider] = true
-		if err := h.upsertVKWildcard(ctx, tx, vk, pg); err != nil {
+		if err := h.reconcileVKModelConfig(ctx, tx, vk, pg); err != nil {
 			return err
 		}
 	}
-	// Delete VK-scoped provider wildcards whose provider is no longer configured.
+	// Delete VK-scoped provider model configs whose provider is no longer configured.
 	var existing []configstoreTables.TableModelConfig
 	if err := tx.Preload("Budgets").
 		Where("scope = ? AND scope_id = ? AND model_name = ? AND provider IS NOT NULL",
@@ -459,7 +507,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	for i := range existing {
 		mc := &existing[i]
 		if mc.Provider != nil && !keep[*mc.Provider] {
-			if err := h.deleteVKWildcardModelConfig(ctx, tx, mc); err != nil {
+			if err := h.deleteVKModelConfig(ctx, tx, mc); err != nil {
 				return err
 			}
 		}
@@ -467,8 +515,8 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	return nil
 }
 
-// upsertVKWildcard reconciles a single VK-scoped wildcard model config to the desired state.
-func (h *GovernanceHandler) upsertVKWildcard(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkWildcardDesired) error {
+// reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
+func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired) error {
 	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
 		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels)
 	if d.provider == nil {
@@ -554,7 +602,7 @@ func (h *GovernanceHandler) upsertVKWildcard(ctx context.Context, tx *gorm.DB, v
 	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0
 
 	if !hasGovernance {
-		// No governance left → drop the wildcard (and its budgets) if it existed.
+		// No governance left → drop the model config (and its budgets) if it existed.
 		if !isNew {
 			for i := range mc.Budgets {
 				if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
@@ -599,9 +647,9 @@ func (h *GovernanceHandler) upsertVKWildcard(ctx context.Context, tx *gorm.DB, v
 	return nil
 }
 
-// deleteVKWildcardModelConfig removes a VK-scoped wildcard model config and its owned
+// deleteVKModelConfig removes a VK-scoped model config and its owned
 // budgets/rate-limit (used when a provider config is removed from the VK).
-func (h *GovernanceHandler) deleteVKWildcardModelConfig(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig) error {
+func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig) error {
 	for i := range mc.Budgets {
 		if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
 			return err
@@ -630,20 +678,20 @@ func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64
 	}
 }
 
-// vkWildcardIndexKey keys a VK-scoped all-models wildcard by scope target + provider
-func vkWildcardIndexKey(scopeID string, provider *string) string {
+// vkModelConfigIndexKey builds a lookup key for a VK-scoped model config by scope target + provider.
+func vkModelConfigIndexKey(scopeID string, provider *string) string {
 	if provider == nil {
 		return scopeID + "|"
 	}
 	return scopeID + "|" + *provider
 }
 
-// applyVKGovernanceFromWildcards repopulates a VK's (and each provider config's) budgets and
-// rate-limit FROM the VK-scoped wildcard model configs that now own them — for serialization
-// only (so the VK sheet still renders the governance it edits). byKey indexes the wildcards by
-// vkWildcardIndexKey. The reverse of syncVKGovernanceToModelConfigs.
-func applyVKGovernanceFromWildcards(vk *configstoreTables.TableVirtualKey, byKey map[string]*configstoreTables.TableModelConfig) {
-	if mc := byKey[vkWildcardIndexKey(vk.ID, nil)]; mc != nil {
+// applyVKGovernanceFromModelConfigs repopulates a VK's (and each provider config's) budgets and
+// rate-limit from the VK-scoped model configs that own them — for serialization only (so the VK
+// sheet still renders the governance it edits). byKey is keyed by vkModelConfigIndexKey.
+// The reverse of syncVKGovernanceToModelConfigs.
+func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, byKey map[string]*configstoreTables.TableModelConfig) {
+	if mc := byKey[vkModelConfigIndexKey(vk.ID, nil)]; mc != nil {
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
 		vk.RateLimitID = mc.RateLimitID
@@ -654,7 +702,7 @@ func applyVKGovernanceFromWildcards(vk *configstoreTables.TableVirtualKey, byKey
 	}
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
-		if mc := byKey[vkWildcardIndexKey(vk.ID, &pc.Provider)]; mc != nil {
+		if mc := byKey[vkModelConfigIndexKey(vk.ID, &pc.Provider)]; mc != nil {
 			pc.Budgets = mc.Budgets
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
@@ -666,7 +714,7 @@ func applyVKGovernanceFromWildcards(vk *configstoreTables.TableVirtualKey, byKey
 	}
 }
 
-// hydrateVKGovernance reverse-maps a single VK's governance from its wildcard model configs.
+// hydrateVKGovernance reverse-maps a single VK's governance from its VK-scoped model configs.
 func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return
@@ -675,7 +723,7 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 	add := func(provider *string) {
 		mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &vk.ID, configstoreTables.ModelConfigAllModels, provider)
 		if err == nil && mc != nil {
-			byKey[vkWildcardIndexKey(vk.ID, provider)] = mc
+			byKey[vkModelConfigIndexKey(vk.ID, provider)] = mc
 		}
 	}
 	add(nil)
@@ -683,23 +731,23 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 		prov := vk.ProviderConfigs[i].Provider
 		add(&prov)
 	}
-	applyVKGovernanceFromWildcards(vk, byKey)
+	applyVKGovernanceFromModelConfigs(vk, byKey)
 }
 
-// vkWildcardIndexFromModelConfigs builds an index of VK-scoped all-models wildcard model
-// configs keyed by vkWildcardIndexKey, from a slice of model-config pointers.
-func vkWildcardIndexFromModelConfigs(mcs []*configstoreTables.TableModelConfig) map[string]*configstoreTables.TableModelConfig {
+// buildVKModelConfigIndex builds a lookup map of VK-scoped model configs keyed by
+// vkModelConfigIndexKey, from a slice of model-config pointers.
+func buildVKModelConfigIndex(mcs []*configstoreTables.TableModelConfig) map[string]*configstoreTables.TableModelConfig {
 	byKey := make(map[string]*configstoreTables.TableModelConfig)
 	for _, mc := range mcs {
 		if mc != nil && mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ModelName == configstoreTables.ModelConfigAllModels && mc.ScopeID != nil {
-			byKey[vkWildcardIndexKey(*mc.ScopeID, mc.Provider)] = mc
+			byKey[vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)] = mc
 		}
 	}
 	return byKey
 }
 
 // hydrateVKListGovernance reverse-maps governance for a list of VKs using a single bulk load
-// of all VK-scoped wildcard model configs (avoids per-VK/per-provider queries).
+// of all VK-scoped model configs (avoids per-VK/per-provider queries).
 func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []configstoreTables.TableVirtualKey) {
 	if len(vks) == 0 {
 		return
@@ -713,11 +761,11 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 	for i := range allMCs {
 		mc := &allMCs[i]
 		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ModelName == configstoreTables.ModelConfigAllModels && mc.ScopeID != nil {
-			byKey[vkWildcardIndexKey(*mc.ScopeID, mc.Provider)] = mc
+			byKey[vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)] = mc
 		}
 	}
 	for i := range vks {
-		applyVKGovernanceFromWildcards(&vks[i], byKey)
+		applyVKGovernanceFromModelConfigs(&vks[i], byKey)
 	}
 }
 
@@ -872,9 +920,15 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		sort.Slice(virtualKeys, func(i, j int) bool {
 			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
 		})
-		byKey := vkWildcardIndexFromModelConfigs(data.ModelConfigs)
-		for _, vk := range virtualKeys {
-			applyVKGovernanceFromWildcards(vk, byKey)
+		byKey := buildVKModelConfigIndex(data.ModelConfigs)
+		hydratedVKs := make([]*configstoreTables.TableVirtualKey, len(virtualKeys))
+		for i, vk := range virtualKeys {
+			clone := *vk
+			pcs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
+			copy(pcs, vk.ProviderConfigs)
+			clone.ProviderConfigs = pcs
+			applyVKGovernanceFromModelConfigs(&clone, byKey)
+			hydratedVKs[i] = &clone
 		}
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": hydratedVKs,
@@ -943,7 +997,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Failed to retrieve virtual keys")
 			return
 		}
-		// Reverse-map governance from VK-scoped wildcard model configs for display.
+		// Reverse-map governance from VK-scoped model configs for display.
 		h.hydrateVKListGovernance(ctx, virtualKeys)
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
@@ -1038,10 +1092,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
 		}
-		// VK top-level and per-provider budgets/rate-limits are the single-source-of-truth
-		// VK-scoped wildcard model configs, written via syncVKGovernanceToModelConfigs below.
+		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model configs,
+		// the single source of truth, written via syncVKGovernanceToModelConfigs below.
 		// The per-provider desired state is accumulated while creating the provider configs.
-		var vkGovProviders []vkWildcardDesired
+		var vkGovProviders []vkModelConfigDesired
 		if req.ProviderConfigs != nil {
 			for _, pc := range req.ProviderConfigs {
 				providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
@@ -1090,14 +1144,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 					return err
 				}
-				// Provider-config budgets/rate-limit are folded into a VK-scoped wildcard
-				// model config for this provider (written by syncVKGovernanceToModelConfigs).
+				// Provider-config budgets/rate-limit are stored in the VK-scoped model config
+				// for this provider (written by syncVKGovernanceToModelConfigs).
 				providerNameStr := string(providerName)
 				var pcRateLimit *configstoreTables.TableRateLimit
 				if pc.RateLimit != nil {
 					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 				}
-				vkGovProviders = append(vkGovProviders, vkWildcardDesired{
+				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 					provider:          &providerNameStr,
 					budgetsProvided:   true,
 					budgets:           pc.Budgets,
@@ -1106,12 +1160,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				})
 			}
 		}
-		// Fold VK top-level + per-provider governance into VK-scoped wildcard model configs.
+		// Fold VK top-level + per-provider governance into VK-scoped model configs.
 		var topRateLimit *configstoreTables.TableRateLimit
 		if req.RateLimit != nil {
 			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
 		}
-		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkWildcardDesired{
+		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkModelConfigDesired{
 			budgetsProvided:   true,
 			budgets:           req.Budgets,
 			rateLimitProvided: req.RateLimit != nil,
@@ -1161,7 +1215,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to reload virtual key: %v", err)
 		preloadedVk = &vk
 	}
-	// Reverse-map governance from the wildcard model configs just written, for display.
+	// Reverse-map governance from the model configs just written, for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
 
 	SendJSON(ctx, map[string]any{
@@ -1181,10 +1235,14 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
-		byKey := vkWildcardIndexFromModelConfigs(data.ModelConfigs)
+		byKey := buildVKModelConfigIndex(data.ModelConfigs)
 		for _, vk := range data.VirtualKeys {
 			if vk.ID == vkID {
-				applyVKGovernanceFromWildcards(vk, byKey)
+				clone := *vk
+				pcs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
+				copy(pcs, vk.ProviderConfigs)
+				clone.ProviderConfigs = pcs
+				applyVKGovernanceFromModelConfigs(&clone, byKey)
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -1203,7 +1261,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual key")
 		return
 	}
-	// Reverse-map governance from the VK-scoped wildcard model configs for display.
+	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, vk)
 
 	SendJSON(ctx, map[string]interface{}{
@@ -1283,11 +1341,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned
 		}
-		// VK top-level and per-provider budgets/rate-limits are folded into VK-scoped
-		// wildcard model configs (the single source of truth), written by
-		// syncVKGovernanceToModelConfigs below. Per-provider desired state is accumulated
-		// while reconciling provider config rows.
-		var vkGovProviders []vkWildcardDesired
+		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
+		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
+		// below. Per-provider desired state is accumulated while reconciling provider config rows.
+		var vkGovProviders []vkModelConfigDesired
 
 		if err := h.configStore.UpdateVirtualKey(ctx, vk, tx); err != nil {
 			return err
@@ -1368,13 +1425,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 						return err
 					}
-					// Provider-config governance is folded into a VK-scoped wildcard model config.
+					// Provider-config governance is stored in the VK-scoped model config for this provider.
 					pName := string(providerName)
 					var pcRL *configstoreTables.TableRateLimit
 					if pc.RateLimit != nil {
 						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 					}
-					vkGovProviders = append(vkGovProviders, vkWildcardDesired{
+					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:          &pName,
 						budgetsProvided:   true,
 						budgets:           pc.Budgets,
@@ -1420,9 +1477,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					existing.AllowAllKeys = allowAllKeys
 					existing.Keys = keys
 
-					// Provider-config governance is folded into a VK-scoped wildcard model
-					// config (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
-					// leaves the wildcard's budgets unchanged; an explicit set reconciles them.
+					// Provider-config governance is stored in the VK-scoped model config for this
+					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
+					// leaves existing budgets unchanged; an explicit set reconciles them.
 					pName := string(providerName)
 					rlRemove := false
 					var pcRL *configstoreTables.TableRateLimit
@@ -1433,7 +1490,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 						}
 					}
-					vkGovProviders = append(vkGovProviders, vkWildcardDesired{
+					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:          &pName,
 						budgetsProvided:   pc.Budgets != nil,
 						budgets:           pc.Budgets,
@@ -1465,10 +1522,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 			}
 		}
-		// Fold VK governance into VK-scoped wildcard model configs. The top-level is always
-		// reconciled (provided-aware); per-provider wildcards are reconciled only when the
-		// request supplied provider_configs (else they're left untouched).
-		top := vkWildcardDesired{
+		// Fold VK governance into VK-scoped model configs. The top-level is always reconciled
+		// (provided-aware); per-provider configs are reconciled only when the request supplied
+		// provider_configs (else they're left untouched).
+		top := vkModelConfigDesired{
 			budgetsProvided:   req.Budgets != nil,
 			budgets:           req.Budgets,
 			rateLimitProvided: req.RateLimit != nil,
@@ -1598,7 +1655,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to load relationships for updated VK: %v", err)
 		preloadedVk = vk
 	}
-	// Reverse-map governance from the VK-scoped wildcard model configs for display.
+	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
 	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
 		// Should never happen but just in case
@@ -2646,22 +2703,64 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
-		// Copy into a value slice before enriching: never mutate ScopeName on the
-		// pointers returned here, so we don't risk racing the in-memory store regardless
-		// of whether the manager hands back shared pointers or clones.
-		modelConfigs := make([]configstoreTables.TableModelConfig, 0, len(data.ModelConfigs))
+		search := string(ctx.QueryArgs().Peek("search"))
+		// Deep-copy into a value slice: top-level struct copy + nested pointer/slice fields
+		// so we never alias or mutate live governance state during serialization.
+		all := make([]configstoreTables.TableModelConfig, 0, len(data.ModelConfigs))
 		for _, mc := range data.ModelConfigs {
-			if mc != nil {
-				modelConfigs = append(modelConfigs, *mc)
+			if mc == nil {
+				continue
+			}
+			if search != "" && !strings.Contains(strings.ToLower(mc.ModelName), strings.ToLower(search)) {
+				continue
+			}
+			clone := *mc
+			if len(mc.Budgets) > 0 {
+				bs := make([]configstoreTables.TableBudget, len(mc.Budgets))
+				copy(bs, mc.Budgets)
+				clone.Budgets = bs
+			}
+			if mc.Budget != nil {
+				b := *mc.Budget
+				clone.Budget = &b
+			}
+			if mc.RateLimit != nil {
+				rl := *mc.RateLimit
+				clone.RateLimit = &rl
+			}
+			all = append(all, clone)
+		}
+		totalCount := len(all)
+		// Apply pagination if requested, otherwise return all (consistent with DB path).
+		limitStr := string(ctx.QueryArgs().Peek("limit"))
+		offsetStr := string(ctx.QueryArgs().Peek("offset"))
+		offset := 0
+		limit := totalCount
+		if offsetStr != "" {
+			if n, err := strconv.Atoi(offsetStr); err == nil && n >= 0 {
+				offset = n
 			}
 		}
-		h.enrichModelConfigScopeNames(ctx, modelConfigs)
+		if limitStr != "" {
+			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if offset > totalCount {
+			offset = totalCount
+		}
+		end := offset + limit
+		if end > totalCount {
+			end = totalCount
+		}
+		page := all[offset:end]
+		h.enrichModelConfigScopeNames(ctx, page)
 		SendJSON(ctx, map[string]any{
-			"model_configs": modelConfigs,
-			"count":         len(modelConfigs),
-			"total_count":   len(modelConfigs),
-			"limit":         len(modelConfigs),
-			"offset":        0,
+			"model_configs": page,
+			"count":         len(page),
+			"total_count":   totalCount,
+			"limit":         limit,
+			"offset":        offset,
 		})
 		return
 	}
@@ -2755,19 +2854,26 @@ func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
 }
 
 // resolveModelConfigScopeName populates the transient ScopeName for a single non-global
-// model config (currently resolves a virtual_key scope_id to the VK's name). The cache
-// lets callers dedupe lookups across many configs. Resolution failures are non-fatal.
+// model config by dispatching to the resolver registered for mc.Scope. Unknown scopes
+// (no resolver registered) and resolution failures are non-fatal — ScopeName stays empty
+// and the UI falls back to rendering the scope_id. The cache lets callers dedupe lookups
+// across many configs; it is keyed by (scope, scope_id) so distinct scopes never collide.
 func (h *GovernanceHandler) resolveModelConfigScopeName(ctx context.Context, mc *configstoreTables.TableModelConfig, cache map[string]string) {
-	if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeVirtualKey || mc.ScopeID == nil {
+	if mc == nil || mc.Scope == "" || mc.ScopeID == nil {
+		return
+	}
+	resolver, ok := lookupScopeNameResolver(mc.Scope)
+	if !ok {
 		return
 	}
 	id := *mc.ScopeID
-	name, ok := cache[id]
-	if !ok {
-		if vk, err := h.configStore.GetVirtualKey(ctx, id); err == nil && vk != nil {
-			name = vk.Name
+	key := mc.Scope + "|" + id
+	name, cached := cache[key]
+	if !cached {
+		if resolved, found := resolver(ctx, id); found {
+			name = resolved
 		}
-		cache[id] = name
+		cache[key] = name
 	}
 	mc.ScopeName = name
 }
@@ -2856,6 +2962,11 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budgets[i].ResetDuration))
 			return
 		}
+		if seenDurations[req.Budgets[i].ResetDuration] {
+			SendError(ctx, 400, fmt.Sprintf("Duplicate reset_duration in budgets: %s", req.Budgets[i].ResetDuration))
+			return
+		}
+		seenDurations[req.Budgets[i].ResetDuration] = true
 	}
 	var mc configstoreTables.TableModelConfig
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -3090,16 +3201,16 @@ type ProviderGovernanceResponse struct {
 	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
 }
 
-// providerGovernanceFromWildcard maps an "all models on a provider" model config
-// (scope=global, model_name="*", provider set) to a ProviderGovernanceResponse. Provider
-// governance now lives in governance_model_configs as these wildcard rows,
-// this endpoint is a compatibility facade over them.
-func providerGovernanceFromWildcard(mc *configstoreTables.TableModelConfig) (ProviderGovernanceResponse, bool) {
+// modelConfigToProviderGovernance converts a model config to a ProviderGovernanceResponse.
+// Returns false if the config does not represent provider-level governance
+// (i.e. not scope=global, model_name="*", with a provider set).
+func modelConfigToProviderGovernance(mc *configstoreTables.TableModelConfig) (ProviderGovernanceResponse, bool) {
 	if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeGlobal ||
 		mc.ModelName != configstoreTables.ModelConfigAllModels || mc.Provider == nil {
 		return ProviderGovernanceResponse{}, false
 	}
 	// Provider governance is single-budget by API; surface the first owned budget.
+	// This will be updated with the v2 endpoint, which can surface all budgets
 	var budget *configstoreTables.TableBudget
 	if len(mc.Budgets) > 0 {
 		budget = &mc.Budgets[0]
@@ -3108,7 +3219,7 @@ func providerGovernanceFromWildcard(mc *configstoreTables.TableModelConfig) (Pro
 }
 
 // getProviderGovernance handles GET /api/governance/providers - returns provider-level governance,
-// now backed by the wildcard ("all models on a provider") model configs.
+// now backed by all-models model configs scoped per provider.
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	var result []ProviderGovernanceResponse
@@ -3119,7 +3230,7 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		for _, mc := range data.ModelConfigs {
-			if r, ok := providerGovernanceFromWildcard(mc); ok {
+			if r, ok := modelConfigToProviderGovernance(mc); ok {
 				result = append(result, r)
 			}
 		}
@@ -3131,7 +3242,7 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		for i := range configs {
-			if r, ok := providerGovernanceFromWildcard(&configs[i]); ok {
+			if r, ok := modelConfigToProviderGovernance(&configs[i]); ok {
 				result = append(result, r)
 			}
 		}
@@ -3260,7 +3371,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			// Nothing to persist (removal request on a provider with no governance).
 			return nil
 		case !hasGovernance && !isNew:
-			// All governance removed → delete the wildcard config and its owned/orphaned rows.
+			// All governance removed → delete the model config and its owned/orphaned rows.
 			if existingBudget != nil {
 				budgetIDToDelete = existingBudget.ID
 			}
@@ -3351,7 +3462,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				resp.Budget = &mc.Budgets[0]
 			}
 			resp.RateLimit = mc.RateLimit
-		} else if r, ok := providerGovernanceFromWildcard(reloaded); ok {
+		} else if r, ok := modelConfigToProviderGovernance(reloaded); ok {
 			resp.Budget, resp.RateLimit = r.Budget, r.RateLimit
 		}
 	}
@@ -3362,7 +3473,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 }
 
 // deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
-// provider-level governance by deleting the wildcard ("all models on this provider") model config.
+// provider-level governance by deleting the all-models model config for that provider.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 	providerName := ctx.UserValue("provider_name").(string)
 	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)

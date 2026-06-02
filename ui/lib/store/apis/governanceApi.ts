@@ -517,8 +517,10 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			// Wildcard model configs back provider governance; refresh the provider page too.
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -548,7 +550,10 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -581,8 +586,10 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/model-configs/${id}`,
 				method: "DELETE",
 			}),
-			// Wildcard model configs back provider governance; refresh the provider page too.
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
