@@ -706,7 +706,8 @@ type OpenAIResponsesRequest struct {
 	schemas.ResponsesParameters
 	Stream *bool `json:"stream,omitempty"`
 
-	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	// Bifrost specific fields (not serialized to wire)
+	Provider    schemas.ModelProvider  `json:"-"` // originating provider, used for provider-specific filtering
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }

@@ -713,6 +713,29 @@ type ResponsesResponseUsage struct {
 	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
 	Cost                *BifrostCost                   `json:"cost,omitempty"`        // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`  // iterations field is sent by anthropic
+
+	// xAI-specific usage fields
+	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
+	NumServerSideToolsUsed     *int                                 `json:"num_server_side_tools_used,omitempty"`
+	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
+	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
+	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+}
+
+// ResponsesServerSideToolUsageDetails holds per-tool call counts returned by xAI.
+type ResponsesServerSideToolUsageDetails struct {
+	WebSearchCalls       int `json:"web_search_calls"`
+	XSearchCalls         int `json:"x_search_calls"`
+	CodeInterpreterCalls int `json:"code_interpreter_calls"`
+	FileSearchCalls      int `json:"file_search_calls"`
+	MCPCalls             int `json:"mcp_calls"`
+	DocumentSearchCalls  int `json:"document_search_calls"`
+}
+
+// ResponsesContextDetails holds the per-context token breakdown returned by xAI.
+type ResponsesContextDetails struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type ResponsesResponseInputTokens struct {
@@ -1634,6 +1657,7 @@ const (
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
 	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
 	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
+	ResponsesToolTypeXSearch            ResponsesToolType = "x_search"
 )
 
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
@@ -1669,7 +1693,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 
 // ResponsesTool represents a tool
 type ResponsesTool struct {
-	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
+	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11" | "x_search"
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
 
@@ -1697,6 +1721,7 @@ type ResponsesTool struct {
 	*ResponsesToolWebSearchPreview
 	*ResponsesToolToolSearch
 	*ResponsesToolNamespace
+	*ResponsesToolXSearch
 }
 
 // mergeJSONFields merges all top-level fields from src into dst using sjson,
@@ -1830,6 +1855,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeNamespace:
 		if t.ResponsesToolNamespace != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolNamespace)
+		}
+	case ResponsesToolTypeXSearch:
+		if t.ResponsesToolXSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolXSearch)
 		}
 	}
 	if err != nil {
@@ -2005,6 +2034,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolNamespace = &namespaceTool
+
+	case ResponsesToolTypeXSearch:
+		var xSearchTool ResponsesToolXSearch
+		if err := Unmarshal(data, &xSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolXSearch = &xSearchTool
 	}
 
 	return nil
@@ -2429,6 +2465,26 @@ type ResponsesToolWebFetch struct {
 // ResponsesToolNamespace represents a namespace tool that groups related function tools.
 type ResponsesToolNamespace struct {
 	Tools []ResponsesTool `json:"tools,omitempty"`
+}
+
+// ResponsesToolXSearch represents the xAI-native x_search server-side tool.
+// All fields are optional; when omitted xAI searches without restrictions.
+// See https://docs.x.ai/developers/tools/x-search#x-search-parameters
+type ResponsesToolXSearch struct {
+	// AllowedXHandles restricts search to posts from these X accounts (max 10).
+	// Mutually exclusive with ExcludedXHandles.
+	AllowedXHandles []string `json:"allowed_x_handles,omitempty"`
+	// ExcludedXHandles excludes posts from these X accounts from results.
+	// Mutually exclusive with AllowedXHandles.
+	ExcludedXHandles []string `json:"excluded_x_handles,omitempty"`
+	// FromDate is the start date for tweet search (ISO 8601 date or datetime string).
+	FromDate *string `json:"from_date,omitempty"`
+	// ToDate is the end date for tweet search (ISO 8601 date or datetime string).
+	ToDate *string `json:"to_date,omitempty"`
+	// EnableImageUnderstanding controls whether images in tweets are analyzed.
+	EnableImageUnderstanding *bool `json:"enable_image_understanding,omitempty"`
+	// EnableVideoUnderstanding controls whether videos in tweets are analyzed.
+	EnableVideoUnderstanding *bool `json:"enable_video_understanding,omitempty"`
 }
 
 // ======================================================= Streaming Structs =======================================================
