@@ -54,7 +54,7 @@ func ParseSGLError(resp *fasthttp.Response) *schemas.BifrostError {
 	currentMsg := strings.TrimSpace(bifrostErr.Error.Message)
 	wrappedHadMessage := currentMsg != "" && !strings.HasPrefix(currentMsg, "provider API error")
 	if !wrappedHadMessage {
-		if flat, ok := extractFlatSGLErrorFromRaw(bifrostErr.ExtraFields.RawResponse); ok && flat.Message != "" {
+		if flat, ok := extractFlatSGLErrorFromRaw(bifrostErr.ExtraFields.RawResponse); ok && flat.Message != "" && flat.Object == "error" {
 			bifrostErr.Error.Message = flat.Message
 			if flat.Type != "" {
 				t := flat.Type
@@ -82,10 +82,8 @@ func ParseSGLError(resp *fasthttp.Response) *schemas.BifrostError {
 }
 
 func setSGLErrorCode(field *schemas.ErrorField, code, typ string) {
-	c := code
-	t := typ
-	field.Code = &c
-	field.Type = &t
+	field.Code = schemas.Ptr(code)
+	field.Type = schemas.Ptr(typ)
 }
 
 // extractFlatSGLErrorFromRaw pulls a flat sglang error envelope out of the

@@ -15,7 +15,17 @@ interface AllowedRequestsFieldsProps {
 	pathOverridesPrefix?: string;
 	providerType?: BaseProvider;
 	disabled?: boolean;
+	// When true, advanced request types (rerank and the other non-core types)
+	// are hidden from the UI but still kept in form defaults. Used by the
+	// Add Custom Provider dialog to keep the dialog scoped.
+	hideAdvancedTypes?: boolean;
 }
+
+// Advanced request types that should be hidden from the Add Custom Provider
+// dialog to avoid clutter. Defaults are still preserved in form state.
+const AdvancedRequestTypes: ReadonlySet<RequestType> = new Set<RequestType>([
+	"rerank",
+]);
 
 // Provider-specific endpoint paths
 const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType, string>>>> = {
@@ -51,6 +61,15 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		responses: "/v2/chat",
 		responses_stream: "/v2/chat",
 		embedding: "/v2/embed",
+	},
+	sgl: {
+		list_models: "/v1/models",
+		text_completion: "/v1/completions",
+		text_completion_stream: "/v1/completions",
+		chat_completion: "/v1/chat/completions",
+		chat_completion_stream: "/v1/chat/completions",
+		embedding: "/v1/embeddings",
+		rerank: "/v1/rerank",
 	},
 };
 
@@ -90,12 +109,19 @@ export function AllowedRequestsFields({
 	pathOverridesPrefix = "request_path_overrides",
 	providerType,
 	disabled = false,
+	hideAdvancedTypes = false,
 }: AllowedRequestsFieldsProps) {
-	const leftColumn = RequestTypes.slice(0, RequestTypes.length / 2);
-	const rightColumn = RequestTypes.slice(RequestTypes.length / 2);
+	const visibleRequestTypes = useMemo(
+		() => (hideAdvancedTypes ? RequestTypes.filter(({ key }) => !AdvancedRequestTypes.has(key)) : RequestTypes),
+		[hideAdvancedTypes],
+	);
+	const leftColumn = visibleRequestTypes.slice(0, Math.ceil(visibleRequestTypes.length / 2));
+	const rightColumn = visibleRequestTypes.slice(Math.ceil(visibleRequestTypes.length / 2));
 	const { getValues, setValue } = useFormContext();
 
-	// Reset disabled fields when providerType changes
+	// Reset disabled fields when providerType changes. Iterates over the full
+	// RequestTypes list (not visibleRequestTypes) so defaults stay in form
+	// state even when an entry is hidden from the UI.
 	useEffect(() => {
 		RequestTypes.forEach(({ key }) => {
 			const fieldName = `${namePrefix}.${key}`;

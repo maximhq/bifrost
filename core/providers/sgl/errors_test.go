@@ -176,6 +176,27 @@ func TestParseSGLError_GzipFlatEnvelope(t *testing.T) {
 	assert.Equal(t, "server_error", strDeref(bifrostErr.Error.Type))
 }
 
+// TestParseSGLError_NonErrorObjectIgnored verifies that a JSON object response
+// missing `"object":"error"` is NOT treated as a flat sglang error envelope,
+// even if it happens to have a top-level "message" key. This guards against
+// a sidecar/proxy in front of sglang accidentally hijacking the error mapping.
+func TestParseSGLError_NonErrorObjectIgnored(t *testing.T) {
+	t.Parallel()
+
+	// Object without `"object":"error"` — e.g. some proxy's own 4xx envelope.
+	body := `{"message":"proxy denied request","type":"ProxyError","code":403}`
+	resp := buildSGLErrorResponse(403, body)
+	defer fasthttp.ReleaseResponse(resp)
+
+	bifrostErr := ParseSGLError(resp)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	// The flat-envelope path should be skipped, so the message should NOT be
+	// "proxy denied request" — the wrapper's default ("provider API error ...")
+	// stays in place.
+	assert.NotEqual(t, "proxy denied request", bifrostErr.Error.Message)
+}
+
 // jsonString minimally escapes a Go string for embedding in a JSON literal.
 // Only handles characters used by the test fixtures.
 func jsonString(s string) string {
