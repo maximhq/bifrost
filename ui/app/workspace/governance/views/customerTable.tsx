@@ -248,15 +248,11 @@ export default function CustomersTable({
 										const customerTeams = getTeamsForCustomer(customer.id);
 										const vks = getVirtualKeysForCustomer(customer.id);
 
-										// Budget calculations
-										const isBudgetExhausted =
-											customer.budget?.max_limit &&
-											customer.budget.max_limit > 0 &&
-											customer.budget.current_usage >= customer.budget.max_limit;
-										const budgetPercentage =
-											customer.budget?.max_limit && customer.budget.max_limit > 0
-												? Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)
-												: 0;
+										// Budget calculations (most-exhausted budget drives the row highlight)
+										const budgets = customer.budgets ?? [];
+										const isBudgetExhausted = budgets.some(
+											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
+										);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -312,38 +308,48 @@ export default function CustomersTable({
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
-													{customer.budget ? (
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(customer.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(customer.budget.reset_duration)}
-																		</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(customer.budget.reset_duration)}
-																</p>
-															</TooltipContent>
-														</Tooltip>
+													{budgets.length > 0 ? (
+														<div className="space-y-2">
+															{budgets.map((budget) => {
+																const pct = budget.max_limit > 0
+																	? Math.min((budget.current_usage / budget.max_limit) * 100, 100)
+																	: 0;
+																const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
+																return (
+																	<Tooltip key={budget.id}>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1">
+																				<div className="flex items-center justify-between gap-4">
+																					<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
+																					<span className="text-muted-foreground text-xs">
+																						{formatResetDuration(budget.reset_duration)}
+																					</span>
+																				</div>
+																				<Progress
+																					value={pct}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1.5",
+																						exhausted
+																							? "[&>div]:bg-red-500/70"
+																							: pct > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
+																			</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				Resets {formatResetDuration(budget.reset_duration)}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																);
+															})}
+														</div>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
 													)}

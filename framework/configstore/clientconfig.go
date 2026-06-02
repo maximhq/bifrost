@@ -982,9 +982,22 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 	// Hash Name
 	hash.Write([]byte(c.Name))
 
-	// Hash BudgetID
+	// Collect budget IDs from both sources so config-file context (BudgetID) and
+	// DB context (Budgets) produce the same hash for the same logical state.
+	seen := make(map[string]bool, len(c.Budgets)+1)
 	if c.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *c.BudgetID))
+		seen[*c.BudgetID] = true
+	}
+	for _, b := range c.Budgets {
+		seen[b.ID] = true
+	}
+	budgetIDs := make([]string, 0, len(seen))
+	for id := range seen {
+		budgetIDs = append(budgetIDs, id)
+	}
+	sort.Strings(budgetIDs)
+	for _, id := range budgetIDs {
+		hash.Write([]byte("budgetID:" + id))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
