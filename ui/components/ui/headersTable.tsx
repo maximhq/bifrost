@@ -26,6 +26,13 @@ interface HeadersTableProps<T extends HeaderValue> {
 	label?: string;
 	disabled?: boolean;
 	useEnvVarInput?: boolean;
+	/**
+	 * When provided, the table renders exactly these keys as read-only,
+	 * non-deletable rows (no trailing "add" row). Values stay editable unless
+	 * `disabled` is set. Use this for fixed-schema key sets like a stdio
+	 * server's required environment variables.
+	 */
+	fixedKeys?: string[];
 	/** Optional custom renderer for the key (name) cell input */
 	renderKeyInput?: (params: CellRenderParams) => React.ReactNode;
 	/** Optional custom renderer for the value cell input */
@@ -64,6 +71,7 @@ export function HeadersTable<T extends HeaderValue>({
 	label = "Headers",
 	disabled = false,
 	useEnvVarInput,
+	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
 }: HeadersTableProps<T>) {
@@ -85,11 +93,16 @@ export function HeadersTable<T extends HeaderValue>({
 		return "" as T;
 	};
 
+	const isFixedKeys = Array.isArray(fixedKeys);
+
 	// Convert headers object to array format for table display
 	// Filter out any empty string keys from stored headers
 	const headerEntries = Object.entries(value || {});
-	// Always show at least one empty row at the bottom
-	const rows: [string, T][] = [...headerEntries, ["", getEmptyValue()]];
+	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
+	// no trailing add-row). Otherwise always show one empty row at the bottom.
+	const rows: [string, T][] = fixedKeys
+		? fixedKeys.map((key) => [key, (value?.[key] ?? getEmptyValue())] as [string, T])
+		: [...headerEntries, ["", getEmptyValue()]];
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
 		// Check if newKey already exists (and it's not the current row's original key)
@@ -203,9 +216,11 @@ export function HeadersTable<T extends HeaderValue>({
 						<TableRow>
 							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
 							<TableHead className="px-4 py-2">Value</TableHead>
-							<TableHead className="w-10 p-0">
-								<span className="sr-only">Actions</span>
-							</TableHead>
+							{!isFixedKeys && (
+								<TableHead className="w-10 p-0">
+									<span className="sr-only">Actions</span>
+								</TableHead>
+							)}
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -237,6 +252,14 @@ export function HeadersTable<T extends HeaderValue>({
 													disabled,
 													rowKey: key,
 												})
+											) : isFixedKeys ? (
+												<Input
+													value={key}
+													readOnly
+													data-row={index}
+													data-column="key"
+													className="border-0 font-mono text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
+												/>
 											) : (
 												<Input
 													placeholder={keyPlaceholder}
@@ -285,13 +308,15 @@ export function HeadersTable<T extends HeaderValue>({
 											/>
 										)}
 									</TableCell>
-									<TableCell className="p-0">
-										{!disabled && !isEmptyTrailingRow && (
-											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
-												<Trash className="h-4 w-4" />
-											</Button>
-										)}
-									</TableCell>
+									{!isFixedKeys && (
+										<TableCell className="p-0">
+											{!disabled && !isEmptyTrailingRow && (
+												<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
+													<Trash className="h-4 w-4" />
+												</Button>
+											)}
+										</TableCell>
+									)}
 								</TableRow>
 							);
 						})}
