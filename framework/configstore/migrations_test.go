@@ -1090,8 +1090,8 @@ func TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted(t *testing
 	// Verify the aliases contain the original deployment data (not double-encrypted)
 	aliases := keys[0].Aliases
 	assert.Contains(t, aliases, "claude")
-	assert.Equal(t, "dep-claude", aliases["claude"])
-	assert.Equal(t, "dep-instant", aliases["claude-instant"])
+	assert.Equal(t, "dep-claude", aliases["claude"].ModelID)
+	assert.Equal(t, "dep-instant", aliases["claude-instant"].ModelID)
 }
 
 // ============================================================================

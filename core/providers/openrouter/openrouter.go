@@ -206,9 +206,11 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	for _, m := range key.BlacklistedModels {
 		normalizedBlacklist = append(normalizedBlacklist, stripPrefix(m))
 	}
-	normalizedAliases := make(map[string]string, len(key.Aliases))
+	normalizedAliases := make(schemas.KeyAliases, len(key.Aliases))
 	for k, v := range key.Aliases {
-		normalizedAliases[stripPrefix(k)] = stripPrefix(v)
+		cfg := v
+		cfg.ModelID = stripPrefix(v.ModelID)
+		normalizedAliases[stripPrefix(k)] = cfg
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{

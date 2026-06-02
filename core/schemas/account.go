@@ -3,6 +3,7 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -141,22 +142,141 @@ type Key struct {
 	Description        string              `json:"description,omitempty"`          // Description of key
 }
 
-type KeyAliases map[string]string
+// ModelFamily is a typed enum identifying the underlying model family of an alias target.
+// It enables provider routing decisions (request shape, response parsing, auth headers,
+// URL construction) without substring-sniffing the wire model ID.
+type ModelFamily string
+
+const (
+	ModelFamilyAnthropic ModelFamily = "anthropic"
+	ModelFamilyOpenAI    ModelFamily = "openai"
+	ModelFamilyMistral   ModelFamily = "mistral"
+	ModelFamilyCohere    ModelFamily = "cohere"
+	ModelFamilyGemini    ModelFamily = "gemini"
+	ModelFamilyNova      ModelFamily = "nova"
+	ModelFamilyTitan     ModelFamily = "titan"
+)
+
+// IsValid reports whether mf is a recognized model family.
+func (mf *ModelFamily) IsValid() bool {
+	if mf == nil {
+		return false
+	}
+	switch *mf {
+	case ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
+		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyNova, ModelFamilyTitan:
+		return true
+	}
+	return false
+}
+
+// AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
+// Each field, when non-nil, overrides the corresponding key-level default.
+type AzureAliasCfg struct {
+	APIVersion       *string `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion *string `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
+	Endpoint         *EnvVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias (allows one credential to span multiple Azure resources)
+}
+
+// VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
+type VertexAliasCfg struct {
+	ProjectID     *EnvVar `json:"project_id,omitempty"`
+	ProjectNumber *EnvVar `json:"project_number,omitempty"`
+}
+
+// BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
+type BedrockAliasCfg struct {
+	InferenceProfileARN *EnvVar `json:"inference_profile_arn,omitempty"`
+}
+
+// ReplicateAliasCfg holds Replicate-specific overrides that apply to a single alias.
+type ReplicateAliasCfg struct {
+	UseDeploymentsEndpoint *bool `json:"use_deployments_endpoint,omitempty"`
+}
+
+// VLLMAliasCfg holds vLLM-specific overrides that apply to a single alias.
+type VLLMAliasCfg struct {
+	ModelName *string `json:"model_name,omitempty"`
+}
+
+// AliasConfig is the rich value type held by KeyAliases. It carries everything
+// needed to call a provider for an aliased model: the wire model identifier
+// (ModelID), the canonical model name used for pricing/logging (ModelName), the
+// family used for provider routing decisions (ModelFamily), and optional
+// provider-specific overrides that override the key-level defaults.
+type AliasConfig struct {
+	ModelID     string       `json:"model_id"`               // wire model identifier sent to the provider
+	ModelName   *string      `json:"model_name,omitempty"`   // canonical model name used for pricing, logging, and 2nd-tier family routing
+	ModelFamily *ModelFamily `json:"model_family,omitempty"` // 1st-tier family routing enum
+	Description string       `json:"description,omitempty"`  // description of the alias for users to understand its purpose (not used by bifrost)
+	Region      *EnvVar      `json:"region,omitempty"`
+
+	*AzureAliasCfg
+	*VertexAliasCfg
+	*BedrockAliasCfg
+	*ReplicateAliasCfg
+}
+
+// isLegacyShape reports whether this AliasConfig carries only ModelID and no
+// other fields. Used by MarshalJSON to emit the legacy string-valued wire
+// shape so older consumers that expect map[string]string keep working.
+func (ac AliasConfig) isLegacyShape() bool {
+	return ac.ModelID != "" &&
+		ac.ModelName == nil &&
+		ac.ModelFamily == nil &&
+		ac.Description == "" &&
+		ac.Region == nil &&
+		ac.AzureAliasCfg == nil &&
+		ac.VertexAliasCfg == nil &&
+		ac.BedrockAliasCfg == nil &&
+		ac.ReplicateAliasCfg == nil
+}
+
+// MarshalJSON emits the legacy string wire shape when only ModelID is set, so
+// callers that haven't opted into the rich AliasConfig see no observable
+// change on the wire. When any other field is populated, the full object is
+// emitted.
+func (ac AliasConfig) MarshalJSON() ([]byte, error) {
+	if ac.isLegacyShape() {
+		return json.Marshal(ac.ModelID)
+	}
+	type aliasConfigJSON AliasConfig
+	return json.Marshal(aliasConfigJSON(ac))
+}
+
+// KeyAliases maps a user-facing model name to its AliasConfig.
+//
+// Both the input (UnmarshalJSON) and the output (AliasConfig.MarshalJSON)
+// transparently accept and emit two JSON wire shapes:
+//   - Legacy: {"my-model": "provider-model-id"}                              — value is a string
+//   - New:    {"my-model": {"model_id": "provider-model-id", ... }}          — value is an object
+//
+// Legacy entries deserialize to AliasConfig{ModelID: <string>}; an AliasConfig
+// that only has ModelID set serializes back to a plain string. This keeps the
+// wire format byte-for-byte compatible with the pre-refactor flow until
+// ModelName / ModelFamily / provider sub-configs are populated explicitly.
+type KeyAliases map[string]AliasConfig
 
 func (ka KeyAliases) Validate() error {
 	seen := make(map[string]struct{}, len(ka))
-	for from, to := range ka {
+	for from, ac := range ka {
 		if strings.TrimSpace(from) == "" {
 			return fmt.Errorf("alias source cannot be empty")
 		}
-		if strings.TrimSpace(to) == "" {
-			return fmt.Errorf("alias target for %q cannot be empty", from)
+		if strings.TrimSpace(ac.ModelID) == "" {
+			return fmt.Errorf("alias %q: model_id cannot be empty", from)
 		}
 		if strings.TrimSpace(from) != from {
 			return fmt.Errorf("alias source %q cannot have leading or trailing whitespace", from)
 		}
-		if strings.TrimSpace(to) != to {
-			return fmt.Errorf("alias target for %q cannot have leading or trailing whitespace", from)
+		if strings.TrimSpace(ac.ModelID) != ac.ModelID {
+			return fmt.Errorf("alias %q: model_id cannot have leading or trailing whitespace", from)
+		}
+		if ac.ModelName != nil && strings.TrimSpace(*ac.ModelName) != *ac.ModelName {
+			return fmt.Errorf("alias %q: model_name cannot have leading or trailing whitespace", from)
+		}
+		if ac.ModelFamily != nil && !ac.ModelFamily.IsValid() {
+			return fmt.Errorf("alias %q: invalid model_family %q", from, *ac.ModelFamily)
 		}
 		normalized := strings.ToLower(from)
 		if _, ok := seen[normalized]; ok {
@@ -167,20 +287,99 @@ func (ka KeyAliases) Validate() error {
 	return nil
 }
 
+// Resolve returns the wire model identifier for the given user-facing model name.
+// If no alias matches, the input is returned unchanged. Case-insensitive fallback
+// matches the prior behavior.
+//
+// This signature is preserved for backward compatibility with existing callers
+// that only need the wire model string. For access to the full AliasConfig
+// (ModelName, ModelFamily, provider overrides), use ResolveConfig.
 func (ka KeyAliases) Resolve(model string) string {
-	if ka == nil {
-		return model
-	}
-	if alias, ok := ka[model]; ok {
-		return alias
-	}
-	// Fall back to case-insensitive lookup for consistency with WhiteList.Contains
-	for k, v := range ka {
-		if strings.EqualFold(k, model) {
-			return v
-		}
+	if ac := ka.ResolveConfig(model); ac != nil {
+		return ac.ModelID
 	}
 	return model
+}
+
+// ResolveConfig returns the AliasConfig for the given user-facing model name,
+// or nil if no alias matches. Case-insensitive fallback matches Resolve.
+func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
+	if ka == nil {
+		return nil
+	}
+	if ac, ok := ka[model]; ok {
+		return &ac
+	}
+	for k, v := range ka {
+		if strings.EqualFold(k, model) {
+			return &v
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON accepts both the legacy {"k":"v"} and new {"k":{...}} wire
+// shapes for KeyAliases. Legacy string values are promoted to
+// AliasConfig{ModelID: <string>}.
+func (ka *KeyAliases) UnmarshalJSON(data []byte) error {
+	trimmed := bytes_TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*ka = nil
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	result := make(KeyAliases, len(raw))
+	for k, entry := range raw {
+		entryTrim := bytes_TrimSpace(entry)
+		if len(entryTrim) == 0 {
+			return fmt.Errorf("alias %q: empty value", k)
+		}
+		switch entryTrim[0] {
+		case '"':
+			// Legacy string value — promote to AliasConfig{ModelID: ...}.
+			var modelID string
+			if err := json.Unmarshal(entry, &modelID); err != nil {
+				return fmt.Errorf("alias %q: %w", k, err)
+			}
+			result[k] = AliasConfig{ModelID: modelID}
+		case '{':
+			var ac AliasConfig
+			if err := json.Unmarshal(entry, &ac); err != nil {
+				return fmt.Errorf("alias %q: %w", k, err)
+			}
+			result[k] = ac
+		default:
+			return fmt.Errorf("alias %q: value must be a string (legacy) or object", k)
+		}
+	}
+	*ka = result
+	return nil
+}
+
+// bytes_TrimSpace trims ASCII whitespace from both ends of b without allocating.
+// Used by UnmarshalJSON to peek at the first non-whitespace byte of a value.
+func bytes_TrimSpace(b []byte) []byte {
+	start, end := 0, len(b)
+	for start < end {
+		switch b[start] {
+		case ' ', '\t', '\n', '\r':
+			start++
+			continue
+		}
+		break
+	}
+	for end > start {
+		switch b[end-1] {
+		case ' ', '\t', '\n', '\r':
+			end--
+			continue
+		}
+		break
+	}
+	return b[start:end]
 }
 
 type AzureAuthType string
