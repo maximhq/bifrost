@@ -3016,8 +3016,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 // CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
 // It returns the default provider if it should be used, otherwise it returns an empty string.
-// Checks if key selection is skipped, or if the available providers are set in the context
-// and the default provider is in the list.
+// Checks if key selection is skipped, if a resolved provider was selected by routing,
+// or if the available providers are set in the context and the default provider is in the list.
 func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
 	if ctx != nil {
 		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
@@ -3027,6 +3027,10 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 			availableProviders, ok := ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
 			if !ok || len(availableProviders) == 0 {
 				return ""
+			}
+			if resolvedProvider, ok := ctx.Value(schemas.BifrostContextKeyResolvedProvider).(schemas.ModelProvider); ok && slices.Contains(availableProviders, resolvedProvider) {
+				getLogger().Debug("[Provider] Using routing-resolved provider: %s (available: %v)", resolvedProvider, availableProviders)
+				return resolvedProvider
 			}
 			getLogger().Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
 			if slices.Contains(availableProviders, defaultProvider) {
