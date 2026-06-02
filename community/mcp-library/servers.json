@@ -1,0 +1,52 @@
+{
+  "$schema": "./schema.json",
+  "lastUpdatedAt": "2026-06-02T00:00:00Z",
+  "servers": [
+    {
+      "slug": "filesystem",
+      "name": "Filesystem",
+      "description": "Read and write files on the local filesystem within configured directories.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/path/to/allowed/dir"
+        ],
+        "envs": []
+      },
+      "auth_type": "none",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "publisher": "Anthropic",
+      "tags": [
+        "files",
+        "local",
+        "storage"
+      ]
+    },
+    {
+      "slug": "github",
+      "name": "GitHub",
+      "description": "Access GitHub repositories, issues, and pull requests through the official GitHub MCP server.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://api.githubcopilot.com/mcp/",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "icon_url": "https://github.githubassets.com/favicons/favicon.png",
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "publisher": "GitHub",
+      "version": "1.0.0",
+      "tags": [
+        "git",
+        "repository",
+        "issues",
+        "pull-requests"
+      ]
+    }
+  ]
+}
