@@ -27,4 +27,8 @@ type Config struct {
 	PricingURL          *string `json:"pricing_url,omitempty"`
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
 	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
+	// DisableSync, when true, disables all upstream URL fetches for both pricing
+	// and model parameters. The catalog still serves data from the config store
+	// and from runtime pricing overrides. Required for airgapped deployments.
+	DisableSync *bool `json:"disable_sync,omitempty"`
 }

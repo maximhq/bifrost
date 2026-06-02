@@ -479,6 +479,11 @@
                   "description": "Pricing sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
                   "default": 86400,
                   "minimum": 3600
+                },
+                "disableSync": {
+                  "type": "boolean",
+                  "description": "Disable upstream fetches of pricing and model parameters. Required for airgapped deployments without outbound network access.",
+                  "default": false
                 }
               },
               "additionalProperties": false

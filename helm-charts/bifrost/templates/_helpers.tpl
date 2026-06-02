@@ -329,7 +329,10 @@ false
 {{- if .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- $_ := set $pricing "pricing_sync_interval" .Values.bifrost.framework.pricing.pricingSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.pricing_sync_interval }}
+{{- if .Values.bifrost.framework.pricing.disableSync }}
+{{- $_ := set $pricing "disable_sync" true }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.pricing_sync_interval $pricing.model_parameters_url $pricing.disable_sync }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}

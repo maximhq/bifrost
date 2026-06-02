@@ -261,6 +261,11 @@ bifrost:
       modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
+      # Disable upstream fetches of pricing and model-parameters data.
+      # Set to true for airgapped clusters with no outbound network access.
+      # When true, pricing is sourced only from governance.pricingOverrides
+      # and any data already present in the config store.
+      disableSync: false
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables

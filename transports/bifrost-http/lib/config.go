@@ -3552,6 +3552,11 @@ func ResolveFrameworkPricingConfig(
 	filePricingURL := (*string)(nil)
 	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
+	// fileDisableSync is intentionally file-only: it is not persisted to the
+	// framework_configs table and does not participate in hash-based DB
+	// reconciliation below. Airgapped operators control sync purely via
+	// config.json / Helm values, which fits the GitOps workflow.
+	fileDisableSync := (*bool)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
@@ -3602,6 +3607,9 @@ func ResolveFrameworkPricingConfig(
 			default:
 				fileSyncSeconds = &val
 			}
+		}
+		if fileConfig.Pricing.DisableSync != nil {
+			fileDisableSync = fileConfig.Pricing.DisableSync
 		}
 	}
 
@@ -3722,6 +3730,7 @@ func ResolveFrameworkPricingConfig(
 			PricingURL:          resolvedPricingURL,
 			PricingSyncInterval: resolvedSyncSeconds,
 			ModelParametersURL:  resolvedModelParametersURL,
+			DisableSync:         fileDisableSync,
 		}, needsDBUpdate
 }
 
