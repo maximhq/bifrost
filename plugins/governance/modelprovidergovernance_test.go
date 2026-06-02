@@ -2102,6 +2102,75 @@ func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 }
 
 // ============================================================================
+// Store Tests - All-models ("*") wildcard tier (provider-level governance)
+// ============================================================================
+
+// TestStore_CheckModelBudget_AllModelsOnProvider_Exceeded verifies that an all-models
+// wildcard config (provider=openai, model_name="*") — the migrated provider-level budget —
+// applies to ANY model on that provider.
+func TestStore_CheckModelBudget_AllModelsOnProvider_Exceeded(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// A request for an arbitrary OpenAI model must be caught by the "*:openai" config.
+	_, err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "all-models budget for the provider should apply to any model on it")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestStore_CheckModelBudget_AllModelsOnProvider_OtherProviderPasses confirms the wildcard
+// is provider-scoped: it must NOT affect a different provider.
+func TestStore_CheckModelBudget_AllModelsOnProvider_OtherProviderPasses(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}, nil)
+	assert.NoError(t, err, "an OpenAI all-models budget must not affect an Anthropic request")
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+// TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard verifies usage recording reaches
+// the all-models wildcard config (record-then-check loop for provider-level governance).
+func TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000000, 0) // 100-token cap
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	// Within limit initially.
+	decision, err := store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision)
+
+	// Record usage for a (different) model on the provider — must bump the "*:openai" config.
+	require.NoError(t, store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4o", schemas.OpenAI, 150, true, true))
+
+	// Now the all-models rate limit trips for any model on the provider.
+	decision, err = store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "gpt-4o-mini", Provider: schemas.OpenAI}, nil, nil)
+	assert.Error(t, err)
+	assert.Equal(t, DecisionTokenLimited, decision)
+}
+
+// ============================================================================
 // Store Tests - Per-VK-Scoped Model Budget / Rate Limit
 // ============================================================================
 
