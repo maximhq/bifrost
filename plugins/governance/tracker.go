@@ -124,6 +124,19 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		return
 	}
 
+	// Update per-VK-scoped model config usage (counterpart to the global model updates above).
+	// Without this, per-VK model limits never increment and so never trip.
+	if update.Model != "" {
+		if err := t.store.UpdateVirtualKeyScopedModelRateLimitUsageInMemory(ctx, vk, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update scoped model rate limit usage for VK %s: %v", vk.ID, err)
+		}
+		if shouldUpdateBudget && update.Cost > 0 {
+			if err := t.store.UpdateVirtualKeyScopedModelBudgetUsageInMemory(ctx, vk, update.Model, update.Provider, update.Cost); err != nil {
+				t.logger.Error("failed to update scoped model budget usage for VK %s: %v", vk.ID, err)
+			}
+		}
+	}
+
 	// Update rate limit usage (VK-level, provider-config-level, team-level, customer-level) if applicable
 	// Include TeamID and CustomerID checks since rate limits can be configured at those levels
 	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 || vk.TeamID != nil || vk.CustomerID != nil {
