@@ -77,6 +77,7 @@ var rateLimitPatterns = []string{
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
+	schemas.Baseten,
 	schemas.Bedrock,
 	schemas.Cerebras,
 	schemas.Cohere,

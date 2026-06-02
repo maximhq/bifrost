@@ -312,6 +312,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "baseten": {
+          "$ref": "#/$defs/provider"
+        },
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
@@ -1443,6 +1446,7 @@
                         "cerebras",
                         "vllm",
                         "parasail",
+                        "baseten",
                         "perplexity",
                         "replicate",
                         "sgl",
@@ -4453,6 +4457,7 @@
             "groq",
             "sgl",
             "parasail",
+            "baseten",
             "perplexity",
             "cerebras",
             "gemini",

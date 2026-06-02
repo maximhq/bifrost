@@ -353,6 +353,27 @@ export const ProviderIcons = {
 		);
 	},
 
+	baseten: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Baseten</title>
+				<rect width="24" height="24" rx="5" fill="#070D0F" />
+				<path
+					d="M6.75 5.5h7.1a4.4 4.4 0 0 1 1.9 8.37 4.15 4.15 0 0 1-2.05 7.63H6.75V5.5Zm2.6 2.45v3.05h4.3a1.525 1.525 0 0 0 0-3.05h-4.3Zm0 5.45v3.6h4.6a1.8 1.8 0 0 0 0-3.6h-4.6Z"
+					fill="#fff"
+				/>
+			</svg>
+		);
+	},
+
 	perplexity: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (
