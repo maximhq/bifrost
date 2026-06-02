@@ -688,3 +688,53 @@ func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
 	assert.Contains(t, bifrostReq.ChatRequest.Params.ExtraParams, "guardrailConfig",
 		"extra params should propagate through RequestConverter to BifrostChatRequest")
 }
+
+// TestExtractModelFromPath covers model extraction across provider path styles: GenAI
+// models/tunedModels (with :action suffixes), Vertex fully-qualified publisher paths, and
+// Azure OpenAI deployments/{deployment} (where the deployment name is the model identifier).
+func TestExtractModelFromPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"azure deployment chat", "/openai/deployments/my-gpt4o/chat/completions", "my-gpt4o"},
+		{"azure deployment leading-stripped", "openai/deployments/prod-embed-3/embeddings", "prod-embed-3"},
+		{"genai models with action", "/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro"},
+		{"genai models stream action", "/models/gemini-2.5-flash:streamGenerateContent", "gemini-2.5-flash"},
+		{"genai tunedModels", "/v1beta/tunedModels/my-tuned-1:generateContent", "my-tuned-1"},
+		{"vertex fully-qualified", "/projects/p/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent", "gemini-3-pro"},
+		{"no model segment", "/v1/chat/completions", ""},
+		{"deployments with no trailing segment", "/openai/deployments", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractModelFromPath(tt.path); got != tt.want {
+				t.Fatalf("extractModelFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractPassthroughModel verifies the path value wins when present, and the body model is
+// used as a fallback — notably for Azure deployment routes where the body usually omits "model".
+func TestExtractPassthroughModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		bodyModel string
+		want      string
+	}{
+		{"azure deployment path overrides empty body", "/openai/deployments/my-gpt4o/chat/completions", "", "my-gpt4o"},
+		{"body fallback when path has no model", "/openai/v1/chat/completions", "gpt-4o", "gpt-4o"},
+		{"path wins over body", "/openai/deployments/dep-a/chat/completions", "ignored-body-model", "dep-a"},
+		{"both empty", "/v1/chat/completions", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractPassthroughModel(tt.path, tt.bodyModel); got != tt.want {
+				t.Fatalf("extractPassthroughModel(%q, %q) = %q, want %q", tt.path, tt.bodyModel, got, tt.want)
+			}
+		})
+	}
+}
