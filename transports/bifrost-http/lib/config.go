@@ -1245,7 +1245,7 @@ func processProvider(
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
-		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+		if err := providerKeyInFile.Aliases.Validate(provider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
 		}
 	}
@@ -1273,7 +1273,7 @@ func processAuthoritativeProvider(
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
-		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+		if err := providerKeyInFile.Aliases.Validate(provider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
 		}
 	}
