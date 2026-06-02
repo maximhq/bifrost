@@ -60,7 +60,7 @@ func (provider *BedrockProvider) chatCompletionViaMantle(
 	key schemas.Key,
 	request *schemas.BifrostChatRequest,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	region := resolveBedrockRegion(key, request.Model)
+	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleURL(region, "chat/completions")
 
 	// Build extraHeaders: always start with network-config headers, then overlay SigV4 if needed.
@@ -106,7 +106,7 @@ func (provider *BedrockProvider) chatCompletionStreamViaMantle(
 	key schemas.Key,
 	request *schemas.BifrostChatRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	region := resolveBedrockRegion(key, request.Model)
+	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleURL(region, "chat/completions")
 
 	// Bearer: identical to Groq / any OpenAI-compatible provider.
@@ -162,7 +162,7 @@ func (provider *BedrockProvider) responsesViaMantle(
 	key schemas.Key,
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	region := resolveBedrockRegion(key, request.Model)
+	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleURL(region, "responses")
 
 	extraHeaders := make(map[string]string, len(provider.networkConfig.ExtraHeaders))
@@ -204,7 +204,7 @@ func (provider *BedrockProvider) responsesStreamViaMantle(
 	key schemas.Key,
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	region := resolveBedrockRegion(key, request.Model)
+	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleURL(region, "responses")
 
 	// Bearer: identical to Groq / any OpenAI-compatible provider.
