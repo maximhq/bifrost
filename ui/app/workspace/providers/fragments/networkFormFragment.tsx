@@ -78,6 +78,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		},
 	});
@@ -112,6 +113,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: data.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 		updateProvider(updatedProvider)
@@ -144,6 +146,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -392,6 +395,29 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											onCheckedChange={field.onChange}
 											disabled={!hasUpdateProviderAccess}
 											data-testid="network-config-enforce-http2"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="network_config.allow_private_network"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between">
+									<div className="space-y-0.5">
+										<FormLabel>Allow Private Network</FormLabel>
+										<FormDescription>
+											Allow connections to private IPs (e.g. <code>10.x</code>, <code>192.168.x</code>). Required for providers on a
+											LAN, k8s pod network, or private VPC. Cloud metadata addresses (169.254.x.x) are always blocked.
+										</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value ?? false}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="network-config-allow-private-network"
 										/>
 									</FormControl>
 								</FormItem>
