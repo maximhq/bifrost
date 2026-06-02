@@ -675,6 +675,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				Method:   req.PassthroughRequest.Method,
 				Path:     req.PassthroughRequest.Path,
 				RawQuery: req.PassthroughRequest.RawQuery,
+				Model:    req.PassthroughRequest.Model,
 			}
 			if len(req.PassthroughRequest.Body) > 0 {
 				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
@@ -1045,6 +1046,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
 				entry.Status = "error"
+			}
+			// Compute cost for streaming passthrough using StreamUsage set by the accumulator.
+			if entry.Cost == nil && p.pricingManager != nil && result.PassthroughResponse.PassthroughUsage != nil {
+				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+					entry.Cost = &cost
+				}
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)

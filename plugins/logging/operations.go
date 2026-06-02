@@ -478,6 +478,10 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		} else {
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
+	case result.PassthroughResponse != nil:
+		if su := result.PassthroughResponse.PassthroughUsage; su != nil {
+			usage = su.LLMUsage
+		}
 	}
 	if usage != nil {
 		entry.TokenUsageParsed = usage
