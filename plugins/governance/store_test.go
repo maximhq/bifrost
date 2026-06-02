@@ -1190,6 +1190,122 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	assert.Equal(t, program, program2)
 }
 
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory verifies that
+// CreateCustomerInMemory stamps IsCalendarAligned on the in-memory budget and
+// rate limit so ResetExpiredBudgetsInMemory uses the calendar-aligned reset path.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-1"
+	rlID := "cust-rl-1"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      100.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:              rlID,
+		TokenMaxLimit:   ptrInt64(1000),
+		TokenLastReset:  time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-1", "ACME", budget)
+	customer.CalendarAligned = true
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok, "budget should be in memory after create")
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.True(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be true when customer.CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok, "rate limit should be in memory after create")
+	storedRL, ok := rawRL.(*configstoreTables.TableRateLimit)
+	require.True(t, ok)
+	assert.True(t, storedRL.IsCalendarAligned, "rate_limit.IsCalendarAligned should be true when customer.CalendarAligned=true")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False verifies that
+// IsCalendarAligned is false when the customer does not have calendar alignment enabled.
+func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	budgetID := "cust-bud-2"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      50.0,
+		ResetDuration: "1d",
+		LastReset:     time.Now(),
+	}
+	customer := buildCustomer("cust-2", "Globex", budget)
+	customer.CalendarAligned = false
+
+	store.CreateCustomerInMemory(context.Background(), customer)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
+	require.True(t, ok)
+	assert.False(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be false when customer.CalendarAligned=false")
+}
+
+// TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory verifies that
+// UpdateCustomerInMemory re-stamps IsCalendarAligned on the budget and rate limit
+// so an in-flight toggle (false→true) takes effect immediately in memory.
+func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
+	logger := NewMockLogger()
+
+	budgetID := "cust-bud-3"
+	rlID := "cust-rl-3"
+	budget := &configstoreTables.TableBudget{
+		ID:            budgetID,
+		MaxLimit:      200.0,
+		ResetDuration: "1M",
+		LastReset:     time.Now(),
+	}
+	rl := &configstoreTables.TableRateLimit{
+		ID:              rlID,
+		TokenMaxLimit:   ptrInt64(500),
+		TokenLastReset:  time.Now(),
+		RequestLastReset: time.Now(),
+	}
+	customer := buildCustomer("cust-3", "Initech", budget)
+	customer.CalendarAligned = false
+	customer.RateLimit = rl
+	customer.RateLimitID = &rlID
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Customers: []configstoreTables.TableCustomer{*customer},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Budget and rate limit should start as non-calendar-aligned
+	rawBudget, _ := store.budgets.Load(budgetID)
+	assert.False(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned)
+
+	// Toggle calendar_aligned to true and update in memory
+	customer.CalendarAligned = true
+	store.UpdateCustomerInMemory(context.Background(), customer, nil)
+
+	rawBudget, ok := store.budgets.Load(budgetID)
+	require.True(t, ok)
+	assert.True(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned, "budget.IsCalendarAligned should be true after update with CalendarAligned=true")
+
+	rawRL, ok := store.rateLimits.Load(rlID)
+	require.True(t, ok)
+	assert.True(t, rawRL.(*configstoreTables.TableRateLimit).IsCalendarAligned, "rate_limit.IsCalendarAligned should be true after update with CalendarAligned=true")
+}
+
 // Utility functions for tests
 func ptrInt64(i int64) *int64 {
 	return &i
