@@ -74,6 +74,10 @@ type TableModelConfig struct {
 	// the scope target (e.g. the virtual key's name) so the UI can render a label
 	// instead of an opaque scope_id. Populated by the HTTP layer on read.
 	ScopeName string `gorm:"-" json:"scope_name,omitempty"`
+	// BudgetIDs is a config-file-only field listing pre-declared budget IDs (from
+	// governance.budgets) to link to this model config. Not persisted; used by the
+	// config sync path to set model_config_id on each referenced budget row.
+	BudgetIDs []string `gorm:"-" json:"budget_ids,omitempty"`
 
 	// Relationships
 	// Budgets are owned by this model config via TableBudget.ModelConfigID (a model

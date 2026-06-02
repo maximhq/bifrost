@@ -527,15 +527,16 @@ export interface GetPricingOverridesResponse {
 // Provider governance - for extending provider with budget/rate limit
 export interface ProviderGovernance {
 	provider: string;
-	budget_id?: string;
-	rate_limit_id?: string;
-	budget?: Budget;
+	budget?: Budget; // deprecated: use budgets
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateProviderGovernanceRequest {
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {
