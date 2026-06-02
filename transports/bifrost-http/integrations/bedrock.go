@@ -255,7 +255,7 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			return bedrock.ToBedrockInvokeMessagesResponse(ctx, resp)
 		},
 		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
-			return bedrock.ToBedrockEmbeddingInvokeResponse(resp)
+			return bedrock.ToBedrockEmbeddingInvokeResponse(ctx, resp)
 		},
 		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
 			return bedrock.ToBedrockInvokeImagesResponse(ctx, resp)

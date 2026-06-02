@@ -3,7 +3,6 @@ package bedrock
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -159,12 +158,16 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 	return req, nil
 }
 
-// DetermineEmbeddingModelType determines the embedding model type from the model name
-func DetermineEmbeddingModelType(model string) (string, error) {
+// DetermineEmbeddingModelType determines the embedding model type for the
+// current attempt. It consults the resolved alias family first
+// (model_family / model_name / model_id / alias key) and falls back to the
+// substring detectors against the wire model — so an alias to an opaque
+// Bedrock deployment that's tagged with the right family routes correctly.
+func DetermineEmbeddingModelType(ctx *schemas.BifrostContext, model string) (string, error) {
 	switch {
-	case strings.Contains(model, "amazon.titan-embed-text"):
+	case schemas.IsTitanModelFamily(ctx, model):
 		return "titan", nil
-	case strings.Contains(model, "cohere.embed"):
+	case schemas.IsCohereModelFamily(ctx, model):
 		return "cohere", nil
 	default:
 		return "", fmt.Errorf("unsupported embedding model: %s", model)
