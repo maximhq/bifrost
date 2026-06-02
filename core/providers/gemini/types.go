@@ -830,10 +830,10 @@ const (
 type TrafficType string
 
 const (
-	TrafficTypeUnspecified          TrafficType = "TRAFFIC_TYPE_UNSPECIFIED"
-	TrafficTypeOnDemand             TrafficType = "ON_DEMAND"
-	TrafficTypeOnDemandPriority     TrafficType = "ON_DEMAND_PRIORITY"
-	TrafficTypeOnDemandFlex         TrafficType = "ON_DEMAND_FLEX"
+	TrafficTypeUnspecified           TrafficType = "TRAFFIC_TYPE_UNSPECIFIED"
+	TrafficTypeOnDemand              TrafficType = "ON_DEMAND"
+	TrafficTypeOnDemandPriority      TrafficType = "ON_DEMAND_PRIORITY"
+	TrafficTypeOnDemandFlex          TrafficType = "ON_DEMAND_FLEX"
 	TrafficTypeProvisionedThroughput TrafficType = "PROVISIONED_THROUGHPUT"
 )
 
@@ -995,6 +995,98 @@ type Schema struct {
 	Title string `json:"title,omitempty"`
 	// Optional. The type of the data.
 	Type Type `json:"type,omitempty"`
+}
+
+type flexibleSchemaInt64 int64
+
+func (i *flexibleSchemaInt64) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		return nil
+	}
+
+	if strings.HasPrefix(raw, "\"") {
+		var value string
+		if err := sonic.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		raw = strings.TrimSpace(value)
+	}
+
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid schema integer constraint %q: %w", raw, err)
+	}
+
+	*i = flexibleSchemaInt64(value)
+	return nil
+}
+
+func schemaInt64Ptr(value *flexibleSchemaInt64) *int64 {
+	if value == nil {
+		return nil
+	}
+	out := int64(*value)
+	return &out
+}
+
+// UnmarshalJSON accepts both the quoted integer format emitted by this struct's
+// JSON tags and standard numeric JSON Schema constraints used by SDKs.
+func (s *Schema) UnmarshalJSON(data []byte) error {
+	type schemaAlias struct {
+		AnyOf            []*Schema            `json:"anyOf,omitempty"`
+		Default          any                  `json:"default,omitempty"`
+		Description      string               `json:"description,omitempty"`
+		Enum             []string             `json:"enum,omitempty"`
+		Example          any                  `json:"example,omitempty"`
+		Format           string               `json:"format,omitempty"`
+		Items            *Schema              `json:"items,omitempty"`
+		MaxItems         *flexibleSchemaInt64 `json:"maxItems,omitempty"`
+		MaxLength        *flexibleSchemaInt64 `json:"maxLength,omitempty"`
+		MaxProperties    *flexibleSchemaInt64 `json:"maxProperties,omitempty"`
+		Maximum          *float64             `json:"maximum,omitempty"`
+		MinItems         *flexibleSchemaInt64 `json:"minItems,omitempty"`
+		MinLength        *flexibleSchemaInt64 `json:"minLength,omitempty"`
+		MinProperties    *flexibleSchemaInt64 `json:"minProperties,omitempty"`
+		Minimum          *float64             `json:"minimum,omitempty"`
+		Nullable         *bool                `json:"nullable,omitempty"`
+		Pattern          string               `json:"pattern,omitempty"`
+		Properties       map[string]*Schema   `json:"properties,omitempty"`
+		PropertyOrdering []string             `json:"propertyOrdering,omitempty"`
+		Required         []string             `json:"required,omitempty"`
+		Title            string               `json:"title,omitempty"`
+		Type             Type                 `json:"type,omitempty"`
+	}
+
+	var aux schemaAlias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	s.AnyOf = aux.AnyOf
+	s.Default = aux.Default
+	s.Description = aux.Description
+	s.Enum = aux.Enum
+	s.Example = aux.Example
+	s.Format = aux.Format
+	s.Items = aux.Items
+	s.MaxItems = schemaInt64Ptr(aux.MaxItems)
+	s.MaxLength = schemaInt64Ptr(aux.MaxLength)
+	s.MaxProperties = schemaInt64Ptr(aux.MaxProperties)
+	s.Maximum = aux.Maximum
+	s.MinItems = schemaInt64Ptr(aux.MinItems)
+	s.MinLength = schemaInt64Ptr(aux.MinLength)
+	s.MinProperties = schemaInt64Ptr(aux.MinProperties)
+	s.Minimum = aux.Minimum
+	s.Nullable = aux.Nullable
+	s.Pattern = aux.Pattern
+	s.Properties = aux.Properties
+	s.PropertyOrdering = aux.PropertyOrdering
+	s.Required = aux.Required
+	s.Title = aux.Title
+	s.Type = aux.Type
+
+	return nil
 }
 
 // Type represents the type of the data.
