@@ -206,12 +206,21 @@ func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
 			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws rds"}`),
 		},
 		{
+			name:   "config_store rejects zero password command timeout",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
 			name:   "logs_store rejects zero password command timeout",
 			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
 		},
 		{
 			name: "config_store rejects zero conn max lifetime",
 			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+		{
+			name: "logs_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws"},
 				"conn_max_lifetime": "0s"`),
 		},
 	}
