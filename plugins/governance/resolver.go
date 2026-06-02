@@ -261,8 +261,10 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 			VirtualKey: vk,
 		}
 	}
-	// 3. Check model filtering
-	if IsModelRequiredForRequest(requestType) && !r.isModelAllowed(vk, provider, model) {
+	// 3. Check model filtering. Most request types always carry a model and are always checked.
+	// Passthrough forwards raw provider routes where a model may or may not be resolvable for some request types.
+	isPassthrough := requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest
+	if (IsModelRequiredForRequest(requestType) || (isPassthrough && model != "")) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
