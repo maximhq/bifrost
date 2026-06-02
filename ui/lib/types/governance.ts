@@ -42,6 +42,7 @@ export interface Customer {
 	name: string;
 	budget_id?: string;
 	rate_limit_id?: string;
+	calendar_aligned?: boolean;
 	// Populated relationships
 	teams?: Team[];
 	budget?: Budget;
@@ -210,12 +211,14 @@ export interface CreateCustomerRequest {
 	name: string;
 	budget?: CreateBudgetRequest;
 	rate_limit?: CreateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateCustomerRequest {
 	name?: string;
 	budget?: UpdateBudgetRequest;
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateBudgetRequest {
