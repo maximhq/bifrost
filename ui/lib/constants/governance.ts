@@ -23,13 +23,6 @@ export const budgetDurationOptions = [
 // Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
 export const supportsCalendarAlignment = (duration: string): boolean => duration.length > 0 && /[dwMY]$/.test(duration);
 
-// Scopes available for model limits. "global" applies to all traffic; "virtual_key"
-// applies only when a specific virtual key is used. Extensible (team/customer/user) later.
-export const MODEL_LIMIT_SCOPES = [
-	{ label: "Global", value: "global" },
-	{ label: "Virtual Key", value: "virtual_key" },
-];
-
 // Map of duration values to short labels for display
 export const resetDurationLabels: Record<string, string> = {
 	"1m": "Every Minute",

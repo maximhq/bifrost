@@ -81,8 +81,10 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
-	if update.Provider != "" && update.Model != "" {
+	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
+	// the underlying function handles empty provider by skipping provider-level and still
+	// updating any matching global model-only configs.
+	if update.Model != "" {
 		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
@@ -90,8 +92,10 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 2. Update budget usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
-	if update.Provider != "" && update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
+	// Guard: only update when Model is set (MCP paths may not have it); provider is optional —
+	// the underlying function handles empty provider by skipping provider-level and still
+	// updating any matching global model-only configs.
+	if update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
 		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
@@ -107,6 +111,19 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		if shouldUpdateBudget && update.Cost > 0 {
 			if err := t.store.UpdateUserBudgetUsageInMemory(ctx, update.UserID, update.Cost); err != nil {
 				t.logger.Error("failed to update user budget usage for user %s: %v", update.UserID, err)
+			}
+		}
+		// Update per-user-scoped model config rate limits and budgets. Mirrors the
+		// VK-scoped model block below. Gated on model being present — MCP tool
+		// execution paths (no model) are excluded naturally by this guard.
+		if update.Model != "" {
+			if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+				t.logger.Error("failed to update scoped model rate limit usage for user %s: %v", update.UserID, err)
+			}
+			if shouldUpdateBudget && update.Cost > 0 {
+				if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeUser, update.UserID, update.Model, update.Provider, update.Cost); err != nil {
+					t.logger.Error("failed to update scoped model budget usage for user %s: %v", update.UserID, err)
+				}
 			}
 		}
 	}
@@ -127,11 +144,11 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// Update per-VK-scoped model config usage (counterpart to the global model updates above).
 	// Without this, per-VK model limits never increment and so never trip.
 	if update.Model != "" {
-		if err := t.store.UpdateVirtualKeyScopedModelRateLimitUsageInMemory(ctx, vk, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		if err := t.store.UpdateScopedModelRateLimitUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update scoped model rate limit usage for VK %s: %v", vk.ID, err)
 		}
 		if shouldUpdateBudget && update.Cost > 0 {
-			if err := t.store.UpdateVirtualKeyScopedModelBudgetUsageInMemory(ctx, vk, update.Model, update.Provider, update.Cost); err != nil {
+			if err := t.store.UpdateScopedModelBudgetUsageInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, update.Model, update.Provider, update.Cost); err != nil {
 				t.logger.Error("failed to update scoped model budget usage for VK %s: %v", vk.ID, err)
 			}
 		}
