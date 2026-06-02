@@ -827,7 +827,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 6. MCP config
 	loadMCPConfig(ctx, config, &configData)
 	// 7. Governance config
-	loadGovernanceConfig(ctx, config, &configData)
+	if err := loadGovernanceConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 8. Auth config
 	loadAuthConfig(ctx, config, &configData)
 	// 9. Plugins
@@ -1820,10 +1822,10 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 }
 
 // loadGovernanceConfig loads and merges governance config from file
-func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	if configData.Governance != nil {
 		if err := resolveGovernanceKeyReferences(ctx, config, configData.Governance); err != nil {
-			logger.Fatal("failed to resolve governance key references: %v", err)
+			return fmt.Errorf("failed to resolve governance key references: %w", err)
 		}
 	}
 
@@ -1844,18 +1846,23 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 		config.GovernanceConfig = governanceConfig
 		// Merge with config file if present
 		if configData.Governance != nil {
-			mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+			if err := mergeGovernanceConfig(ctx, config, configData, governanceConfig); err != nil {
+				return err
+			}
 		}
 	} else if configData.Governance != nil {
 		// No governance config in store, use config file
 		logger.Debug("no governance config found in store, processing from config file")
 		config.GovernanceConfig = configData.Governance
-		createGovernanceConfigInStore(ctx, config)
+		if err := createGovernanceConfigInStore(ctx, config); err != nil {
+			return err
+		}
 		// Pricing overrides are loaded into ModelCatalog after initFrameworkConfig,
 		// once ModelCatalog is initialized.
 	} else {
 		logger.Debug("no governance config in store or config file")
 	}
+	return nil
 }
 
 func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {
@@ -1980,7 +1987,7 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 }
 
 // mergeGovernanceConfig merges governance config from file with store
-func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
+func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) error {
 	logger.Debug("merging governance config from config file with store")
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
@@ -2128,22 +2135,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
 						configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
 					}
-					// Process environment variable for virtual key value
-					if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-						// Resolving the environment variable value
-						envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-						if err != nil {
-							logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-							continue
-						}
-						configData.Governance.VirtualKeys[i].Value = envValue
-					}
-					// If the virtual key value is not a valid virtual key, we will generate a new one
-					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-						if configData.Governance.VirtualKeys[i].Value != "" {
-							logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-						}
-						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+					if err := normalizeVirtualKeyValueFromConfig(&configData.Governance.VirtualKeys[i]); err != nil {
+						return err
 					}
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -2158,22 +2151,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
-			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
-			// Process environment variable for virtual key value
-			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-				// Resolving the environment variable value
-				envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-				if err != nil {
-					logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-					continue
-				}
-				configData.Governance.VirtualKeys[i].Value = envValue
-			}
-			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-				if configData.Governance.VirtualKeys[i].Value != "" {
-					logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-				}
-				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+			if err := normalizeVirtualKeyValueFromConfig(&configData.Governance.VirtualKeys[i]); err != nil {
+				return err
 			}
 			// Resolve MCP client names to IDs for config file mcp_configs
 			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -2344,7 +2323,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			modelConfigsToAdd, modelConfigsToUpdate,
 			providersToAdd, providersToUpdate)
 		if err != nil {
-			logger.Fatal("failed to sync governance config: %v", err)
+			return fmt.Errorf("failed to sync governance config: %w", err)
 		}
 	}
 	// Sync pricing overrides into the model catalog in one batch to avoid
@@ -2364,14 +2343,17 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 	}
 	if configData.isConfigJSONSourceOfTruth() {
-		pruneGovernanceConfigToFile(ctx, config, configData)
+		if err := pruneGovernanceConfigToFile(ctx, config, configData); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
-func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
+func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) error {
 	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
-		return
+		return nil
 	}
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -2517,8 +2499,9 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 		return nil
 	})
 	if err != nil {
-		logger.Fatal("failed to prune governance config: %v", err)
+		return fmt.Errorf("failed to prune governance config: %w", err)
 	}
+	return nil
 }
 
 // updateGovernanceConfigInStore updates governance config items in the store
@@ -2692,7 +2675,7 @@ func updateGovernanceConfigInStore(
 				// budget_id removed — unlink any budget previously owned via this path.
 				if err := tx.Model(&configstoreTables.TableBudget{}).
 					Where("customer_id = ?", customer.ID).
-					Update("customer_id", nil).Error; err != nil {
+					UpdateColumn("customer_id", nil).Error; err != nil {
 					return fmt.Errorf("failed to unlink stale budgets from customer %s: %w", customer.ID, err)
 				}
 				continue
@@ -2965,7 +2948,7 @@ func linkCustomerBudgetID(tx *gorm.DB, customerID, budgetID string, clearStale b
 	if clearStale {
 		if err := tx.Model(&configstoreTables.TableBudget{}).
 			Where("customer_id = ? AND id != ?", customerID, budgetID).
-			Update("customer_id", nil).Error; err != nil {
+			UpdateColumn("customer_id", nil).Error; err != nil {
 			return fmt.Errorf("failed to unlink stale budget from customer %s: %w", customerID, err)
 		}
 	}
@@ -3137,11 +3120,30 @@ func validateRateLimitLinkOwnership(tx *gorm.DB, rateLimitID *string, ownerType,
 	return nil
 }
 
+// normalizeVirtualKeyValueFromConfig resolves config-file virtual key values and
+// ensures persisted values are valid Bifrost virtual keys.
+func normalizeVirtualKeyValueFromConfig(virtualKey *configstoreTables.TableVirtualKey) error {
+	if strings.HasPrefix(virtualKey.Value, "env.") {
+		envValue, err := envutils.ProcessEnvValue(virtualKey.Value)
+		if err != nil {
+			return fmt.Errorf("failed to process environment variable for virtual key %s: %w", virtualKey.ID, err)
+		}
+		virtualKey.Value = envValue
+	}
+	if !strings.HasPrefix(virtualKey.Value, governance.VirtualKeyPrefix) {
+		if virtualKey.Value != "" {
+			logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", virtualKey.ID, governance.VirtualKeyPrefix)
+		}
+		virtualKey.Value = governance.GenerateVirtualKey()
+	}
+	return nil
+}
+
 // createGovernanceConfigInStore creates governance config in store from config file
-func createGovernanceConfigInStore(ctx context.Context, config *Config) {
+func createGovernanceConfigInStore(ctx context.Context, config *Config) error {
 	if config.ConfigStore == nil {
 		logger.Debug("createGovernanceConfigInStore: ConfigStore is nil, skipping")
-		return
+		return nil
 	}
 	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys, %d routing_rules",
 		len(config.GovernanceConfig.Budgets),
@@ -3166,9 +3168,13 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		// - team_id -> governance_teams
 		// - virtual_key_id -> governance_virtual_keys
 		// - provider_config_id -> governance_virtual_key_provider_configs
+		// - model_config_id -> governance_model_configs
+		// - customer_id -> governance_customers
 		pendingTeamBudgets := make([]*configstoreTables.TableBudget, 0)
 		pendingVirtualKeyBudgets := make([]*configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgets := make([]*configstoreTables.TableBudget, 0)
+		pendingModelConfigBudgets := make([]*configstoreTables.TableBudget, 0)
+		pendingCustomerBudgets := make([]*configstoreTables.TableBudget, 0)
 		for i := range config.GovernanceConfig.Budgets {
 			budget := &config.GovernanceConfig.Budgets[i]
 			if budget.TeamID != nil {
@@ -3181,6 +3187,14 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if budget.ProviderConfigID != nil {
 				pendingProviderConfigBudgets = append(pendingProviderConfigBudgets, budget)
+				continue
+			}
+			if budget.ModelConfigID != nil {
+				pendingModelConfigBudgets = append(pendingModelConfigBudgets, budget)
+				continue
+			}
+			if budget.CustomerID != nil {
+				pendingCustomerBudgets = append(pendingCustomerBudgets, budget)
 				continue
 			}
 			if err := createBudget(budget); err != nil {
@@ -3220,6 +3234,14 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 				}
 			}
 		}
+
+		// Create model-config-owned budgets after model config rows exist.
+		for _, budget := range pendingModelConfigBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
+			}
+		}
+
 		for i := range config.GovernanceConfig.Providers {
 			provider := &config.GovernanceConfig.Providers[i]
 			if provider.Name == "" {
@@ -3274,6 +3296,13 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 		}
 
+		// Create customer-owned budgets after customer rows exist.
+		for _, budget := range pendingCustomerBudgets {
+			if err := createBudget(budget); err != nil {
+				return err
+			}
+		}
+
 		for i := range config.GovernanceConfig.Teams {
 			team := &config.GovernanceConfig.Teams[i]
 			teamHash, err := configstore.GenerateTeamHash(*team)
@@ -3314,6 +3343,9 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 				logger.Warn("failed to generate virtual key hash for %s: %v", virtualKey.ID, err)
 			} else {
 				virtualKey.ConfigHash = vkHash
+			}
+			if err := normalizeVirtualKeyValueFromConfig(virtualKey); err != nil {
+				return err
 			}
 			providerConfigs := virtualKey.ProviderConfigs
 			mcpConfigs := virtualKey.MCPConfigs
@@ -3388,8 +3420,9 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 
 		return nil
 	}); err != nil {
-		logger.Warn("failed to update governance config: %v", err)
+		return fmt.Errorf("failed to update governance config: %w", err)
 	}
+	return nil
 }
 
 // isBcryptHash checks if a string looks like a bcrypt hash

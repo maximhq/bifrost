@@ -99,6 +99,7 @@
 	},
 	"overrides": {
 		"dompurify": "3.4.0",
+		"es-toolkit": "1.47.0",
 		"follow-redirects": "1.16.0",
 		"tar": "7.5.3"
 	}
