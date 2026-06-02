@@ -1,1 +1,3 @@
+- feat: add native GigaChat provider with chat, Responses, streaming, embeddings, files, batches, and CountTokens support
+- feat: add GigaChat auth modes, TLS/mTLS configuration, raw payload redaction, and gated integration coverage
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
