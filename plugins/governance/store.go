@@ -639,13 +639,18 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		clone := *customer
 		clone.Teams = make([]configstoreTables.TableTeam, 0)
 		clone.VirtualKeys = make([]configstoreTables.TableVirtualKey, 0)
-		if clone.BudgetID != nil {
-			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
-				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-					clone.Budget = b
+		// Refresh each owned budget from the live budget map.
+		refreshedBudgets := make([]configstoreTables.TableBudget, 0, len(clone.Budgets))
+		for _, b := range clone.Budgets {
+			if liveBudget, exists := gs.budgets.Load(b.ID); exists && liveBudget != nil {
+				if lb, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					refreshedBudgets = append(refreshedBudgets, *lb)
+					continue
 				}
 			}
+			refreshedBudgets = append(refreshedBudgets, b)
 		}
+		clone.Budgets = refreshedBudgets
 		if clone.RateLimitID != nil {
 			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
 				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
@@ -1245,15 +1250,20 @@ func (gs *LocalGovernanceStore) CheckCustomerBudget(ctx context.Context, custome
 		return DecisionAllow, nil
 	}
 	customer, ok := customerValue.(*configstoreTables.TableCustomer)
-	if !ok || customer.BudgetID == nil {
-		return DecisionAllow, nil
-	}
-	customerBudget := gs.LoadBudget(ctx, *customer.BudgetID)
-	if customerBudget == nil {
+	if !ok || len(customer.Budgets) == 0 {
 		return DecisionAllow, nil
 	}
 	key := fmt.Sprintf("Customer:%s", customerID)
-	entityWiseBudgets := EntityWiseBudgets{key: {customerBudget}}
+	var customerBudgets []*configstoreTables.TableBudget
+	for i := range customer.Budgets {
+		if b := gs.LoadBudget(ctx, customer.Budgets[i].ID); b != nil {
+			customerBudgets = append(customerBudgets, b)
+		}
+	}
+	if len(customerBudgets) == 0 {
+		return DecisionAllow, nil
+	}
+	entityWiseBudgets := EntityWiseBudgets{key: customerBudgets}
 	return gs.CheckBudget(ctx, entityWiseBudgets, baselines)
 }
 
@@ -2159,6 +2169,24 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		}
 	}
 
+	// Stamp customer-owned budget and rate-limit entries in the flat caches so
+	// calendar-aligned resets survive restarts and reloads. Mirrors the model-config
+	// stamping above.
+	for i := range customers {
+		customer := &customers[i]
+		for j := range customer.Budgets {
+			customer.Budgets[j].IsCalendarAligned = customer.CalendarAligned
+			gs.budgets.Store(customer.Budgets[j].ID, &customer.Budgets[j])
+		}
+		if customer.RateLimitID != nil {
+			if raw, ok := gs.rateLimits.Load(*customer.RateLimitID); ok {
+				if rl, ok := raw.(*configstoreTables.TableRateLimit); ok && rl != nil {
+					rl.IsCalendarAligned = customer.CalendarAligned
+				}
+			}
+		}
+	}
+
 	// Build providers map
 	// Key format: provider name (e.g., "openai", "anthropic")
 	for i := range providers {
@@ -2388,10 +2416,10 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(_ context.Context, v
 					teamCustomerID = *team.CustomerID
 					if customerValue, exists := gs.customers.Load(*team.CustomerID); exists && customerValue != nil {
 						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-							if customer.BudgetID != nil {
-								if budgetValue, exists := gs.budgets.Load(*customer.BudgetID); exists && budgetValue != nil {
+							for _, cb := range customer.Budgets {
+								if budgetValue, exists := gs.budgets.Load(cb.ID); exists && budgetValue != nil {
 									if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-										if categoryBudgets := entityWiseBudgets["Customer"]; categoryBudgets == nil {
+										if entityWiseBudgets["Customer"] == nil {
 											entityWiseBudgets["Customer"] = []*configstoreTables.TableBudget{}
 										}
 										entityWiseBudgets["Customer"] = append(entityWiseBudgets["Customer"], budget)
@@ -2409,10 +2437,10 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(_ context.Context, v
 	if vk.CustomerID != nil && (teamCustomerID == "" || *vk.CustomerID != teamCustomerID) {
 		if customerValue, exists := gs.customers.Load(*vk.CustomerID); exists && customerValue != nil {
 			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-				if customer.BudgetID != nil {
-					if budgetValue, exists := gs.budgets.Load(*customer.BudgetID); exists && budgetValue != nil {
+				for _, cb := range customer.Budgets {
+					if budgetValue, exists := gs.budgets.Load(cb.ID); exists && budgetValue != nil {
 						if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-							if categoryBudgets := entityWiseBudgets["Customer"]; categoryBudgets == nil {
+							if entityWiseBudgets["Customer"] == nil {
 								entityWiseBudgets["Customer"] = []*configstoreTables.TableBudget{}
 							}
 							entityWiseBudgets["Customer"] = append(entityWiseBudgets["Customer"], budget)
@@ -2952,12 +2980,10 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	if customer == nil {
 		return // Nothing to create
 	}
-	// Create associated budget if exists
-	if customer.Budget != nil {
-		customer.Budget.IsCalendarAligned = customer.CalendarAligned
-		gs.budgets.Store(customer.Budget.ID, customer.Budget)
+	for i := range customer.Budgets {
+		customer.Budgets[i].IsCalendarAligned = customer.CalendarAligned
+		gs.budgets.Store(customer.Budgets[i].ID, &customer.Budgets[i])
 	}
-	// Create associated rate limit if exists
 	if customer.RateLimit != nil {
 		customer.RateLimit.IsCalendarAligned = customer.CalendarAligned
 		gs.rateLimits.Store(customer.RateLimit.ID, customer.RateLimit)
@@ -2979,25 +3005,24 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 		// Create clone to avoid modifying the original
 		clone := *customer
 
-		// Handle budget updates with consistent logic
-		if clone.Budget != nil {
-			clone.Budget.IsCalendarAligned = clone.CalendarAligned
-			// Preserve existing usage from memory when updating customer budget config
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
+		// Reconcile budgets: upsert new set, delete any that were removed.
+		newBudgetIDs := make(map[string]bool, len(clone.Budgets))
+		for i := range clone.Budgets {
+			b := &clone.Budgets[i]
+			b.IsCalendarAligned = clone.CalendarAligned
+			if existingBudgetValue, exists := gs.budgets.Load(b.ID); exists && existingBudgetValue != nil {
 				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					// Preserve current usage and last reset time from existing in-memory budget
-					clone.Budget.CurrentUsage = existingBudget.CurrentUsage
-					clone.Budget.LastReset = existingBudget.LastReset
+					b.CurrentUsage = existingBudget.CurrentUsage
+					b.LastReset = existingBudget.LastReset
 				}
 			}
-			gs.budgets.Store(clone.Budget.ID, clone.Budget)
-			// Clean up old budget if ID changed (e.g., UUID rotation on propagation)
-			if existingCustomer.Budget != nil && existingCustomer.Budget.ID != clone.Budget.ID {
-				gs.DeleteBudget(ctx, existingCustomer.Budget.ID)
+			gs.budgets.Store(b.ID, b)
+			newBudgetIDs[b.ID] = true
+		}
+		for _, existing := range existingCustomer.Budgets {
+			if !newBudgetIDs[existing.ID] {
+				gs.DeleteBudget(ctx, existing.ID)
 			}
-		} else if existingCustomer.Budget != nil {
-			// Budget was removed from the customer, delete it from memory
-			gs.DeleteBudget(ctx, existingCustomer.Budget.ID)
 		}
 
 		// Handle rate limit updates with consistent logic
@@ -3037,9 +3062,8 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 	// Get customer to check for associated budget and rate limit
 	if customerValue, exists := gs.customers.Load(customerID); exists && customerValue != nil {
 		if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
-			// Delete associated budget if exists
-			if customer.BudgetID != nil {
-				gs.DeleteBudget(ctx, *customer.BudgetID)
+			for _, b := range customer.Budgets {
+				gs.DeleteBudget(ctx, b.ID)
 			}
 			// Delete associated rate limit if exists
 			if customer.RateLimitID != nil {
@@ -3309,16 +3333,21 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		}
 		return true // continue
 	})
-	// Update customers that reference this budget
+	// Update customers that own this budget
 	gs.customers.Range(func(key, value interface{}) bool {
 		customer, ok := value.(*configstoreTables.TableCustomer)
 		if !ok || customer == nil {
 			return true // continue
 		}
-		if customer.BudgetID != nil && *customer.BudgetID == budgetID {
-			clone := *customer
-			clone.Budget = resetBudget
-			gs.customers.Store(key, &clone)
+		for i, b := range customer.Budgets {
+			if b.ID == budgetID {
+				clone := *customer
+				clone.Budgets = make([]configstoreTables.TableBudget, len(customer.Budgets))
+				copy(clone.Budgets, customer.Budgets)
+				clone.Budgets[i] = *resetBudget
+				gs.customers.Store(key, &clone)
+				break
+			}
 		}
 		return true // continue
 	})

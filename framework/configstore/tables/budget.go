@@ -15,11 +15,12 @@ type TableBudget struct {
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
 
-	// Owner FKs: a budget belongs to at most one Team, one VK, one ProviderConfig, or one ModelConfig
+	// Owner FKs: a budget belongs to at most one Team, VK, ProviderConfig, ModelConfig, or Customer
 	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
 	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
 	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
 	ModelConfigID    *string `gorm:"type:varchar(255);index" json:"model_config_id,omitempty"`
+	CustomerID       *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
 
 	// Deprecated: set calendar_aligned on the parent access profile / VK / team
 	// instead. Kept for backward compatibility with older config.json files;
@@ -61,8 +62,11 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	if b.ModelConfigID != nil {
 		owners++
 	}
+	if b.CustomerID != nil {
+		owners++
+	}
 	if owners > 1 {
-		return fmt.Errorf("budget cannot have more than one owner (team/virtual key/provider config/model config)")
+		return fmt.Errorf("budget cannot have more than one owner (team/virtual key/provider config/model config/customer)")
 	}
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")
 	if d, err := ParseDuration(b.ResetDuration); err != nil {

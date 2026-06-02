@@ -40,12 +40,11 @@ export interface Team {
 export interface Customer {
 	id: string;
 	name: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
 	// Populated relationships
 	teams?: Team[];
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 }
 
@@ -209,14 +208,16 @@ export interface UpdateTeamRequest {
 
 export interface CreateCustomerRequest {
 	name: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
+	budget?: CreateBudgetRequest; // deprecated: use budgets
 	rate_limit?: CreateRateLimitRequest;
 	calendar_aligned?: boolean;
 }
 
 export interface UpdateCustomerRequest {
 	name?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
+	budget?: UpdateBudgetRequest;   // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
 }

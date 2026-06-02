@@ -188,6 +188,7 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
+
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -844,6 +845,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddCustomerCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -9495,6 +9499,112 @@ func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB)
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerBudgetsToBudgetsTable pivots customer budgets from a single-FK on
+// governance_customers.budget_id to multi-budget ownership via governance_budgets.customer_id,
+// mirroring how team budgets were restructured in migrationAddTeamBudgetsToBudgetsTable.
+func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_customer_budgets_to_budgets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add customer_id FK column on governance_budgets.
+			if !mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "CustomerID"); err != nil {
+					return fmt.Errorf("failed to add customer_id column to governance_budgets: %w", err)
+				}
+			}
+
+			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags).
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_customer_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "CustomerID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.customer_id: %w", err)
+				}
+			}
+
+			// Backfill: set customer_id from legacy governance_customers.budget_id (if column still exists).
+			// The column is intentionally kept; a future migration can drop it once all instances
+			// have migrated and the column is confirmed unused.
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if legacyExists {
+				// Preflight: fail if any customer-referenced budget is already owned by another entity.
+				var conflictCount int64
+				if err := tx.Raw(`
+					SELECT COUNT(*) FROM governance_budgets b
+					WHERE (b.virtual_key_id IS NOT NULL OR b.provider_config_id IS NOT NULL OR b.team_id IS NOT NULL OR b.model_config_id IS NOT NULL)
+					  AND EXISTS (SELECT 1 FROM governance_customers c WHERE c.budget_id = b.id)
+				`).Scan(&conflictCount).Error; err != nil {
+					return fmt.Errorf("failed to check for multi-owner customer budget conflicts: %w", err)
+				}
+				if conflictCount > 0 {
+					return fmt.Errorf(
+						"cannot migrate customer budgets: %d budget row(s) referenced by a customer are already owned by another entity; resolve manually before re-running",
+						conflictCount,
+					)
+				}
+
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET customer_id = (
+						SELECT id FROM governance_customers
+						WHERE governance_customers.budget_id = governance_budgets.id
+					) WHERE customer_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_customers
+						WHERE governance_customers.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill customer budget customer_id: %w", err)
+				}
+			}
+
+			// Create FK constraint with CASCADE delete (defined on TableCustomer.Budgets).
+			if !mg.HasConstraint(&tables.TableCustomer{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableCustomer{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for Customer -> Budgets: %w", err)
+				}
+			}
+
+			// Refresh config_hash for customers whose budgets just got linked. GenerateCustomerHash
+			// now includes sorted budget IDs, so hashes written before multi-budget support are stale.
+			var customersToRehash []tables.TableCustomer
+			if err := tx.Preload("Budgets").Find(&customersToRehash).Error; err != nil {
+				return fmt.Errorf("failed to fetch customers for hash refresh: %w", err)
+			}
+			for _, c := range customersToRehash {
+				if len(c.Budgets) == 0 {
+					continue
+				}
+				hash, err := GenerateCustomerHash(c)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for customer %s: %w", c.ID, err)
+				}
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", c.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for customer %s: %w", c.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "customer_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
 	}
 	return nil
 }

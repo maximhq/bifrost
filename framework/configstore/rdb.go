@@ -109,6 +109,14 @@ func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudg
 			}
 			return err
 		}
+	case budget.CustomerID != nil && *budget.CustomerID != "":
+		var customer tables.TableCustomer
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&customer, "id = ?", *budget.CustomerID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -2576,7 +2584,7 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
-		Preload(relation("Budget")).
+		Preload(relation("Budgets")).
 		Preload(relation("RateLimit")).
 		Preload(relation("VirtualKeys"))
 }
@@ -3684,13 +3692,13 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 
 	txDB := tx[0]
 	var customer tables.TableCustomer
-	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
 	}
-	// Set customer_id to null for all virtual keys associated with the customer
+	// Null out customer_id on associated VKs and teams before deleting the customer row.
 	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
 		return err
 	}
@@ -3698,23 +3706,18 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 	if err := txDB.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
 		return err
 	}
-	// Store the budget and rate limit IDs before deleting the customer
-	budgetID := customer.BudgetID
 	rateLimitID := customer.RateLimitID
-	// Delete the customer first
+	// Explicitly delete owned budgets before the customer row. FK cascades cannot
+	// be relied on across all dialects for constraints added to pre-existing tables.
+	if err := txDB.WithContext(ctx).Where("customer_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+		return err
+	}
 	if err := txDB.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
 	}
-	// Delete the customer's budget if it exists
-	if budgetID != nil {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-			return err
-		}
-	}
-	// Delete the customer's rate limit if it exists
 	if rateLimitID != nil {
 		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
 			return err
@@ -3915,6 +3918,9 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		}
 		if ownerBudget.TeamID == nil {
 			ownerBudget.TeamID = existing.TeamID
+		}
+		if ownerBudget.CustomerID == nil {
+			ownerBudget.CustomerID = existing.CustomerID
 		}
 		if err := lockBudgetOwner(ctx, txDB, ownerBudget); err != nil {
 			return err

@@ -1781,9 +1781,10 @@ func (m *mockCustomerStore) GetCustomer(_ context.Context, id string) (*configst
 		return nil, configstore.ErrNotFound
 	}
 	clone := *c
-	if c.Budget != nil {
-		b := *c.Budget
-		clone.Budget = &b
+	if len(c.Budgets) > 0 {
+		clonedBudgets := make([]configstoreTables.TableBudget, len(c.Budgets))
+		copy(clonedBudgets, c.Budgets)
+		clone.Budgets = clonedBudgets
 	}
 	if c.RateLimit != nil {
 		rl := *c.RateLimit
@@ -1910,18 +1911,27 @@ func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
 	store := newMockCustomerStore()
 
 	budgetID := "bud-snap"
+	budgetID2 := "bud-snap-2"
 	oldLastReset := time.Now().AddDate(0, -1, 0) // 1 month ago
 	store.customers["cust-snap"] = &configstoreTables.TableCustomer{
 		ID:              "cust-snap",
 		Name:            "Initech",
 		CalendarAligned: false,
-		BudgetID:        &budgetID,
-		Budget: &configstoreTables.TableBudget{
-			ID:            budgetID,
-			MaxLimit:      200.0,
-			ResetDuration: "1M",
-			LastReset:     oldLastReset,
-			CurrentUsage:  99.0,
+		Budgets: []configstoreTables.TableBudget{
+			{
+				ID:            budgetID,
+				MaxLimit:      200.0,
+				ResetDuration: "1M",
+				LastReset:     oldLastReset,
+				CurrentUsage:  99.0,
+			},
+			{
+				ID:            budgetID2,
+				MaxLimit:      500.0,
+				ResetDuration: "1Y",
+				LastReset:     oldLastReset,
+				CurrentUsage:  150.0,
+			},
 		},
 	}
 	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
@@ -1937,20 +1947,25 @@ func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	// UpdateBudget must have been called once (for the snap).
-	if len(store.updatedBudgets) != 1 {
-		t.Fatalf("expected 1 UpdateBudget call for snap, got %d", len(store.updatedBudgets))
+	// UpdateBudget must have been called once per budget (both snap).
+	if len(store.updatedBudgets) != 2 {
+		t.Fatalf("expected 2 UpdateBudget calls for snap, got %d", len(store.updatedBudgets))
 	}
-	snapped := store.updatedBudgets[0]
-	// LastReset must be at the calendar period start, not the old value.
-	if snapped.LastReset.Equal(oldLastReset) {
-		t.Error("budget LastReset was not snapped: still equals old value")
+	snappedIDs := make(map[string]bool, 2)
+	for _, snapped := range store.updatedBudgets {
+		snappedIDs[snapped.ID] = true
+		if snapped.LastReset.Equal(oldLastReset) {
+			t.Errorf("budget %s LastReset was not snapped: still equals old value", snapped.ID)
+		}
+		if snapped.LastReset.After(snapBefore) {
+			t.Errorf("budget %s snapped LastReset %v should be at the period start, not time.Now()", snapped.ID, snapped.LastReset)
+		}
+		if snapped.CurrentUsage != 0 {
+			t.Errorf("budget %s expected CurrentUsage reset to 0, got %v", snapped.ID, snapped.CurrentUsage)
+		}
 	}
-	if snapped.LastReset.After(snapBefore) {
-		t.Errorf("snapped LastReset %v should be at the period start, not time.Now() (%v)", snapped.LastReset, snapBefore)
-	}
-	if snapped.CurrentUsage != 0 {
-		t.Errorf("expected CurrentUsage reset to 0, got %v", snapped.CurrentUsage)
+	if !snappedIDs[budgetID] || !snappedIDs[budgetID2] {
+		t.Errorf("expected both %q and %q to be snapped, got IDs: %v", budgetID, budgetID2, snappedIDs)
 	}
 }
 
@@ -1960,18 +1975,25 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newMockCustomerStore()
 
-	budgetID := "bud-already"
 	store.customers["cust-already"] = &configstoreTables.TableCustomer{
 		ID:              "cust-already",
 		Name:            "Umbrella",
 		CalendarAligned: true, // already enabled
-		BudgetID:        &budgetID,
-		Budget: &configstoreTables.TableBudget{
-			ID:            budgetID,
-			MaxLimit:      300.0,
-			ResetDuration: "1M",
-			LastReset:     time.Now().AddDate(0, -1, 0),
-			CurrentUsage:  42.0,
+		Budgets: []configstoreTables.TableBudget{
+			{
+				ID:            "bud-already-1",
+				MaxLimit:      300.0,
+				ResetDuration: "1M",
+				LastReset:     time.Now().AddDate(0, -1, 0),
+				CurrentUsage:  42.0,
+			},
+			{
+				ID:            "bud-already-2",
+				MaxLimit:      800.0,
+				ResetDuration: "1Y",
+				LastReset:     time.Now().AddDate(-1, 0, 0),
+				CurrentUsage:  10.0,
+			},
 		},
 	}
 	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
