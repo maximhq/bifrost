@@ -24,7 +24,8 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteRoutingRuleMutation, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
-import { getPriorityBadgeClass, getScopeLabel, truncateCELExpression } from "@/lib/utils/routingRules";
+import { getScopeLabel } from "@/lib/utils/labels";
+import { getPriorityBadgeClass, truncateCELExpression } from "@/lib/utils/routingRules";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -240,13 +241,18 @@ export function RoutingRulesTable({
 											size="md"
 											disabled={!canUpdate}
 											onAsyncCheckedChange={async (checked) => {
-												await updateRoutingRule({ id: rule.id, data: { enabled: checked } })
+												await updateRoutingRule({
+													id: rule.id,
+													data: { enabled: checked },
+												})
 													.unwrap()
 													.then(() => {
 														toast.success(`Rule ${checked ? "enabled" : "disabled"} successfully`);
 													})
 													.catch((err) => {
-														toast.error("Failed to update rule", { description: getErrorMessage(err) });
+														toast.error("Failed to update rule", {
+															description: getErrorMessage(err),
+														});
 													});
 											}}
 										/>

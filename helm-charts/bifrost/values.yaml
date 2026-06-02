@@ -506,8 +506,17 @@ bifrost:
     customers: []
       # - id: "customer-1"
       #   name: "Customer Name"
-      #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
+      #   # Option A: inline multi-budget (each must have a unique reset_duration)
+      #   budgets:
+      #     - id: "budget-monthly"
+      #       max_limit: 500
+      #       reset_duration: "1M"
+      #     - id: "budget-yearly"
+      #       max_limit: 5000
+      #       reset_duration: "1Y"
+      #   # Option B: single budget reference (pre-declared in governance.budgets)
+      #   budget_id: "budget-1"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -542,8 +551,10 @@ bifrost:
       #       tools_to_execute: ["tool1", "tool2"]
     modelConfigs: []
       # - id: "model-config-1"
-      #   model_name: "gpt-4o"
-      #   provider: "openai"
+      #   model_name: "gpt-4o"       # model name, or "*" for all models
+      #   provider: "openai"          # optional; omit to apply to all providers
+      #   scope: "global"             # "global" (default) or "virtual_key"
+      #   scope_id: ""                # required when scope is "virtual_key" — the virtual key id
       #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
     providers: []

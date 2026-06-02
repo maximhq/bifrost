@@ -835,70 +835,11 @@
                   "type": "boolean"
                 },
                 "config": {
-                  "type": "object",
-                  "properties": {
-                    "service_name": {
-                      "type": "string",
-                      "description": "Service name to be used for tracing",
-                      "default": "bifrost"
-                    },
-                    "collector_url": {
-                      "type": "string",
-                      "description": "URL of the OpenTelemetry collector"
-                    },
-                    "trace_type": {
-                      "type": "string",
-                      "enum": ["genai_extension", "vercel", "open_inference"],
-                      "description": "Type of trace to use for the OTEL collector"
-                    },
-                    "protocol": {
-                      "type": "string",
-                      "enum": ["http", "grpc"],
-                      "description": "Protocol to use for the OTEL collector"
-                    },
-                    "metrics_enabled": {
-                      "type": "boolean",
-                      "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
-                      "default": false
-                    },
-                    "metrics_endpoint": {
-                      "type": "string",
-                      "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
-                    },
-                    "metrics_push_interval": {
-                      "type": "integer",
-                      "description": "Metrics push interval in seconds",
-                      "default": 15,
-                      "minimum": 1,
-                      "maximum": 300
-                    },
-                    "headers": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
-                    },
-                    "tls_ca_cert": {
-                      "type": "string",
-                      "description": "Path to TLS CA certificate file"
-                    },
-                    "insecure": {
-                      "type": "boolean",
-                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
-                    }
-                  },
-                  "if": {
-                    "properties": {
-                      "metrics_enabled": {
-                        "const": true
-                      }
-                    },
-                    "required": ["metrics_enabled"]
-                  },
-                  "then": {
-                    "required": ["metrics_endpoint"]
-                  }
+                  "anyOf": [
+                    { "$ref": "#/$defs/otelProfileConfig" },
+                    { "$ref": "#/$defs/otelProfilesConfig" }
+                  ],
+                  "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
                 }
               },
               "if": {
@@ -911,7 +852,10 @@
               "then": {
                 "properties": {
                   "config": {
-                    "required": ["collector_url", "trace_type", "protocol"]
+                    "anyOf": [
+                      { "$ref": "#/$defs/otelProfileConfig" },
+                      { "$ref": "#/$defs/otelProfilesConfig" }
+                    ]
                   }
                 }
               }
@@ -1366,10 +1310,22 @@
                     "type": "string"
                   },
                   "model_name": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Model name, or \"*\" to match all models"
                   },
                   "provider": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Provider name; omit to apply to all providers"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": ["global", "virtual_key"],
+                    "default": "global",
+                    "description": "Scope where this limit applies"
+                  },
+                  "scope_id": {
+                    "type": "string",
+                    "description": "Target entity ID — required when scope is \"virtual_key\""
                   },
                   "budget_id": {
                     "type": "string"
@@ -3360,6 +3316,208 @@
     }
   },
   "$defs": {
+    "otelEndpoint": {
+      "type": "string",
+      "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
+      "anyOf": [
+        {
+          "format": "uri"
+        },
+        {
+          "pattern": "^[^:\\s]+:\\d+$"
+        },
+        {
+          "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        {
+          "const": ""
+        }
+      ]
+    },
+    "otelPluginSpanFilter": {
+      "type": "object",
+      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["include", "exclude"]
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mode", "plugins"],
+      "additionalProperties": false
+    },
+    "otelProfileConfig": {
+      "type": "object",
+      "description": "OpenTelemetry export profile. This legacy single-profile shape is still accepted directly as bifrost.plugins.otel.config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this profile exports traces and metrics",
+          "default": true
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Service name to be used for tracing",
+          "default": "bifrost"
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "URL of the OpenTelemetry collector"
+        },
+        "trace_type": {
+          "type": "string",
+          "enum": ["genai_extension", "vercel", "open_inference"],
+          "description": "Type of trace to use for the OTEL collector"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "grpc"],
+          "description": "Protocol to use for the OTEL collector"
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
+          "default": false
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "description": "Metrics push interval in seconds",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 300
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Path to TLS CA certificate file"
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
+          "default": true
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otelPluginSpanFilter"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "enabled": {
+                  "const": false
+                }
+              },
+              "required": ["enabled"]
+            }
+          },
+          "then": {
+            "required": ["collector_url", "trace_type", "protocol"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "metrics_enabled": {
+                "const": true
+              }
+            },
+            "required": ["metrics_enabled"]
+          },
+          "then": {
+            "required": ["metrics_endpoint"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "otelProfilesConfig": {
+      "type": "object",
+      "description": "OpenTelemetry plugin configuration with one or more export profiles.",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "description": "OpenTelemetry export profiles",
+          "items": {
+            "$ref": "#/$defs/otelProfileConfig"
+          },
+          "minItems": 1
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otelPluginSpanFilter"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; kept only so Helm's default map merge does not reject values that switch from the legacy shape to profiles."
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Deprecated in the profiles wrapper; configure service_name per profile instead."
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "Deprecated in the profiles wrapper; configure collector_url per profile instead."
+        },
+        "trace_type": {
+          "type": "string",
+          "enum": ["genai_extension", "vercel", "open_inference"],
+          "description": "Deprecated in the profiles wrapper; configure trace_type per profile instead."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "grpc"],
+          "description": "Deprecated in the profiles wrapper; configure protocol per profile instead."
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure metrics_enabled per profile instead."
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "Deprecated in the profiles wrapper; configure metrics_endpoint per profile instead."
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Deprecated in the profiles wrapper; configure metrics_push_interval per profile instead."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Deprecated in the profiles wrapper; configure headers per profile instead."
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Deprecated in the profiles wrapper; configure tls_ca_cert per profile instead."
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure insecure per profile instead."
+        }
+      },
+      "required": ["profiles"],
+      "additionalProperties": false
+    },
     "authConfig": {
       "type": "object",
       "description": "Authentication configuration. Deprecated: Use governance.auth_config instead.",

@@ -624,6 +624,19 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	if configData == nil || configData.Governance == nil {
 		return
 	}
+	// Build ID-keyed lookup maps for the global budget/rate-limit sections so
+	// customer entries (which reference by ID, not inline) can promote legacy
+	// calendar_aligned flags from the referenced rows.
+	budgetsByID := make(map[string]*configstoreTables.TableBudget, len(configData.Governance.Budgets))
+	for i := range configData.Governance.Budgets {
+		b := &configData.Governance.Budgets[i]
+		budgetsByID[b.ID] = b
+	}
+	rateLimitsByID := make(map[string]*configstoreTables.TableRateLimit, len(configData.Governance.RateLimits))
+	for i := range configData.Governance.RateLimits {
+		rl := &configData.Governance.RateLimits[i]
+		rateLimitsByID[rl.ID] = rl
+	}
 	for i := range configData.Governance.VirtualKeys {
 		vk := &configData.Governance.VirtualKeys[i]
 		promoteCalendarAligned(&vk.CalendarAligned, vk.Budgets, vk.RateLimit)
@@ -635,6 +648,28 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	for i := range configData.Governance.Teams {
 		team := &configData.Governance.Teams[i]
 		promoteCalendarAligned(&team.CalendarAligned, team.Budgets, team.RateLimit)
+	}
+	for i := range configData.Governance.Customers {
+		customer := &configData.Governance.Customers[i]
+		// Inline budgets (new multi-budget format): promote directly.
+		promoteCalendarAligned(&customer.CalendarAligned, customer.Budgets, nil)
+		// Legacy budget_id reference: look up the referenced row.
+		if customer.BudgetID != nil {
+			if b := budgetsByID[*customer.BudgetID]; b != nil {
+				if b.CalendarAlignedInput != nil && *b.CalendarAlignedInput {
+					customer.CalendarAligned = true
+				}
+				b.CalendarAlignedInput = nil
+			}
+		}
+		if customer.RateLimitID != nil {
+			if rl := rateLimitsByID[*customer.RateLimitID]; rl != nil {
+				if rl.CalendarAlignedInput != nil && *rl.CalendarAlignedInput {
+					customer.CalendarAligned = true
+				}
+				rl.CalendarAlignedInput = nil
+			}
+		}
 	}
 }
 
@@ -2515,12 +2550,15 @@ func updateGovernanceConfigInStore(
 		// - team_id -> governance_teams
 		// - virtual_key_id -> governance_virtual_keys
 		// - provider_config_id -> governance_virtual_key_provider_configs
+		// - customer_id -> governance_customers
 		pendingTeamBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingVirtualKeyBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingCustomerBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingTeamBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingVirtualKeyBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+		pendingCustomerBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 
 		// Create budgets
 		for _, budget := range budgetsToAdd {
@@ -2534,6 +2572,10 @@ func updateGovernanceConfigInStore(
 			}
 			if budget.ProviderConfigID != nil {
 				pendingProviderConfigBudgetsToAdd = append(pendingProviderConfigBudgetsToAdd, budget)
+				continue
+			}
+			if budget.CustomerID != nil {
+				pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, budget)
 				continue
 			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
@@ -2555,6 +2597,10 @@ func updateGovernanceConfigInStore(
 				pendingProviderConfigBudgetsToUpdate = append(pendingProviderConfigBudgetsToUpdate, budget)
 				continue
 			}
+			if budget.CustomerID != nil {
+				pendingCustomerBudgetsToUpdate = append(pendingCustomerBudgetsToUpdate, budget)
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -2574,17 +2620,85 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
-		// Create customers
-		for _, customer := range customersToAdd {
-			if err := config.ConfigStore.CreateCustomer(ctx, &customer, tx); err != nil {
+		// Create customers — strip inline Budgets first; created explicitly after the row exists.
+		for i := range customersToAdd {
+			customer := &customersToAdd[i]
+			for j := range customer.Budgets {
+				cid := customer.ID
+				customer.Budgets[j].CustomerID = &cid
+				pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, customer.Budgets[j])
+			}
+			customer.Budgets = nil
+			if err := config.ConfigStore.CreateCustomer(ctx, customer, tx); err != nil {
 				return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
 			}
 		}
 
 		// Update customers (config.json changed)
-		for _, customer := range customersToUpdate {
-			if err := config.ConfigStore.UpdateCustomer(ctx, &customer, tx); err != nil {
+		for i := range customersToUpdate {
+			customer := &customersToUpdate[i]
+			if customer.Budgets != nil {
+				// Fetch existing budget IDs for this customer so we can route
+				// to add vs update — avoids INSERT conflicts on second sync.
+				var existingIDs []string
+				if err := tx.Model(&configstoreTables.TableBudget{}).
+					Where("customer_id = ?", customer.ID).
+					Pluck("id", &existingIDs).Error; err != nil {
+					return fmt.Errorf("failed to query existing budgets for customer %s: %w", customer.ID, err)
+				}
+				existingSet := make(map[string]bool, len(existingIDs))
+				for _, id := range existingIDs {
+					existingSet[id] = true
+				}
+				desiredSet := make(map[string]bool, len(customer.Budgets))
+				for j := range customer.Budgets {
+					cid := customer.ID
+					customer.Budgets[j].CustomerID = &cid
+					desiredSet[customer.Budgets[j].ID] = true
+					if existingSet[customer.Budgets[j].ID] {
+						pendingCustomerBudgetsToUpdate = append(pendingCustomerBudgetsToUpdate, customer.Budgets[j])
+					} else {
+						pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, customer.Budgets[j])
+					}
+				}
+				// Delete stale budgets one by one — mirrors the team/VK reconcile pattern.
+				for _, existingID := range existingIDs {
+					if !desiredSet[existingID] {
+						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil {
+							return fmt.Errorf("failed to delete stale budget %s for customer %s: %w", existingID, customer.ID, err)
+						}
+					}
+				}
+			}
+			customer.Budgets = nil
+			if err := config.ConfigStore.UpdateCustomer(ctx, customer, tx); err != nil {
 				return fmt.Errorf("failed to update customer %s: %w", customer.ID, err)
+			}
+		}
+
+		// Link budget_id references: validate ownership and set customer_id.
+		// For adds: verify the budget is unowned before taking it.
+		// For updates: also clear any stale link from the old budget_id.
+		for _, customer := range customersToAdd {
+			if customer.BudgetID == nil {
+				continue
+			}
+			if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
+				return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
+			}
+		}
+		for _, customer := range customersToUpdate {
+			if customer.BudgetID == nil {
+				// budget_id removed — unlink any budget previously owned via this path.
+				if err := tx.Model(&configstoreTables.TableBudget{}).
+					Where("customer_id = ?", customer.ID).
+					Update("customer_id", nil).Error; err != nil {
+					return fmt.Errorf("failed to unlink stale budgets from customer %s: %w", customer.ID, err)
+				}
+				continue
+			}
+			if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, true); err != nil {
+				return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
 			}
 		}
 
@@ -2611,6 +2725,20 @@ func updateGovernanceConfigInStore(
 
 		// Update team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Create customer-owned budgets after customers exist (inline budgets + top-level with customer_id).
+		for _, budget := range pendingCustomerBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update customer-owned budgets declared in top-level governance.budgets.
+		for _, budget := range pendingCustomerBudgetsToUpdate {
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -2717,6 +2845,11 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.CreateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
 			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Update model configs (config.json changed)
@@ -2726,6 +2859,11 @@ func updateGovernanceConfigInStore(
 			}
 			if err := config.ConfigStore.UpdateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to update model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2797,6 +2935,86 @@ func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstore
 	}
 	if err := validateRateLimitLinkOwnership(tx, modelConfig.RateLimitID, "model config", modelConfig.ID); err != nil {
 		return err
+	}
+	for _, budgetID := range modelConfig.BudgetIDs {
+		id := budgetID
+		if err := validateBudgetLinkOwnership(tx, &id, "model config", modelConfig.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkCustomerBudgetID sets customer_id on the referenced budget row, verifying that the budget
+// is either unowned or already owned by this customer. When clearStale is true it also
+// unlinks any other budget previously owned by the customer (handles budget_id changes).
+func linkCustomerBudgetID(tx *gorm.DB, customerID, budgetID string, clearStale bool) error {
+	var existing configstoreTables.TableBudget
+	if err := tx.Select("id", "customer_id", "team_id", "virtual_key_id", "provider_config_id", "model_config_id").
+		First(&existing, "id = ?", budgetID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("budget %s not found", budgetID)
+		}
+		return fmt.Errorf("failed to check budget ownership: %w", err)
+	}
+	if (existing.CustomerID != nil && *existing.CustomerID != customerID) ||
+		existing.TeamID != nil || existing.VirtualKeyID != nil ||
+		existing.ProviderConfigID != nil || existing.ModelConfigID != nil {
+		return fmt.Errorf("budget %s is already owned by another entity", budgetID)
+	}
+	if clearStale {
+		if err := tx.Model(&configstoreTables.TableBudget{}).
+			Where("customer_id = ? AND id != ?", customerID, budgetID).
+			Update("customer_id", nil).Error; err != nil {
+			return fmt.Errorf("failed to unlink stale budget from customer %s: %w", customerID, err)
+		}
+	}
+	result := tx.Model(&configstoreTables.TableBudget{}).
+		Where("id = ?", budgetID).
+		Update("customer_id", customerID)
+	if result.Error != nil {
+		return fmt.Errorf("failed to link budget %s to customer %s: %w", budgetID, customerID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("failed to link budget %s to customer %s: no row updated", budgetID, customerID)
+	}
+	return nil
+}
+
+// linkModelConfigBudgets sets model_config_id on each budget in budgetIDs, and clears it from
+// any budgets previously owned by mcID that are no longer in the list.
+func linkModelConfigBudgets(tx *gorm.DB, mcID string, budgetIDs []string) error {
+	// Normalize: trim whitespace and deduplicate.
+	seen := make(map[string]struct{}, len(budgetIDs))
+	normalized := make([]string, 0, len(budgetIDs))
+	for _, raw := range budgetIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+
+	// Clear ownership from budgets that are no longer referenced.
+	unlinkQ := tx.Model(&configstoreTables.TableBudget{}).
+		Where("model_config_id = ?", mcID)
+	if len(normalized) > 0 {
+		unlinkQ = unlinkQ.Where("id NOT IN ?", normalized)
+	}
+	if err := unlinkQ.Update("model_config_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to unlink stale budgets from model config %q: %w", mcID, err)
+	}
+	// Link the declared budgets.
+	for _, id := range normalized {
+		if err := tx.Model(&configstoreTables.TableBudget{}).
+			Where("id = ?", id).
+			Update("model_config_id", mcID).Error; err != nil {
+			return fmt.Errorf("failed to link budget %q to model config %q: %w", id, mcID, err)
+		}
 	}
 	return nil
 }
@@ -2996,6 +3214,11 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
 			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
 		}
 		for i := range config.GovernanceConfig.Providers {
 			provider := &config.GovernanceConfig.Providers[i]
@@ -3029,8 +3252,25 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			} else {
 				customer.ConfigHash = customerHash
 			}
-			if err := config.ConfigStore.CreateCustomer(ctx, customer, tx); err != nil {
+			// Work on a copy so the live GovernanceConfig entry keeps its Budgets
+			// slice — in-memory reads after boot must not see a nil slice.
+			inlineBudgets := customer.Budgets
+			customerRow := *customer
+			customerRow.Budgets = nil
+			if err := config.ConfigStore.CreateCustomer(ctx, &customerRow, tx); err != nil {
 				return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
+			}
+			for j := range inlineBudgets {
+				cid := customer.ID
+				inlineBudgets[j].CustomerID = &cid
+				if err := config.ConfigStore.CreateBudget(ctx, &inlineBudgets[j], tx); err != nil {
+					return fmt.Errorf("failed to create budget %s for customer %s: %w", inlineBudgets[j].ID, customer.ID, err)
+				}
+			}
+			if customer.BudgetID != nil {
+				if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
+					return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
+				}
 			}
 		}
 

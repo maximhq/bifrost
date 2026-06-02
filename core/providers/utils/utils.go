@@ -253,7 +253,7 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 //
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
-func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -286,9 +286,6 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			if splitErr != nil {
 				return nil, splitErr
 			}
-			if network.IsLocalhost(host) {
-				return nil, fmt.Errorf("connection to %s is not allowed", host)
-			}
 			// Bound DNS resolution with the same timeout that governs the TCP
 			resolveCtx := context.Background()
 			if client.ReadTimeout > 0 {
@@ -306,7 +303,15 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			}
 			var lastErr error
 			for _, ip := range ips {
-				if network.IsPrivateIP(ip) {
+				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+				if ip.IsUnspecified() {
+					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+				}
+				if network.IsLinkLocal(ip) {
+					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+				}
+				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
+				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
 				}
 				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
