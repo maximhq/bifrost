@@ -303,6 +303,9 @@
         "gemini": {
           "$ref": "#/$defs/provider"
         },
+        "gigachat": {
+          "$ref": "#/$defs/provider_with_gigachat_config"
+        },
         "openrouter": {
           "$ref": "#/$defs/provider"
         },
@@ -1461,6 +1464,7 @@
                         "openai",
                         "anthropic",
                         "gemini",
+                        "gigachat",
                         "bedrock",
                         "azure",
                         "cohere",
@@ -2519,6 +2523,98 @@
         }
       ]
     },
+    "gigachat_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gigachat_key_config": {
+              "type": "object",
+              "properties": {
+                "credentials": {
+                  "type": "string",
+                  "description": "GigaChat authorization key for OAuth token exchange (can use env. prefix)"
+                },
+                "scope": {
+                  "type": "string",
+                  "description": "GigaChat OAuth scope, defaults to GIGACHAT_API_PERS"
+                },
+                "user": {
+                  "type": "string",
+                  "description": "GigaChat username for password auth mode (can use env. prefix)"
+                },
+                "password": {
+                  "type": "string",
+                  "description": "GigaChat password for password auth mode (can use env. prefix)"
+                },
+                "access_token": {
+                  "type": "string",
+                  "description": "Pre-obtained GigaChat bearer access token (can use env. prefix)"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "description": "GigaChat OAuth token endpoint override"
+                },
+                "base_url": {
+                  "type": "string",
+                  "description": "GigaChat API base URL override for this key"
+                },
+                "cert_file": {
+                  "type": "string",
+                  "description": "Client certificate file for GigaChat mTLS. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
+                },
+                "key_file": {
+                  "type": "string",
+                  "description": "Client private key file for GigaChat mTLS. Must be configured with cert_file."
+                },
+                "key_file_password": {
+                  "type": "string",
+                  "description": "Reserved for encrypted GigaChat client private keys (can use env. prefix). Encrypted private keys are currently rejected by the provider."
+                },
+                "ca_bundle_file": {
+                  "type": "string",
+                  "description": "CA bundle file for GigaChat TLS roots. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
+                }
+              },
+              "dependentRequired": {
+                "user": ["password"],
+                "password": ["user"],
+                "cert_file": ["key_file"],
+                "key_file": ["cert_file"],
+                "key_file_password": ["cert_file", "key_file"]
+              },
+              "additionalProperties": false
+            }
+          },
+          "anyOf": [
+            {
+              "required": ["value"]
+            },
+            {
+              "required": ["gigachat_key_config"],
+              "properties": {
+                "gigachat_key_config": {
+                  "anyOf": [
+                    {
+                      "required": ["credentials"]
+                    },
+                    {
+                      "required": ["access_token"]
+                    },
+                    {
+                      "required": ["user", "password"]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
     "azure_key": {
       "allOf": [
         {
@@ -2913,6 +3009,45 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
+      "additionalProperties": false
+    },
+    "provider_with_gigachat_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gigachat_key"
+          },
+          "minItems": 1,
+          "description": "GigaChat auth keys and per-key endpoint overrides"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {

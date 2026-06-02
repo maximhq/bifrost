@@ -1176,6 +1176,16 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			Region:       schemas.NewEnvVar("eu-west-1"),
 			ARN:          schemas.NewEnvVar("arn:aws:bedrock:eu-west-1:123:role"),
 		},
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials:     schemas.NewEnvVar("gigachat-credentials"),
+			Scope:           schemas.DefaultGigaChatScope,
+			BaseURL:         "https://api.giga.chat",
+			AuthURL:         "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+			CertFile:        "/secure/client.pem",
+			KeyFile:         "/secure/client.key",
+			KeyFilePassword: schemas.NewEnvVar("gigachat-key-password"),
+			CABundleFile:    "/secure/ca.pem",
+		},
 	}
 
 	require.NoError(t, db.Create(key).Error)
@@ -1190,6 +1200,19 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
+	rawGigaChatVal := raw["gigachat_key_config_json"]
+	require.NotNil(t, rawGigaChatVal, "gigachat_key_config_json should be present in raw row")
+	var rawGigaChatStr string
+	switch v := rawGigaChatVal.(type) {
+	case string:
+		rawGigaChatStr = v
+	case []byte:
+		rawGigaChatStr = string(v)
+	}
+	require.NotEmpty(t, rawGigaChatStr, "gigachat_key_config_json should not be empty")
+	assert.NotContains(t, rawGigaChatStr, "gigachat-credentials")
+	assert.NotContains(t, rawGigaChatStr, "gigachat-key-password")
+	assert.NotContains(t, rawGigaChatStr, "/secure/client.pem")
 	rawAliasesVal2 := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
 	var rawAliasesStr2 string
@@ -1231,6 +1254,15 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
 	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
+
+	require.NotNil(t, found.GigaChatKeyConfig)
+	require.NotNil(t, found.GigaChatKeyConfig.Credentials)
+	assert.Equal(t, "gigachat-credentials", found.GigaChatKeyConfig.Credentials.GetValue())
+	require.NotNil(t, found.GigaChatKeyConfig.KeyFilePassword)
+	assert.Equal(t, "gigachat-key-password", found.GigaChatKeyConfig.KeyFilePassword.GetValue())
+	assert.Equal(t, "/secure/client.pem", found.GigaChatKeyConfig.CertFile)
+	assert.Equal(t, "/secure/client.key", found.GigaChatKeyConfig.KeyFile)
+	assert.Equal(t, "/secure/ca.pem", found.GigaChatKeyConfig.CABundleFile)
 }
 
 // ============================================================================

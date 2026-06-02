@@ -447,10 +447,46 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		}
 	}
 
+	if updateKey.GigaChatKeyConfig != nil && oldRedactedKey.GigaChatKeyConfig != nil && oldRawKey.GigaChatKeyConfig != nil {
+		mergeGigaChatKeyConfigSecrets(updateKey.GigaChatKeyConfig, oldRedactedKey.GigaChatKeyConfig, oldRawKey.GigaChatKeyConfig, mergedKey.GigaChatKeyConfig)
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
 	return mergedKey
+}
+
+func mergeGigaChatKeyConfigSecrets(updateConfig, oldRedactedConfig, oldRawConfig, mergedConfig *schemas.GigaChatKeyConfig) {
+	if updateConfig.Credentials != nil && oldRedactedConfig.Credentials != nil &&
+		updateConfig.Credentials.IsRedacted() && updateConfig.Credentials.Equals(oldRedactedConfig.Credentials) {
+		mergedConfig.Credentials = oldRawConfig.Credentials
+	}
+	if updateConfig.User != nil && oldRedactedConfig.User != nil &&
+		updateConfig.User.IsRedacted() && updateConfig.User.Equals(oldRedactedConfig.User) {
+		mergedConfig.User = oldRawConfig.User
+	}
+	if updateConfig.Password != nil && oldRedactedConfig.Password != nil &&
+		updateConfig.Password.IsRedacted() && updateConfig.Password.Equals(oldRedactedConfig.Password) {
+		mergedConfig.Password = oldRawConfig.Password
+	}
+	if updateConfig.AccessToken != nil && oldRedactedConfig.AccessToken != nil &&
+		updateConfig.AccessToken.IsRedacted() && updateConfig.AccessToken.Equals(oldRedactedConfig.AccessToken) {
+		mergedConfig.AccessToken = oldRawConfig.AccessToken
+	}
+	if updateConfig.KeyFilePassword != nil && oldRedactedConfig.KeyFilePassword != nil &&
+		updateConfig.KeyFilePassword.IsRedacted() && updateConfig.KeyFilePassword.Equals(oldRedactedConfig.KeyFilePassword) {
+		mergedConfig.KeyFilePassword = oldRawConfig.KeyFilePassword
+	}
+	if updateConfig.CertFile == oldRedactedConfig.CertFile && updateConfig.CertFile == "<REDACTED>" {
+		mergedConfig.CertFile = oldRawConfig.CertFile
+	}
+	if updateConfig.KeyFile == oldRedactedConfig.KeyFile && updateConfig.KeyFile == "<REDACTED>" {
+		mergedConfig.KeyFile = oldRawConfig.KeyFile
+	}
+	if updateConfig.CABundleFile == oldRedactedConfig.CABundleFile && updateConfig.CABundleFile == "<REDACTED>" {
+		mergedConfig.CABundleFile = oldRawConfig.CABundleFile
+	}
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
@@ -472,7 +508,7 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return decoded, nil
 }
 
-// validateProviderKeyURL checks that Ollama/SGL keys have a server URL configured.
+// validateProviderKeyURL checks provider-specific key config requirements.
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
 	switch provider {
 	case schemas.Ollama:
@@ -482,6 +518,15 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	case schemas.GigaChat:
+		if key.GigaChatKeyConfig != nil {
+			if err := key.GigaChatKeyConfig.Validate(); err != nil {
+				return err
+			}
+		}
+		if !key.Value.IsSet() && (key.GigaChatKeyConfig == nil || !key.GigaChatKeyConfig.HasAuthMaterial()) {
+			return fmt.Errorf("gigachat key requires value access token or gigachat_key_config bearer auth material")
 		}
 	}
 	return nil

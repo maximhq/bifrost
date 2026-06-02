@@ -566,6 +566,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
+
+		if key.GigaChatKeyConfig != nil {
+			redactedConfig.Keys[i].GigaChatKeyConfig = key.GigaChatKeyConfig.Redacted()
+		}
 	}
 	return &redactedConfig
 }

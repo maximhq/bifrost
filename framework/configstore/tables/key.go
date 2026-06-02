@@ -69,6 +69,9 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.EnvVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// GigaChat config fields (serialized because the auth surface spans multiple optional modes)
+	GigaChatKeyConfigJSON *string `gorm:"column:gigachat_key_config_json;type:text" json:"-"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -88,6 +91,7 @@ type TableKey struct {
 	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig    *schemas.OllamaKeyConfig    `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig       *schemas.SGLKeyConfig       `gorm:"-" json:"sgl_key_config,omitempty"`
+	GigaChatKeyConfig  *schemas.GigaChatKeyConfig  `gorm:"-" json:"gigachat_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -328,6 +332,19 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.GigaChatKeyConfig != nil {
+		cfg := *k.GigaChatKeyConfig
+		cfg.CheckAndSetDefaults()
+		data, err := sonic.Marshal(&cfg)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		k.GigaChatKeyConfigJSON = &s
+	} else {
+		k.GigaChatKeyConfigJSON = nil
+	}
+
 	// Encrypt sensitive fields after serialization
 	if encrypt.IsEnabled() {
 		if err := encryptEnvVar(&k.Value); err != nil {
@@ -402,6 +419,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		// SGL
 		if err := encryptEnvVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
+		}
+		// GigaChat
+		if err := encryptString(k.GigaChatKeyConfigJSON); err != nil {
+			return fmt.Errorf("failed to encrypt gigachat key config: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -486,6 +507,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// SGL
 		if err := decryptEnvVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
+		}
+		// GigaChat
+		if err := decryptString(k.GigaChatKeyConfigJSON); err != nil {
+			return fmt.Errorf("failed to decrypt gigachat key config: %w", err)
 		}
 	}
 
@@ -624,6 +649,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.SGLKeyConfig = nil
+	}
+	if k.GigaChatKeyConfigJSON != nil && *k.GigaChatKeyConfigJSON != "" {
+		var config schemas.GigaChatKeyConfig
+		if err := sonic.Unmarshal([]byte(*k.GigaChatKeyConfigJSON), &config); err != nil {
+			return err
+		}
+		config.CheckAndSetDefaults()
+		k.GigaChatKeyConfig = &config
+	} else {
+		k.GigaChatKeyConfig = nil
 	}
 	return nil
 }

@@ -1163,6 +1163,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json"), "GigaChat key config column should exist")
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {

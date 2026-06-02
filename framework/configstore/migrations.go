@@ -682,6 +682,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOllamaSGLConfigColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddGigaChatKeyConfigColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddMultiBudgetTables(ctx, db); err != nil {
 		return err
 	}
@@ -7083,6 +7086,37 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running ollama sgl key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGigaChatKeyConfigColumn adds GigaChat key auth config storage.
+func migrationAddGigaChatKeyConfigColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_gigachat_key_config_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "gigachat_key_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "gigachat_key_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running gigachat key config column migration: %s", err.Error())
 	}
 	return nil
 }
