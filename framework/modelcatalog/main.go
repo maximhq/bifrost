@@ -395,11 +395,36 @@ func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
 	return result
 }
 
-// populateModelPool populates the model pool with all available models per provider (thread-safe)
+// populateModelPool populates the model pool with all available models per provider (thread-safe).
+//
+// This function is the only path that resets modelPool / unfilteredModelPool /
+// baseModelIndex from upstream pricing data. It is called both at init (where
+// the pool is empty) and on every reload (gossip ReloadFromDB, manual
+// ForceReloadPricing). To avoid drift on reload — where a naive wipe would
+// drop everything contributed by per-provider list-models output and key
+// allowed_models — the pre-wipe pool is snapshotted and unioned back in after
+// the pricing rebuild. baseModelIndex is intentionally not preserved: aliases
+// outside the pricing sheet have no canonical base-model entry, and
+// getBaseModelNameUnsafe falls through to algorithmic stripping for them.
 func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 	// Acquire write lock for the entire rebuild operation
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
+
+	// Snapshot the pre-wipe pool so non-pricing contributions (list-models
+	// output, allowed_models) survive the rebuild.
+	previousModelPool := make(map[schemas.ModelProvider][]string, len(mc.modelPool))
+	for provider, models := range mc.modelPool {
+		copied := make([]string, len(models))
+		copy(copied, models)
+		previousModelPool[provider] = copied
+	}
+	previousUnfilteredModelPool := make(map[schemas.ModelProvider][]string, len(mc.unfilteredModelPool))
+	for provider, models := range mc.unfilteredModelPool {
+		copied := make([]string, len(models))
+		copy(copied, models)
+		previousUnfilteredModelPool[provider] = copied
+	}
 
 	// Clear existing model pool and base model index
 	mc.modelPool = make(map[schemas.ModelProvider][]string)
@@ -436,6 +461,27 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 		}
 		mc.modelPool[provider] = models
 		mc.unfilteredModelPool[provider] = models
+	}
+
+	// Union the pre-wipe snapshot back in. Anything previously added by
+	// UpsertModelDataForProvider / UpsertUnfilteredModelDataForProvider —
+	// list-models output, allowed_models aliases — is restored. Pricing
+	// entries from the rebuild win on duplicates (already in place above);
+	// removals via DeleteModelDataForProvider are respected because that
+	// method strips the provider from the live map before this runs.
+	for provider, models := range previousModelPool {
+		for _, m := range models {
+			if !slices.Contains(mc.modelPool[provider], m) {
+				mc.modelPool[provider] = append(mc.modelPool[provider], m)
+			}
+		}
+	}
+	for provider, models := range previousUnfilteredModelPool {
+		for _, m := range models {
+			if !slices.Contains(mc.unfilteredModelPool[provider], m) {
+				mc.unfilteredModelPool[provider] = append(mc.unfilteredModelPool[provider], m)
+			}
+		}
 	}
 
 	// Log the populated model pool for debugging
