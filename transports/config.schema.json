@@ -2383,6 +2383,19 @@
           "description": "Model parameters URL",
           "optional": true,
           "format": "uri"
+        },
+        "mcp_library_url": {
+          "type": "string",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
+          "optional": true,
+          "format": "uri"
+        },
+        "mcp_library_sync_interval": {
+          "type": "integer",
+          "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+          "default": 86400,
+          "optional": true,
+          "minimum": 3600
         }
       },
       "additionalProperties": false
