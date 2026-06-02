@@ -278,10 +278,48 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
 		default:
-			conn, err = (&net.Dialer{
+			// resolve DNS ourselves, reject private IPs, then dial
+			// the IP literal directly — closes the DNS rebinding window that exists
+			// between ValidateExternalURL (save time) and this connection.
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			if network.IsLocalhost(host) {
+				return nil, fmt.Errorf("connection to %s is not allowed", host)
+			}
+			// Bound DNS resolution with the same timeout that governs the TCP
+			resolveCtx := context.Background()
+			if client.ReadTimeout > 0 {
+				var cancel context.CancelFunc
+				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
+				defer cancel()
+			}
+			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			dialer := &net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}).Dial("tcp", addr)
+			}
+			var lastErr error
+			for _, ip := range ips {
+				if network.IsPrivateIP(ip) {
+					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				}
+				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					break
+				}
+				lastErr = err
+			}
+			if conn == nil {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, fmt.Errorf("no usable address resolved for %s", host)
+			}
 		}
 		if err != nil {
 			return nil, err
