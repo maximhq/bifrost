@@ -693,9 +693,23 @@
                 "type": "string",
                 "description": "Optional provider name to scope this config"
               },
+              "scope": {
+                "type": "string",
+                "description": "Scope where this config applies: \"global\" (default) or \"virtual_key\"",
+                "default": "global"
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "Target entity ID for non-global scopes (e.g. virtual key ID). Required when scope != \"global\""
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Budget ID to associate with this model"
+                "description": "Deprecated — single budget reference. Use budget_ids instead."
+              },
+              "budget_ids": {
+                "type": "array",
+                "description": "List of budget IDs (from governance.budgets) to associate with this model config. Supports multiple budgets (e.g. daily + monthly). Replaces budget_id.",
+                "items": { "type": "string" }
               },
               "rate_limit_id": {
                 "type": "string",
@@ -2088,6 +2102,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -2152,6 +2171,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false

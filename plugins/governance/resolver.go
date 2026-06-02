@@ -215,6 +215,24 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 		}
 	}
 
+	// Check per-user-scoped model config rate limits and budgets. Mirrors the
+	// VK-scoped block in EvaluateVirtualKeyRequest. Gated on model being present —
+	// MCP tool execution (no model) is excluded naturally by this guard.
+	if request.Model != "" {
+		if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("User-level model rate limit exceeded: %s", reasonFromErr(err, decision)),
+			}
+		}
+		if decision, err := r.store.CheckScopedModelBudget(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil); err != nil || isBudgetViolation(decision) {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("User-level model budget exceeded: %s", reasonFromErr(err, decision)),
+			}
+		}
+	}
+
 	return &EvaluationResult{
 		Decision: DecisionAllow,
 		Reason:   "User-level checks passed",
@@ -285,6 +303,27 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		// 5. Check budget hierarchy (VK → Team → Customer)
 		if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
 			return budgetResult
+		}
+
+		// 6. Check per-VK-scoped model config rate limits and budgets. These aggregate with
+		// the global model checks already enforced in EvaluateModelAndProviderRequest — the
+		// request must satisfy both (most-restrictive wins). Gated on a model being present,
+		// mirroring the global model checks.
+		if model != "" {
+			if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil, nil); err != nil || isRateLimitViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level rate limit check failed (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
+			if decision, err := r.store.CheckScopedModelBudget(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil); err != nil || isBudgetViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level budget exceeded (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
 		}
 	}
 

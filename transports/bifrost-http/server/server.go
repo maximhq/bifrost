@@ -389,6 +389,17 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		}
 	}
 	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	// Also reload any model configs scoped to this VK so governance changes made
+	// via the VK sheet (syncVKGovernanceToModelConfigs) are reflected in memory
+	// immediately — both on the node that handled the update and on peers that
+	// receive this reload via the cluster gossip broadcast.
+	if mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(
+		ctx, tables.ModelConfigScopeVirtualKey, []string{id},
+	); err == nil {
+		for i := range mcs {
+			governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(ctx, &mcs[i])
+		}
+	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
 }
@@ -507,10 +518,16 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		return preloadedMC, nil
 	}
 
-	// Sync updated usage values back to database if they changed
-	if updatedMC.Budget != nil && preloadedMC.Budget != nil {
-		if updatedMC.Budget.CurrentUsage != preloadedMC.Budget.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedMC.Budget.ID, updatedMC.Budget.CurrentUsage); err != nil {
+	// Sync updated budget usage values back to database if they changed (per budget ID,
+	// since a model config may own multiple budgets).
+	preloadedUsage := make(map[string]float64, len(preloadedMC.Budgets))
+	for i := range preloadedMC.Budgets {
+		preloadedUsage[preloadedMC.Budgets[i].ID] = preloadedMC.Budgets[i].CurrentUsage
+	}
+	for i := range updatedMC.Budgets {
+		b := &updatedMC.Budgets[i]
+		if old, ok := preloadedUsage[b.ID]; ok && old != b.CurrentUsage {
+			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, b.ID, b.CurrentUsage); err != nil {
 				logger.Error("failed to sync budget usage to database: %v", err)
 			}
 		}

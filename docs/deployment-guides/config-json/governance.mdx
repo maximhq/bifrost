@@ -158,6 +158,52 @@ Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a
 
 ---
 
+## Model Limits
+
+`governance.model_configs` applies budgets and rate limits keyed on a model name, an optional provider, and a scope. This is the same data the **Budget & Limits → Model Limits** UI manages.
+
+```json
+{
+  "governance": {
+    "model_configs": [
+      {
+        "id": "mc-gpt4o-global",
+        "model_name": "gpt-4o",
+        "provider": "openai",
+        "budget_id": "budget-production",
+        "rate_limit_id": "rl-platform-hourly"
+      },
+      {
+        "id": "mc-openai-provider",
+        "model_name": "*",
+        "provider": "openai",
+        "scope": "global",
+        "budget_id": "budget-production"
+      },
+      {
+        "id": "mc-vk-dev-toplevel",
+        "model_name": "*",
+        "scope": "virtual_key",
+        "scope_id": "vk-dev-all",
+        "budget_id": "budget-dev"
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique identifier |
+| `model_name` | Yes | Model name, or `"*"` to match all models |
+| `provider` | No | Provider name; omit to apply across all providers |
+| `scope` | No | `"global"` (default, all traffic) or `"virtual_key"` (one VK) |
+| `scope_id` | Conditional | Required when `scope` is `"virtual_key"` — the virtual key `id` |
+| `budget_id` | No | References a `governance.budgets` entry |
+| `rate_limit_id` | No | References a `governance.rate_limits` entry |
+
+---
+
 ## Routing Rules
 
 Routing rules dynamically select the provider and model for each request based on a [CEL](https://cel.dev) expression. They are evaluated in priority order before the request is dispatched.

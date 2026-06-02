@@ -27,6 +27,7 @@ import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useGetVirtualKeyQuery,
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
@@ -53,6 +54,7 @@ import {
 	ShieldCheck,
 	Trash2,
 } from "lucide-react";
+import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
@@ -335,10 +337,22 @@ export default function VirtualKeysTable({
 		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
 		[editingVirtualKeyId, virtualKeys],
 	);
-	const selectedVirtualKey = useMemo(
+	const selectedVkInList = useMemo(
 		() => (selectedVkId ? (virtualKeys.find((vk) => vk.id === selectedVkId) ?? null) : null),
 		[selectedVkId, virtualKeys],
 	);
+	// Deep-link support: another page (e.g. Model Limits) can open a VK via ?vk=<id>.
+	// The target may not be on the current page/filter, so fetch it by id as a fallback.
+	const [vkParam, setVkParam] = useQueryState("vk");
+	const needsVkFetch = !!selectedVkId && !selectedVkInList;
+	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", { skip: !needsVkFetch });
+	const selectedVirtualKey = selectedVkInList ?? (needsVkFetch ? (fetchedVkData?.virtual_key ?? null) : null);
+
+	useEffect(() => {
+		if (!vkParam) return;
+		onSelectedVkChange(vkParam);
+		setVkParam(null); // consume the param; selection is held in parent state from here
+	}, [vkParam, setVkParam, onSelectedVkChange]);
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);

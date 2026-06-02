@@ -12,6 +12,7 @@ func IsLocalhost(hostname string) bool {
 }
 
 var privateSubnets []*net.IPNet
+var linkLocalSubnet *net.IPNet
 
 func init() {
 	for _, cidr := range []string{
@@ -24,6 +25,18 @@ func init() {
 		_, subnet, _ := net.ParseCIDR(cidr)
 		privateSubnets = append(privateSubnets, subnet)
 	}
+	_, linkLocalSubnet, _ = net.ParseCIDR("169.254.0.0/16")
+}
+
+// IsLinkLocal reports whether ip is a link-local address.
+// These are always blocked regardless of AllowPrivateNetwork — they include
+// cloud instance metadata endpoints (169.254.169.254, fe80::) that must
+// never be reachable even in private-network deployments.
+func IsLinkLocal(ip net.IP) bool {
+	if ip.To4() != nil {
+		return linkLocalSubnet.Contains(ip)
+	}
+	return ip.IsLinkLocalUnicast()
 }
 
 // IsPrivateIP reports whether ip falls in a private, loopback, or link-local range.

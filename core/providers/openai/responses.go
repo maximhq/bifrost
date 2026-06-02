@@ -200,7 +200,8 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 	params := bifrostReq.Params
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
-		Model: bifrostReq.Model,
+		Model:    bifrostReq.Model,
+		Provider: bifrostReq.Provider,
 		Input: OpenAIResponsesRequestInput{
 			OpenAIResponsesRequestInputArray: messages,
 		},
@@ -337,6 +338,11 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		schemas.ResponsesToolTypeNamespace:          true,
 	}
 
+	// Allow provider-native tools that are not part of the OpenAI spec
+	if resp.Provider == schemas.XAI {
+		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
+	}
+
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
 	for _, tool := range resp.Tools {
@@ -397,4 +403,10 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		}
 	}
 	resp.Tools = filteredTools
+
+	// If every tool was stripped, a leftover tool_choice would cause a 400 from
+	// the upstream ("tool_choice must be specified with tools").
+	if len(resp.Tools) == 0 {
+		resp.ToolChoice = nil
+	}
 }

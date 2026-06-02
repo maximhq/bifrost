@@ -828,6 +828,21 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelConfigScopeColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMigrateProviderGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddBudgetModelConfigIDColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelConfigCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3828,6 +3843,451 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add provider governance columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigScopeColumns adds the scope and scope_id columns to
+// governance_model_configs and swaps the unique index from (model_name, provider)
+// to (scope, scope_id, model_name, provider). Existing rows are backfilled to the
+// "global" scope, preserving pre-scope behavior. The new index is created before
+// the old one is dropped so uniqueness is never unenforced during the migration.
+func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_scope_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			modelConfig := &tables.TableModelConfig{}
+
+			// Add scope column (NOT NULL DEFAULT 'global' backfills existing rows).
+			if !migrator.HasColumn(modelConfig, "scope") {
+				if err := migrator.AddColumn(modelConfig, "scope"); err != nil {
+					return fmt.Errorf("failed to add scope column: %w", err)
+				}
+			}
+			// Add scope_id column (nullable).
+			if !migrator.HasColumn(modelConfig, "scope_id") {
+				if err := migrator.AddColumn(modelConfig, "scope_id"); err != nil {
+					return fmt.Errorf("failed to add scope_id column: %w", err)
+				}
+			}
+			// Belt-and-suspenders backfill in case the column default did not populate
+			// existing rows on this dialect.
+			if err := tx.Exec("UPDATE governance_model_configs SET scope = ? WHERE scope IS NULL OR scope = ''", tables.ModelConfigScopeGlobal).Error; err != nil {
+				return fmt.Errorf("failed to backfill scope: %w", err)
+			}
+
+			// Create the new composite unique index BEFORE dropping the old one. The
+			// composite index is strictly more selective, so already-unique rows stay
+			// unique under it; this ordering avoids any window where uniqueness is
+			// unenforced. CreateIndex reads the struct tags so it is dialect-safe.
+			if !migrator.HasIndex(modelConfig, "idx_model_scope_provider") {
+				if err := migrator.CreateIndex(modelConfig, "idx_model_scope_provider"); err != nil {
+					return fmt.Errorf("failed to create idx_model_scope_provider: %w", err)
+				}
+			}
+			// Drop the now-superseded (model_name, provider) unique index.
+			if migrator.HasIndex(modelConfig, "idx_model_provider") {
+				if err := migrator.DropIndex(modelConfig, "idx_model_provider"); err != nil {
+					return fmt.Errorf("failed to drop idx_model_provider: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_model_config_scope_columns is non-rollbackable: scope-aware rows and the previous uniqueness invariant cannot be restored safely")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add model config scope columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMigrateProviderGovernanceToModelConfigs folds provider-level governance
+// (config_providers.budget_id / rate_limit_id) into governance_model_configs as
+// (scope='global', provider=<name>, model_name='*') "all models on this provider" rows,
+// reusing the same budget/rate-limit rows. It then NULLs the provider FKs so the old
+// provider-governance enforcement path goes inert (single source of truth = model_configs).
+func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_provider_governance_to_model_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Guard: only run once the model-config table + scope columns exist.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			var providers []tables.TableProvider
+			if err := tx.Where("budget_id IS NOT NULL OR rate_limit_id IS NOT NULL").Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to load providers with governance: %w", err)
+			}
+
+			now := time.Now()
+			for i := range providers {
+				p := &providers[i]
+
+				// Idempotency: skip if a global all-models row already exists for this provider.
+				var existing int64
+				if err := tx.Model(&tables.TableModelConfig{}).
+					Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
+					Count(&existing).Error; err != nil {
+					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
+				}
+				if existing == 0 {
+					providerName := p.Name
+					mc := tables.TableModelConfig{
+						ID:          uuid.NewString(),
+						ModelName:   tables.ModelConfigAllModels,
+						Provider:    &providerName,
+						Scope:       tables.ModelConfigScopeGlobal,
+						BudgetID:    p.BudgetID,
+						RateLimitID: p.RateLimitID,
+						CreatedAt:   now,
+						UpdatedAt:   now,
+					}
+					if err := tx.Create(&mc).Error; err != nil {
+						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
+					}
+				}
+
+				// Detach governance from the provider (FK rows are reused by the model config above).
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", p.Name).
+					Updates(map[string]any{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
+					return fmt.Errorf("failed to clear governance FKs for provider %q: %w", p.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Nothing to reverse if the model-config table/scope columns are gone.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			// Reverse provider-level wildcards:
+			// (scope='global', scope_id IS NULL, model_name='*', provider IS NOT NULL).
+			var wildcards []tables.TableModelConfig
+			if err := tx.Where(
+				"scope = ? AND scope_id IS NULL AND model_name = ? AND provider IS NOT NULL",
+				tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels,
+			).Find(&wildcards).Error; err != nil {
+				return fmt.Errorf("failed to load provider wildcard configs: %w", err)
+			}
+
+			for i := range wildcards {
+				mc := &wildcards[i]
+				// Re-attach the budget/rate-limit FK rows to the provider row.
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", *mc.Provider).
+					Updates(map[string]any{"budget_id": mc.BudgetID, "rate_limit_id": mc.RateLimitID}).Error; err != nil {
+					return fmt.Errorf("failed to restore governance FKs for provider %q: %w", *mc.Provider, err)
+				}
+				// Drop the wildcard model config; its FK rows now live on the provider again.
+				if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+					return fmt.Errorf("failed to delete wildcard config for provider %q: %w", *mc.Provider, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running migrate provider governance to model configs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetModelConfigIDColumn adds governance_budgets.model_config_id and
+// backfills it from the legacy single governance_model_configs.budget_id, inverting
+// budget ownership so a model config can own multiple budgets via the FK.
+func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_budget_model_config_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableBudget{}, "model_config_id") {
+				if err := mig.AddColumn(&tables.TableBudget{}, "model_config_id"); err != nil {
+					return fmt.Errorf("failed to add model_config_id column: %w", err)
+				}
+			}
+
+			// Backfill from the legacy single budget_id. Idempotent via the IS NULL guard.
+			if !mig.HasColumn(&tables.TableModelConfig{}, "budget_id") {
+				return nil
+			}
+			var mcs []tables.TableModelConfig
+			if err := tx.Where("budget_id IS NOT NULL").Find(&mcs).Error; err != nil {
+				return fmt.Errorf("failed to load model configs with budgets: %w", err)
+			}
+			for i := range mcs {
+				mc := &mcs[i]
+				if mc.BudgetID == nil {
+					continue
+				}
+				if err := tx.Exec(
+					"UPDATE governance_budgets SET model_config_id = ? WHERE id = ? AND model_config_id IS NULL",
+					mc.ID, *mc.BudgetID,
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill model_config_id for budget %q: %w", *mc.BudgetID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return fmt.Errorf("add_budget_model_config_id_column is non-rollbackable: dropping model_config_id would permanently lose multi-budget ownership data that cannot be recovered from the legacy single budget_id column")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add budget model_config_id column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// ensureVKModelConfig returns the ID of the VK-scoped model config for the given
+// (vkID, provider) pair, creating it if absent.
+func ensureVKModelConfig(tx *gorm.DB, vkID string, provider *string, calendarAligned bool, now time.Time) (string, error) {
+	q := tx.Model(&tables.TableModelConfig{}).
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var existing []tables.TableModelConfig
+	if err := q.Limit(1).Find(&existing).Error; err != nil {
+		return "", fmt.Errorf("failed to look up VK model config: %w", err)
+	}
+	if len(existing) > 0 {
+		return existing[0].ID, nil
+	}
+	mc := tables.TableModelConfig{
+		ID:              uuid.NewString(),
+		ModelName:       tables.ModelConfigAllModels,
+		Provider:        provider,
+		Scope:           tables.ModelConfigScopeVirtualKey,
+		ScopeID:         &vkID,
+		CalendarAligned: calendarAligned,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := tx.Create(&mc).Error; err != nil {
+		return "", fmt.Errorf("failed to create VK model config: %w", err)
+	}
+	return mc.ID, nil
+}
+
+// migrationMigrateVirtualKeyGovernanceToModelConfigs folds VK-level governance into
+// model_configs as VK-scoped all-models wildcard rows:
+//   - VK top-level budgets/rate-limit -> (scope=virtual_key, scope_id=vk, model_name='*', provider=NULL)
+//   - per-provider-config budgets/rate-limit -> (..., provider=<that provider>)
+func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_virtual_key_governance_to_model_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Required tables/columns must exist (scope columns + the new owner FK).
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) ||
+				!tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") ||
+				!tx.Migrator().HasColumn(&tables.TableBudget{}, "model_config_id") {
+				return nil
+			}
+
+			var vks []tables.TableVirtualKey
+			if err := tx.Preload("Budgets").Preload("ProviderConfigs").Preload("ProviderConfigs.Budgets").
+				Find(&vks).Error; err != nil {
+				return fmt.Errorf("failed to load virtual keys: %w", err)
+			}
+
+			now := time.Now()
+			for i := range vks {
+				vk := &vks[i]
+
+				// VK top-level governance -> all-providers wildcard.
+				if len(vk.Budgets) > 0 || vk.RateLimitID != nil {
+					mcID, err := ensureVKModelConfig(tx, vk.ID, nil, vk.CalendarAligned, now)
+					if err != nil {
+						return err
+					}
+					for _, b := range vk.Budgets {
+						if err := tx.Exec(
+							"UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL WHERE id = ? AND model_config_id IS NULL",
+							mcID, b.ID,
+						).Error; err != nil {
+							return fmt.Errorf("failed to reparent VK budget %q: %w", b.ID, err)
+						}
+					}
+					if vk.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *vk.RateLimitID, mcID).Error; err != nil {
+							return fmt.Errorf("failed to move VK rate limit to model config: %w", err)
+						}
+						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?", vk.ID).Error; err != nil {
+							return fmt.Errorf("failed to clear VK rate limit FK: %w", err)
+						}
+					}
+				}
+
+				// Per-provider-config governance -> provider-specific wildcard.
+				for j := range vk.ProviderConfigs {
+					pc := &vk.ProviderConfigs[j]
+					if len(pc.Budgets) == 0 && pc.RateLimitID == nil {
+						continue
+					}
+					provider := pc.Provider
+					mcID, err := ensureVKModelConfig(tx, vk.ID, &provider, vk.CalendarAligned, now)
+					if err != nil {
+						return err
+					}
+					for _, b := range pc.Budgets {
+						if err := tx.Exec(
+							"UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL WHERE id = ? AND model_config_id IS NULL",
+							mcID, b.ID,
+						).Error; err != nil {
+							return fmt.Errorf("failed to reparent provider-config budget %q: %w", b.ID, err)
+						}
+					}
+					if pc.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *pc.RateLimitID, mcID).Error; err != nil {
+							return fmt.Errorf("failed to move provider-config rate limit to model config: %w", err)
+						}
+						if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = NULL WHERE id = ?", pc.ID).Error; err != nil {
+							return fmt.Errorf("failed to clear provider-config rate limit FK: %w", err)
+						}
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) ||
+				!tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			// Only the VK-scoped all-models wildcards this migration creates.
+			var mcs []tables.TableModelConfig
+			if err := tx.Where("scope = ? AND model_name = ?",
+				tables.ModelConfigScopeVirtualKey, tables.ModelConfigAllModels).Find(&mcs).Error; err != nil {
+				return fmt.Errorf("failed to load VK wildcard model configs: %w", err)
+			}
+
+			for i := range mcs {
+				mc := &mcs[i]
+				if mc.ScopeID == nil {
+					continue
+				}
+				var budgets []tables.TableBudget
+				if err := tx.Where("model_config_id = ?", mc.ID).Find(&budgets).Error; err != nil {
+					return fmt.Errorf("failed to load budgets for model config %q: %w", mc.ID, err)
+				}
+
+				if mc.Provider == nil {
+					// VK top-level: restore VK ownership + rate limit.
+					for _, b := range budgets {
+						if err := tx.Exec("UPDATE governance_budgets SET virtual_key_id = ?, model_config_id = NULL WHERE id = ?", *mc.ScopeID, b.ID).Error; err != nil {
+							return fmt.Errorf("failed to restore VK budget %q: %w", b.ID, err)
+						}
+					}
+					if mc.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, *mc.ScopeID).Error; err != nil {
+							return fmt.Errorf("failed to restore VK rate limit: %w", err)
+						}
+					}
+				} else {
+					// Provider-specific: find the matching provider config to restore onto.
+					var pcs []tables.TableVirtualKeyProviderConfig
+					if err := tx.Where("virtual_key_id = ? AND provider = ?", *mc.ScopeID, *mc.Provider).
+						Limit(1).Find(&pcs).Error; err != nil {
+						return fmt.Errorf("failed to find provider config for VK %q provider %q: %w", *mc.ScopeID, *mc.Provider, err)
+					}
+					if len(pcs) > 0 {
+						pcID := pcs[0].ID
+						for _, b := range budgets {
+							if err := tx.Exec("UPDATE governance_budgets SET provider_config_id = ?, model_config_id = NULL WHERE id = ?", pcID, b.ID).Error; err != nil {
+								return fmt.Errorf("failed to restore provider-config budget %q: %w", b.ID, err)
+							}
+						}
+						if mc.RateLimitID != nil {
+							if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, pcID).Error; err != nil {
+								return fmt.Errorf("failed to restore provider-config rate limit: %w", err)
+							}
+						}
+					}
+				}
+
+				if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+					return fmt.Errorf("failed to delete VK wildcard model config %q: %w", mc.ID, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running migrate virtual key governance to model configs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigCalendarAlignedColumn adds governance_model_configs.calendar_aligned
+// and backfills VK-scoped wildcards from their owning virtual key. Budgets folded out of a
+// calendar-aligned VK then keep snapping resets to calendar boundaries.
+func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
+				}
+			}
+
+			// Backfill VK-scoped configs from their owning VK.
+			type vkRow struct {
+				ID              string
+				CalendarAligned bool
+			}
+			var rows []vkRow
+			if err := tx.Table("governance_virtual_keys").Select("id, calendar_aligned").Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to load virtual keys for calendar_aligned backfill: %w", err)
+			}
+			for _, r := range rows {
+				if !r.CalendarAligned {
+					continue // default is already false
+				}
+				if err := tx.Exec(
+					"UPDATE governance_model_configs SET calendar_aligned = ? WHERE scope = ? AND scope_id = ?",
+					true, tables.ModelConfigScopeVirtualKey, r.ID,
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill calendar_aligned for VK %q: %w", r.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add model config calendar_aligned column migration: %s", err.Error())
 	}
 	return nil
 }

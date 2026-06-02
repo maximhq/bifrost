@@ -3,12 +3,17 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { resetDurationOptions } from "@/lib/constants/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+// Side-effect import: pulls in downstream scope registrations (e.g. enterprise
+// registers "user" + user picker). The OSS-build fallback is an empty module.
+import "@enterprise/lib/registrations/modelLimitScopes";
 import {
 	getErrorMessage,
 	useCreateModelConfigMutation,
@@ -31,16 +36,30 @@ interface ModelLimitSheetProps {
 	onCancel: () => void;
 }
 
-const formSchema = z.object({
-	modelName: z.string().min(1, "Model name is required"),
-	provider: z.string().optional(),
-	budgetMaxLimit: z.number().nonnegative().optional(),
-	budgetResetDuration: z.string().optional(),
-	tokenMaxLimit: z.number().int().nonnegative().optional(),
-	tokenResetDuration: z.string().optional(),
-	requestMaxLimit: z.number().int().nonnegative().optional(),
-	requestResetDuration: z.string().optional(),
-});
+const formSchema = z
+	.object({
+		modelName: z.string().min(1, "Model name is required"),
+		provider: z.string().optional(),
+		scope: z.string().optional(),
+		scopeId: z.string().optional(),
+		budgets: z
+			.array(
+				z.object({
+					id: z.string().optional(),
+					max_limit: z.number().nonnegative().optional(),
+					reset_duration: z.string().optional(),
+				}),
+			)
+			.optional(),
+		tokenMaxLimit: z.number().int().nonnegative().optional(),
+		tokenResetDuration: z.string().optional(),
+		requestMaxLimit: z.number().int().nonnegative().optional(),
+		requestResetDuration: z.string().optional(),
+	})
+	.refine((data) => data.scope !== "virtual_key" || !!data.scopeId, {
+		message: "Virtual key is required for the Virtual Key scope",
+		path: ["scopeId"],
+	});
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -94,8 +113,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
 			provider: modelConfig?.provider || "",
-			budgetMaxLimit: modelConfig?.budget?.max_limit ?? undefined,
-			budgetResetDuration: modelConfig?.budget?.reset_duration || "1M",
+			scope: modelConfig?.scope || "global",
+			scopeId: modelConfig?.scope_id || "",
+			budgets: (modelConfig?.budgets ?? []).map((b) => ({
+				id: b.id,
+				max_limit: b.max_limit,
+				reset_duration: b.reset_duration,
+			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ?? undefined,
@@ -103,8 +127,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		},
 	});
 
+	const watchedBudgets = form.watch("budgets");
 	const hasAnyLimit =
-		(form.watch("budgetMaxLimit") !== undefined && form.watch("budgetMaxLimit") !== null) ||
+		(watchedBudgets?.some((b) => b.max_limit !== undefined && b.max_limit !== null) ?? false) ||
 		(form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
 		(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null);
 
@@ -121,8 +146,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			form.reset({
 				modelName: modelConfig.model_name || "",
 				provider: modelConfig.provider || "",
-				budgetMaxLimit: modelConfig.budget?.max_limit ?? undefined,
-				budgetResetDuration: modelConfig.budget?.reset_duration || "1M",
+				scope: modelConfig.scope || "global",
+				scopeId: modelConfig.scope_id || "",
+				budgets: (modelConfig.budgets ?? []).map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit,
+					reset_duration: b.reset_duration,
+				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
 				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ?? undefined,
@@ -145,23 +175,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		try {
 			const provider = data.provider && data.provider.trim() !== "" ? data.provider : undefined;
 
+			// Full desired set of budgets (kept lines with a max_limit). For updates this is
+			// reconciled server-side; an empty array removes all budgets.
+			const budgetsPayload = (data.budgets ?? [])
+				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+				.map((b) => ({ id: b.id, max_limit: b.max_limit as number, reset_duration: b.reset_duration || "1M" }));
+
 			if (isEditing && modelConfig) {
-				const hadBudget = !!modelConfig.budget;
-				const hasBudget = data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null;
 				const hadRateLimit = !!modelConfig.rate_limit;
 				const hasRateLimit =
 					(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
 					(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null);
-
-				let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
-				if (hasBudget) {
-					budgetPayload = {
-						max_limit: data.budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-					};
-				} else if (hadBudget) {
-					budgetPayload = {};
-				}
 
 				let rateLimitPayload:
 					| {
@@ -188,7 +212,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					data: {
 						model_name: data.modelName,
 						provider: provider,
-						budget: budgetPayload,
+						budgets: budgetsPayload,
 						rate_limit: rateLimitPayload,
 					},
 				}).unwrap();
@@ -197,13 +221,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				await createModelConfig({
 					model_name: data.modelName,
 					provider,
-					budget:
-						data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null
-							? {
-									max_limit: data.budgetMaxLimit,
-									reset_duration: data.budgetResetDuration || "1M",
-								}
-							: undefined,
+					scope: data.scope || "global",
+					// Any scope with a registered PickerComponent carries a target;
+					// global (no picker) sends no scope_id. Mirrors the registry
+					// shape, so adding a new scope (e.g. enterprise's "user")
+					// doesn't need a branch here.
+					scope_id: getModelLimitScope(data.scope || "global")?.PickerComponent ? data.scopeId : undefined,
+					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
 					rate_limit:
 						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
 						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
@@ -306,6 +330,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 													placeholder="Search for a model..."
 													isSingleSelect
 													loadModelsOnEmptyProvider="base_models"
+													allowAllOption
 													disabled={isEditing}
 												/>
 											</div>
@@ -315,29 +340,89 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								)}
 							/>
 
+							{/* Scope */}
+							<FormField
+								control={form.control}
+								name="scope"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Scope</FormLabel>
+										<Select
+											value={field.value || "global"}
+											onValueChange={(value) => {
+												field.onChange(value);
+												// Reset the scope target when switching scopes
+												form.setValue("scopeId", "", { shouldDirty: true });
+											}}
+											disabled={isEditing}
+										>
+											<FormControl>
+												<SelectTrigger className="w-full" data-testid="model-limit-scope-select">
+													<SelectValue placeholder="Global" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{getModelLimitScopes().map((option) => (
+													<SelectItem key={option.value} value={option.value}>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Scope-target picker — driven by the scope registry.
+								Each non-global scope (virtual_key, user, …) registers its
+								own PickerComponent; we render whichever the current scope
+								provides. */}
+							{(() => {
+								const scopeEntry = getModelLimitScope(form.watch("scope") || "global");
+								const Picker = scopeEntry?.PickerComponent;
+								if (!Picker) return null;
+								return (
+									<FormField
+										control={form.control}
+										name="scopeId"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>{scopeEntry.label}</FormLabel>
+												<FormControl>
+													<div data-testid="model-limit-scope-id-select">
+														<Picker
+															value={field.value || ""}
+															onChange={(v) => field.onChange(v ?? "")}
+															disabled={isEditing}
+															fallbackOption={
+																modelConfig?.scope === scopeEntry.value && modelConfig?.scope_id && modelConfig?.scope_name
+																	? { value: modelConfig.scope_id, label: modelConfig.scope_name }
+																	: null
+															}
+														/>
+													</div>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								);
+							})()}
+
 							<DottedSeparator />
 
-							{/* Budget Configuration */}
+							{/* Budget Configuration (multi-budget) */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Budget</Label>
-								<FormField
-									control={form.control}
-									name="budgetMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="modelBudgetMaxLimit"
-												labelClassName="font-normal"
-												label="Maximum Spend (USD)"
-												value={field.value}
-												selectValue={form.watch("budgetResetDuration") || "1M"}
-												onChangeNumber={(value) => field.onChange(value)}
-												onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
+								<MultiBudgetLines
+									data-testid="model-limit-budget-lines"
+									label="Budget"
+									lines={(form.watch("budgets") ?? []).map((b) => ({
+										id: b.id,
+										max_limit: b.max_limit,
+										reset_duration: b.reset_duration ?? "1M",
+									}))}
+									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 								/>
 							</div>
 
@@ -390,20 +475,20 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 							</div>
 
 							{/* Current Usage Display (for editing) */}
-							{isEditing && (modelConfig?.budget || modelConfig?.rate_limit) && (
+							{isEditing && ((modelConfig?.budgets?.length ?? 0) > 0 || modelConfig?.rate_limit) && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-3">
 										<Label className="text-sm font-medium">Current Usage</Label>
 										<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
-											{modelConfig?.budget && (
-												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">Budget</p>
+											{(modelConfig?.budgets ?? []).map((b) => (
+												<div key={b.id} className="space-y-1">
+													<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
 													<p className="text-sm font-medium">
-														${modelConfig.budget.current_usage.toFixed(2)} / ${modelConfig.budget.max_limit.toFixed(2)}
+														${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
 													</p>
 												</div>
-											)}
+											))}
 											{modelConfig?.rate_limit?.token_max_limit && (
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">Tokens</p>
