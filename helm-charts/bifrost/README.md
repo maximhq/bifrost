@@ -9,7 +9,9 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ## Changelog
 
 ### 2.1.21
+
 - Add `per_user_oauth`/`per_user_headers` to `authType` enum in mcpClientConfig
+- Added `scope` and `scope_id` fields to `bifrost.governance.modelConfigs[]` items in `values.yaml` and `values.schema.json`. `scope` accepts `"global"` (default, applies to all traffic) or `"virtual_key"` (applies to a specific virtual key); `scope_id` is required when `scope` is `"virtual_key"` and must reference a virtual key `id`. The `_helpers.tpl` already passes `modelConfigs` through as-is so no template change was needed.
 
 ### 2.1.20
 
@@ -647,17 +649,17 @@ bifrost:
 
 ### MCP Configuration
 
-| Parameter                                             | Description                                                                                                                                                                                   | Default  |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `bifrost.mcp.enabled`                                 | Enable MCP (Model Context Protocol)                                                                                                                                                           | `false`  |
-| `bifrost.mcp.clientConfigs`                           | Array of MCP client configurations                                                                                                                                                            | `[]`     |
-| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout`  | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form.                                                                               | `"30s"`  |
-| `bifrost.mcp.toolManagerConfig.maxAgentDepth`         | Maximum agent depth                                                                                                                                                                           | `10`     |
-| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`  | Code mode binding level (`server` or `tool`)                                                                                                                                                  | `server` |
-| `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection                                                                                                                                                          | `false`  |
-| `bifrost.mcp.toolSyncInterval`                        | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended. | `10m`    |
-| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production. | `false`  |
-| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`    | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
+| Parameter                                                  | Description                                                                                                                                                                                                    | Default  |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `bifrost.mcp.enabled`                                      | Enable MCP (Model Context Protocol)                                                                                                                                                                            | `false`  |
+| `bifrost.mcp.clientConfigs`                                | Array of MCP client configurations                                                                                                                                                                             | `[]`     |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout`       | Tool execution timeout. Integer = seconds, string = Go duration (e.g. `"30s"`, `"2m"`). Prefer the string form.                                                                                                | `"30s"`  |
+| `bifrost.mcp.toolManagerConfig.maxAgentDepth`              | Maximum agent depth                                                                                                                                                                                            | `10`     |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`       | Code mode binding level (`server` or `tool`)                                                                                                                                                                   | `server` |
+| `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
+| `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
+| `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
+| `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
 #### MCP Migration Guide (`client.mcp*` -> `mcp.*`)
 

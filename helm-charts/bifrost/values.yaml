@@ -542,8 +542,10 @@ bifrost:
       #       tools_to_execute: ["tool1", "tool2"]
     modelConfigs: []
       # - id: "model-config-1"
-      #   model_name: "gpt-4o"
-      #   provider: "openai"
+      #   model_name: "gpt-4o"       # model name, or "*" for all models
+      #   provider: "openai"          # optional; omit to apply to all providers
+      #   scope: "global"             # "global" (default) or "virtual_key"
+      #   scope_id: ""                # required when scope is "virtual_key" — the virtual key id
       #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
     providers: []
