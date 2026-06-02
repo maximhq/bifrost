@@ -870,8 +870,9 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 	if rc.ContentBlocks != nil {
 		return MarshalSorted(rc.ContentBlocks)
 	}
-	// If both are nil, return null
-	return MarshalSorted(nil)
+	// Empty content: emit "" rather than null. The OpenAI Responses API rejects
+	// null content (it must be a string or array), and "" is a valid string.
+	return MarshalSorted("")
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
