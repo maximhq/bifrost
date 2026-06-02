@@ -184,8 +184,8 @@ func buildCustomer(id, name string, budget *configstoreTables.TableBudget) *conf
 		Name: name,
 	}
 	if budget != nil {
-		customer.Budget = budget
-		customer.BudgetID = &budget.ID
+		budget.CustomerID = &customer.ID
+		customer.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	return customer
 }
