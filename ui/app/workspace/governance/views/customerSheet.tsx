@@ -12,13 +12,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
-import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
+import { CreateBudgetRequest, CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -36,8 +37,7 @@ interface CustomerSheetProps {
 
 interface CustomerFormData {
 	name: string;
-	budgetMaxLimit: number | undefined;
-	budgetResetDuration: string;
+	budgets: BudgetLineEntry[];
 	tokenMaxLimit: number | undefined;
 	tokenResetDuration: string;
 	requestMaxLimit: number | undefined;
@@ -49,8 +49,11 @@ interface CustomerFormData {
 const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, "isDirty"> => {
 	return {
 		name: customer?.name || "",
-		budgetMaxLimit: customer?.budget?.max_limit ?? undefined,
-		budgetResetDuration: customer?.budget?.reset_duration || "1M",
+		budgets: (customer?.budgets ?? []).map((b) => ({
+			id: b.id,
+			max_limit: b.max_limit,
+			reset_duration: b.reset_duration,
+		})),
 		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
 		requestMaxLimit: customer?.rate_limit?.request_max_limit ?? undefined,
@@ -96,8 +99,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	useEffect(() => {
 		const currentData = {
 			name: formData.name,
-			budgetMaxLimit: formData.budgetMaxLimit,
-			budgetResetDuration: formData.budgetResetDuration,
+			budgets: formData.budgets,
 			tokenMaxLimit: formData.tokenMaxLimit,
 			tokenResetDuration: formData.tokenResetDuration,
 			requestMaxLimit: formData.requestMaxLimit,
@@ -110,8 +112,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		}));
 	}, [
 		formData.name,
-		formData.budgetMaxLimit,
-		formData.budgetResetDuration,
+		formData.budgets,
 		formData.tokenMaxLimit,
 		formData.tokenResetDuration,
 		formData.requestMaxLimit,
@@ -120,20 +121,47 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		initialState,
 	]);
 
-	const budgetMaxLimitNum = formData.budgetMaxLimit;
+	const canCalendarAlign = useMemo(() => {
+		const hasAlignableBudget = formData.budgets.some(
+			(b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration),
+		);
+		const hasAlignableRateLimit =
+			(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null && supportsCalendarAlignment(formData.tokenResetDuration)) ||
+			(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null && supportsCalendarAlignment(formData.requestResetDuration));
+		return hasAlignableBudget || hasAlignableRateLimit;
+	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
+
+	// Reset calendarAligned when no duration supports alignment,
+	// so a hidden toggle doesn't silently submit calendar_aligned: true.
+	useEffect(() => {
+		if (!formData.calendarAligned) return;
+		if (!canCalendarAlign) {
+			updateField("calendarAligned", false);
+		}
+	}, [canCalendarAlign, formData.calendarAligned]);
+
 	const tokenMaxLimitNum = formData.tokenMaxLimit;
 	const requestMaxLimitNum = formData.requestMaxLimit;
+
+	const hasDuplicateDuration = useMemo(() => {
+		const seen = new Set<string>();
+		return formData.budgets
+			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+			.some((b) => {
+				if (seen.has(b.reset_duration)) return true;
+				seen.add(b.reset_duration);
+				return false;
+			});
+	}, [formData.budgets]);
 
 	const validator = useMemo(
 		() =>
 			new Validator([
 				Validator.required(formData.name.trim(), "Customer name is required"),
 				Validator.custom(formData.isDirty, "No changes to save"),
-				...(formData.budgetMaxLimit !== undefined && formData.budgetMaxLimit !== null
-					? [
-						Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
-						Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
-					]
+				Validator.custom(!hasDuplicateDuration, "Each budget must have a unique reset period"),
+				...(formData.budgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && b.max_limit < 0.01)
+					? [Validator.custom(false, "Budget max limit must be greater than $0.01")]
 					: []),
 				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
@@ -148,7 +176,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					]
 					: []),
 			]),
-		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
+		[formData, hasDuplicateDuration, tokenMaxLimitNum, requestMaxLimitNum],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
@@ -163,23 +191,17 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			return;
 		}
 
+		const budgetRequests: CreateBudgetRequest[] = formData.budgets
+			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration }));
+
 		try {
 			if (isEditing && customer) {
 				const updateData: UpdateCustomerRequest = {
 					name: formData.name,
 					calendar_aligned: formData.calendarAligned,
+					budgets: budgetRequests,
 				};
-
-				const hadBudget = !!customer.budget;
-				const hasBudget = budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null;
-				if (hasBudget) {
-					updateData.budget = {
-						max_limit: budgetMaxLimitNum,
-						reset_duration: formData.budgetResetDuration,
-					};
-				} else if (hadBudget) {
-					updateData.budget = {} as UpdateCustomerRequest["budget"];
-				}
 
 				const hadRateLimit = !!customer.rate_limit;
 				const hasRateLimit =
@@ -203,14 +225,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				const createData: CreateCustomerRequest = {
 					name: formData.name,
 					calendar_aligned: formData.calendarAligned,
+					budgets: budgetRequests,
 				};
-
-				if (budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null) {
-					createData.budget = {
-						max_limit: budgetMaxLimitNum,
-						reset_duration: formData.budgetResetDuration,
-					};
-				}
 
 				if (
 					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
@@ -244,6 +260,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		return validator.getFirstError() || "Please fix validation errors";
 	};
 
+	const showCalendarAlignToggle = canCalendarAlign;
+
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="sm:max-w-2xl max-w-[900px]" data-testid="customer-dialog-content">
@@ -274,15 +292,12 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								</div>
 							</div>
 
-							<NumberAndSelect
-								id="budgetMaxLimit"
-								label="Maximum Spend (USD)"
-								value={formData.budgetMaxLimit}
-								selectValue={formData.budgetResetDuration}
-								onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
-								onChangeSelect={(value) => updateField("budgetResetDuration", value)}
+							<MultiBudgetLines
+								data-testid="customer-budgets"
+								label="Budget Limits"
+								lines={formData.budgets}
+								onChange={(lines) => updateField("budgets", lines)}
 								options={resetDurationOptions}
-								dataTestId="budget-max-limit-input"
 							/>
 
 							<NumberAndSelect
@@ -305,42 +320,26 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								options={resetDurationOptions}
 							/>
 
-							{/* Calendar alignment toggle — only shown when there's an alignable budget or rate limit */}
-							{(() => {
-								const hasAlignableBudget =
-									formData.budgetMaxLimit !== undefined &&
-									formData.budgetMaxLimit !== null &&
-									supportsCalendarAlignment(formData.budgetResetDuration);
-								const hasAlignableRateLimit =
-									(formData.tokenMaxLimit !== undefined &&
-										formData.tokenMaxLimit !== null &&
-										supportsCalendarAlignment(formData.tokenResetDuration)) ||
-									(formData.requestMaxLimit !== undefined &&
-										formData.requestMaxLimit !== null &&
-										supportsCalendarAlignment(formData.requestResetDuration));
-								if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
-								return (
-									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-										<div className="space-y-0.5">
-											<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
-												Align to calendar cycle
-											</Label>
-											<p className="text-muted-foreground text-xs">
-												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from
-												creation date. Applies to durations of a day or longer.
-											</p>
-										</div>
-										<Switch
-											id="customer-calendar-aligned-toggle"
-											checked={formData.calendarAligned}
-											onCheckedChange={handleCalendarAlignedChange}
-											data-testid="customer-calendar-aligned-toggle"
-										/>
+							{showCalendarAlignToggle && (
+								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+									<div className="space-y-0.5">
+										<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
+											Align to calendar cycle
+										</Label>
+										<p className="text-muted-foreground text-xs">
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from
+											creation date. Applies to durations of a day or longer.
+										</p>
 									</div>
-								);
-							})()}
+									<Switch
+										id="customer-calendar-aligned-toggle"
+										checked={formData.calendarAligned}
+										onCheckedChange={handleCalendarAlignedChange}
+										data-testid="customer-calendar-aligned-toggle"
+									/>
+								</div>
+							)}
 
-							{/* Warning dialog shown when enabling calendar alignment on an existing customer */}
 							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
 								<AlertDialogContent>
 									<AlertDialogHeader>
@@ -367,29 +366,29 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								</AlertDialogContent>
 							</AlertDialog>
 
-							{isEditing && (customer?.budget || customer?.rate_limit) && (
+							{isEditing && ((customer?.budgets?.length ?? 0) > 0 || customer?.rate_limit) && (
 								<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
 									<p className="text-sm font-medium">Current Usage</p>
 									<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-										{customer?.budget && (
-											<div className="space-y-1">
-												<p className="text-muted-foreground text-xs">Budget</p>
+										{customer?.budgets?.map((budget) => (
+											<div key={budget.id} className="space-y-1">
+												<p className="text-muted-foreground text-xs">Budget ({budget.reset_duration})</p>
 												<div className="flex items-center gap-2">
 													<span className="font-mono text-sm">
-														{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
+														{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
 													</span>
 													<Badge
-														variant={customer.budget.current_usage >= customer.budget.max_limit ? "destructive" : "default"}
+														variant={budget.current_usage >= budget.max_limit ? "destructive" : "default"}
 														className="text-xs"
 													>
-														{Math.round((customer.budget.current_usage / customer.budget.max_limit) * 100)}%
+														{Math.round((budget.current_usage / budget.max_limit) * 100)}%
 													</Badge>
 												</div>
 												<p className="text-muted-foreground text-xs">
-													Last Reset: {formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
+													Last Reset: {formatDistanceToNow(new Date(budget.last_reset), { addSuffix: true })}
 												</p>
 											</div>
-										)}
+										))}
 										{customer?.rate_limit?.token_max_limit && (
 											<div className="space-y-1">
 												<p className="text-muted-foreground text-xs">Tokens</p>

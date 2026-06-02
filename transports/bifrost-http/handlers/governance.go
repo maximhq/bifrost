@@ -487,6 +487,74 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 	return nil
 }
 
+// reconcileCustomerBudgets upserts the desired set of budgets owned by a customer
+// (via TableBudget.CustomerID), preserving usage on matched rows and deleting removed ones.
+// It mutates customer.Budgets to the reconciled set. Mirrors reconcileModelConfigBudgets.
+func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *gorm.DB, customer *configstoreTables.TableCustomer, requests []CreateBudgetRequest) error {
+	seenDurations := make(map[string]bool, len(requests))
+	for _, b := range requests {
+		if b.MaxLimit < 0 {
+			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
+		}
+		if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
+			return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+		}
+		if seenDurations[b.ResetDuration] {
+			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+		}
+		seenDurations[b.ResetDuration] = true
+	}
+
+	existingByID, existingByDuration := buildBudgetLookup(customer.Budgets, requests)
+	var reconciled []configstoreTables.TableBudget
+	matchedIDs := make(map[string]bool)
+	for _, b := range requests {
+		existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
+		if err != nil {
+			return err
+		}
+		if found {
+			existing.MaxLimit = b.MaxLimit
+			existing.ResetDuration = b.ResetDuration
+			if err := validateBudget(&existing); err != nil {
+				return err
+			}
+			if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
+				return err
+			}
+			reconciled = append(reconciled, existing)
+			matchedIDs[existing.ID] = true
+		} else {
+			cid := customer.ID
+			budget := configstoreTables.TableBudget{
+				ID:            uuid.NewString(),
+				MaxLimit:      b.MaxLimit,
+				ResetDuration: b.ResetDuration,
+				LastReset:     budgetLastReset(customer.CalendarAligned, b.ResetDuration),
+				CurrentUsage:  0,
+				CustomerID:    &cid,
+			}
+			inheritUsageFromClosestShorterBudget(&budget, customer.Budgets, false)
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			reconciled = append(reconciled, budget)
+		}
+	}
+	for _, existing := range customer.Budgets {
+		if !matchedIDs[existing.ID] {
+			if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
+				return fmt.Errorf("failed to delete removed customer budget: %w", err)
+			}
+		}
+	}
+	customer.Budgets = reconciled
+	return nil
+}
+
 // vkModelConfigDesired is the desired governance state for one VK-scoped model config tier
 // (provider=nil for the VK top-level, or a specific provider). The *Provided flags distinguish
 // "leave unchanged" (false, used by partial VK updates) from "set to the given value" (true).
@@ -832,7 +900,8 @@ type UpdateTeamRequest struct {
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
 	Name            string                  `json:"name" validate:"required"`
-	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
+	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
@@ -840,7 +909,8 @@ type CreateCustomerRequest struct {
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
 	Name            *string                 `json:"name,omitempty"`
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`          // nil=no change, []=remove all
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
@@ -2344,6 +2414,10 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if len(req.Budgets) > 0 && req.Budget != nil {
+		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Customer name is required")
@@ -2362,6 +2436,14 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Coerce legacy singular budget into the multi-budget slice.
+	budgetRequests := req.Budgets
+	if len(budgetRequests) == 0 && req.Budget != nil {
+		budgetRequests = []CreateBudgetRequest{{
+			MaxLimit:      req.Budget.MaxLimit,
+			ResetDuration: req.Budget.ResetDuration,
+		}}
+	}
 	var customer configstoreTables.TableCustomer
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		customer = configstoreTables.TableCustomer{
@@ -2369,22 +2451,13 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			Name:            req.Name,
 			CalendarAligned: req.CalendarAligned,
 		}
-
-		if req.Budget != nil {
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      req.Budget.MaxLimit,
-				ResetDuration: req.Budget.ResetDuration,
-				LastReset:     budgetLastReset(req.CalendarAligned, req.Budget.ResetDuration),
-				CurrentUsage:  0,
-			}
-			if err := validateBudget(&budget); err != nil {
+		if err := h.configStore.CreateCustomer(ctx, &customer, tx); err != nil {
+			return err
+		}
+		if len(budgetRequests) > 0 {
+			if err := h.reconcileCustomerBudgets(ctx, tx, &customer, budgetRequests); err != nil {
 				return err
 			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.BudgetID = &budget.ID
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -2400,12 +2473,17 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 			customer.RateLimitID = &rateLimit.ID
-		}
-		if err := h.configStore.CreateCustomer(ctx, &customer, tx); err != nil {
-			return err
+			if err := h.configStore.UpdateCustomer(ctx, &customer, tx); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		SendError(ctx, 500, "failed to create customer")
 		return
 	}
@@ -2445,6 +2523,10 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if req.Budgets != nil && req.Budget != nil {
+		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
+		return
+	}
 	// Fetching customer from database
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
@@ -2457,8 +2539,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating customer in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Track IDs to delete after updating the customer (to avoid FK constraint)
-		var budgetIDToDelete, rateLimitIDToDelete string
+		var rateLimitIDToDelete string
 
 		// Update fields if provided
 		if req.Name != nil {
@@ -2469,62 +2550,24 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			customer.CalendarAligned = *req.CalendarAligned
 		}
 		calendarAlignmentJustEnabled := !wasCalendarAligned && customer.CalendarAligned
-		// Handle budget updates
-		if req.Budget != nil {
-			// Check if budget removal is requested (all fields nil)
-			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
-			if budgetIsEmpty {
-				// Mark budget for deletion after FK is removed
-				if customer.BudgetID != nil {
-					budgetIDToDelete = *customer.BudgetID
-					customer.BudgetID = nil
-					customer.Budget = nil
-				}
-			} else if customer.BudgetID != nil {
-				// Update existing budget — all fields are optional (partial update)
-				budget := configstoreTables.TableBudget{}
-				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
-					return err
-				}
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				customer.Budget = &budget
-			} else {
-				// Create new budget
-				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
-				}
-				if *req.Budget.MaxLimit < 0 {
-					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
-				}
-				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
-					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
-				}
-				budget := configstoreTables.TableBudget{
-					ID:            uuid.NewString(),
-					MaxLimit:      *req.Budget.MaxLimit,
-					ResetDuration: *req.Budget.ResetDuration,
-					LastReset:     budgetLastReset(customer.CalendarAligned, *req.Budget.ResetDuration),
-					CurrentUsage:  0,
-				}
-				if err := validateBudget(&budget); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-					return err
-				}
-				customer.BudgetID = &budget.ID
-				customer.Budget = &budget
+		// Handle budget updates: prefer Budgets slice; coerce legacy Budget if needed.
+		effectiveBudgets := req.Budgets
+		if effectiveBudgets == nil && req.Budget != nil {
+			if len(customer.Budgets) > 1 {
+				return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
+			}
+			var existingBudget *configstoreTables.TableBudget
+			if len(customer.Budgets) == 1 {
+				existingBudget = &customer.Budgets[0]
+			}
+			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
+				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
+			}
+		}
+		if effectiveBudgets != nil {
+			if err := h.reconcileCustomerBudgets(ctx, tx, customer, *effectiveBudgets); err != nil {
+				return err
 			}
 		}
 		// Handle rate limit updates
@@ -2576,15 +2619,20 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				customer.RateLimit = &rateLimit
 			}
 		}
-		// Snap budget and rate limit to the current calendar period when calendar
-		// alignment transitions false -> true in this request.
+		// Snap budgets and rate limit to the current calendar period when calendar
+		// alignment transitions false → true. Runs after reconciliation so combined
+		// "toggle + budgets" requests see the final reconciled state.
 		if calendarAlignmentJustEnabled {
 			now := time.Now()
-			if customer.Budget != nil && configstoreTables.IsCalendarAlignableDuration(customer.Budget.ResetDuration) {
-				customer.Budget.LastReset = configstoreTables.GetCalendarPeriodStart(customer.Budget.ResetDuration, now)
-				customer.Budget.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, customer.Budget, tx); err != nil {
-					return fmt.Errorf("failed to snap customer budget on calendar-align enable: %w", err)
+			for i := range customer.Budgets {
+				b := &customer.Budgets[i]
+				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+					continue
+				}
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.CurrentUsage = 0
+				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
+					return fmt.Errorf("failed to snap customer budget %s on calendar-align enable: %w", b.ID, err)
 				}
 			}
 			if customer.RateLimit != nil {
@@ -2611,12 +2659,6 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			return err
 		}
 
-		// Now that FK references are removed, delete the orphaned budget/rate limit
-		if budgetIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
-				return err
-			}
-		}
 		if rateLimitIDToDelete != "" {
 			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
 				return err
@@ -2625,6 +2667,11 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		SendError(ctx, 500, "Failed to update customer")
 		return
 	}
