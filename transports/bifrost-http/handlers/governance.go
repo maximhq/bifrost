@@ -2991,23 +2991,45 @@ type ProviderGovernanceResponse struct {
 	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
 }
 
-// getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
-func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providers, err := h.configStore.GetProviders(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve providers: %v", err)
-		SendError(ctx, 500, "Failed to retrieve providers")
-		return
+// providerGovernanceFromWildcard maps an "all models on a provider" model config
+// (scope=global, model_name="*", provider set) to a ProviderGovernanceResponse. Provider
+// governance now lives in governance_model_configs as these wildcard rows,
+// this endpoint is a compatibility facade over them.
+func providerGovernanceFromWildcard(mc *configstoreTables.TableModelConfig) (ProviderGovernanceResponse, bool) {
+	if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeGlobal ||
+		mc.ModelName != configstoreTables.ModelConfigAllModels || mc.Provider == nil {
+		return ProviderGovernanceResponse{}, false
 	}
-	// Transform to governance response format
+	return ProviderGovernanceResponse{Provider: *mc.Provider, Budget: mc.Budget, RateLimit: mc.RateLimit}, true
+}
+
+// getProviderGovernance handles GET /api/governance/providers - returns provider-level governance,
+// now backed by the wildcard ("all models on a provider") model configs.
+func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	var result []ProviderGovernanceResponse
-	for _, p := range providers {
-		if p.Budget != nil || p.RateLimit != nil {
-			result = append(result, ProviderGovernanceResponse{
-				Provider:  p.Name,
-				Budget:    p.Budget,
-				RateLimit: p.RateLimit,
-			})
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData(ctx)
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		for _, mc := range data.ModelConfigs {
+			if r, ok := providerGovernanceFromWildcard(mc); ok {
+				result = append(result, r)
+			}
+		}
+	} else {
+		configs, err := h.configStore.GetProviderGovernanceModelConfigs(ctx)
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve providers")
+			return
+		}
+		for i := range configs {
+			if r, ok := providerGovernanceFromWildcard(&configs[i]); ok {
+				result = append(result, r)
+			}
 		}
 	}
 	SendJSON(ctx, map[string]interface{}{
@@ -3024,42 +3046,58 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	// Get all providers and find the one we need
+	// Validate the provider exists.
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		SendError(ctx, 500, "Failed to retrieve providers")
 		return
 	}
-	var provider *configstoreTables.TableProvider
+	providerExists := false
 	for i := range providers {
 		if providers[i].Name == providerName {
-			provider = &providers[i]
+			providerExists = true
 			break
 		}
 	}
-	if provider == nil {
+	if !providerExists {
 		SendError(ctx, 404, "Provider not found")
 		return
 	}
+
+	existing, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
+	if err != nil && err != configstore.ErrNotFound {
+		logger.Error("failed to load provider governance: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to load provider governance: %v", err))
+		return
+	}
+	isNew := existing == nil
+	mc := configstoreTables.TableModelConfig{
+		ID:        uuid.NewString(),
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Provider:  &providerName,
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if existing != nil {
+		mc = *existing
+	}
+
+	deleted := false
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Track IDs to delete after updating the provider (to avoid FK constraint)
 		var budgetIDToDelete, rateLimitIDToDelete string
 
-		// Handle budget updates
+		// Budget lifecycle (owner is the wildcard model config).
 		if req.Budget != nil {
-			// Check if budget removal is requested (all fields nil)
-			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
-			if budgetIsEmpty {
-				// Mark budget for deletion after FK is removed
-				if provider.BudgetID != nil {
-					budgetIDToDelete = *provider.BudgetID
-					provider.BudgetID = nil
-					provider.Budget = nil
+			if isBudgetRemovalRequest(req.Budget) {
+				if mc.BudgetID != nil {
+					budgetIDToDelete = *mc.BudgetID
+					mc.BudgetID = nil
+					mc.Budget = nil
 				}
-			} else if provider.BudgetID != nil {
-				// Update existing budget — all fields are optional (partial update)
+			} else if mc.BudgetID != nil {
 				budget := configstoreTables.TableBudget{}
-				if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
+				if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
 					return err
 				}
 				if req.Budget.MaxLimit != nil {
@@ -3074,9 +3112,8 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
 					return err
 				}
-				provider.Budget = &budget
+				mc.Budget = &budget
 			} else {
-				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
 					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
 				}
@@ -3093,28 +3130,23 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
 					return err
 				}
-				provider.BudgetID = &budget.ID
-				provider.Budget = &budget
+				mc.BudgetID = &budget.ID
+				mc.Budget = &budget
 			}
 		}
-		// Handle rate limit updates
+		// Rate limit lifecycle (owner is the wildcard model config).
 		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if provider.RateLimitID != nil {
-					rateLimitIDToDelete = *provider.RateLimitID
-					provider.RateLimitID = nil
-					provider.RateLimit = nil
+			if isRateLimitRemovalRequest(req.RateLimit) {
+				if mc.RateLimitID != nil {
+					rateLimitIDToDelete = *mc.RateLimitID
+					mc.RateLimitID = nil
+					mc.RateLimit = nil
 				}
-			} else if provider.RateLimitID != nil {
-				// Update existing rate limit - set ALL fields from request (nil means clear)
+			} else if mc.RateLimitID != nil {
 				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *provider.RateLimitID).Error; err != nil {
+				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
 					return err
 				}
-				// Set all fields from request - nil values will clear the field
 				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
 				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
 				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
@@ -3125,9 +3157,8 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
 					return err
 				}
-				provider.RateLimit = &rateLimit
+				mc.RateLimit = &rateLimit
 			} else {
-				// Create new rate limit
 				rateLimit := configstoreTables.TableRateLimit{
 					ID:                   uuid.NewString(),
 					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
@@ -3143,16 +3174,32 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
 					return err
 				}
-				provider.RateLimitID = &rateLimit.ID
-				provider.RateLimit = &rateLimit
+				mc.RateLimitID = &rateLimit.ID
+				mc.RateLimit = &rateLimit
 			}
 		}
-		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
-		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
-			return err
+
+		hasGovernance := mc.BudgetID != nil || mc.RateLimitID != nil
+		switch {
+		case !hasGovernance && isNew:
+			// Nothing to persist (removal request on a provider with no governance).
+		case !hasGovernance && !isNew:
+			// All governance removed → delete the wildcard config and its orphaned rows.
+			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+				return err
+			}
+			deleted = true
+		case isNew:
+			if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
+				return err
+			}
+		default:
+			if err := h.configStore.UpdateModelConfig(ctx, &mc, tx); err != nil {
+				return err
+			}
 		}
 
-		// Now that FK references are removed, delete the orphaned budget/rate limit
+		// Delete orphaned budget/rate-limit rows after the FK references are gone.
 		if budgetIDToDelete != "" {
 			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
 				return err
@@ -3163,93 +3210,56 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 		}
-
 		return nil
 	}); err != nil {
 		logger.Error("failed to update provider governance: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to update provider governance: %v", err))
 		return
 	}
-	// Reload provider in memory
-	updatedProvider, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(providerName))
-	if err != nil {
-		logger.Error("failed to reload provider in memory: %v", err)
-		// Use the local provider object if reload fails
-	} else {
-		provider = updatedProvider
+
+	// Sync the in-memory governance store with the change.
+	resp := ProviderGovernanceResponse{Provider: providerName}
+	if deleted {
+		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
+			logger.Error("failed to remove provider governance from memory: %v", err)
+		}
+	} else if mc.BudgetID != nil || mc.RateLimitID != nil {
+		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
+			logger.Error("failed to reload provider governance in memory: %v", err)
+			resp.Budget, resp.RateLimit = mc.Budget, mc.RateLimit
+		} else {
+			resp.Budget, resp.RateLimit = reloaded.Budget, reloaded.RateLimit
+		}
 	}
 	SendJSON(ctx, map[string]interface{}{
-		"message": "Provider governance updated successfully",
-		"provider": ProviderGovernanceResponse{
-			Provider:  provider.Name,
-			Budget:    provider.Budget,
-			RateLimit: provider.RateLimit,
-		},
+		"message":  "Provider governance updated successfully",
+		"provider": resp,
 	})
 }
 
-// deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - Remove governance from provider
+// deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
+// provider-level governance by deleting the wildcard ("all models on this provider") model config.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 	providerName := ctx.UserValue("provider_name").(string)
-	// Get all providers and find the one we need
-	providers, err := h.configStore.GetProviders(ctx)
+	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
 	if err != nil {
-		SendError(ctx, 500, "Failed to retrieve providers")
+		if err == configstore.ErrNotFound {
+			// No provider-level governance to remove — treat as success (idempotent).
+			SendJSON(ctx, map[string]interface{}{"message": "Provider governance deleted successfully"})
+			return
+		}
+		logger.Error("failed to load provider governance: %v", err)
+		SendError(ctx, 500, "Failed to delete provider governance")
 		return
 	}
-	var provider *configstoreTables.TableProvider
-	for i := range providers {
-		if providers[i].Name == providerName {
-			provider = &providers[i]
-			break
-		}
-	}
-	if provider == nil {
-		SendError(ctx, 404, "Provider not found")
-		return
-	}
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Store IDs to delete after removing FK references
-		var budgetIDToDelete, rateLimitIDToDelete string
-
-		if provider.BudgetID != nil {
-			budgetIDToDelete = *provider.BudgetID
-			provider.BudgetID = nil
-			provider.Budget = nil
-		}
-		if provider.RateLimitID != nil {
-			rateLimitIDToDelete = *provider.RateLimitID
-			provider.RateLimitID = nil
-			provider.RateLimit = nil
-		}
-
-		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
-		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
-			return err
-		}
-
-		// Now delete the orphaned budget/rate limit
-		if budgetIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
-				return err
-			}
-		}
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
-				return err
-			}
-		}
-
-		return nil
-	}); err != nil {
+	// DeleteModelConfig cascades to the owned budget/rate-limit rows.
+	if err := h.configStore.DeleteModelConfig(ctx, mc.ID); err != nil {
 		logger.Error("failed to delete provider governance: %v", err)
 		SendError(ctx, 500, "Failed to delete provider governance")
 		return
 	}
-	// Reload provider in memory (to clear the budget/rate limit)
-	if _, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(providerName)); err != nil {
-		logger.Error("failed to reload provider in memory: %v", err)
-		// Continue anyway, the governance is deleted from DB
+	if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
+		logger.Error("failed to remove provider governance from memory: %v", err)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Provider governance deleted successfully",

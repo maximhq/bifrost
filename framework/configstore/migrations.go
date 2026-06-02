@@ -831,6 +831,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelConfigScopeColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationMigrateProviderGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3889,6 +3892,102 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add model config scope columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMigrateProviderGovernanceToModelConfigs folds provider-level governance
+// (config_providers.budget_id / rate_limit_id) into governance_model_configs as
+// (scope='global', provider=<name>, model_name='*') "all models on this provider" rows,
+// reusing the same budget/rate-limit rows. It then NULLs the provider FKs so the old
+// provider-governance enforcement path goes inert (single source of truth = model_configs).
+func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_provider_governance_to_model_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Guard: only run once the model-config table + scope columns exist.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			var providers []tables.TableProvider
+			if err := tx.Where("budget_id IS NOT NULL OR rate_limit_id IS NOT NULL").Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to load providers with governance: %w", err)
+			}
+
+			now := time.Now()
+			for i := range providers {
+				p := &providers[i]
+
+				// Idempotency: skip if a global all-models row already exists for this provider.
+				var existing int64
+				if err := tx.Model(&tables.TableModelConfig{}).
+					Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
+					Count(&existing).Error; err != nil {
+					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
+				}
+				if existing == 0 {
+					providerName := p.Name
+					mc := tables.TableModelConfig{
+						ID:          uuid.NewString(),
+						ModelName:   tables.ModelConfigAllModels,
+						Provider:    &providerName,
+						Scope:       tables.ModelConfigScopeGlobal,
+						BudgetID:    p.BudgetID,
+						RateLimitID: p.RateLimitID,
+						CreatedAt:   now,
+						UpdatedAt:   now,
+					}
+					if err := tx.Create(&mc).Error; err != nil {
+						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
+					}
+				}
+
+				// Detach governance from the provider (FK rows are reused by the model config above).
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", p.Name).
+					Updates(map[string]any{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
+					return fmt.Errorf("failed to clear governance FKs for provider %q: %w", p.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Nothing to reverse if the model-config table/scope columns are gone.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			// Reverse provider-level wildcards:
+			// (scope='global', scope_id IS NULL, model_name='*', provider IS NOT NULL).
+			var wildcards []tables.TableModelConfig
+			if err := tx.Where(
+				"scope = ? AND scope_id IS NULL AND model_name = ? AND provider IS NOT NULL",
+				tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels,
+			).Find(&wildcards).Error; err != nil {
+				return fmt.Errorf("failed to load provider wildcard configs: %w", err)
+			}
+
+			for i := range wildcards {
+				mc := &wildcards[i]
+				// Re-attach the budget/rate-limit FK rows to the provider row.
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", *mc.Provider).
+					Updates(map[string]any{"budget_id": mc.BudgetID, "rate_limit_id": mc.RateLimitID}).Error; err != nil {
+					return fmt.Errorf("failed to restore governance FKs for provider %q: %w", *mc.Provider, err)
+				}
+				// Drop the wildcard model config; its FK rows now live on the provider again.
+				if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+					return fmt.Errorf("failed to delete wildcard config for provider %q: %w", *mc.Provider, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running migrate provider governance to model configs migration: %s", err.Error())
 	}
 	return nil
 }

@@ -2442,3 +2442,43 @@ func TestMigrationAddModelConfigScopeColumns(t *testing.T) {
 	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"))
 	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"))
 }
+
+// TestMigrationMigrateProviderGovernanceToModelConfigs verifies provider-level governance is
+// folded into a (global, provider, '*') model_config reusing the same budget/rate-limit rows,
+// and the provider FKs are cleared. Idempotent on re-run.
+func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableProvider{}, &tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{},
+	))
+
+	now := time.Now()
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b1", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl1", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", BudgetID: schemas.Ptr("b1"), RateLimitID: schemas.Ptr("rl1"), CreatedAt: now, UpdatedAt: now}).Error)
+
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+
+	// A (global, openai, '*') model config now exists reusing the same budget/rate-limit IDs.
+	var mc tables.TableModelConfig
+	require.NoError(t, db.Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").First(&mc).Error)
+	require.NotNil(t, mc.BudgetID)
+	assert.Equal(t, "b1", *mc.BudgetID)
+	require.NotNil(t, mc.RateLimitID)
+	assert.Equal(t, "rl1", *mc.RateLimitID)
+
+	// Provider governance FKs are cleared (old path now inert).
+	var prov tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&prov).Error)
+	assert.Nil(t, prov.BudgetID, "provider budget_id should be cleared")
+	assert.Nil(t, prov.RateLimitID, "provider rate_limit_id should be cleared")
+
+	// Idempotency: re-run creates no duplicate wildcard row.
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+	var count int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).
+		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
+		Count(&count).Error)
+	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+}
