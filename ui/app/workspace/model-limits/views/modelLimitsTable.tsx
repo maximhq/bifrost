@@ -20,6 +20,8 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getErrorMessage, useDeleteModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
+import { ModelProvider } from "@/lib/types/config";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -29,7 +31,7 @@ import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 import { getScopeLabel } from "@/lib/utils/labels";
-import { getModelLimitScope } from "@/lib/registries/modelLimitScopes";
+import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 // Side-effect import: pull in downstream scope registrations (enterprise
 // "user" deep-link, etc.). No-op for OSS builds.
 import "@enterprise/lib/registrations/modelLimitScopes";
@@ -110,9 +112,14 @@ function ModelLimitActionsMenu({
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
 	totalCount: number;
+	providers: ModelProvider[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
+	scope: string;
+	onScopeChange: (value: string) => void;
+	provider: string;
+	onProviderChange: (value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -121,9 +128,14 @@ interface ModelLimitsTableProps {
 export default function ModelLimitsTable({
 	modelConfigs,
 	totalCount,
+	providers,
 	search,
 	debouncedSearch,
 	onSearchChange,
+	scope,
+	onScopeChange,
+	provider,
+	onProviderChange,
 	offset,
 	limit,
 	onOffsetChange,
@@ -174,7 +186,7 @@ export default function ModelLimitsTable({
 		setEditingModelConfigId(null);
 	};
 
-	const hasActiveFilters = debouncedSearch;
+	const hasActiveFilters = debouncedSearch || scope || provider;
 
 	// True empty state: no model limits at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -232,9 +244,9 @@ export default function ModelLimitsTable({
 					</Button>
 				</div>
 
-				{/* Toolbar: Search */}
-				<div className="flex items-center gap-3">
-					<div className="relative max-w-sm flex-1">
+				{/* Toolbar: Search + Filters */}
+				<div className="flex flex-wrap items-center gap-3">
+					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search model limits by model name"
@@ -245,6 +257,48 @@ export default function ModelLimitsTable({
 							data-testid="model-limits-search-input"
 						/>
 					</div>
+
+					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
+						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-scope">
+							<SelectValue placeholder="All Scopes" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Scopes</SelectItem>
+							{getModelLimitScopes().map((o) => (
+								<SelectItem key={o.value} value={o.value}>
+									{o.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					<Select value={provider || "all"} onValueChange={(v) => onProviderChange(v === "all" ? "" : v)}>
+						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-provider">
+							<SelectValue placeholder="All Providers" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Providers</SelectItem>
+							{(providers ?? []).map((p) => (
+								<SelectItem key={p.name} value={p.name}>
+									<div className="flex items-center gap-2">
+										<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
+										<span>{ProviderLabels[p.name as ProviderName] || p.name}</span>
+									</div>
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					{hasActiveFilters && (
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => { onSearchChange(""); onScopeChange(""); onProviderChange(""); }}
+							data-testid="model-limits-filter-clear"
+						>
+							Clear filters
+						</Button>
+					)}
 				</div>
 
 				<div className="rounded-sm border" data-testid="model-limits-table">

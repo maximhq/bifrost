@@ -4306,6 +4306,12 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
 	}
+	if params.Scope != "" {
+		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	}
+	if params.Provider != "" {
+		baseQuery = baseQuery.Where("provider = ?", params.Provider)
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
