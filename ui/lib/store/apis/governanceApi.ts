@@ -85,7 +85,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			// VK governance is backed by VK-scoped model configs; refresh Model Limits too.
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
 		updateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, { vkId: string; data: UpdateVirtualKeyRequest }>({
@@ -94,7 +95,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
 		rotateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, string>({
@@ -119,7 +120,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
 		// Teams
@@ -517,7 +518,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: data,
 			}),
 			// Wildcard model configs back provider governance; refresh the provider page too.
-			invalidatesTags: ["ProviderGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -547,7 +548,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["ProviderGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -581,7 +582,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "DELETE",
 			}),
 			// Wildcard model configs back provider governance; refresh the provider page too.
-			invalidatesTags: ["ProviderGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys"],
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;

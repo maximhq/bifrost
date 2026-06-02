@@ -3,6 +3,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -39,8 +40,15 @@ const formSchema = z
 		provider: z.string().optional(),
 		scope: z.string().optional(),
 		scopeId: z.string().optional(),
-		budgetMaxLimit: z.number().nonnegative().optional(),
-		budgetResetDuration: z.string().optional(),
+		budgets: z
+			.array(
+				z.object({
+					id: z.string().optional(),
+					max_limit: z.number().nonnegative().optional(),
+					reset_duration: z.string().optional(),
+				}),
+			)
+			.optional(),
 		tokenMaxLimit: z.number().int().nonnegative().optional(),
 		tokenResetDuration: z.string().optional(),
 		requestMaxLimit: z.number().int().nonnegative().optional(),
@@ -106,8 +114,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			provider: modelConfig?.provider || "",
 			scope: modelConfig?.scope || "global",
 			scopeId: modelConfig?.scope_id || "",
-			budgetMaxLimit: modelConfig?.budget?.max_limit ?? undefined,
-			budgetResetDuration: modelConfig?.budget?.reset_duration || "1M",
+			budgets: (modelConfig?.budgets ?? []).map((b) => ({
+				id: b.id,
+				max_limit: b.max_limit,
+				reset_duration: b.reset_duration,
+			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: modelConfig?.rate_limit?.request_max_limit ?? undefined,
@@ -115,8 +126,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		},
 	});
 
+	const watchedBudgets = form.watch("budgets");
 	const hasAnyLimit =
-		(form.watch("budgetMaxLimit") !== undefined && form.watch("budgetMaxLimit") !== null) ||
+		(watchedBudgets?.some((b) => b.max_limit !== undefined && b.max_limit !== null) ?? false) ||
 		(form.watch("tokenMaxLimit") !== undefined && form.watch("tokenMaxLimit") !== null) ||
 		(form.watch("requestMaxLimit") !== undefined && form.watch("requestMaxLimit") !== null);
 
@@ -135,8 +147,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				provider: modelConfig.provider || "",
 				scope: modelConfig.scope || "global",
 				scopeId: modelConfig.scope_id || "",
-				budgetMaxLimit: modelConfig.budget?.max_limit ?? undefined,
-				budgetResetDuration: modelConfig.budget?.reset_duration || "1M",
+				budgets: (modelConfig.budgets ?? []).map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit,
+					reset_duration: b.reset_duration,
+				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
 				requestMaxLimit: modelConfig.rate_limit?.request_max_limit ?? undefined,
@@ -159,23 +174,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		try {
 			const provider = data.provider && data.provider.trim() !== "" ? data.provider : undefined;
 
+			// Full desired set of budgets (kept lines with a max_limit). For updates this is
+			// reconciled server-side; an empty array removes all budgets.
+			const budgetsPayload = (data.budgets ?? [])
+				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+				.map((b) => ({ id: b.id, max_limit: b.max_limit as number, reset_duration: b.reset_duration || "1M" }));
+
 			if (isEditing && modelConfig) {
-				const hadBudget = !!modelConfig.budget;
-				const hasBudget = data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null;
 				const hadRateLimit = !!modelConfig.rate_limit;
 				const hasRateLimit =
 					(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
 					(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null);
-
-				let budgetPayload: { max_limit?: number; reset_duration?: string } | undefined;
-				if (hasBudget) {
-					budgetPayload = {
-						max_limit: data.budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-					};
-				} else if (hadBudget) {
-					budgetPayload = {};
-				}
 
 				let rateLimitPayload:
 					| {
@@ -202,7 +211,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					data: {
 						model_name: data.modelName,
 						provider: provider,
-						budget: budgetPayload,
+						budgets: budgetsPayload,
 						rate_limit: rateLimitPayload,
 					},
 				}).unwrap();
@@ -213,13 +222,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					provider,
 					scope: data.scope || "global",
 					scope_id: data.scope === "virtual_key" ? data.scopeId : undefined,
-					budget:
-						data.budgetMaxLimit !== undefined && data.budgetMaxLimit !== null
-							? {
-									max_limit: data.budgetMaxLimit,
-									reset_duration: data.budgetResetDuration || "1M",
-								}
-							: undefined,
+					budgets: budgetsPayload.length > 0 ? budgetsPayload : undefined,
 					rate_limit:
 						(data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null) ||
 						(data.requestMaxLimit !== undefined && data.requestMaxLimit !== null)
@@ -403,27 +406,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 							<DottedSeparator />
 
-							{/* Budget Configuration */}
+							{/* Budget Configuration (multi-budget) */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Budget</Label>
-								<FormField
-									control={form.control}
-									name="budgetMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="modelBudgetMaxLimit"
-												labelClassName="font-normal"
-												label="Maximum Spend (USD)"
-												value={field.value}
-												selectValue={form.watch("budgetResetDuration") || "1M"}
-												onChangeNumber={(value) => field.onChange(value)}
-												onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
+								<MultiBudgetLines
+									data-testid="model-limit-budget-lines"
+									label="Budget"
+									lines={(form.watch("budgets") ?? []).map((b) => ({
+										id: b.id,
+										max_limit: b.max_limit,
+										reset_duration: b.reset_duration ?? "1M",
+									}))}
+									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 								/>
 							</div>
 
@@ -476,20 +469,20 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 							</div>
 
 							{/* Current Usage Display (for editing) */}
-							{isEditing && (modelConfig?.budget || modelConfig?.rate_limit) && (
+							{isEditing && ((modelConfig?.budgets?.length ?? 0) > 0 || modelConfig?.rate_limit) && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-3">
 										<Label className="text-sm font-medium">Current Usage</Label>
 										<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
-											{modelConfig?.budget && (
-												<div className="space-y-1">
-													<p className="text-muted-foreground text-xs">Budget</p>
+											{(modelConfig?.budgets ?? []).map((b) => (
+												<div key={b.id} className="space-y-1">
+													<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
 													<p className="text-sm font-medium">
-														${modelConfig.budget.current_usage.toFixed(2)} / ${modelConfig.budget.max_limit.toFixed(2)}
+														${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
 													</p>
 												</div>
-											)}
+											))}
 											{modelConfig?.rate_limit?.token_max_limit && (
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">Tokens</p>
