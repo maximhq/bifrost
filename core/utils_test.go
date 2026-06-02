@@ -10,10 +10,11 @@ import (
 
 func TestValidateExternalURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		url     string
-		wantErr bool
-		errMsg  string
+		name                string
+		url                 string
+		allowPrivateNetwork bool
+		wantErr             bool
+		errMsg              string
 	}{
 		// Valid URLs
 		{
@@ -69,36 +70,32 @@ func TestValidateExternalURL(t *testing.T) {
 			errMsg:  "URL must have a hostname",
 		},
 
-		// Localhost / loopback by name
+		// Localhost / loopback — allowed for local deployments (Ollama, vLLM, SGL)
 		{
 			name:    "localhost",
 			url:     "http://localhost",
-			wantErr: true,
-			errMsg:  "localhost and loopback addresses are not allowed",
+			wantErr: false,
 		},
 		{
 			name:    "localhost with port",
 			url:     "http://localhost:8080",
-			wantErr: true,
-			errMsg:  "localhost and loopback addresses are not allowed",
+			wantErr: false,
 		},
 		{
 			name:    "loopback 127.0.0.1",
 			url:     "http://127.0.0.1",
-			wantErr: true,
-			errMsg:  "localhost and loopback addresses are not allowed",
+			wantErr: false,
 		},
 		{
 			name:    "loopback ::1",
 			url:     "http://[::1]",
-			wantErr: true,
-			errMsg:  "localhost and loopback addresses are not allowed",
+			wantErr: false,
 		},
 		{
 			name:    "all-zeros 0.0.0.0",
 			url:     "http://0.0.0.0",
 			wantErr: true,
-			errMsg:  "localhost and loopback addresses are not allowed",
+			errMsg:  "unspecified IP addresses are not allowed",
 		},
 
 		// Private IP ranges (RFC 1918)
@@ -121,24 +118,24 @@ func TestValidateExternalURL(t *testing.T) {
 			errMsg:  "private IP addresses are not allowed",
 		},
 
-		// Link-local / cloud metadata
+		// Link-local / cloud metadata — always blocked even with AllowPrivateNetwork
 		{
 			name:    "AWS metadata service",
 			url:     "http://169.254.169.254",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "link-local IP addresses are not allowed",
 		},
 		{
 			name:    "AWS metadata with path",
 			url:     "http://169.254.169.254/latest/meta-data/",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "link-local IP addresses are not allowed",
 		},
 		{
 			name:    "link-local 169.254.x.x",
 			url:     "http://169.254.1.1",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "link-local IP addresses are not allowed",
 		},
 
 		// Query-parameter injection (the PoC vector from the advisory)
@@ -146,7 +143,7 @@ func TestValidateExternalURL(t *testing.T) {
 			name:    "query param injection targeting metadata service",
 			url:     "http://169.254.169.254/latest/meta-data/iam/security-credentials/role?x=",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "link-local IP addresses are not allowed",
 		},
 		{
 			name:    "query param injection targeting internal host",
@@ -154,11 +151,39 @@ func TestValidateExternalURL(t *testing.T) {
 			wantErr: true,
 			errMsg:  "private IP addresses are not allowed",
 		},
+
+		// AllowPrivateNetwork=true: RFC 1918 allowed, link-local still blocked
+		{
+			name:                "allow_private_network permits 10.x.x.x",
+			url:                 "http://10.0.0.5:8000",
+			allowPrivateNetwork: true,
+			wantErr:             false,
+		},
+		{
+			name:                "allow_private_network permits 192.168.x.x",
+			url:                 "http://192.168.1.50:11434",
+			allowPrivateNetwork: true,
+			wantErr:             false,
+		},
+		{
+			name:                "allow_private_network still blocks 169.254.169.254",
+			url:                 "http://169.254.169.254",
+			allowPrivateNetwork: true,
+			wantErr:             true,
+			errMsg:              "link-local IP addresses are not allowed",
+		},
+		{
+			name:                "allow_private_network still blocks 0.0.0.0",
+			url:                 "http://0.0.0.0",
+			allowPrivateNetwork: true,
+			wantErr:             true,
+			errMsg:              "unspecified IP addresses are not allowed",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateExternalURL(tt.url)
+			err := ValidateExternalURL(tt.url, tt.allowPrivateNetwork)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.errMsg)

@@ -22,7 +22,7 @@ func TestConfigureDialer_SetsRetryIfErr(t *testing.T) {
 		t.Fatal("precondition: RetryIfErr should be nil on a new client")
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	if client.RetryIfErr == nil {
 		t.Fatal("ConfigureDialer should set RetryIfErr")
@@ -47,7 +47,7 @@ func TestConfigureDialer_SetsDial(t *testing.T) {
 		t.Fatal("precondition: Dial should be nil on a new client")
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	if client.Dial == nil {
 		t.Fatal("ConfigureDialer should set a Dial function")
@@ -67,7 +67,7 @@ func TestConfigureDialer_ComposesWithExistingDial(t *testing.T) {
 		return net.Dial("tcp", addr)
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	// Start a test server to connect to
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,11 +104,26 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// The default (no-proxy) path enforces SSRF protection and blocks loopback,
-	// so test servers on 127.0.0.1 are unreachable via that path. Keepalive is
-	// verified through the existingDial path below, which also applies it.
+	// Test without existing dial (direct connection path)
+	t.Run("without_existing_dial", func(t *testing.T) {
+		client := &fasthttp.Client{}
+		ConfigureDialer(client, false)
 
-	// Test with existing dial (proxy composition path)
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+
+		req.SetRequestURI(server.URL)
+		req.Header.SetMethod(http.MethodGet)
+
+		if err := client.Do(req, resp); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resp.StatusCode() != 200 {
+			t.Fatalf("expected 200, got %d", resp.StatusCode())
+		}
+	})
 
 	// Test with existing dial (proxy composition path)
 	t.Run("with_existing_dial", func(t *testing.T) {
@@ -119,7 +134,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 			connFromProxy = conn
 			return conn, err
 		}
-		ConfigureDialer(client)
+		ConfigureDialer(client, false)
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -148,7 +163,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 // same client pointer it received (for chaining).
 func TestConfigureDialer_ReturnValue(t *testing.T) {
 	client := &fasthttp.Client{}
-	result := ConfigureDialer(client)
+	result := ConfigureDialer(client, false)
 	if result != client {
 		t.Error("ConfigureDialer should return the same client pointer")
 	}
@@ -163,12 +178,9 @@ func TestConfigureDialer_Idempotent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Pre-set existingDial so the proxy path is used — httptest binds to
-	// 127.0.0.1, which the default SSRF-safe path blocks.
 	client := &fasthttp.Client{}
-	client.Dial = func(addr string) (net.Conn, error) { return net.Dial("tcp", addr) }
-	ConfigureDialer(client)
-	ConfigureDialer(client) // called again
+	ConfigureDialer(client, false)
+	ConfigureDialer(client, false) // called again
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -217,11 +229,8 @@ func TestConfigureDialer_WithRetryOnStaleConnection(t *testing.T) {
 		MaxIdleConnDuration: clientIdleTimeout,
 		MaxConnsPerHost:     10,
 	}
-	// Pre-set existingDial so the proxy path is used — httptest binds to
-	// 127.0.0.1, which the default SSRF-safe path blocks.
-	client.Dial = func(addr string) (net.Conn, error) { return net.Dial("tcp", addr) }
-	// Use ConfigureDialer (the function under test) to install RetryIfErr + keepalive
-	ConfigureDialer(client)
+	// Use ConfigureDialer (the function under test) instead of manually setting RetryIfErr
+	ConfigureDialer(client, false)
 
 	// First request: establish connection in pool
 	req := fasthttp.AcquireRequest()
@@ -292,12 +301,8 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 		addr    string
 		wantErr string
 	}{
-		// Localhost / loopback — rejected by IsLocalhost before DNS is touched
-		{"localhost name", "localhost:80", "not allowed"},
-		{"127.0.0.1 literal", "127.0.0.1:80", "not allowed"},
-		{"[::1] loopback", "[::1]:80", "not allowed"},
-		{"0.0.0.0 all-zeros", "0.0.0.0:80", "not allowed"},
-		{"[::] unspecified short", "[::]:80", "not allowed"},
+		// Unspecified addresses — IsPrivateIP rejects them via IsUnspecified()
+		{"0.0.0.0 all-zeros", "0.0.0.0:80", "unspecified IP"},
 
 		// RFC 1918 private ranges — LookupIP returns the literal IP, IsPrivateIP rejects it
 		{"10.x.x.x", "10.0.0.1:80", "private IP"},
@@ -305,21 +310,21 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 		{"192.168.x.x", "192.168.1.1:80", "private IP"},
 
 		// Link-local / cloud metadata
-		{"169.254.169.254 AWS metadata", "169.254.169.254:80", "private IP"},
-		{"169.254.x.x link-local", "169.254.1.1:80", "private IP"},
+		{"169.254.169.254 AWS metadata", "169.254.169.254:80", "link-local IP"},
+		{"169.254.x.x link-local", "169.254.1.1:80", "link-local IP"},
 
 		// IPv6 private
 		{"[fc00::1] unique-local", "[fc00::1]:80", "private IP"},
 		{"[fd00::1] unique-local", "[fd00::1]:80", "private IP"},
 
 		// Unspecified IPv6 long form — regression for bypass via 0:0:0:0:0:0:0:0
-		{"[0:0:0:0:0:0:0:0] unspecified long form", "[0:0:0:0:0:0:0:0]:80", "private IP"},
+		{"[0:0:0:0:0:0:0:0] unspecified long form", "[0:0:0:0:0:0:0:0]:80", "unspecified IP"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fasthttp.Client{ReadTimeout: time.Second}
-			ConfigureDialer(client)
+			ConfigureDialer(client, false)
 			_, err := client.Dial(tt.addr)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -340,7 +345,7 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 		proxyCalled = true
 		return nil, fmt.Errorf("proxy handled: %s", addr)
 	}
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	_, err := client.Dial("10.0.0.1:80")
 	if !proxyCalled {
@@ -355,14 +360,14 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 // even when ReadTimeout is 0 (context.Background() is used instead of WithTimeout).
 func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {
 	client := &fasthttp.Client{ReadTimeout: 0}
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	_, err := client.Dial("169.254.169.254:80")
 	if err == nil {
 		t.Fatal("expected SSRF rejection with zero ReadTimeout, got nil")
 	}
-	if !strings.Contains(err.Error(), "private IP") {
-		t.Errorf("expected 'private IP' error, got %q", err.Error())
+	if !strings.Contains(err.Error(), "link-local IP") {
+		t.Errorf("expected 'link-local IP' error, got %q", err.Error())
 	}
 }
 
@@ -373,7 +378,7 @@ func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
 	// A connection attempt to it will fail (refused or timeout) without any
 	// private-IP rejection, letting us exercise the lastErr return path.
 	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	_, err := client.Dial("192.0.2.1:9")
 	if err == nil {
@@ -395,7 +400,7 @@ func TestConfigureDialer_DialError(t *testing.T) {
 		return nil, expectedErr
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
