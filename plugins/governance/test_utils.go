@@ -253,8 +253,9 @@ func buildModelConfig(id, modelName string, provider *string, budget *configstor
 		UpdatedAt: time.Now(),
 	}
 	if budget != nil {
-		mc.Budget = budget
-		mc.BudgetID = &budget.ID
+		// Model configs now own budgets via TableBudget.ModelConfigID (multi-budget).
+		budget.ModelConfigID = &mc.ID
+		mc.Budgets = []configstoreTables.TableBudget{*budget}
 	}
 	if rateLimit != nil {
 		mc.RateLimit = rateLimit
