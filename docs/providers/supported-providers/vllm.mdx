@@ -79,29 +79,7 @@ Configure vLLM as a provider.
 
 </Tab>
 <Tab title="API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-  "provider": "vllm",
-  "keys": [
-    {
-      "name": "vllm-local",
-      "value": "",
-      "models": [
-        "meta-llama/Llama-3.2-1B-Instruct"
-      ],
-      "weight": 1.0,
-      "vllm_key_config": {
-        "url": "http://localhost:8000",
-        "model_name": "meta-llama/Llama-3.2-1B-Instruct"
-      }
-    }
-  ]
-}'
-```
-
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
