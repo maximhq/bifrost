@@ -1479,6 +1479,31 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 }
 
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
+	t.Run("diagnostics_gated_via_feature_map", func(t *testing.T) {
+		// diagnostics is an undocumented Claude Code session-continuity field
+		// (diagnostics.previous_message_id). Only Anthropic direct keeps it;
+		// every other provider strips it fail-closed via Diagnostics=false.
+		const body = `{"model":"claude-opus-4-7","diagnostics":{"previous_message_id":null}}`
+		// Anthropic keeps it.
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-7")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "diagnostics") {
+			t.Errorf("expected diagnostics to be kept for Anthropic, got: %s", string(result))
+		}
+		// Azure, Bedrock, Vertex strip it.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			result, err := StripUnsupportedFieldsFromRawBody([]byte(body), provider, "claude-opus-4-7")
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", provider, err)
+			}
+			if providerUtils.JSONFieldExists(result, "diagnostics") {
+				t.Errorf("expected diagnostics to be stripped for %s, got: %s", provider, string(result))
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills

@@ -126,6 +126,8 @@ logs:
           type: string
           enum: [asc, desc]
           default: desc
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -150,6 +152,8 @@ logs:
         application/json:
           schema:
             $ref: '../../schemas/management/logging.yaml#/DeleteLogsRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Logs deleted successfully
@@ -262,6 +266,8 @@ logs-stats:
         description: Search in request/response content
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -281,6 +287,8 @@ logs-dropped:
     description: Returns the number of dropped requests.
     tags:
       - Logging
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -296,6 +304,8 @@ logs-filterdata:
     description: Returns all unique filter data from logs (models, keys, virtual keys).
     tags:
       - Logging
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -320,6 +330,8 @@ logs-by-id:
         description: Log entry ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -363,6 +375,8 @@ logs-histogram:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -401,6 +415,8 @@ logs-histogram-tokens:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -439,6 +455,8 @@ logs-histogram-cost:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -477,6 +495,8 @@ logs-histogram-models:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -515,6 +535,8 @@ logs-histogram-latency:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -553,6 +575,8 @@ logs-histogram-cost-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -591,6 +615,8 @@ logs-histogram-tokens-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -629,6 +655,8 @@ logs-histogram-latency-by-provider:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -769,6 +797,8 @@ logs-recalculate-cost:
         application/json:
           schema:
             $ref: '../../schemas/management/logging.yaml#/RecalculateCostRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Costs recalculated successfully
@@ -870,6 +900,8 @@ mcp-logs:
           type: string
           enum: [asc, desc]
           default: desc
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -894,6 +926,8 @@ mcp-logs:
         application/json:
           schema:
             $ref: '../../schemas/management/logging.yaml#/DeleteMCPLogsRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP tool logs deleted successfully
@@ -920,6 +954,8 @@ mcp-logs-by-id:
         description: MCP tool log ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP tool log found
@@ -995,6 +1031,8 @@ mcp-logs-stats:
         description: Search in tool arguments and results
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -1014,6 +1052,8 @@ mcp-logs-filterdata:
     description: Returns all unique filter data from MCP tool logs (tool names, server labels).
     tags:
       - Logging
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -1060,6 +1100,8 @@ logs-sessions-by-id:
           type: string
           enum: [asc, desc]
           default: asc
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session logs retrieved successfully
@@ -1086,6 +1128,8 @@ logs-sessions-summary-by-id:
         description: Parent request ID identifying the session
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Session summary retrieved successfully
@@ -1127,6 +1171,8 @@ logs-rankings:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Model rankings retrieved successfully
@@ -1174,6 +1220,8 @@ logs-histogram-cost-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Dimension cost histogram retrieved successfully
@@ -1220,6 +1268,8 @@ logs-histogram-tokens-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Dimension token histogram retrieved successfully
@@ -1266,6 +1316,8 @@ logs-histogram-latency-by-dimension:
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
       - $ref: '#/_histogram-parameters/content_search'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Dimension latency histogram retrieved successfully
@@ -1338,6 +1390,8 @@ mcp-logs-histogram:
         description: Search in tool arguments and results
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP histogram retrieved successfully
@@ -1410,6 +1464,8 @@ mcp-logs-histogram-cost:
         description: Search in tool arguments and results
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP cost histogram retrieved successfully
@@ -1482,6 +1538,8 @@ mcp-logs-histogram-top-tools:
         description: Search in tool arguments and results
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP top tools retrieved successfully

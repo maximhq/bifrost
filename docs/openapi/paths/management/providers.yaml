@@ -5,6 +5,8 @@ providers:
     description: Returns a list of all configured providers with their configurations and status.
     tags:
       - Providers
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -27,6 +29,8 @@ providers:
         application/json:
           schema:
             $ref: '../../schemas/management/providers.yaml#/AddProviderRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Provider added successfully
@@ -59,6 +63,8 @@ providers-by-name:
         description: Provider name
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -98,6 +104,8 @@ providers-by-name:
         application/json:
           schema:
             $ref: '../../schemas/management/providers.yaml#/UpdateProviderRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Provider updated successfully
@@ -123,6 +131,8 @@ providers-by-name:
         description: Provider name
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Provider deleted successfully
@@ -155,6 +165,8 @@ provider-keys:
         description: Provider name
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -195,6 +207,8 @@ provider-keys:
         application/json:
           schema:
             $ref: '../../schemas/management/providers.yaml#/Key'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Key created successfully
@@ -239,6 +253,8 @@ provider-key-by-id:
         description: Key ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -285,6 +301,8 @@ provider-key-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/providers.yaml#/Key'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Key updated successfully
@@ -322,6 +340,8 @@ provider-key-by-id:
         description: Key ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Key deleted successfully
@@ -347,6 +367,8 @@ keys:
     description: Returns a list of all configured API keys across all providers.
     tags:
       - Providers
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -399,6 +421,8 @@ models:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -449,6 +473,8 @@ models-details:
         schema:
           type: boolean
           default: false
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -466,6 +492,8 @@ models-parameters:
     description: Returns the available parameter definitions for models.
     tags:
       - Providers
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -500,6 +528,8 @@ models-base:
         description: Maximum number of results to return
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response

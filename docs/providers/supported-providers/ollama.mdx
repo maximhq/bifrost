@@ -161,28 +161,7 @@ Configure Ollama as a provider.
 
 </Tab>
 <Tab title="API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-  "provider": "ollama",
-  "keys": [
-    {
-      "name": "ollama-local",
-      "value": "",
-      "models": [
-        "*"
-      ],
-      "weight": 1.0,
-      "ollama_key_config": {
-        "url": "http://localhost:11434"
-      }
-    }
-  ]
-}'
-```
-
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 

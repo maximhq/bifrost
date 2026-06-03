@@ -2631,6 +2631,25 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// resolveBatchProvider resolves the provider (and optional model) for a batch
+// create request. Per the OpenAI spec, model is optional on POST /v1/batches —
+// it lives inside each JSONL request body. When model is present it is parsed
+// via resolveModelAndProvider; when absent the provider is taken from the
+// ?provider= query param or x-model-provider header (same as fileUpload).
+func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+	if model != "" {
+		return resolveModelAndProvider(ctx, config, model)
+	}
+	p := string(ctx.QueryArgs().Peek("provider"))
+	if p == "" {
+		p = string(ctx.Request.Header.Peek("x-model-provider"))
+	}
+	if p == "" {
+		return "", "", fmt.Errorf("provider query parameter or x-model-provider header is required when model is not specified")
+	}
+	return schemas.ModelProvider(p), "", nil
+}
+
 // batchCreate handles POST /v1/batches - Create a new batch job
 func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var req BatchCreateRequest
@@ -2639,7 +2658,10 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	provider, modelName, err := resolveModelAndProvider(ctx, h.config, req.Model)
+	// model is optional on POST /v1/batches per the OpenAI spec — the model lives
+	// inside each JSONL request body. When omitted, resolve the provider from the
+	// x-model-provider header or ?provider= query param (same as fileUpload).
+	provider, modelName, err := resolveBatchProvider(ctx, h.config, req.Model)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
