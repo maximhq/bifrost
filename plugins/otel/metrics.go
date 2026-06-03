@@ -28,6 +28,10 @@ type MetricsConfig struct {
 	TLSCACert    string
 	Insecure     bool // Skip TLS when true; ignored if TLSCACert is set
 	PushInterval int  // in seconds
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64
+	FirstTokenLatencyBuckets []float64
+	InterTokenLatencyBuckets []float64
 }
 
 // MetricsExporter handles OTEL metrics export
@@ -244,7 +248,7 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	}
 
 	// Initialize metrics with lazy loading wrappers
-	m.initMetrics()
+	m.initMetrics(config)
 
 	return m, nil
 }
@@ -296,7 +300,20 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 	return otlpmetricgrpc.New(ctx, opts...)
 }
 
-func (m *MetricsExporter) initMetrics() {
+func (m *MetricsExporter) initMetrics(config *MetricsConfig) {
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
+	if len(config.LatencyBuckets) > 0 {
+		upstreamLatencyBuckets = config.LatencyBuckets
+	}
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
+	}
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
+	}
+
 	// Bifrost upstream metrics
 	m.upstreamRequestsTotal = &syncInt64Counter{
 		name:  "bifrost_upstream_requests_total",

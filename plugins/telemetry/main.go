@@ -77,10 +77,16 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels   []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled *bool               `json:"metrics_enabled,omitempty"`
 		PushGateway    *pushGatewayStorage `json:"push_gateway,omitempty"`
+		LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+		FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+		InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 	}
 	storage := configStorage{
-		CustomLabels:   c.CustomLabels,
-		MetricsEnabled: c.MetricsEnabled,
+		CustomLabels:             c.CustomLabels,
+		MetricsEnabled:           c.MetricsEnabled,
+		LatencyBuckets:           c.LatencyBuckets,
+		FirstTokenLatencyBuckets: c.FirstTokenLatencyBuckets,
+		InterTokenLatencyBuckets: c.InterTokenLatencyBuckets,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -197,6 +203,10 @@ type Config struct {
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
+	// Custom histogram bucket boundaries. When nil, compiled-in defaults are used.
+	LatencyBuckets           []float64 `json:"latency_buckets,omitempty"`
+	FirstTokenLatencyBuckets []float64 `json:"first_token_latency_buckets,omitempty"`
+	InterTokenLatencyBuckets []float64 `json:"inter_token_latency_buckets,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -234,6 +244,19 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	if pricingManager == nil {
 		logger.Warn("telemetry plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+	}
+
+	upstreamLatencyBuckets := upstreamLatencyBuckets
+	firstTokenLatencyBuckets := firstTokenLatencyBuckets
+	interTokenLatencyBuckets := interTokenLatencyBuckets
+	if len(config.LatencyBuckets) > 0 {
+		upstreamLatencyBuckets = config.LatencyBuckets
+	}
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
+	}
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
 	}
 
 	registry := config.Registry

@@ -69,6 +69,15 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.MetricsEnabled != nil {
 					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
 				}
+				if len(extraConfig.LatencyBuckets) > 0 {
+					telConfig.LatencyBuckets = extraConfig.LatencyBuckets
+				}
+				if len(extraConfig.FirstTokenLatencyBuckets) > 0 {
+					telConfig.FirstTokenLatencyBuckets = extraConfig.FirstTokenLatencyBuckets
+				}
+				if len(extraConfig.InterTokenLatencyBuckets) > 0 {
+					telConfig.InterTokenLatencyBuckets = extraConfig.InterTokenLatencyBuckets
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
