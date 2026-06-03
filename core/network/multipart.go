@@ -43,7 +43,13 @@ func ParseMultipartFormFields(contentType string, body []byte) (map[string]any, 
 				_ = part.Close()
 				return nil, readErr
 			}
-			payload[name] = string(val)
+			if _, ok := payload[name]; !ok {
+				payload[name] = string(val)
+			} else if item, isString := payload[name].(string); isString {
+				payload[name] = []string{item, string(val)}
+			} else if items, isList := payload[name].([]string); isList {
+				payload[name] = append(items, string(val))
+			}
 		}
 		_ = part.Close()
 	}
@@ -88,6 +94,10 @@ func ReconstructMultipartBody(origContentType string, origBody []byte, payload m
 			}
 		} else if name != "" {
 			if val, ok := payload[name]; ok {
+				if writtenFields[name] {
+					_ = part.Close()
+					continue
+				}
 				if err := WriteMultipartField(writer, name, val); err != nil {
 					_ = part.Close()
 					return nil, "", err
@@ -130,11 +140,12 @@ func WriteMultipartField(writer *multipart.Writer, name string, val any) error {
 	case string:
 		return writer.WriteField(name, v)
 	case []string:
-		encoded, err := schemas.MarshalSorted(v)
-		if err != nil {
-			return err
+		for _, item := range v {
+			if err := writer.WriteField(name, item); err != nil {
+				return err
+			}
 		}
-		return writer.WriteField(name, string(encoded))
+		return nil
 	default:
 		return writer.WriteField(name, fmt.Sprintf("%v", val))
 	}
