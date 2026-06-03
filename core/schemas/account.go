@@ -479,6 +479,41 @@ func IsVeoModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyVeo
 }
 
+// BuildRoutingInfo constructs a RoutingInfo for the current attempt from this
+// attempt's chosen provider/model/key and the resolved alias stashed in ctx.
+//
+// Populates only the per-attempt fields (Provider, Model, Key,
+// ResolvedKeyAlias). IsFallback and PrimaryProvider/PrimaryModel are layered
+// on later by the orchestrator (handleRequest / handleStreamRequest) via
+// SetFallbackRoutingInfo on the final response/error, since those signals
+// belong to the orchestrator scope rather than the per-attempt one.
+//
+// ResolvedKeyAlias.ModelFamily reflects the family explicitly configured on
+// the alias (nil when the admin didn't set one) — not the substring-resolved
+// family used for routing.
+func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemptModel string, attemptKey Key) RoutingInfo {
+	info := RoutingInfo{
+		Provider: attemptProvider,
+		Model:    attemptModel,
+		Key:      attemptKey.Name,
+	}
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
+		rka := &ResolvedKeyAlias{
+			ModelID: ra.Config.ModelID,
+		}
+		if ra.Config.ModelName != nil {
+			mn := *ra.Config.ModelName
+			rka.ModelName = &mn
+		}
+		if ra.Config.ModelFamily != nil {
+			f := *ra.Config.ModelFamily
+			rka.ModelFamily = &f
+		}
+		info.ResolvedKeyAlias = rka
+	}
+	return info
+}
+
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
 // or nil if no alias matches. Case-insensitive fallback matches Resolve.
 func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
