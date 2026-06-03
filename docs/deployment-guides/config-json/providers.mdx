@@ -256,6 +256,10 @@ When `value` is empty or omitted, Bifrost uses `DefaultAzureCredential` - which 
 }
 ```
 
+<Note>
+`aliases` values can also be objects, not just plain strings. The object form lets you tag each alias with a canonical `model_name` (improves pricing/log attribution when the wire ID is opaque), a `model_family` for routing, and per-alias provider overrides like `api_version` or `endpoint`. See [Aliasing Models](/providers/aliasing-models) for the full schema.
+</Note>
+
 **Multi-region failover** (two keys, different regions):
 
 ```json
