@@ -236,6 +236,24 @@ var (
 	}
 )
 
+// validateBuckets checks that buckets are strictly increasing and positive.
+// Returns false and logs a warning if invalid so callers can fall back to defaults.
+func validateBuckets(name string, buckets []float64, logger schemas.Logger) bool {
+	prev := 0.0
+	for _, v := range buckets {
+		if v <= 0 {
+			logger.Warn("telemetry: %s contains non-positive bucket value %v — ignoring custom buckets, using defaults", name, v)
+			return false
+		}
+		if v <= prev {
+			logger.Warn("telemetry: %s bucket values must be strictly increasing (got %v after %v) — ignoring custom buckets, using defaults", name, v, prev)
+			return false
+		}
+		prev = v
+	}
+	return true
+}
+
 // Init creates a new PrometheusPlugin with initialized metrics.
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -249,13 +267,13 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	upstreamLatencyBuckets := upstreamLatencyBuckets
 	firstTokenLatencyBuckets := firstTokenLatencyBuckets
 	interTokenLatencyBuckets := interTokenLatencyBuckets
-	if len(config.LatencyBuckets) > 0 {
+	if len(config.LatencyBuckets) > 0 && validateBuckets("latency_buckets", config.LatencyBuckets, logger) {
 		upstreamLatencyBuckets = config.LatencyBuckets
 	}
-	if len(config.FirstTokenLatencyBuckets) > 0 {
+	if len(config.FirstTokenLatencyBuckets) > 0 && validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets, logger) {
 		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
 	}
-	if len(config.InterTokenLatencyBuckets) > 0 {
+	if len(config.InterTokenLatencyBuckets) > 0 && validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets, logger) {
 		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
 	}
 
