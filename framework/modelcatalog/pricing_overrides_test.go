@@ -56,7 +56,7 @@ func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 20.0, *pricing.InputCostPerToken)
@@ -95,7 +95,7 @@ func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 15.0, pricing.InputCostPerToken)
 }
@@ -124,7 +124,7 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("gemini", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 7.0, pricing.InputCostPerToken)
 }
@@ -155,7 +155,7 @@ func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *test
 
 	// Override pattern matches the resolved model name ("dep-gpt4o"), not the
 	// originally requested name ("gpt-4o"), because resolved model has priority.
-	pricing := mc.resolvePricing("openai", "gpt-4o", "dep-gpt4o", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "dep-gpt4o"}}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 7.0, *pricing.InputCostPerToken)
@@ -195,7 +195,7 @@ func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) 
 		},
 	}))
 
-	pricing := mc.resolvePricing("gemini", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 5.0, *pricing.InputCostPerToken)
@@ -225,7 +225,7 @@ func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T)
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "openai/gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "openai/gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 }
@@ -256,7 +256,7 @@ func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 	assert.Equal(t, 2.0, pricing.OutputCostPerToken)
@@ -288,13 +288,13 @@ func TestDeleteProviderPricingOverrides_StopsApplying(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 11.0, pricing.InputCostPerToken)
 
 	require.NoError(t, mc.SetPricingOverrides(nil))
 
-	pricing = mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing = mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 }
@@ -331,7 +331,7 @@ func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o-mini", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-mini"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 6.0, pricing.InputCostPerToken)
 }
@@ -371,7 +371,7 @@ func TestGetPricing_FirstInsertionWinsOnTie(t *testing.T) {
 		},
 	}))
 
-	pricing := mc.resolvePricing("openai", "gpt-4o-mini", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	pricing := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-mini"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 8.0, *pricing.InputCostPerToken)
