@@ -1466,14 +1466,7 @@
                     "description": "Internal hash for change detection (auto-managed)"
                   }
                 },
-                "required": [
-                  "id",
-                  "name",
-                  "scope_kind",
-                  "match_type",
-                  "pattern",
-                  "request_types"
-                ]
+                "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
             }
           },
@@ -1529,11 +1522,7 @@
                       "description": "Number of failed probes before marking as failed"
                     }
                   },
-                  "required": [
-                    "timeoutSeconds",
-                    "successThreshold",
-                    "failureThreshold"
-                  ],
+                  "required": ["timeoutSeconds", "successThreshold", "failureThreshold"],
                   "additionalProperties": false
                 }
               },
@@ -1567,15 +1556,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": [
-                    "",
-                    "kubernetes",
-                    "dns",
-                    "udp",
-                    "consul",
-                    "etcd",
-                    "mdns"
-                  ],
+                  "enum": ["", "kubernetes", "dns", "udp", "consul", "etcd", "mdns"],
                   "description": "Discovery type (empty when not configured)"
                 },
                 "serviceName": {
@@ -1795,8 +1776,14 @@
                           "type": "object",
                           "properties": {
                             "attribute": { "type": "string", "description": "JWT claim name" },
-                            "value": { "type": "string", "description": "Claim value to match, or '*' for pass-through" },
-                            "team": { "type": "string", "description": "Bifrost team slug to assign" },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match, or '*' for pass-through"
+                            },
+                            "team": {
+                              "type": "string",
+                              "description": "Bifrost team slug to assign"
+                            },
                             "attributeType": {
                               "type": "string",
                               "enum": ["user", "group"],
@@ -1819,7 +1806,10 @@
                           "properties": {
                             "attribute": { "type": "string", "description": "JWT claim name" },
                             "value": { "type": "string", "description": "Claim value to match" },
-                            "business_unit": { "type": "string", "description": "Bifrost business unit slug to assign" },
+                            "business_unit": {
+                              "type": "string",
+                              "description": "Bifrost business unit slug to assign"
+                            },
                             "attributeType": {
                               "type": "string",
                               "enum": ["user", "group"],
@@ -1835,12 +1825,7 @@
                         }
                       }
                     },
-                    "required": [
-                      "issuerUrl",
-                      "clientId",
-                      "clientSecret",
-                      "apiToken"
-                    ],
+                    "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
                   }
                 }
@@ -2070,12 +2055,7 @@
                         }
                       }
                     },
-                    "required": [
-                      "serverUrl",
-                      "realm",
-                      "clientId",
-                      "clientSecret"
-                    ],
+                    "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
                   }
                 }
@@ -2433,13 +2413,7 @@
                     "description": "IDs of provider configurations to use with this rule"
                   }
                 },
-                "required": [
-                  "id",
-                  "name",
-                  "enabled",
-                  "cel_expression",
-                  "apply_to"
-                ],
+                "required": ["id", "name", "enabled", "cel_expression", "apply_to"],
                 "additionalProperties": false
               }
             },
@@ -2944,14 +2918,7 @@
             },
             "sslMode": {
               "type": "string",
-              "enum": [
-                "disable",
-                "allow",
-                "prefer",
-                "require",
-                "verify-ca",
-                "verify-full"
-              ]
+              "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
             },
             "existingSecret": {
               "type": "string"
@@ -4124,13 +4091,7 @@
         },
         "authType": {
           "type": "string",
-          "enum": [
-            "none",
-            "headers",
-            "oauth",
-            "per_user_oauth",
-            "per_user_headers"
-          ],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauthConfigId": {
