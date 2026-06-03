@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
@@ -145,22 +148,43 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 // loadPricingFromURL fetches and parses the pricing datasheet at the
 // configured URL. Honors ctx for cancellation.
 func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error) {
-	client := &http.Client{Timeout: DefaultPricingTimeout}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
+	s.syncCfgMu.RLock()
+	rawURL := s.url
+	s.syncCfgMu.RUnlock()
+
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to parse pricing URL: %w", err)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download pricing data: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download pricing data: HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read pricing data response: %w", err)
+
+	var data []byte
+
+	if parsed.Scheme == "file" {
+		data, err = os.ReadFile(parsed.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read pricing file: %w", err)
+		}
+	} else {
+		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
+		}
+		client := &http.Client{Timeout: DefaultPricingTimeout}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download pricing data: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to download pricing data: HTTP %d", resp.StatusCode)
+		}
+		data, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read pricing data response: %w", err)
+		}
 	}
 	var pricingData map[string]Entry
 	if err := json.Unmarshal(data, &pricingData); err != nil {
@@ -169,6 +193,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	if s.logger != nil {
 		s.logger.Debug("successfully downloaded and parsed %d pricing records", len(pricingData))
 	}
+
 	return pricingData, nil
 }
 
