@@ -3703,6 +3703,25 @@
               "type": "string",
               "description": "Azure endpoint (can use env. prefix)"
             },
+            "client_id": {
+              "type": "string",
+              "description": "Azure client ID for authentication (can use env. prefix)"
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Azure client secret for authentication (can use env. prefix)"
+            },
+            "tenant_id": {
+              "type": "string",
+              "description": "Azure tenant ID for authentication (can use env. prefix)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Azure scopes for authentication"
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
@@ -3716,6 +3735,11 @@
             }
           },
           "required": ["endpoint"],
+          "dependentRequired": {
+            "client_id": ["client_secret", "tenant_id"],
+            "client_secret": ["client_id", "tenant_id"],
+            "tenant_id": ["client_id", "client_secret"]
+          },
           "additionalProperties": false
         },
         "vertex_key_config": {
@@ -4430,6 +4454,25 @@
                     "type": "string",
                     "description": "Azure endpoint (can use env. prefix)"
                   },
+                  "client_id": {
+                    "type": "string",
+                    "description": "Azure client ID for authentication (can use env. prefix)"
+                  },
+                  "client_secret": {
+                    "type": "string",
+                    "description": "Azure client secret for authentication (can use env. prefix)"
+                  },
+                  "tenant_id": {
+                    "type": "string",
+                    "description": "Azure tenant ID for authentication (can use env. prefix)"
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Azure scopes for authentication"
+                  },
                   "deployments": {
                     "type": "object",
                     "additionalProperties": {
@@ -4441,6 +4484,12 @@
                     "type": "string",
                     "description": "Azure API version"
                   }
+                },
+                "required": ["endpoint"],
+                "dependentRequired": {
+                  "client_id": ["client_secret", "tenant_id"],
+                  "client_secret": ["client_id", "tenant_id"],
+                  "tenant_id": ["client_id", "client_secret"]
                 },
                 "additionalProperties": false
               },
