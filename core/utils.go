@@ -414,6 +414,18 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 	return
 }
 
+// GetResponseRoutingInfo extracts the RoutingInfo recorded on a completed
+// attempt — from the accumulated response, or the error when the attempt failed.
+func GetResponseRoutingInfo(result *schemas.BifrostResponse, err *schemas.BifrostError) schemas.RoutingInfo {
+	if result != nil {
+		return result.GetExtraFields().RoutingInfo
+	}
+	if err != nil {
+		return err.ExtraFields.RoutingInfo
+	}
+	return schemas.RoutingInfo{}
+}
+
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
 // Returns empty string if marshaling fails.
 func MarshalUnsafe(v any) string {

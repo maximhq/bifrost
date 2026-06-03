@@ -38,15 +38,20 @@ func testCatalogWithPricing(entries map[string]configstoreTables.TableModelPrici
 	return mc
 }
 
+// routingInfoFor builds a minimal RoutingInfo populated by core.bifrost for a
+// non-aliased request — the form pricing reads from.
+func routingInfoFor(provider schemas.ModelProvider, model string) schemas.RoutingInfo {
+	return schemas.RoutingInfo{Provider: provider, Model: model}
+}
+
 // makeChatResponse builds a minimal BifrostResponse for a chat completion.
 func makeChatResponse(provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               provider,
-				OriginalModelRequested: model,
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(provider, model),
 			},
 		},
 	}
@@ -58,9 +63,8 @@ func makeEmbeddingResponse(provider schemas.ModelProvider, model string, usage *
 		EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.EmbeddingRequest,
-				Provider:               provider,
-				OriginalModelRequested: model,
+				RequestType: schemas.EmbeddingRequest,
+				RoutingInfo: routingInfoFor(provider, model),
 			},
 		},
 	}
@@ -72,9 +76,8 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 		RerankResponse: &schemas.BifrostRerankResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.RerankRequest,
-				Provider:               provider,
-				OriginalModelRequested: model,
+				RequestType: schemas.RerankRequest,
+				RoutingInfo: routingInfoFor(provider, model),
 			},
 		},
 	}
@@ -86,9 +89,8 @@ func makeImageResponse(provider schemas.ModelProvider, model string, usage *sche
 		ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ImageGenerationRequest,
-				Provider:               provider,
-				OriginalModelRequested: model,
+				RequestType: schemas.ImageGenerationRequest,
+				RoutingInfo: routingInfoFor(provider, model),
 			},
 		},
 	}
@@ -1158,9 +1160,8 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit: true,
 					HitType:  &hitType,
@@ -1194,9 +1195,8 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     true,
 					HitType:      &hitType,
@@ -1233,9 +1233,8 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
@@ -1428,9 +1427,8 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ChatCompletionStreamRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
+				RequestType: schemas.ChatCompletionStreamRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -1450,10 +1448,8 @@ func TestCalculateCost_WebSocketResponsesFallsBackToChatPricing(t *testing.T) {
 				Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.WebSocketResponsesRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
-				ResolvedModelUsed:      "gpt-4o",
+				RequestType: schemas.WebSocketResponsesRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -1479,7 +1475,7 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
@@ -1490,7 +1486,7 @@ func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 			InputCostPerToken: bifrost.Ptr(0.0000001), OutputCostPerToken: bifrost.Ptr(0.0000004),
 		},
 	})
-	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
@@ -1498,7 +1494,7 @@ func TestGetPricing_VertexStripsProviderPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
-	p := mc.resolvePricing("vertex", "google/gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "vertex"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "vertex", Model: "google/gemini-2.0-flash"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "vertex"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
@@ -1506,7 +1502,7 @@ func TestGetPricing_BedrockAddsAnthropicPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): chatPricing(0.000003, 0.000015),
 	})
-	p := mc.resolvePricing("bedrock", "claude-3-5-sonnet-20241022-v2:0", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "bedrock"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "claude-3-5-sonnet-20241022-v2:0"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "bedrock"})
 	assert.Equal(t, 0.000003, derefF(p.InputCostPerToken))
 }
 
@@ -1514,7 +1510,7 @@ func TestGetPricing_ResponsesFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
@@ -1522,7 +1518,7 @@ func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesStreamRequest, PricingLookupScopes{Provider: "openai"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesStreamRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
@@ -1530,7 +1526,7 @@ func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.RealtimeRequest, PricingLookupScopes{Provider: "openai"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.RealtimeRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
@@ -1539,13 +1535,13 @@ func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
 	// gemini provider + responses request → try vertex + responses → try vertex + chat
-	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "gemini"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ResponsesRequest, PricingLookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_NotFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing("openai", "nonexistent", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "nonexistent"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Nil(t, p)
 }
 
@@ -1559,7 +1555,7 @@ func TestResolvePricing_DeploymentFallback(t *testing.T) {
 	})
 
 	// Model not found directly, but deployment matches
-	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-custom", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
@@ -1572,14 +1568,14 @@ func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 
 	// Resolved model ("my-deployment") is looked up first and has priority
 	// over the originally requested model ("gpt-4o").
-	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest, PricingLookupScopes{})
+	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "unknown"}, schemas.ChatCompletionRequest, PricingLookupScopes{})
 	assert.Nil(t, p)
 }
 
@@ -1882,9 +1878,7 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
-				ResolvedModelUsed:      "gpt-4o",
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -1918,9 +1912,7 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
-				ResolvedModelUsed:      "gpt-4o",
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -2163,9 +2155,7 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
-				ResolvedModelUsed:      "gpt-4o",
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -2191,9 +2181,7 @@ func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ChatCompletionRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4o",
-				ResolvedModelUsed:      "gpt-4o",
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
 			},
 		},
 	}
@@ -2329,9 +2317,8 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 				{URL: "https://example.com/img3.png", Index: 2},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:            schemas.ImageGenerationRequest,
-				Provider:               "openai",
-				OriginalModelRequested: "dall-e-3",
+				RequestType: schemas.ImageGenerationRequest,
+				RoutingInfo: routingInfoFor("openai", "dall-e-3"),
 			},
 		},
 	}
@@ -2451,9 +2438,7 @@ func TestCalculateCost_ResponsesWithCodeInterpreter(t *testing.T) {
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:            schemas.ResponsesRequest,
-				Provider:               schemas.OpenAI,
-				OriginalModelRequested: "gpt-4.1",
-				ResolvedModelUsed:      "gpt-4.1",
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4.1"),
 			},
 		},
 	}
@@ -2511,7 +2496,7 @@ func TestCalculateCost_ContainerCreate_NoMemoryLimit(t *testing.T) {
 			Name: "test-container",
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ContainerCreateRequest,
-				Provider:    schemas.OpenAI,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
 			},
 		},
 	}
@@ -2543,7 +2528,7 @@ func TestCalculateCost_ContainerCreate_MemorySpecificEntry(t *testing.T) {
 			MemoryLimit: "4g",
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ContainerCreateRequest,
-				Provider:    schemas.OpenAI,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
 			},
 		},
 	}
@@ -2569,7 +2554,7 @@ func TestCalculateCost_ContainerCreate_FallsBackToBaseEntry(t *testing.T) {
 			MemoryLimit: "4g",
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ContainerCreateRequest,
-				Provider:    schemas.OpenAI,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
 			},
 		},
 	}
@@ -2588,6 +2573,143 @@ func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
 			Name: "test-container",
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ContainerCreateRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.Equal(t, 0.0, cost)
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compat: RoutingInfo missing → synthesize from deprecated triplet
+//
+// Covers callers stuck on the legacy ExtraFields shape:
+//   - LoggerPlugin.RecalculateCosts replaying logs written before RoutingInfo existed
+//   - Third-party plugins / SDK users that haven't migrated to RoutingInfo
+//
+// The fallback only fires when RoutingInfo is fully empty (zero Provider,
+// zero Model, nil ResolvedKeyAlias). Any partial population is trusted.
+// ---------------------------------------------------------------------------
+
+func TestCalculateCost_BackCompat_LegacyFieldsOnly_NoAlias(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	// Caller populates only the deprecated triplet — no RoutingInfo.
+	// Pricing should fall back to Provider + OriginalModelRequested.
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	// 1000 * 0.000005 + 500 * 0.000015 = 0.005 + 0.0075 = 0.0125
+	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
+func TestCalculateCost_BackCompat_LegacyFieldsOnly_WithAlias(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	// Caller populates only the deprecated triplet with a distinct
+	// ResolvedModelUsed (i.e. an alias was matched at original request time
+	// and the wire model differs from the caller-facing name). The fallback
+	// should route ResolvedModelUsed into ResolvedKeyAlias.ModelID so the
+	// catalog lookup hits the deployment-keyed entry.
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "my-alias-name",
+				ResolvedModelUsed:      "my-deployment",
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	// 1000 * 0.000005 + 500 * 0.000015 = 0.0125, charged via the deployment-keyed entry
+	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
+func TestCalculateCost_BackCompat_RoutingInfoWinsOverLegacyFields(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+		makeKey("gemini-2.0-flash", "gemini", "chat"): {
+			Model:              "gemini-2.0-flash",
+			Provider:           "gemini",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(0.0000001),
+			OutputCostPerToken: bifrost.Ptr(0.0000004),
+		},
+	})
+
+	// Both populated. The modern fields (RoutingInfo) must win — the
+	// fallback only fires when RoutingInfo is fully unset.
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				RoutingInfo:            routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				Provider:               schemas.Gemini,
+				OriginalModelRequested: "gemini-2.0-flash",
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	// Priced via RoutingInfo → openai/gpt-4o → 0.0125 (not the gemini rate).
+	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
+func TestCalculateCost_BackCompat_BothEmpty_ReturnsZero(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	// Neither RoutingInfo nor the deprecated triplet are populated.
+	// Pricing has no way to identify the model; cost is 0.
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+			},
+		},
+	}
+
+	cost := mc.CalculateCost(resp, nil)
+	assert.Equal(t, 0.0, cost)
+}
+
+func TestCalculateCost_BackCompat_PartialRoutingInfo_NoFallback(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	// RoutingInfo has Model but no Provider. The legacy Provider field is
+	// also set. The fallback MUST NOT fire — partial RoutingInfo means the
+	// caller intended to use RoutingInfo. With Provider unset on RoutingInfo,
+	// the catalog lookup fails and cost is 0. (This guards the trigger
+	// against false positives.)
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{Model: "gpt-4o"},
 				Provider:    schemas.OpenAI,
 			},
 		},

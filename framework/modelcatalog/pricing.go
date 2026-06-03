@@ -272,7 +272,13 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	if scopes.Provider == "" {
 		scopes.Provider = *cacheDebug.ProviderUsed
 	}
-	pricing := mc.resolvePricing(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", schemas.EmbeddingRequest, scopes)
+	// Cache-debug pricing has only a single model identifier (whatever the
+	// cache recorded). Maps to RoutingInfo.Model — no alias resolution
+	// context exists for the cache-replayed request.
+	pricing := mc.resolvePricing(schemas.RoutingInfo{
+		Provider: schemas.ModelProvider(*cacheDebug.ProviderUsed),
+		Model:    *cacheDebug.ModelUsed,
+	}, schemas.EmbeddingRequest, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -294,9 +300,22 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 		return 0
 	}
 
-	provider := string(extraFields.Provider)
-	originalModelRequested := extraFields.OriginalModelRequested
-	resolvedModelUsed := extraFields.ResolvedModelUsed
+	// Read routing info populated by core.bifrost at request time.
+	//
+	// Backward-compat fallback: when the caller (e.g. LoggerPlugin's
+	// RecalculateCosts replaying logs written before RoutingInfo existed,
+	// or third-party plugins still on the legacy ExtraFields shape) leaves
+	// RoutingInfo empty, synthesise one from the deprecated triplet so
+	// pricing keeps working. Triggered only when RoutingInfo is fully
+	// unset — partial population is trusted as-is.
+	routingInfo := extraFields.RoutingInfo
+	if routingInfo.Provider == "" && routingInfo.Model == "" && routingInfo.ResolvedKeyAlias == nil {
+		routingInfo.Provider = extraFields.Provider
+		routingInfo.Model = extraFields.OriginalModelRequested
+		if r := extraFields.ResolvedModelUsed; r != "" && r != extraFields.OriginalModelRequested {
+			routingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: r}
+		}
+	}
 	requestType := extraFields.RequestType
 
 	// Extract usage data from the response (passthrough and native paths unified)
@@ -314,22 +333,26 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 
 	if result.PassthroughResponse != nil {
 		// Infer request type from usage fields + path; passthrough bypasses stream normalization.
-		requestType = inferPassthroughRequestType(extraFields.Provider, extraFields.PassthroughPath, result.PassthroughResponse.PassthroughUsage)
+		requestType = inferPassthroughRequestType(routingInfo.Provider, extraFields.PassthroughPath, result.PassthroughResponse.PassthroughUsage)
 	} else {
 		// Normalize stream request types to their base type for pricing lookup
 		requestType = normalizeStreamRequestType(requestType)
 	}
 
-	// When a pricing model override is set, use it in place of the actual requested/resolved
-	// model names during pricing lookup (e.g. container creates always look up "container").
-	lookupModel, lookupResolved := originalModelRequested, resolvedModelUsed
+	// When a pricing model override is set (e.g. container creates always look
+	// up "container"), it replaces the lookup hierarchy entirely. Build a
+	// synthetic RoutingInfo that reuses Provider but pins the model fields to
+	// the container identifier — the lookup tries it as ModelName, the
+	// override key is the container identifier so per-container overrides
+	// stay addressable.
 	if input.containerIdentifierString != "" {
-		lookupModel = input.containerIdentifierString
-		lookupResolved = input.containerIdentifierString
+		routingInfo = schemas.RoutingInfo{
+			Provider: routingInfo.Provider,
+			Model:    input.containerIdentifierString,
+		}
 	}
 
-	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, lookupModel, lookupResolved, requestType, scopes)
+	pricing := mc.resolvePricing(routingInfo, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -1159,39 +1182,64 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // Pricing resolution
 // ---------------------------------------------------------------------------
 
-// resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
-func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolvedModelUsed string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
-	if resolvedModelUsed == "" {
-		resolvedModelUsed = originalModelRequested
+// resolvePricing resolves the pricing entry for a request directly from the
+// RoutingInfo populated on the response/error by core.bifrost at request time.
+//
+// Lookup precedence — AliasModelName → AliasModelID → ModelName. Each
+// non-empty candidate is tried against the base catalog in order; the first
+// hit wins.
+//
+//   - AliasModelName (RoutingInfo.ResolvedKeyAlias.ModelName) is the canonical
+//     model name the admin tagged on the matched alias. Catches the
+//     opaque-deployment-ID case where the wire model wouldn't hit the catalog
+//     on its own.
+//   - AliasModelID (RoutingInfo.ResolvedKeyAlias.ModelID) is the wire model
+//     when an alias matched. nil/empty otherwise.
+//   - ModelName (RoutingInfo.Model) is the model string the caller sent — the
+//     alias key when an alias matched, or the raw user input when none did.
+//
+// Overrides are applied keyed by the wire model (AliasModelID when an alias
+// matched, otherwise ModelName) so per-deployment override pricing stays
+// addressable in either flow.
+func (mc *ModelCatalog) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
+	provider := string(routingInfo.Provider)
+	var aliasModelID, aliasModelName string
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		aliasModelID = rka.ModelID
+		if rka.ModelName != nil {
+			aliasModelName = *rka.ModelName
+		}
 	}
-	mc.logger.Debug("looking up pricing for resolved model %s and provider %s of request type %s", resolvedModelUsed, provider, normalizeRequestType(requestType))
+	overrideKey := aliasModelID
+	if overrideKey == "" {
+		overrideKey = routingInfo.Model
+	}
+	mc.logger.Debug("looking up pricing for wire model %s and provider %s of request type %s", overrideKey, provider, normalizeRequestType(requestType))
 
 	if scopes.Provider == "" {
 		scopes.Provider = provider
 	}
 
-	base, exists := mc.getBasePricing(resolvedModelUsed, provider, requestType)
-	if exists && base != nil {
-		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
-		return &result
-	}
-
-	mc.logger.Debug("pricing not found for resolved model %s, trying alias %s", resolvedModelUsed, originalModelRequested)
-	base, exists = mc.getBasePricing(originalModelRequested, provider, requestType)
-	if exists && base != nil {
-		// Apply overrides using the resolved model name, not the alias
-		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
-		return &result
+	for _, candidate := range []string{aliasModelName, aliasModelID, routingInfo.Model} {
+		if candidate == "" {
+			continue
+		}
+		base, exists := mc.getBasePricing(candidate, provider, requestType)
+		if exists && base != nil {
+			result, _ := mc.applyPricingOverrides(overrideKey, requestType, *base, scopes)
+			return &result
+		}
+		mc.logger.Debug("pricing not found for %s, trying next candidate", candidate)
 	}
 
 	// No base catalog entry found; still try overrides in case the user defined
 	// override-only pricing for a model not in the built-in catalog.
-	mc.logger.Debug("pricing not found for resolved model %s and provider %s, trying override-only pricing", resolvedModelUsed, provider)
-	result, applied := mc.applyPricingOverrides(resolvedModelUsed, requestType, configstoreTables.TableModelPricing{}, scopes)
+	mc.logger.Debug("pricing not found for any candidate (provider %s), trying override-only pricing keyed by %s", provider, overrideKey)
+	result, applied := mc.applyPricingOverrides(overrideKey, requestType, configstoreTables.TableModelPricing{}, scopes)
 	if applied {
 		return &result
 	}
-	mc.logger.Debug("no pricing found for resolved model %s and provider %s, skipping cost calculation", resolvedModelUsed, provider)
+	mc.logger.Debug("no pricing found for wire model %s and provider %s, skipping cost calculation", overrideKey, provider)
 	return nil
 }
 
