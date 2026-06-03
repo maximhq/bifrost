@@ -443,6 +443,18 @@ false
 {{- end }}
 {{- $_ := set $governance "business_units" $businessUnits }}
 {{- end }}
+{{- if .Values.bifrost.governance.roles }}
+{{- $roles := list }}
+{{- range .Values.bifrost.governance.roles }}
+{{- $role := dict "name" .name }}
+{{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
+{{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
+{{- $roles = append $roles $role }}
+{{- end }}
+{{- $_ := set $governance "roles" $roles }}
+{{- end }}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
@@ -494,7 +506,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -1613,6 +1625,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $vk.name }}
 {{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].name is required for virtual key '%s'." $idx $vk.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance roles */}}
+{{- if .Values.bifrost.governance.roles }}
+{{- range $idx, $role := .Values.bifrost.governance.roles }}
+{{- if not $role.name }}
+{{- fail (printf "ERROR: bifrost.governance.roles[%d].name is required." $idx) }}
 {{- end }}
 {{- end }}
 {{- end }}
