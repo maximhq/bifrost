@@ -290,6 +290,47 @@
               "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
             }
           }
+        },
+        {
+          "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig + trace (outputAssessments regression)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression: Bifrost 1.4.6 crashed with mismatch type []bedrock.BedrockGuardrailAssessment",
+                  "// when trace:enabled caused Bedrock to return outputAssessments as a map keyed by guardrail ID.",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('trace.guardrail.outputAssessments is a map not an array', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.trace, 'expected trace in response').to.exist;",
+                  "  pm.expect(j.trace.guardrail, 'expected trace.guardrail').to.exist;",
+                  "  var oa = j.trace.guardrail.outputAssessments;",
+                  "  if (oa !== undefined) {",
+                  "    pm.expect(typeof oa).to.equal('object');",
+                  "    pm.expect(Array.isArray(oa), 'outputAssessments must not be an array').to.be.false;",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"What is the capital of France?\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 256 },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": ["{{baseUrl}}"],
+              "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
+            }
+          }
         }
       ]
     },
