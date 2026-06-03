@@ -1135,6 +1135,42 @@
                 "required": ["id", "name"]
               }
             },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "dac": {
+                    "type": "string",
+                    "enum": ["own-data", "team-data", "all-data"],
+                    "default": "all-data"
+                  },
+                  "access_profile": {
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "resource": { "type": "string" },
+                        "operation": { "type": "string" }
+                      },
+                      "required": ["resource", "operation"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+              }
+            },
             "virtualKeys": {
               "type": "array",
               "items": {
