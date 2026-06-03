@@ -543,6 +543,7 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
+	"content-type":                     true,
 	"transfer-encoding":                true,
 	"connection":                       true,
 	"keep-alive":                       true,
@@ -583,6 +584,32 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		if providerResponseFilterHeaders[strings.ToLower(k)] {
+			return
+		}
+		v := string(value)
+		if existing, ok := headers[k]; ok && existing != "" {
+			headers[k] = existing + ", " + v
+		} else {
+			headers[k] = v
+		}
+	})
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+// ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
+// fasthttp response. Transport-level headers are excluded.
+func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	resp.Header.VisitAll(func(key, value []byte) {
+		k := string(key)
+		kLower := strings.ToLower(k)
+		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
 			return
 		}
 		v := string(value)
