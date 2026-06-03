@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -78,6 +79,10 @@ type Profile struct {
 	MetricsEnabled      bool            `json:"metrics_enabled"`
 	MetricsEndpoint     *schemas.EnvVar `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval int             `json:"metrics_push_interval,omitempty"` // in seconds, default 15
+
+	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
+	// or "*") whose captured values are attached to the root span as attributes.
+	RequestHeaders []string `json:"request_headers,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -197,6 +202,7 @@ type profileForStorage struct {
 	MetricsEnabled      bool              `json:"metrics_enabled"`
 	MetricsEndpoint     string            `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval int               `json:"metrics_push_interval,omitempty"`
+	RequestHeaders      []string          `json:"request_headers,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -230,6 +236,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			MetricsEnabled:      p.MetricsEnabled,
 			MetricsEndpoint:     schemas.EnvVarAsString(p.MetricsEndpoint),
 			MetricsPushInterval: p.MetricsPushInterval,
+			RequestHeaders:      p.RequestHeaders,
 		})
 	}
 	return sonic.Marshal(out)
@@ -298,6 +305,7 @@ type otelTarget struct {
 	traceType       TraceType
 	client          OtelClient
 	metricsExporter *MetricsExporter
+	requestHeaders  []string
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -420,9 +428,10 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 
 	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
-		serviceName: serviceName,
-		url:         url,
-		traceType:   profile.TraceType,
+		serviceName:    serviceName,
+		url:            url,
+		traceType:      profile.TraceType,
+		requestHeaders: slices.Clone(profile.RequestHeaders),
 	}
 
 	var err error
@@ -605,7 +614,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}
@@ -617,6 +626,28 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+// RequestHeaderPatterns returns the deduplicated union of request-header name patterns
+// across all enabled profiles. The tracing middleware uses this to capture matching
+// headers onto the trace; each profile filters to its own subset at conversion time.
+func (p *OtelPlugin) RequestHeaderPatterns() []string {
+	seen := make(map[string]struct{})
+	var patterns []string
+	for _, t := range p.targets {
+		for _, h := range t.requestHeaders {
+			normalized := strings.ToLower(strings.TrimSpace(h))
+			if normalized == "" {
+				continue
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			patterns = append(patterns, normalized)
+		}
+	}
+	return patterns
 }
 
 // Helper functions for type-safe attribute extraction from trace spans
