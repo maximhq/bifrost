@@ -3012,15 +3012,18 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 // fileList handles GET /v1/files - List files
 func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("x-model-provider"))
+	// Get provider from query parameters or header; accept both ?provider= and
+	// ?x-model-provider= for consistency with other file endpoints (#3963).
+	provider := string(ctx.QueryArgs().Peek("provider"))
 	if provider == "" {
-		// Try to get from header
+		provider = string(ctx.QueryArgs().Peek("x-model-provider"))
+	}
+	if provider == "" {
 		provider = string(ctx.Request.Header.Peek("x-model-provider"))
-		if provider == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "x-model-provider query parameter or x-model-provider header is required")
-			return
-		}
+	}
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
+		return
 	}
 
 	// Parse optional parameters
