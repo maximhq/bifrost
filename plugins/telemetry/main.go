@@ -237,21 +237,19 @@ var (
 )
 
 // validateBuckets checks that buckets are strictly increasing and positive.
-// Returns false and logs a warning if invalid so callers can fall back to defaults.
-func validateBuckets(name string, buckets []float64, logger schemas.Logger) bool {
+// Returns an error so Init can fail fast before Prometheus panics on invalid input.
+func validateBuckets(name string, buckets []float64) error {
 	prev := 0.0
-	for _, v := range buckets {
+	for i, v := range buckets {
 		if v <= 0 {
-			logger.Warn("telemetry: %s contains non-positive bucket value %v — ignoring custom buckets, using defaults", name, v)
-			return false
+			return fmt.Errorf("%s[%d] must be > 0, got %v", name, i, v)
 		}
-		if v <= prev {
-			logger.Warn("telemetry: %s bucket values must be strictly increasing (got %v after %v) — ignoring custom buckets, using defaults", name, v, prev)
-			return false
+		if i > 0 && v <= prev {
+			return fmt.Errorf("%s must be strictly increasing", name)
 		}
 		prev = v
 	}
-	return true
+	return nil
 }
 
 // Init creates a new PrometheusPlugin with initialized metrics.
@@ -267,14 +265,23 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	upstreamLatencyBuckets := upstreamLatencyBuckets
 	firstTokenLatencyBuckets := firstTokenLatencyBuckets
 	interTokenLatencyBuckets := interTokenLatencyBuckets
-	if len(config.LatencyBuckets) > 0 && validateBuckets("latency_buckets", config.LatencyBuckets, logger) {
-		upstreamLatencyBuckets = config.LatencyBuckets
+	if len(config.LatencyBuckets) > 0 {
+		if err := validateBuckets("latency_buckets", config.LatencyBuckets); err != nil {
+			return nil, err
+		}
+		upstreamLatencyBuckets = append([]float64(nil), config.LatencyBuckets...)
 	}
-	if len(config.FirstTokenLatencyBuckets) > 0 && validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets, logger) {
-		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
+	if len(config.FirstTokenLatencyBuckets) > 0 {
+		if err := validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets); err != nil {
+			return nil, err
+		}
+		firstTokenLatencyBuckets = append([]float64(nil), config.FirstTokenLatencyBuckets...)
 	}
-	if len(config.InterTokenLatencyBuckets) > 0 && validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets, logger) {
-		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
+	if len(config.InterTokenLatencyBuckets) > 0 {
+		if err := validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets); err != nil {
+			return nil, err
+		}
+		interTokenLatencyBuckets = append([]float64(nil), config.InterTokenLatencyBuckets...)
 	}
 
 	registry := config.Registry

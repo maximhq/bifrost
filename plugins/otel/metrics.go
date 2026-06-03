@@ -301,16 +301,16 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 }
 
 // validateBuckets checks that buckets are strictly increasing and positive.
-// Returns false and logs a warning if invalid so callers can fall back to defaults.
+// Logs a warning and returns false if invalid so callers can fall back to defaults.
 func validateBuckets(name string, buckets []float64) bool {
 	prev := 0.0
-	for _, v := range buckets {
+	for i, v := range buckets {
 		if v <= 0 {
-			logger.Warn("otel: %s contains non-positive bucket value %v — ignoring custom buckets, using defaults", name, v)
+			logger.Warn("otel: %s[%d] must be > 0, got %v — ignoring custom buckets, using defaults", name, i, v)
 			return false
 		}
-		if v <= prev {
-			logger.Warn("otel: %s bucket values must be strictly increasing (got %v after %v) — ignoring custom buckets, using defaults", name, v, prev)
+		if i > 0 && v <= prev {
+			logger.Warn("otel: %s must be strictly increasing — ignoring custom buckets, using defaults", name)
 			return false
 		}
 		prev = v
@@ -323,13 +323,13 @@ func (m *MetricsExporter) initMetrics(config *MetricsConfig) {
 	firstTokenLatencyBuckets := firstTokenLatencyBuckets
 	interTokenLatencyBuckets := interTokenLatencyBuckets
 	if len(config.LatencyBuckets) > 0 && validateBuckets("latency_buckets", config.LatencyBuckets) {
-		upstreamLatencyBuckets = config.LatencyBuckets
+		upstreamLatencyBuckets = append([]float64(nil), config.LatencyBuckets...)
 	}
 	if len(config.FirstTokenLatencyBuckets) > 0 && validateBuckets("first_token_latency_buckets", config.FirstTokenLatencyBuckets) {
-		firstTokenLatencyBuckets = config.FirstTokenLatencyBuckets
+		firstTokenLatencyBuckets = append([]float64(nil), config.FirstTokenLatencyBuckets...)
 	}
 	if len(config.InterTokenLatencyBuckets) > 0 && validateBuckets("inter_token_latency_buckets", config.InterTokenLatencyBuckets) {
-		interTokenLatencyBuckets = config.InterTokenLatencyBuckets
+		interTokenLatencyBuckets = append([]float64(nil), config.InterTokenLatencyBuckets...)
 	}
 
 	// Bifrost upstream metrics
