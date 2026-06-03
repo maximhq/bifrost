@@ -31,13 +31,10 @@ const (
 	// does not block other pods from running their (fast) migrations on startup.
 	indexAdvisoryLockKey = 1000002
 
-	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
-	// refreshes across cluster nodes so only one replica refreshes at a time.
+	// matviewRefreshAdvisoryLockKey serializes materialized view maintenance
+	// across cluster nodes. Startup create/repair and periodic refresh both use
+	// this key so they never overlap.
 	matviewRefreshAdvisoryLockKey = 1000005
-
-	// matviewEnsureAdvisoryLockKey serializes startup materialized view
-	// creation/repair without contending with the periodic refresh lock.
-	matviewEnsureAdvisoryLockKey = 1000006
 
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second
@@ -334,6 +331,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddLogIncNumberColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterUsersMatView(ctx, db); err != nil {
 		return err
 	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
@@ -3302,6 +3302,34 @@ func migrationAddLogIncNumberColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding log inc_number column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterUsersMatView drops mv_filter_users so ensureMatViews
+// recreates it with the corrected WHERE clause that excludes rows without a
+// user_name, preventing duplicate entries where name falls back to user_id.
+func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_users_matview",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_users CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop mv_filter_users: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter users matview: %s", err.Error())
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -33,7 +34,7 @@ const (
 type MCPManager struct {
 	ctx                  context.Context
 	logger               schemas.Logger                     // Logger instance for this manager
-	oauth2Provider       schemas.OAuth2Provider             // Provider for OAuth2 functionality
+	credStore            schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
 	toolsManager         *ToolsManager                      // Handler for MCP tools
 	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
 	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
@@ -63,7 +64,10 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // Parameters:
 //   - ctx: Context for the MCP manager
 //   - config: MCP configuration including server port and client configs
-//   - oauth2Provider: OAuth2 provider for authentication
+//   - credStore: CredentialStore that resolves per-call credentials (Bearer
+//     tokens, static headers, user-submitted headers) and signals whether
+//     each client requires an ephemeral upstream connection. Pass nil only
+//     in tests where credential resolution is irrelevant.
 //   - logger: Logger instance for structured logging (uses default if nil)
 //   - codeMode: Optional CodeMode implementation for code execution (e.g., Starlark).
 //     Pass nil if code mode is not needed. The CodeMode's dependencies will be
@@ -71,9 +75,16 @@ type MCPToolFunction[T any] func(args T) (string, error)
 //
 // Returns:
 //   - *MCPManager: Initialized manager instance
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider schemas.OAuth2Provider, logger schemas.Logger, codeMode CodeMode) *MCPManager {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore schemas.MCPCredentialStore, logger schemas.Logger, codeMode CodeMode) *MCPManager {
 	if logger == nil {
 		logger = defaultLogger
+	}
+	// Default to a provider-less CredentialStore so tests (and callers that
+	// don't wire OAuth / per-user-headers) get a working store: static /
+	// headers / none resolvers stay functional, per-user resolvers cleanly
+	// error on use.
+	if credStore == nil {
+		credStore = credstore.NewCredStore(nil, nil, logger)
 	}
 	// Set default values
 	if config.ToolManagerConfig == nil {
@@ -89,7 +100,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		clientMap:            make(map[string]*schemas.MCPClientState),
 		healthMonitorManager: NewHealthMonitorManager(),
 		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
-		oauth2Provider:       oauth2Provider,
+		credStore:            credStore,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -111,7 +122,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 
 	manager.pluginPipelineProvider = pluginPipelineProvider
 	manager.releasePluginPipeline = releasePluginPipeline
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, oauth2Provider, logger)
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, credStore, logger)
 
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {
@@ -128,7 +139,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		for _, clientConfig := range config.ClientConfigs {
 			go func(clientConfig *schemas.MCPClientConfig) {
 				defer wg.Done()
-				if err := manager.AddClient(clientConfig); err != nil {
+				if err := manager.AddClient(manager.ctx, clientConfig); err != nil {
 					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
 					// Retain the entry in Disconnected state and start a health monitor to
 					// recover it automatically. On startup, a connection failure is likely
@@ -204,23 +215,6 @@ func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas
 
 func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
-}
-
-// ExecuteToolCall executes a single tool call and returns the result.
-// This is the primary tool executor and is used by both Chat Completions and Responses APIs.
-//
-// The method accepts an MCP request containing either a ChatAssistantMessageToolCall or
-// ResponsesToolMessage, and returns the appropriate result format based on the request type.
-//
-// Parameters:
-//   - ctx: Context for the tool execution
-//   - request: The MCP request containing the tool call (ChatAssistantMessageToolCall or ResponsesToolMessage)
-//
-// Returns:
-//   - *schemas.BifrostMCPResponse: The result response containing tool execution output (ChatMessage or ResponsesMessage)
-//   - error: Any error that occurred during tool execution
-func (m *MCPManager) ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-	return m.toolsManager.ExecuteTool(ctx, request)
 }
 
 // UpdateToolManagerConfig updates the configuration for the tool manager.

@@ -367,10 +367,21 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
-				if err.ExtraFields.MCPAuthRequired != nil {
+				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+					// Two surfaces share this error: per-user OAuth uses
+					// AuthorizeURL (the upstream provider's authorize page);
+					// per-user headers uses SubmitURL (the workspace landing
+					// page where the user submits their header values).
+					// Pick whichever Kind populated.
+					url := authReq.AuthorizeURL
+					action := "connect your account"
+					if authReq.Kind == schemas.MCPAuthRequiredKindHeaders {
+						url = authReq.SubmitURL
+						action = "submit the required headers"
+					}
 					return mcp.NewToolResultError(fmt.Sprintf(
-						"Authentication required for %s. Open this URL to connect your account: %s",
-						err.ExtraFields.MCPAuthRequired.MCPClientName, err.ExtraFields.MCPAuthRequired.AuthorizeURL,
+						"Authentication required for %s. Open this URL to %s: %s",
+						authReq.MCPClientName, action, url,
 					)), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
@@ -402,27 +413,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			description = *tool.Function.Description
 		}
 
-		// Convert Parameters to mcp.ToolInputSchema
-		var inputSchema mcp.ToolInputSchema
-		if tool.Function.Parameters != nil {
-			inputSchema.Type = tool.Function.Parameters.Type
-			if tool.Function.Parameters.Properties != nil {
-				// Convert *map[string]interface{} to map[string]any
-				props := make(map[string]any)
-				tool.Function.Parameters.Properties.Range(func(key string, value interface{}) bool {
-					props[key] = value
-					return true
-				})
-				inputSchema.Properties = props
-			}
-			if tool.Function.Parameters.Required != nil {
-				inputSchema.Required = tool.Function.Parameters.Required
-			}
-		} else {
-			// Default to empty object schema if no parameters
-			inputSchema.Type = "object"
-			inputSchema.Properties = make(map[string]any)
-		}
+		inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
 
 		// Map Bifrost annotations back to MCP tool annotations
 		var toolAnnotation mcp.ToolAnnotation
@@ -444,6 +435,47 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			Annotations: toolAnnotation,
 		}, handler)
 	}
+}
+
+func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionParameters) mcp.ToolInputSchema {
+	if params == nil {
+		return mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: make(map[string]any),
+		}
+	}
+
+	inputSchema := mcp.ToolInputSchema{
+		Type:     params.Type,
+		Required: params.Required,
+	}
+
+	if params.Properties != nil {
+		props := make(map[string]any, params.Properties.Len())
+		params.Properties.Range(func(key string, value interface{}) bool {
+			props[key] = value
+			return true
+		})
+		inputSchema.Properties = props
+	}
+
+	if params.Defs != nil {
+		defs := make(map[string]any, params.Defs.Len())
+		params.Defs.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
+		inputSchema.Defs = defs
+	} else if params.Definitions != nil {
+		defs := make(map[string]any, params.Definitions.Len())
+		params.Definitions.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
+		inputSchema.Defs = defs
+	}
+
+	return inputSchema
 }
 
 // fetchToolsForVK fetches the tools for a given virtual key value.

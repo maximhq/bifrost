@@ -758,10 +758,9 @@ func TestValidateToolsForProvider(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "Bedrock rejects web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Bedrock,
-			expectErr: true,
+			name:     "Bedrock allows web_search (nova_grounding via Responses path)",
+			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider: schemas.Bedrock,
 		},
 		{
 			name:      "Bedrock rejects web_fetch",
@@ -1480,6 +1479,31 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 }
 
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
+	t.Run("diagnostics_gated_via_feature_map", func(t *testing.T) {
+		// diagnostics is an undocumented Claude Code session-continuity field
+		// (diagnostics.previous_message_id). Only Anthropic direct keeps it;
+		// every other provider strips it fail-closed via Diagnostics=false.
+		const body = `{"model":"claude-opus-4-7","diagnostics":{"previous_message_id":null}}`
+		// Anthropic keeps it.
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-7")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "diagnostics") {
+			t.Errorf("expected diagnostics to be kept for Anthropic, got: %s", string(result))
+		}
+		// Azure, Bedrock, Vertex strip it.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			result, err := StripUnsupportedFieldsFromRawBody([]byte(body), provider, "claude-opus-4-7")
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", provider, err)
+			}
+			if providerUtils.JSONFieldExists(result, "diagnostics") {
+				t.Errorf("expected diagnostics to be stripped for %s, got: %s", provider, string(result))
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
@@ -2193,6 +2217,8 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		model    string
 		expected bool
 	}{
+		{"claude-opus-4-8-20260601", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7-20260401", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6-20250514", true},
@@ -2203,6 +2229,7 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
+		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
 		{"", false},
 	}
 
@@ -2216,9 +2243,84 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 	}
 }
 
+// TestSupportsFastMode pins the helper against Anthropic's fast-mode docs.
+// TestSupportsMidConversationSystem pins the helper against Anthropic docs:
+// available on the Anthropic API only, Opus 4.8+ only, no beta header required.
+func TestSupportsMidConversationSystem(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		model    string
+		expected bool
+	}{
+		// Supported: Anthropic provider + Opus 4.8.
+		{schemas.Anthropic, "claude-opus-4-8", true},
+		{schemas.Anthropic, "claude-opus-4.8-20260601", true},
+		{schemas.Anthropic, "claude-opus-4-8-20260601", true},
+		// Not supported: Bedrock and Vertex even with Opus 4.8.
+		{schemas.Bedrock, "global.anthropic.claude-opus-4-8", false},
+		{schemas.Vertex, "claude-opus-4-8", false},
+		// Not supported: Anthropic but Opus 4.7 (feature is 4.8+ only).
+		{schemas.Anthropic, "claude-opus-4-7", false},
+		{schemas.Anthropic, "claude-opus-4.7-20260401", false},
+		// Not supported: other model families.
+		{schemas.Anthropic, "claude-sonnet-4-8", false},
+		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Defensive cases.
+		{schemas.Anthropic, "", false},
+		{"", "claude-opus-4-8", false},
+	}
+
+	for _, tt := range tests {
+		name := string(tt.provider) + "/" + tt.model
+		t.Run(name, func(t *testing.T) {
+			got := SupportsMidConversationSystem(tt.provider, tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsMidConversationSystem(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// Supported: Opus 4.6, Opus 4.7, Opus 4.8. All other models return false.
+func TestSupportsFastMode(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Supported models.
+		{"claude-opus-4-6", true},
+		{"claude-opus-4.6-20250514", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.7-20260401", true},
+		{"claude-opus-4-8", true},
+		{"claude-opus-4.8-20260601", true},
+		// Bedrock / Vertex prefixed IDs.
+		{"global.anthropic.claude-opus-4-6", true},
+		{"global.anthropic.claude-opus-4-7", true},
+		{"global.anthropic.claude-opus-4-8", true},
+		// Not supported — other model families.
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"claude-opus-4-5", false},
+		{"claude-opus-4-1", false},
+		// Defensive cases.
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsFastMode(tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsFastMode(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2226,6 +2328,8 @@ func TestSupportsEffortParameter(t *testing.T) {
 	}{
 		// Supported per docs.
 		{"claude-mythos-preview", true},
+		{"claude-opus-4-8", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6", true},
@@ -2236,8 +2340,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
 		// Bedrock + Vertex IDs for supported models keep the substring shape.
+		{"anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-opus-4-7-v1", true},
 		{"global.anthropic.claude-sonnet-4-6", true},
+		{"claude-opus-4-8@20260601", true},
 		{"claude-opus-4-7@20260401", true},
 		// Not supported - the failing case from the upstream 400.
 		{"claude-haiku-4-5", false},
@@ -2305,6 +2411,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "opus 4.8 keeps effort",
+			model: "claude-opus-4-8",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2520,6 +2635,9 @@ func TestComputerUseGeneration(t *testing.T) {
 		model string
 		want  string
 	}{
+		{"claude-opus-4-8", ComputerUseGen20251124},
+		{"claude-opus-4.8", ComputerUseGen20251124},
+		{"claude-opus-4-8-20260601", ComputerUseGen20251124},
 		{"claude-opus-4-7", ComputerUseGen20251124},
 		{"claude-opus-4.7", ComputerUseGen20251124},
 		{"Claude-Opus-4-7", ComputerUseGen20251124},
@@ -2621,7 +2739,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with old-gen tools (no-op)",
+			name:  "sonnet-4-5 with old-gen tools upgrades text_editor to new-gen",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2630,7 +2748,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},
@@ -2649,7 +2767,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			},
 		},
 		{
-			name:  "sonnet-4-5 with new-gen tools auto-downgrades",
+			name:  "sonnet-4-5 with new-gen tools downgrades computer but keeps new-gen text_editor",
 			model: "claude-sonnet-4-5",
 			inputBody: `{"model":"claude-sonnet-4-5","tools":[
 				{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768},
@@ -2658,7 +2776,7 @@ func TestRemapRawToolVersionsForProvider_NormalizesComputerUse(t *testing.T) {
 			]}`,
 			expected: []expectedTool{
 				{"computer_20250124", "computer"},
-				{"text_editor_20250124", "str_replace_editor"},
+				{"text_editor_20250728", "str_replace_based_edit_tool"},
 				{"bash_20250124", "bash"},
 			},
 		},

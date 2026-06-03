@@ -127,15 +127,18 @@ func (p *OtelPlugin) buildReparentMap(spans []*schemas.Span) map[string]string {
 	return filtered
 }
 
-// convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan
-func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
+// convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
+// profile service name. Span filtering and instance attributes are shared across profiles;
+// only the resource service name differs per profile.
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string) *ResourceSpan {
 	reparent := p.buildReparentMap(trace.Spans)
+	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.shouldExportSpan(span) {
 			continue
 		}
-		otelSpan := p.convertSpanToOTELSpan(trace.TraceID, span)
+		otelSpan := convertSpanToOTELSpan(trace.TraceID, span)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -147,27 +150,33 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 		}
 		if span == trace.RootSpan {
 			if requestID := trace.GetRequestID(); requestID != "" {
-				otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrRequestID, requestID))
+				otelSpan.Attributes = append(otelSpan.Attributes,
+					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id
+					kvStr(schemas.AttrBifrostRequestID, requestID),
+				)
 			}
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
+			}
+			for k, v := range filteredHeaders {
+				otelSpan.Attributes = append(otelSpan.Attributes, kvStr("http.request.header."+k, v))
 			}
 		}
 		otelSpans = append(otelSpans, otelSpan)
 	}
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
-			Attributes: p.getResourceAttributes(),
+			Attributes: p.getResourceAttributes(serviceName),
 		},
 		ScopeSpans: []*ScopeSpan{{
-			Scope: p.getInstrumentationScope(),
+			Scope: p.getInstrumentationScope(serviceName),
 			Spans: otelSpans,
 		}},
 	}
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
+func convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -189,9 +198,9 @@ func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *
 }
 
 // getResourceAttributes returns the resource attributes for the OTEL span
-func (p *OtelPlugin) getResourceAttributes() []*KeyValue {
+func (p *OtelPlugin) getResourceAttributes(serviceName string) []*KeyValue {
 	attrs := []*KeyValue{
-		kvStr("service.name", p.serviceName),
+		kvStr("service.name", serviceName),
 		kvStr("service.version", p.bifrostVersion),
 		kvStr("telemetry.sdk.name", "bifrost"),
 		kvStr("telemetry.sdk.language", "go"),
@@ -202,9 +211,9 @@ func (p *OtelPlugin) getResourceAttributes() []*KeyValue {
 }
 
 // getInstrumentationScope returns the instrumentation scope for OTEL
-func (p *OtelPlugin) getInstrumentationScope() *commonpb.InstrumentationScope {
+func (p *OtelPlugin) getInstrumentationScope(serviceName string) *commonpb.InstrumentationScope {
 	return &commonpb.InstrumentationScope{
-		Name:    p.serviceName,
+		Name:    serviceName,
 		Version: p.bifrostVersion,
 	}
 }

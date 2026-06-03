@@ -194,7 +194,7 @@ Ensure your application has the necessary permissions.
 
 ## Step 6: Configure Token Claims
 
-<Note>Groups and other attributes are required in the claim when you configure their mapping in Bifrost.</Note>
+<Note>Groups and other attributes are required in the claim when you configure their mapping in Bifrost. If you prefer to configure claims via the App Manifest JSON (Step 9), you can skip the UI steps here — the manifest is the source of truth and overrides UI-based token configuration.</Note>
 
 By default, Entra includes the `roles` claim when app roles are assigned. To include group memberships for team synchronization:
 
@@ -234,7 +234,19 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
 
 ---
 
-## Step 8: Configure App Manifest
+## Step 8: Understand Microsoft Entra user sync
+
+Bifrost does not currently support Microsoft Entra SCIM management APIs or inbound Entra SCIM provisioning. Do not configure the Entra **Provisioning** tab with a Bifrost `/scim/v2` tenant URL yet.
+
+For Entra, Bifrost uses the application credentials from the setup above to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Entra.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Entra whether the user is still active; if Entra reports the user is inactive, Bifrost decommissions that user locally.
+
+Support for Microsoft Entra SCIM management APIs is coming soon.
+
+---
+
+## Step 9: Configure App Manifest
 
 <Frame>
 	<img src="/media/user-provisioning/entra-app-manifest.png" alt="Microsoft entra app manifest" />
@@ -294,7 +306,7 @@ Restrict the `groups` claim to groups assigned to this application (recommended)
   `"All"` only if you intentionally want broader group visibility.
 </Note>
 
-## Step 9: Configure Bifrost
+## Step 10: Configure Bifrost
 
 Now configure Bifrost to use Microsoft Entra as the identity provider.
 
@@ -305,7 +317,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 </Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
-2. Select **Microsoft Entra** as the SCIM Provider
+2. Select **Microsoft Entra** as the OIDC Provider
 3. Enter the following configuration:
 
 | Field             | Value                                            |
@@ -316,9 +328,9 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 | **Audience**      | Your Client ID (optional, defaults to Client ID) |
 | **App ID URI**    | `api://{client-id}` (optional, for v1.0 tokens)  |
 
-5. **Verify** configuration and see if you get any errors. Make sure you get no errors/warnings.
-6. Toggle **Enabled** to activate the provider
-7. Click **Save Configuration**
+4. **Verify** configuration and see if you get any errors. Make sure you get no errors/warnings.
+5. Toggle **Enabled** to activate the provider
+6. Click **Save Configuration**
 
 <Warning>After saving, you'll need to restart your Bifrost server for the changes to take effect.</Warning>
 
@@ -338,7 +350,7 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 
 ### Attribute Mappings
 
-Attribute mappings let you translate Entra claim values into Bifrost roles, teams, or business units without restructuring your Okta claims. Bifrost supports three mapping types:
+Attribute mappings let you translate Entra claim values into Bifrost roles, teams, or business units without restructuring your Entra claims. Bifrost supports three mapping types:
 
 - **`attributeRoleMappings`**: map a claim value to a Bifrost role (Admin, Developer, Viewer, or a custom role)
 - **`attributeTeamMappings`**: map a claim value to a Bifrost team
@@ -369,14 +381,9 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 #### Evaluation rules
 
-- **Role mappings**: Ordered, first match wins. If no rule matches, users are not allowed to login into the system.
+- **Role mappings**: Ordered, first match wins. If a user matches multiple role mapping rules, the highest privilege role is assigned. If no mapping matches, the user is not allowed to log in.
 - **Team and business unit mappings**: All matching rules apply - users can be placed on multiple teams and business units simultaneously.
 - **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
-
-<Note>
-	If a user matches multiple role mapping rules, the highest privilege role is assigned. If no mapping matches, the first user to sign in
-	receives the **Admin** role, and subsequent users receive the **Viewer** role.
-</Note>
 
 5. Click **Save Configuration**
 
@@ -396,7 +403,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ### User not redirected to Microsoft login
 
-- Verify the SCIM provider is enabled in Bifrost
+- Verify the OIDC provider is enabled in Bifrost
 - Check that the Bifrost server was restarted after configuration
 - Ensure the Tenant ID and Client ID are correct
 
@@ -425,7 +432,7 @@ Causes and fixes:
 
 - **User isn't assigned to a role at the Enterprise Application level.** Go to **Enterprise applications → Bifrost Enterprise → Users and groups**, edit the assignment, and pick a role (admin/developer/viewer). Adding a user to the app without selecting a role does not emit the `roles` claim.
 - **Role assignment is via a group that isn't itself assigned to the app.** The group needs to appear in _Users and groups_ with a role selected — Entra does not walk transitive group memberships to populate `roles`.
-- **Optional `roles` claim missing from the manifest.** Confirm Step 8 (App Manifest) lists `roles` under `optionalClaims.idToken`.
+- **Optional `roles` claim missing from the manifest.** Confirm Step 9 (App Manifest) lists `roles` under `optionalClaims.idToken`.
 - **Sign out and back in.** Existing sessions still carry the old token without `roles`.
 
 If you don't want to use app roles at all, switch your Bifrost mappings to use the `groups` attribute (which is already in the token) instead of `roles`. See [Attribute Mappings](#attribute-mappings).
@@ -442,7 +449,7 @@ If users come in via **User Provisioning → Import users** and end up on the de
 
 ## Next Steps
 
-- **[User Provisioning (SCIM)](./user-provisioning)** - Overview of SCIM in Bifrost and alternative identity providers
+- **[User Provisioning (OIDC)](./user-provisioning)** - Overview of OIDC user provisioning in Bifrost and alternative identity providers
 - **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
 - **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
 - **[Audit Logs](./audit-logs)** - Monitor user authentication and activity

@@ -40,11 +40,11 @@ export interface Team {
 export interface Customer {
 	id: string;
 	name: string;
-	budget_id?: string;
 	rate_limit_id?: string;
+	calendar_aligned?: boolean;
 	// Populated relationships
 	teams?: Team[];
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 }
 
@@ -171,8 +171,8 @@ export interface UpdateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
-	team_id?: string;
-	customer_id?: string;
+	team_id?: string | null;
+	customer_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -208,14 +208,18 @@ export interface UpdateTeamRequest {
 
 export interface CreateCustomerRequest {
 	name: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
+	budget?: CreateBudgetRequest; // deprecated: use budgets
 	rate_limit?: CreateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateCustomerRequest {
 	name?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
+	budget?: UpdateBudgetRequest;   // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateBudgetRequest {
@@ -347,10 +351,14 @@ export interface ModelConfig {
 	id: string;
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget_id?: string;
+	scope?: string; // "global" (default) or "virtual_key"
+	scope_id?: string; // Target of a non-global scope (e.g. the virtual key ID)
+	scope_name?: string; // Resolved, human-readable name of the scope target (read-only)
+	calendar_aligned?: boolean; // Snap budget resets to calendar boundaries (inherited from VK for vk scope)
 	rate_limit_id?: string;
 	// Populated relationships
-	budget?: Budget;
+	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
+	budget?: Budget; // Deprecated: superseded by budgets (kept for back-compat reads)
 	rate_limit?: RateLimit;
 	created_at: string;
 	updated_at: string;
@@ -360,14 +368,16 @@ export interface ModelConfig {
 export interface CreateModelConfigRequest {
 	model_name: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget?: CreateBudgetRequest;
+	scope?: string; // Defaults to "global" if omitted
+	scope_id?: string; // Required for non-global scopes (e.g. the virtual key ID)
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateModelConfigRequest {
 	model_name?: string;
 	provider?: string; // Optional provider - if empty/null, applies to all providers
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
 }
 
@@ -375,6 +385,8 @@ export interface GetModelConfigsParams {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	scope?: string;
+	provider?: string;
 }
 
 // Response types for model configs
@@ -519,15 +531,16 @@ export interface GetPricingOverridesResponse {
 // Provider governance - for extending provider with budget/rate limit
 export interface ProviderGovernance {
 	provider: string;
-	budget_id?: string;
-	rate_limit_id?: string;
-	budget?: Budget;
+	budget?: Budget; // deprecated: use budgets
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateProviderGovernanceRequest {
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
+	calendar_aligned?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

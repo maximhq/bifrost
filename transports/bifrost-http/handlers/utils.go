@@ -14,11 +14,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// resolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
+// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
 // start/end time pointers computed from the current server time. Returns nil, nil for
 // unrecognised values. When used in filter parsing, period takes precedence over any explicit
 // start_time/end_time query parameters so every poll always covers the intended window.
-func resolvePeriod(period string) (start, end *time.Time) {
+func ResolvePeriod(period string) (start, end *time.Time) {
 	now := time.Now().UTC()
 	var from time.Time
 	switch period {

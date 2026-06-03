@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,11 +22,10 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerDialog from "./customerDialog";
+import CustomerSheet from "./customerSheet";
 import { CustomersEmptyState } from "./customersEmptyState";
 
 // Helper to format reset duration for display
@@ -103,6 +103,7 @@ interface CustomersTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	isFetching?: boolean
 }
 
 export default function CustomersTable({
@@ -116,8 +117,9 @@ export default function CustomersTable({
 	offset,
 	limit,
 	onOffsetChange,
+	isFetching
 }: CustomersTableProps) {
-	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
 
@@ -140,16 +142,16 @@ export default function CustomersTable({
 
 	const handleAddCustomer = () => {
 		setEditingCustomer(null);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleEditCustomer = (customer: Customer) => {
 		setEditingCustomer(customer);
-		setShowCustomerDialog(true);
+		setShowCustomerSheet(true);
 	};
 
 	const handleCustomerSaved = () => {
-		setShowCustomerDialog(false);
+		setShowCustomerSheet(false);
 		setEditingCustomer(null);
 	};
 
@@ -164,13 +166,19 @@ export default function CustomersTable({
 	const hasActiveFilters = debouncedSearch;
 
 	// True empty state: no customers at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters) {
+	if (totalCount === 0 && !hasActiveFilters && !isFetching) {
 		return (
 			<>
 				<TooltipProvider>
-					{showCustomerDialog && (
-						<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-					)}
+					<CustomerSheet
+						open={showCustomerSheet}
+						onOpenChange={(open) => {
+							setShowCustomerSheet(open);
+							if (!open) setEditingCustomer(null);
+						}}
+						customer={editingCustomer}
+						onSuccess={handleCustomerSaved}
+					/>
 					<CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -180,12 +188,18 @@ export default function CustomersTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showCustomerDialog && (
-					<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
-				)}
+				<CustomerSheet
+					open={showCustomerSheet}
+					onOpenChange={(open) => {
+						setShowCustomerSheet(open);
+						if (!open) setEditingCustomer(null);
+					}}
+					customer={editingCustomer}
+					onSuccess={handleCustomerSaved}
+				/>
 
-				<div className="space-y-4">
-					<div className="flex items-center justify-between">
+				<div className="flex flex-col grow">
+					<div className="flex items-center justify-between mb-4">
 						<div>
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
@@ -196,7 +210,7 @@ export default function CustomersTable({
 						</Button>
 					</div>
 
-					<div className="flex items-center gap-3">
+					<div className="flex items-center gap-3 mb-4">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -210,7 +224,7 @@ export default function CustomersTable({
 						</div>
 					</div>
 
-					<div className="overflow-auto rounded-sm border" data-testid="customer-table-container">
+					<div className="overflow-auto rounded-sm border grow mb-2" data-testid="customer-table-container">
 						<Table className="min-w-[1100px]">
 							<TableHeader>
 								<TableRow>
@@ -234,15 +248,11 @@ export default function CustomersTable({
 										const customerTeams = getTeamsForCustomer(customer.id);
 										const vks = getVirtualKeysForCustomer(customer.id);
 
-										// Budget calculations
-										const isBudgetExhausted =
-											customer.budget?.max_limit &&
-											customer.budget.max_limit > 0 &&
-											customer.budget.current_usage >= customer.budget.max_limit;
-										const budgetPercentage =
-											customer.budget?.max_limit && customer.budget.max_limit > 0
-												? Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)
-												: 0;
+										// Budget calculations (most-exhausted budget drives the row highlight)
+										const budgets = customer.budgets ?? [];
+										const isBudgetExhausted = budgets.some(
+											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
+										);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -298,38 +308,48 @@ export default function CustomersTable({
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
-													{customer.budget ? (
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(customer.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(customer.budget.reset_duration)}
-																		</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(customer.budget.reset_duration)}
-																</p>
-															</TooltipContent>
-														</Tooltip>
+													{budgets.length > 0 ? (
+														<div className="space-y-2">
+															{budgets.map((budget) => {
+																const pct = budget.max_limit > 0
+																	? Math.min((budget.current_usage / budget.max_limit) * 100, 100)
+																	: 0;
+																const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
+																return (
+																	<Tooltip key={budget.id}>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1">
+																				<div className="flex items-center justify-between gap-4">
+																					<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
+																					<span className="text-muted-foreground text-xs">
+																						{formatResetDuration(budget.reset_duration)}
+																					</span>
+																				</div>
+																				<Progress
+																					value={pct}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1.5",
+																						exhausted
+																							? "[&>div]:bg-red-500/70"
+																							: pct > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
+																			</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				Resets {formatResetDuration(budget.reset_duration)}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																);
+															})}
+														</div>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
 													)}
@@ -451,28 +471,38 @@ export default function CustomersTable({
 
 					{/* Pagination */}
 					{totalCount > 0 && (
-						<div className="flex items-center justify-between px-2">
-							<p className="text-muted-foreground text-sm">
-								Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-							</p>
-							<div className="flex gap-2">
+						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+							<div className="text-muted-foreground flex items-center gap-2">
+								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							</div>
+
+							<div className="flex items-center gap-2">
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset === 0}
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+									disabled={offset === 0}
 									data-testid="customers-pagination-prev-btn"
+									aria-label="Previous page"
 								>
-									<ChevronLeft className="mr-1 h-4 w-4" /> Previous
+									<ChevronLeft className="size-3" />
 								</Button>
+
+								<div className="flex items-center gap-1">
+									<span>Page</span>
+									<span>{Math.floor(offset / limit) + 1}</span>
+									<span>of {Math.ceil(totalCount / limit)}</span>
+								</div>
+
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset + limit >= totalCount}
 									onClick={() => onOffsetChange(offset + limit)}
+									disabled={offset + limit >= totalCount}
 									data-testid="customers-pagination-next-btn"
+									aria-label="Next page"
 								>
-									Next <ChevronRight className="ml-1 h-4 w-4" />
+									<ChevronRight className="size-3" />
 								</Button>
 							</div>
 						</div>

@@ -319,14 +319,15 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
 	return &PricingEntry{
-		BaseModel:       pricing.BaseModel,
-		Provider:        pricing.Provider,
-		Mode:            pricing.Mode,
-		ContextLength:   pricing.ContextLength,
-		MaxInputTokens:  pricing.MaxInputTokens,
-		MaxOutputTokens: pricing.MaxOutputTokens,
-		Architecture:    pricing.Architecture,
-		PricingOptions:  options,
+		BaseModel:            pricing.BaseModel,
+		Provider:             pricing.Provider,
+		Mode:                 pricing.Mode,
+		ContextLength:        pricing.ContextLength,
+		MaxInputTokens:       pricing.MaxInputTokens,
+		MaxOutputTokens:      pricing.MaxOutputTokens,
+		Architecture:         pricing.Architecture,
+		AdditionalAttributes: pricing.AdditionalAttributes,
+		PricingOptions:       options,
 	}
 }
 

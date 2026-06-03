@@ -755,6 +755,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
 		return body, nil
@@ -770,7 +771,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
 	blacklistedProviders := make(map[string]bool)
 	for _, config := range providerConfigs {
-		if config.BlacklistedModels.IsBlocked(modelStr) {
+		if isModelBlockedByList(config.BlacklistedModels, modelStr) {
 			blacklistedProviders[config.Provider] = true
 		}
 	}
@@ -818,9 +819,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	var allowedProviders []string
+	allowedModelProviders := make([]schemas.ModelProvider, 0, len(allowedProviderConfigs))
 	for _, pc := range allowedProviderConfigs {
 		allowedProviders = append(allowedProviders, pc.Provider)
+		allowedModelProviders = append(allowedModelProviders, schemas.ModelProvider(pc.Provider))
 	}
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, allowedModelProviders)
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
@@ -1700,6 +1704,60 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
+// before the connect-plugin gate releases control to the credential-store
+// resolver. This is the only point in the MCP connect lifecycle where we can
+// turn the raw x-bf-vk header into the resolved VK row ID — anything later
+// (PreMCPHook / PostMCPHook) runs after the resolver has already needed that
+// row ID, and per-user auth types (per_user_oauth, per_user_headers) key
+// their stored credentials by it.
+//
+// The hook is intentionally narrow: it ONLY populates the identity context
+// keys (VK row ID, name, team / customer fan-out). Policy checks (budget,
+// rate limit, tool allow-list) stay on PreMCPHook for the actual CallTool —
+// Connect is transport setup, not the gated operation.
+//
+// No short-circuit returned even when the VK isn't recognized: bad-VK
+// rejection belongs on the tool-call path so the caller gets a stable
+// error format. An unknown VK here simply leaves the row ID empty, and the
+// resolver will surface the "requires an identity" error itself.
+func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if virtualKeyValue == "" {
+		return req, nil, nil
+	}
+	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || vk == nil {
+		// Unknown VK — leave identity unset; the resolver will surface the
+		// appropriate error on the per-user auth path. For shared-connection
+		// auth types this is a no-op (they don't read these keys).
+		return req, nil, nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+		}
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	}
+	return req, nil, nil
+}
+
+// PostMCPConnectionHook is a pass-through; the identity resolution that
+// PreMCPConnectionHook performs is observation-only and has no post-connect
+// cleanup. Implementing this satisfies MCPConnectionPlugin so the typed
+// PreMCPConnectionHook is dispatched by the plugin pipeline.
+func (p *GovernancePlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
 // Cleanup shuts down all components gracefully
 func (p *GovernancePlugin) Cleanup() error {
 	var cleanupErr error
@@ -1765,8 +1823,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
 				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			case result.PassthroughResponse != nil:
+				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+					tokensUsed = su.LLMUsage.TotalTokens
+				}
 			}
 		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			VirtualKey:   virtualKey,
@@ -1779,7 +1842,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+			HasUsageData: tokensUsed > 0 || cost > 0,
 		}
 
 		// Queue usage update asynchronously using tracker

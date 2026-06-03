@@ -792,6 +792,18 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
 			if extractedProvider == "" && !skipModelCatalogProviderSelection {
 				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
+				existingProviders, hasExistingProviders := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+				if hasExistingProviders {
+					if len(existingProviders) == 0 {
+						availableProviders = []schemas.ModelProvider{}
+					} else if len(availableProviders) == 0 {
+						availableProviders = existingProviders
+					} else {
+						availableProviders = slices.DeleteFunc(availableProviders, func(provider schemas.ModelProvider) bool {
+							return !slices.Contains(existingProviders, provider)
+						})
+					}
+				}
 				availableProvidersStrs := make([]string, len(availableProviders))
 				for i, p := range availableProviders {
 					availableProvidersStrs[i] = string(p)
@@ -814,6 +826,8 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 						))
 					}
 					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+				} else if hasExistingProviders {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 				}
 				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 			}
@@ -912,7 +926,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		// Extract and parse fallbacks from the request if present
-		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+		if err := g.extractAndParseFallbacks(bifrostCtx, req, bifrostReq); err != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
@@ -2840,7 +2854,10 @@ func extractModelFromPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
-		if p == "models" || p == "tunedModels" {
+		// GenAI uses models/{model} and tunedModels/{model}; Azure OpenAI uses
+		// deployments/{deployment}, where the deployment name is the model identifier
+		// (deployment-based Azure routes usually omit "model" from the request body).
+		if p == "models" || p == "tunedModels" || p == "deployments" {
 			if i+1 < len(parts) {
 				model := parts[i+1]
 				// Strip :suffix for GenAI (e.g. :generateContent, :streamGenerateContent)
@@ -3054,7 +3071,22 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
 	ctx.SetStatusCode(passthroughResp.StatusCode)
-	ctx.SetContentType("text/event-stream")
+	// Preserve the upstream Content-Type. Passthrough streams aren't always SSE — e.g.
+	// Vertex/Gemini :streamGenerateContent without ?alt=sse returns an incrementally-delivered
+	// JSON array with Content-Type: application/json. Forcing text/event-stream mislabels that
+	// stream, so clients that dispatch on content-type run an SSE parser over a non-SSE body and
+	// hang. Fall back to text/event-stream only when the upstream didn't provide a Content-Type.
+	contentType := ""
+	for k, v := range passthroughResp.Headers {
+		if strings.EqualFold(k, "content-type") {
+			contentType = v
+			break
+		}
+	}
+	if contentType == "" {
+		contentType = "text/event-stream"
+	}
+	ctx.SetContentType(contentType)
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
@@ -3063,7 +3095,8 @@ func (g *GenericRouter) handlePassthroughStream(
 		case "connection", "transfer-encoding", "content-length", "content-type",
 			"cache-control", "x-accel-buffering",
 			"set-cookie", "proxy-authenticate", "www-authenticate":
-			// drop — streaming invariants are set explicitly above; upstream must not override them
+			// drop — streaming invariants are set explicitly above (Content-Type is set from the
+			// upstream value before this loop); upstream must not override them here
 		default:
 			ctx.Response.Header.Set(k, v)
 		}

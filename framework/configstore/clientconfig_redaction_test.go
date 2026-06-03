@@ -12,14 +12,14 @@ import (
 
 // TestProviderConfig_Redacted_AutoMasksEnvBackedFields verifies that env-backed
 // values in provider config fields are redacted in the JSON output of a Redacted()
-// ProviderConfig, including fields like Azure APIVersion.
+// ProviderConfig, including fields like Azure Endpoint.
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
-	t.Setenv("MY_AZURE_API_VERSION_SECRET", "2024-10-21-preview-secret")
+	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
-	apiVersion := schemas.NewEnvVar("env.MY_AZURE_API_VERSION_SECRET")
-	require.True(t, apiVersion.IsFromEnv(), "setup: APIVersion should be FromEnv")
-	require.Equal(t, "2024-10-21-preview-secret", apiVersion.GetValue(),
-		"setup: APIVersion should be resolved")
+	endpoint := schemas.NewEnvVar("env.MY_AZURE_ENDPOINT_SECRET")
+	require.True(t, endpoint.IsFromEnv(), "setup: Endpoint should be FromEnv")
+	require.Equal(t, "https://secret-resource.openai.azure.com", endpoint.GetValue(),
+		"setup: Endpoint should be resolved")
 
 	config := ProviderConfig{
 		Keys: []schemas.Key{{
@@ -27,8 +27,7 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 			Name:  "test",
 			Value: schemas.EnvVar{Val: ""},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://foo.openai.azure.com"),
-				APIVersion: apiVersion,
+				Endpoint: *endpoint,
 			},
 		}},
 	}
@@ -37,10 +36,9 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	require.NotNil(t, redacted)
 	require.Len(t, redacted.Keys, 1)
 	require.NotNil(t, redacted.Keys[0].AzureKeyConfig)
-	require.NotNil(t, redacted.Keys[0].AzureKeyConfig.APIVersion)
 
-	// Marshal the APIVersion field as it would be sent to the UI.
-	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.APIVersion)
+	// Marshal the Endpoint field as it would be sent to the UI.
+	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.Endpoint)
 	require.NoError(t, err)
 
 	var out struct {
@@ -50,16 +48,16 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
-	assert.NotContains(t, out.Value, "preview-secret",
-		"resolved env value leaked through APIVersion JSON output: %q", out.Value)
-	assert.Equal(t, "env.MY_AZURE_API_VERSION_SECRET", out.EnvVar,
+	assert.NotContains(t, out.Value, "secret-resource",
+		"resolved env value leaked through Endpoint JSON output: %q", out.Value)
+	assert.Equal(t, "env.MY_AZURE_ENDPOINT_SECRET", out.EnvVar,
 		"env var reference must be preserved so the UI can show it")
 	assert.True(t, out.FromEnv, "from_env flag must be preserved")
 }
 
 // TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields verifies that the
-// auto-redaction does NOT touch plain (non-env-backed) values. A user-typed
-// api_version like "2024-10-21" must show as-is in the UI.
+// auto-redaction does NOT touch plain (non-env-backed) values. A plain endpoint
+// URL must show as-is in the UI.
 func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	config := ProviderConfig{
 		Keys: []schemas.Key{{
@@ -67,8 +65,7 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 			Name:  "test",
 			Value: schemas.EnvVar{Val: ""},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:   *schemas.NewEnvVar("https://foo.openai.azure.com"),
-				APIVersion: schemas.NewEnvVar("2024-10-21"),
+				Endpoint: *schemas.NewEnvVar("https://foo.openai.azure.com"),
 			},
 		}},
 	}
@@ -77,9 +74,8 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	require.NotNil(t, redacted)
 	require.Len(t, redacted.Keys, 1)
 	require.NotNil(t, redacted.Keys[0].AzureKeyConfig)
-	require.NotNil(t, redacted.Keys[0].AzureKeyConfig.APIVersion)
 
-	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.APIVersion)
+	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.Endpoint)
 	require.NoError(t, err)
 
 	var out struct {
@@ -88,8 +84,8 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &out))
 
-	assert.Equal(t, "2024-10-21", out.Value,
-		"plain APIVersion was incorrectly redacted")
+	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
+		"plain Endpoint was incorrectly redacted")
 	assert.False(t, out.FromEnv)
 }
 
@@ -164,7 +160,6 @@ func TestProviderConfig_Redacted_DoesNotMutateOriginal(t *testing.T) {
 // redacted JSON.
 func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	t.Setenv("LEAK_TEST_AZURE_ENDPOINT", "https://leaked-azure.example.com")
-	t.Setenv("LEAK_TEST_AZURE_APIVER", "leaked-api-version-string")
 	t.Setenv("LEAK_TEST_VERTEX_PROJECT", "leaked-vertex-project-id")
 	t.Setenv("LEAK_TEST_BEDROCK_ACCESS", "AKIAIOSFODNN7LEAKED1")
 	t.Setenv("LEAK_TEST_OPENAI_KEY", "sk-leaked-openai-key-1234567890")
@@ -181,8 +176,7 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 				Name:  "azure",
 				Value: schemas.EnvVar{Val: ""},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("env.LEAK_TEST_AZURE_ENDPOINT"),
-					APIVersion: schemas.NewEnvVar("env.LEAK_TEST_AZURE_APIVER"),
+					Endpoint: *schemas.NewEnvVar("env.LEAK_TEST_AZURE_ENDPOINT"),
 				},
 			},
 			{
@@ -213,7 +207,6 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 
 	leakedSecrets := []string{
 		"https://leaked-azure.example.com",
-		"leaked-api-version-string",
 		"leaked-vertex-project-id",
 		"AKIAIOSFODNN7LEAKED1",
 		"sk-leaked-openai-key-1234567890",
@@ -227,7 +220,6 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	expectedRefs := []string{
 		"env.LEAK_TEST_OPENAI_KEY",
 		"env.LEAK_TEST_AZURE_ENDPOINT",
-		"env.LEAK_TEST_AZURE_APIVER",
 		"env.LEAK_TEST_VERTEX_PROJECT",
 		"env.LEAK_TEST_BEDROCK_ACCESS",
 	}

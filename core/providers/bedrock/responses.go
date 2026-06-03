@@ -30,6 +30,7 @@ type BedrockResponsesStreamState struct {
 	NovaGroundingCitations    map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource // Collected citation sources per nova_grounding output index
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
+	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
 	CurrentOutputIndex        int                                                            // Current output index counter
 	MessageID                 *string                                                        // Message ID (generated)
 	Model                     *string                                                        // Model name
@@ -37,6 +38,8 @@ type BedrockResponsesStreamState struct {
 	CreatedAt                 int                                                            // Timestamp for created_at consistency
 	HasEmittedCreated         bool                                                           // Whether we've emitted response.created
 	HasEmittedInProgress      bool                                                           // Whether we've emitted response.in_progress
+	UsedStructuredOutputTool  bool                                                           // True when the SO tool block was intercepted and converted to text content
+	Ctx                       context.Context                                                // Request context for restoring aliased tool names
 }
 
 // bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
@@ -54,6 +57,7 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			NovaGroundingCitations:    make(map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource),
 			CompletedOutputIndices:    make(map[int]bool),
 			AnnotationIndices:         make(map[int]int),
+			TextBuffers:               make(map[int]*strings.Builder),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -122,6 +126,11 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	} else {
 		clear(state.AnnotationIndices)
 	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
+	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -130,7 +139,14 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.UsedStructuredOutputTool = false
+	state.Ctx = nil
 	return state
+}
+
+// NewBedrockResponsesStreamState returns a freshly initialised stream state for use in tests.
+func NewBedrockResponsesStreamState() *BedrockResponsesStreamState {
+	return acquireBedrockResponsesStreamState()
 }
 
 // releaseBedrockResponsesStreamState returns a Bedrock responses stream state to the pool.
@@ -198,6 +214,11 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.AnnotationIndices)
 	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.TextBuffers)
+	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
@@ -205,6 +226,7 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.UsedStructuredOutputTool = false
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
@@ -374,22 +396,27 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					continue
 				}
 
-				// Emit output_text.done
-				emptyText := ""
+				prevAccText := ""
+				if buf := state.TextBuffers[prevOutputIndex]; buf != nil {
+					prevAccText = buf.String()
+				}
+
+				// Emit output_text.done with accumulated text
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(prevOutputIndex),
 					ContentIndex:   &prevContentIndex,
 					ItemID:         &prevItemID,
-					Text:           &emptyText,
+					Text:           &prevAccText,
 					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				})
 
-				// Emit content_part.done for text
+				// Emit content_part.done for text with accumulated text
+				prevPartText := prevAccText
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
+					Text: &prevPartText,
 					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -404,8 +431,22 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					Part:           part,
 				})
 
-				// Emit output_item.done for text
+				// Emit output_item.done for text with content blocks
 				statusCompleted := "completed"
+				var prevContentBlocks []schemas.ResponsesMessageContentBlock
+				if prevAccText != "" {
+					prevItemText := prevAccText
+					prevContentBlocks = []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &prevItemText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					}
+				}
 				messageType := schemas.ResponsesMessageTypeMessage
 				role := schemas.ResponsesInputMessageRoleAssistant
 				doneItem := &schemas.ResponsesMessage{
@@ -413,7 +454,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					Role:   &role,
 					Status: &statusCompleted,
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+						ContentBlocks: prevContentBlocks,
 					},
 				}
 				if prevItemID != "" {
@@ -426,6 +467,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					ContentIndex:   &prevContentIndex,
 					Item:           doneItem,
 				})
+				delete(state.TextBuffers, prevOutputIndex)
 
 				// Mark this output index as completed
 				state.CompletedOutputIndices[prevOutputIndex] = true
@@ -539,7 +581,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			state.CurrentOutputIndex++
 
 			toolUseID := chunk.Start.ToolUse.ToolUseID
-			toolName := chunk.Start.ToolUse.Name
+			toolName := bedrockRestoreToolName(state.Ctx, chunk.Start.ToolUse.Name)
 			state.ItemIDs[outputIndex] = toolUseID
 			state.ToolCallIDs[outputIndex] = toolUseID
 			state.ToolCallNames[outputIndex] = toolName
@@ -781,6 +823,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// If this is a text delta for a new content block, also emit the text delta in the same batch
 			if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 				text := *chunk.Delta.Text
+				// Accumulate text for done events
+				if state.TextBuffers[outputIndex] == nil {
+					state.TextBuffers[outputIndex] = &strings.Builder{}
+				}
+				state.TextBuffers[outputIndex].WriteString(text)
 				itemID := state.ItemIDs[outputIndex]
 				textDeltaResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -807,6 +854,11 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			// Handle text delta
 			text := *chunk.Delta.Text
 			if text != "" {
+				// Accumulate text for done events
+				if state.TextBuffers[outputIndex] == nil {
+					state.TextBuffers[outputIndex] = &strings.Builder{}
+				}
+				state.TextBuffers[outputIndex].WriteString(text)
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
@@ -1107,7 +1159,7 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 }
 
 // FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
-func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
+func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage, trace *BedrockConverseTrace) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// Synthesize lifecycle events if Bedrock never sent a messageStart
@@ -1250,23 +1302,27 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 			} // end else (regular function call)
 		} else {
 			// This is likely a text item that needs to be closed
+			accText := ""
+			if buf := state.TextBuffers[outputIndex]; buf != nil {
+				accText = buf.String()
+			}
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			// Emit output_text.done with accumulated text
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &accText,
 				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
-			// Emit content_part.done for text
+			// Emit content_part.done for text with accumulated text
+			partText := accText
 			part := &schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &partText,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1281,8 +1337,22 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Part:           part,
 			})
 
-			// Emit output_item.done for text
+			// Emit output_item.done for text with content blocks
 			statusCompleted := "completed"
+			contentBlocks := []schemas.ResponsesMessageContentBlock{}
+			if accText != "" {
+				itemText := accText
+				contentBlocks = []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &itemText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
+				}
+			}
 			messageType := schemas.ResponsesMessageTypeMessage
 			role := schemas.ResponsesInputMessageRoleAssistant
 			doneItem := &schemas.ResponsesMessage{
@@ -1290,7 +1360,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					ContentBlocks: contentBlocks,
 				},
 			}
 			if itemID != "" {
@@ -1303,6 +1373,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				ContentIndex:   &contentIndex,
 				Item:           doneItem,
 			})
+			delete(state.TextBuffers, outputIndex)
 		}
 
 		// Mark this output index as completed
@@ -1398,11 +1469,31 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		Usage:     usage,
 	}
 
+	if trace != nil {
+		response.ProviderExtraFields = map[string]interface{}{
+			"trace": trace,
+		}
+	}
+
 	if state.Model != nil {
 		response.Model = *state.Model
 	}
 	if state.StopReason != nil {
-		response.StopReason = state.StopReason
+		stopReason := *state.StopReason
+		// If only the SO tool was consumed (no real tool calls in state), downgrade tool_calls → stop.
+		if stopReason == string(schemas.BifrostFinishReasonToolCalls) && state.UsedStructuredOutputTool {
+			hasRealToolCall := false
+			for _, toolCallID := range state.ToolCallIDs {
+				if toolCallID != "" {
+					hasRealToolCall = true
+					break
+				}
+			}
+			if !hasRealToolCall {
+				stopReason = string(schemas.BifrostFinishReasonStop)
+			}
+		}
+		response.StopReason = &stopReason
 	} else {
 		// Infer stop reason based on whether tool calls are present
 		hasToolCalls := false
@@ -1652,6 +1743,11 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			}
 		}
 
+		// Restore guardrail trace from provider extra fields
+		if bifrostResp.Response != nil && bifrostResp.Response.ProviderExtraFields != nil {
+			event.Trace = extractBedrockTrace(bifrostResp.Response.ProviderExtraFields["trace"])
+		}
+
 	case schemas.ResponsesStreamResponseTypeError:
 		// Error - errors are handled separately by the router via BifrostError in the stream chunk
 		// Return nil to skip this chunk
@@ -1733,7 +1829,7 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 		})
 	}
 
-	if event.Usage != nil || event.Metrics != nil {
+	if event.Usage != nil || event.Metrics != nil || event.Trace != nil {
 		events = append(events, BedrockEncodedEvent{
 			EventType: "metadata",
 			Payload: BedrockMetadataEvent{
@@ -2201,7 +2297,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsOpus47(bifrostReq.Model) {
+							} else if anthropic.IsOpus47Plus(bifrostReq.Model) {
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -2277,34 +2373,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				delete(bedrockReq.ExtraParams, "stop")
 				inferenceConfig.StopSequences = stop
 			}
-
-			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
-				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
-					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
-						bedrockReq.AdditionalModelRequestFields,
-						orderedFields,
-					)
-				}
-			}
-
-			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
-				if fields, ok := responseFields.([]string); ok {
-					bedrockReq.AdditionalModelResponseFieldPaths = fields
-				} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
-					stringFields := make([]string, 0, len(fieldsInterface))
-					for _, field := range fieldsInterface {
-						if fieldStr, ok := field.(string); ok {
-							stringFields = append(stringFields, fieldStr)
-						}
-					}
-					if len(stringFields) > 0 {
-						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
-					}
-				}
-				if len(bedrockReq.AdditionalModelResponseFieldPaths) > 0 {
-					delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
-				}
+			applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
+			if len(bedrockReq.ExtraParams) == 0 {
+				bedrockReq.ExtraParams = nil
 			}
 		}
 
@@ -2355,6 +2426,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					return nil, fmt.Errorf("responses tool is missing required name for Bedrock function conversion")
 				}
 				name := *tool.Name
+				toolSpecName := bedrockAliasToolName(ctx, name)
 
 				// Use the tool description if available, otherwise use a generic description
 				description := "Function tool"
@@ -2368,7 +2440,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				bedrockTool := BedrockTool{
 					ToolSpec: &BedrockToolSpec{
-						Name:        name,
+						Name:        toolSpecName,
 						Description: &description,
 						InputSchema: BedrockToolInputSchema{
 							JSON: json.RawMessage(schemaObjectBytes),
@@ -2397,6 +2469,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && bedrockToolChoice.Tool.Name != "" {
+			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, bedrockToolChoice.Tool.Name)
+		}
 		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
 		// on Meta Llama variants ("This model doesn't support the
 		// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
@@ -2432,7 +2507,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		// support matrix at
 		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
 		// (mirrors the gate applied in convertChatParameters).
-		if !schemas.IsLlamaModel(bifrostReq.Model) {
+		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responsesStructuredOutputTool.ToolSpec.Name,
@@ -2442,7 +2520,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	}
 
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
-	ensureResponsesToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
+
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
 
 	return bedrockReq, nil
 }
@@ -2508,7 +2590,35 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 
 	if response.StopReason != "" {
 		stopReason := convertBedrockStopReason(response.StopReason)
+		if stopReason == string(schemas.BifrostFinishReasonToolCalls) {
+			if toolName, hasSO := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); hasSO && toolName != "" {
+				hasRealToolCall := false
+				for _, msg := range bifrostResp.Output {
+					if msg.Type == nil {
+						continue
+					}
+					switch *msg.Type {
+					case schemas.ResponsesMessageTypeFunctionCall,
+						schemas.ResponsesMessageTypeWebSearchCall,
+						schemas.ResponsesMessageTypeCodeInterpreterCall:
+						hasRealToolCall = true
+					}
+					if hasRealToolCall {
+						break
+					}
+				}
+				if !hasRealToolCall {
+					stopReason = string(schemas.BifrostFinishReasonStop)
+				}
+			}
+		}
 		bifrostResp.StopReason = &stopReason
+	}
+
+	if response.Trace != nil {
+		bifrostResp.ProviderExtraFields = map[string]interface{}{
+			"trace": response.Trace,
+		}
 	}
 
 	return bifrostResp, nil
@@ -2546,19 +2656,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			message.Content = append(message.Content, bedrockMsg.Content...)
 		}
 
-		// Check for tool use in the content blocks. Server-managed tools
-		// (nova_grounding, nova_code_interpreter) return both toolUse and
-		// toolResult in the same message — their stop reason is "end_turn",
-		// not "tool_use". Only flag hasToolUse when there is an unmatched
-		// toolUse (i.e. the model is waiting for a client-side tool result).
-		resolvedToolUseIDs := make(map[string]bool)
-		for _, block := range message.Content {
-			if block.ToolResult != nil {
-				resolvedToolUseIDs[block.ToolResult.ToolUseID] = true
-			}
-		}
-		for _, block := range message.Content {
-			if block.ToolUse != nil && !resolvedToolUseIDs[block.ToolUse.ToolUseID] {
+		for _, msg := range bifrostResp.Output {
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
 				hasToolUse = true
 				break
 			}
@@ -2617,25 +2716,52 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
 	}
 
+	// Restore guardrail trace from provider extra fields
+	if bifrostResp.ProviderExtraFields != nil {
+		bedrockResp.Trace = extractBedrockTrace(bifrostResp.ProviderExtraFields["trace"])
+	}
+
 	return bedrockResp, nil
 }
 
 // Helper functions
 
+// extractBedrockTrace recovers a *BedrockConverseTrace from ProviderExtraFields["trace"].
+// It handles two cases:
+//   - in-memory pointer (normal non-streaming path): direct type assertion
+//   - map[string]interface{} (JSON-deserialized path, e.g. async job retrieval): marshal→unmarshal fallback
+func extractBedrockTrace(v interface{}) *BedrockConverseTrace {
+	if v == nil {
+		return nil
+	}
+	if t, ok := v.(*BedrockConverseTrace); ok {
+		return t
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var t BedrockConverseTrace
+	if err := sonic.Unmarshal(b, &t); err != nil {
+		return nil
+	}
+	return &t
+}
+
 // ensureResponsesToolConfigForConversation ensures toolConfig is present when tool content exists
-func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
+func ensureResponsesToolConfigForConversation(ctx context.Context, bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
 	if bedrockReq.ToolConfig != nil {
 		return // Already has tool config
 	}
 
-	hasToolContent, tools := extractToolsFromResponsesConversationHistory(bifrostReq.Input, bifrostReq.Model)
+	hasToolContent, tools := extractToolsFromResponsesConversationHistory(ctx, bifrostReq.Input, bifrostReq.Model)
 	if hasToolContent && len(tools) > 0 {
 		bedrockReq.ToolConfig = &BedrockToolConfig{Tools: tools}
 	}
 }
 
 // extractToolsFromResponsesConversationHistory extracts tools from Responses conversation history
-func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
+func extractToolsFromResponsesConversationHistory(ctx context.Context, messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
 	var hasToolContent bool
 	toolMap := make(map[string]*schemas.ResponsesTool) // Use map to deduplicate by name
 	var hasNovaGrounding, hasNovaCodeInterpreter bool
@@ -2693,7 +2819,7 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 			schemaObjectBytes2, _ := providerUtils.MarshalSorted(schemaObject)
 			bedrockTool := BedrockTool{
 				ToolSpec: &BedrockToolSpec{
-					Name:        *tool.Name,
+					Name:        bedrockAliasToolName(ctx, *tool.Name),
 					Description: &description,
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes2),
@@ -3092,7 +3218,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
 				toolName := ""
 				if msg.ResponsesToolMessage.Name != nil {
-					toolName = *msg.ResponsesToolMessage.Name
+					toolName = bedrockAliasToolName(ctx, *msg.ResponsesToolMessage.Name)
 				}
 				arguments := ""
 				if msg.ResponsesToolMessage.Arguments != nil {
@@ -3121,7 +3247,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				// Convert result content to Bedrock format
 				if msg.ResponsesToolMessage.Output != nil {
 					if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						resultContent = append(resultContent, tryParseJSONIntoContentBlock(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr))
+						outputStr := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+						if blocks, ok := decodeBedrockToolResultEnvelope(outputStr); ok {
+							resultContent = append(resultContent, blocks...)
+						} else {
+							resultContent = append(resultContent, tryParseJSONIntoContentBlock(outputStr))
+						}
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
@@ -3872,12 +4003,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				if block.ToolUse.Input != nil {
 					arguments = string(block.ToolUse.Input)
 				}
+				restoredToolUseName := bedrockRestoreToolName(ctx, toolUseName)
 				toolMsg := schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status: schemas.Ptr("completed"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:    &toolUseID,
-						Name:      &toolUseName,
+						Name:      &restoredToolUseName,
 						Arguments: schemas.Ptr(arguments),
 					},
 				}
@@ -3947,9 +4079,24 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
-			// Prefer JSON payloads without unmarshalling; fallback to text
+			// Prefer JSON payloads without unmarshalling; fallback to text.
+			// If the content contains a searchResult (or any other block Bifrost's intermediate
+			// can't model natively), serialize the full content array into a sentinel envelope
+			// so it round-trips losslessly via ToBedrockResponsesRequest.
 			var resultContent string
-			if len(block.ToolResult.Content) > 0 {
+			hasUnrepresentableBlock := false
+			for _, c := range block.ToolResult.Content {
+				if c.SearchResult != nil || c.Video != nil {
+					hasUnrepresentableBlock = true
+					break
+				}
+			}
+			if hasUnrepresentableBlock {
+				if envelope, err := encodeBedrockToolResultEnvelope(block.ToolResult.Content); err == nil {
+					resultContent = envelope
+				}
+			}
+			if resultContent == "" && len(block.ToolResult.Content) > 0 {
 				// JSON first (no unmarshal; just one marshal to string when present)
 				for _, c := range block.ToolResult.Content {
 					if c.JSON != nil {
@@ -4095,6 +4242,9 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 			bedrockBlock := BedrockContentBlock{}
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
+				if block.Text == nil || *block.Text == "" {
+					continue
+				}
 				bedrockBlock.Text = block.Text
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {

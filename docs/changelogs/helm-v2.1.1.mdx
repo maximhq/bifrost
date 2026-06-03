@@ -1,0 +1,13 @@
+---
+title: "v2.1.1"
+description: "Helm v2.1.1 changelog - 2026-04-15"
+---
+
+<Update label="Bifrost Helm" description="v2.1.1">
+
+## Changelog
+
+- Made `bifrost.governance.virtualKeys[].value` optional — template no longer fails when the field is omitted, allowing the backend to auto-generate the virtual key value
+- When `value` is absent, the rendered `config.json` omits the field entirely (consistent with other optional VK fields)
+
+</Update>

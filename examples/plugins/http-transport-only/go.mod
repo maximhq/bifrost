@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/http-transport-only
 
-go 1.26.2
+go 1.26.3
 
 replace github.com/maximhq/bifrost/core => ../../../core
 

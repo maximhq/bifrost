@@ -1,6 +1,7 @@
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import {
   getErrorMessage,
   useGetCustomersQuery,
@@ -29,12 +30,13 @@ export default function GovernanceVirtualKeysPage() {
 
   const [urlState, setUrlState] = useQueryStates(
     {
-      search: parseAsString.withDefault(""),
+      search: parseAsSafeString.withDefault(""),
       customer_id: parseAsString.withDefault(""),
       team_id: parseAsString.withDefault(""),
       offset: parseAsInteger.withDefault(0),
       sort_by: parseAsString.withDefault(""),
       order: parseAsString.withDefault(""),
+      selected_vk: parseAsString.withDefault(""),
     },
     { history: "push" },
   );
@@ -45,6 +47,7 @@ export default function GovernanceVirtualKeysPage() {
     data: virtualKeysData,
     error: vkError,
     isLoading: vkLoading,
+    isFetching,
   } = useGetVirtualKeysQuery(
     {
       limit: PAGE_SIZE,
@@ -147,8 +150,21 @@ export default function GovernanceVirtualKeysPage() {
     });
   };
 
+  const handleSelectedVkChange = (
+    id: string,
+    options?: { offset?: number },
+  ) => {
+    const update: Record<string, string | number | null> = {
+      selected_vk: id || null,
+    };
+    if (options?.offset !== undefined) {
+      update.offset = options.offset;
+    }
+    setUrlState(update);
+  };
+
   return (
-    <div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden p-4">
+    <div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
       <VirtualKeysTable
         virtualKeys={virtualKeysData?.virtual_keys || []}
         totalCount={virtualKeysData?.total_count || 0}
@@ -167,6 +183,9 @@ export default function GovernanceVirtualKeysPage() {
         sortBy={urlState.sort_by}
         order={urlState.order}
         onSortChange={handleSortChange}
+        selectedVkId={urlState.selected_vk}
+        onSelectedVkChange={handleSelectedVkChange}
+        isFetching={isFetching}
       />
     </div>
   );

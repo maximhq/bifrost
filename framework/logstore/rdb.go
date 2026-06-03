@@ -1996,6 +1996,142 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	return &UserRankingResult{Rankings: rankings}, nil
 }
 
+// GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
+func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
+	}
+
+	var nameExpr string
+	if nameCol != "" {
+		nameExpr = fmt.Sprintf("MAX(%s) as name", nameCol)
+	} else {
+		nameExpr = "'' as name"
+	}
+
+	selectClause := fmt.Sprintf(`
+		%s as id,
+		%s,
+		COUNT(*) as total_requests,
+		SUM(total_tokens) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost
+	`, idCol, nameExpr)
+
+	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery = s.applyFilters(currentQuery, filters)
+	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+	var currentResults []struct {
+		ID            string          `gorm:"column:id"`
+		Name          string          `gorm:"column:name"`
+		TotalRequests int64           `gorm:"column:total_requests"`
+		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+	}
+
+	if err := currentQuery.
+		Select(selectClause).
+		Group(idCol).
+		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
+		Find(&currentResults).Error; err != nil {
+		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
+	}
+
+	if len(currentResults) == 0 {
+		return &DimensionRankingResult{
+			Rankings:  []DimensionRankingWithTrend{},
+			Dimension: dimension,
+		}, nil
+	}
+
+	prevMap := make(map[string]DimensionRankingEntry)
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+
+		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery = s.applyFilters(prevQuery, prevFilters)
+		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+
+		if len(currentResults) > 0 {
+			ids := make([]string, len(currentResults))
+			for i, r := range currentResults {
+				ids[i] = r.ID
+			}
+			prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", idCol), ids)
+		}
+
+		var prevResults []struct {
+			ID            string          `gorm:"column:id"`
+			TotalRequests int64           `gorm:"column:total_requests"`
+			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+		}
+
+		prevSelect := fmt.Sprintf(`
+			%s as id,
+			COUNT(*) as total_requests,
+			SUM(total_tokens) as total_tokens,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, idCol)
+
+		if err := prevQuery.
+			Select(prevSelect).
+			Group(idCol).
+			Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+
+		for _, r := range prevResults {
+			prevMap[r.ID] = DimensionRankingEntry{
+				ID:            r.ID,
+				TotalRequests: r.TotalRequests,
+				TotalTokens:   r.TotalTokens.Int64,
+				TotalCost:     r.TotalCost.Float64,
+			}
+		}
+	}
+
+	rankings := make([]DimensionRankingWithTrend, len(currentResults))
+	for i, r := range currentResults {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          r.Name,
+			TotalRequests: r.TotalRequests,
+			TotalTokens:   r.TotalTokens.Int64,
+			TotalCost:     r.TotalCost.Float64,
+		}
+
+		var trend DimensionRankingTrend
+		if prev, exists := prevMap[r.ID]; exists && prev.TotalRequests > 0 {
+			trend.HasPreviousPeriod = true
+			trend.RequestsTrend = pctChange(float64(prev.TotalRequests), float64(r.TotalRequests))
+			trend.TokensTrend = pctChange(float64(prev.TotalTokens), float64(r.TotalTokens.Int64))
+			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
+		}
+
+		rankings[i] = DimensionRankingWithTrend{
+			DimensionRankingEntry: entry,
+			Trend:                 trend,
+		}
+	}
+
+	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
+}
+
 // pctChange computes the percentage change from old to new.
 func pctChange(old, new float64) float64 {
 	if old == 0 {

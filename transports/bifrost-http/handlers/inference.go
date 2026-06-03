@@ -137,62 +137,64 @@ var textParamsKnownFields = map[string]bool{
 
 // Known fields for CompletionRequest
 var chatParamsKnownFields = map[string]bool{
-	"model":                 true,
-	"messages":              true,
-	"fallbacks":             true,
-	"stream":                true,
-	"frequency_penalty":     true,
-	"logit_bias":            true,
-	"logprobs":              true,
-	"max_completion_tokens": true,
-	"metadata":              true,
-	"modalities":            true,
-	"parallel_tool_calls":   true,
-	"presence_penalty":      true,
-	"prompt_cache_key":      true,
-	"reasoning":             true,
-	"reasoning_effort":      true,
-	"reasoning_max_tokens":  true,
-	"response_format":       true,
-	"safety_identifier":     true,
-	"service_tier":          true,
-	"stream_options":        true,
-	"store":                 true,
-	"temperature":           true,
-	"tool_choice":           true,
-	"tools":                 true,
-	"truncation":            true,
-	"user":                  true,
-	"verbosity":             true,
+	"model":                  true,
+	"messages":               true,
+	"fallbacks":              true,
+	"stream":                 true,
+	"frequency_penalty":      true,
+	"logit_bias":             true,
+	"logprobs":               true,
+	"max_completion_tokens":  true,
+	"metadata":               true,
+	"modalities":             true,
+	"parallel_tool_calls":    true,
+	"presence_penalty":       true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"reasoning":              true,
+	"reasoning_effort":       true,
+	"reasoning_max_tokens":   true,
+	"response_format":        true,
+	"safety_identifier":      true,
+	"service_tier":           true,
+	"stream_options":         true,
+	"store":                  true,
+	"temperature":            true,
+	"tool_choice":            true,
+	"tools":                  true,
+	"truncation":             true,
+	"user":                   true,
+	"verbosity":              true,
 }
 
 var responsesParamsKnownFields = map[string]bool{
-	"model":                true,
-	"input":                true,
-	"fallbacks":            true,
-	"stream":               true,
-	"background":           true,
-	"conversation":         true,
-	"include":              true,
-	"instructions":         true,
-	"max_output_tokens":    true,
-	"max_tool_calls":       true,
-	"metadata":             true,
-	"parallel_tool_calls":  true,
-	"previous_response_id": true,
-	"prompt_cache_key":     true,
-	"reasoning":            true,
-	"safety_identifier":    true,
-	"service_tier":         true,
-	"stream_options":       true,
-	"store":                true,
-	"temperature":          true,
-	"text":                 true,
-	"top_logprobs":         true,
-	"top_p":                true,
-	"tool_choice":          true,
-	"tools":                true,
-	"truncation":           true,
+	"model":                  true,
+	"input":                  true,
+	"fallbacks":              true,
+	"stream":                 true,
+	"background":             true,
+	"conversation":           true,
+	"include":                true,
+	"instructions":           true,
+	"max_output_tokens":      true,
+	"max_tool_calls":         true,
+	"metadata":               true,
+	"parallel_tool_calls":    true,
+	"previous_response_id":   true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"reasoning":              true,
+	"safety_identifier":      true,
+	"service_tier":           true,
+	"stream_options":         true,
+	"store":                  true,
+	"temperature":            true,
+	"text":                   true,
+	"top_logprobs":           true,
+	"top_p":                  true,
+	"tool_choice":            true,
+	"tools":                  true,
+	"truncation":             true,
 }
 
 var embeddingParamsKnownFields = map[string]bool{
@@ -856,6 +858,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 			if pricingEntry != nil {
 				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
 					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
+				}
+				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
+					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
 				}
 				if modelEntry.Pricing == nil {
 					pricing := &schemas.Pricing{}
@@ -2626,6 +2631,25 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// resolveBatchProvider resolves the provider (and optional model) for a batch
+// create request. Per the OpenAI spec, model is optional on POST /v1/batches —
+// it lives inside each JSONL request body. When model is present it is parsed
+// via resolveModelAndProvider; when absent the provider is taken from the
+// ?provider= query param or x-model-provider header (same as fileUpload).
+func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+	if model != "" {
+		return resolveModelAndProvider(ctx, config, model)
+	}
+	p := string(ctx.QueryArgs().Peek("provider"))
+	if p == "" {
+		p = string(ctx.Request.Header.Peek("x-model-provider"))
+	}
+	if p == "" {
+		return "", "", fmt.Errorf("provider query parameter or x-model-provider header is required when model is not specified")
+	}
+	return schemas.ModelProvider(p), "", nil
+}
+
 // batchCreate handles POST /v1/batches - Create a new batch job
 func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var req BatchCreateRequest
@@ -2634,7 +2658,10 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	provider, modelName, err := resolveModelAndProvider(ctx, h.config, req.Model)
+	// model is optional on POST /v1/batches per the OpenAI spec — the model lives
+	// inside each JSONL request body. When omitted, resolve the provider from the
+	// x-model-provider header or ?provider= query param (same as fileUpload).
+	provider, modelName, err := resolveBatchProvider(ctx, h.config, req.Model)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2985,15 +3012,18 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 // fileList handles GET /v1/files - List files
 func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("x-model-provider"))
+	// Get provider from query parameters or header; accept both ?provider= and
+	// ?x-model-provider= for consistency with other file endpoints (#3963).
+	provider := string(ctx.QueryArgs().Peek("provider"))
 	if provider == "" {
-		// Try to get from header
+		provider = string(ctx.QueryArgs().Peek("x-model-provider"))
+	}
+	if provider == "" {
 		provider = string(ctx.Request.Header.Peek("x-model-provider"))
-		if provider == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "x-model-provider query parameter or x-model-provider header is required")
-			return
-		}
+	}
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
+		return
 	}
 
 	// Parse optional parameters

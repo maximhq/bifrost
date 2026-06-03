@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620" role="img" aria-labelledby="title desc">
+  <title id="title">Per-user lazy authentication flow</title>
+  <desc id="desc">Sequence diagram showing a caller request with identity, Bifrost credential lookup, an authentication URL for OAuth or headers, credential storage, and a successful retry.</desc>
+
+  <defs>
+    <marker id="arrow-slate" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#475569" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#EA580C" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#2563EB" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#15803D" />
+    </marker>
+    <style>
+      .bg { fill: #FFFFFF; }
+      .title { font: 700 22px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #0F172A; }
+      .subtitle { font: 14px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; }
+      .actor { font: 700 15px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #0F172A; text-anchor: middle; }
+      .lane { stroke: #CBD5E1; stroke-width: 1.5; stroke-dasharray: 2 8; }
+      .label { font: 13px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .note { font: 12px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; text-anchor: middle; }
+      .small { font: 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #64748B; text-anchor: middle; }
+      .step { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 1.5; }
+      .num { font: 700 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; text-anchor: middle; dominant-baseline: middle; }
+      .arrow-slate { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrow-slate); }
+      .arrow-orange { stroke: #EA580C; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow-orange); }
+      .arrow-blue { stroke: #2563EB; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #15803D; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .badge { fill: #F8FAFC; stroke: #CBD5E1; stroke-width: 1.2; }
+      .fast { fill: #ECFDF5; stroke: #86EFAC; stroke-width: 1.2; }
+      .miss { fill: #FFF7ED; stroke: #FDBA74; stroke-width: 1.2; }
+      .url { fill: #EFF6FF; stroke: #93C5FD; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="980" height="620" />
+
+  <text class="title" x="40" y="40">Per-user auth is lazy</text>
+  <text class="subtitle" x="40" y="64">The first tool call creates an auth URL only when Bifrost cannot find a usable credential for the caller identity.</text>
+
+  <text class="actor" x="100" y="115">Caller</text>
+  <text class="actor" x="310" y="115">Bifrost Gateway</text>
+  <text class="actor" x="510" y="115">Credential Store</text>
+  <text class="actor" x="705" y="115">End User</text>
+  <text class="actor" x="885" y="115">MCP Server</text>
+
+  <line class="lane" x1="100" y1="135" x2="100" y2="575" />
+  <line class="lane" x1="310" y1="135" x2="310" y2="575" />
+  <line class="lane" x1="510" y1="135" x2="510" y2="575" />
+  <line class="lane" x1="705" y1="135" x2="705" y2="575" />
+  <line class="lane" x1="885" y1="135" x2="885" y2="575" />
+
+  <rect class="badge" x="42" y="142" width="170" height="34" rx="17" />
+  <text class="small" x="127" y="164">identity: user, vk, or session</text>
+
+  <line class="arrow-slate" x1="100" y1="200" x2="310" y2="200" />
+  <text class="label" x="205" y="190">request + identity + tool call</text>
+  <circle class="step" cx="205" cy="200" r="12" />
+  <text class="num" x="205" y="200">1</text>
+
+  <line class="arrow-slate" x1="310" y1="250" x2="510" y2="250" />
+  <text class="label" x="410" y="240">lookup (identity, mcp_client)</text>
+  <circle class="step" cx="410" cy="250" r="12" />
+  <text class="num" x="410" y="250">2</text>
+
+  <rect class="fast" x="590" y="212" width="300" height="48" rx="12" />
+  <text class="label" x="740" y="232">If active credential exists</text>
+  <text class="note" x="740" y="250">Bifrost uses it transparently</text>
+
+  <line class="arrow-green" x1="510" y1="305" x2="885" y2="305" />
+  <text class="label" x="698" y="295">tool call + stored credential</text>
+  <circle class="step" cx="698" cy="305" r="12" />
+  <text class="num" x="698" y="305">3a</text>
+
+  <line class="arrow-green" x1="885" y1="352" x2="310" y2="352" />
+  <line class="arrow-green" x1="310" y1="382" x2="100" y2="382" />
+  <text class="label" x="598" y="342">result</text>
+
+  <rect class="miss" x="42" y="420" width="300" height="52" rx="12" />
+  <text class="label" x="192" y="440">If missing, expired, or stale</text>
+  <text class="note" x="192" y="458">tool is not executed yet</text>
+
+  <line class="arrow-orange" x1="310" y1="495" x2="100" y2="495" />
+  <text class="label" x="205" y="485">mcp_auth_required + auth URL</text>
+  <circle class="step" cx="205" cy="495" r="12" />
+  <text class="num" x="205" y="495">3b</text>
+
+  <line class="arrow-blue" x1="100" y1="535" x2="705" y2="535" />
+  <text class="label" x="402" y="525">open URL: OAuth consent or headers form</text>
+  <circle class="step" cx="402" cy="535" r="12" />
+  <text class="num" x="402" y="535">4</text>
+
+  <line class="arrow-blue" x1="705" y1="575" x2="510" y2="575" />
+  <text class="label" x="608" y="565">save credential to identity</text>
+  <circle class="step" cx="608" cy="575" r="12" />
+  <text class="num" x="608" y="575">5</text>
+
+  <rect class="url" x="676" y="420" width="250" height="58" rx="12" />
+  <text class="label" x="801" y="442">Next request</text>
+  <text class="note" x="801" y="462">credential is found and step 3a runs</text>
+</svg>

@@ -10,16 +10,18 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// MCPOpFunc is the closure each call site provides to runWithPluginPipeline. It receives the
+// MCPOpFunc is the closure each call site provides to RunWithPluginPipeline. It receives the
 // (possibly mutated) request that flowed through PreHooks and is responsible for
 // performing the wire call (including any internal retries) and building a
 // BifrostMCPResponse from the outcome. The plain Go error returned here is wrapped
 // into a BifrostError by the gate before being handed to PostMCPHooks.
 type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
-// runWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
+// RunWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
 // with the plugin pipeline. It is the single source of truth for the MCP plugin gate
-// pattern — handleMCPToolExecution in core/bifrost.go calls into this same function.
+// pattern — handleMCPToolExecution in core/bifrost.go calls into this same function,
+// and the Starlark codemode sandbox calls into it via the ClientManager interface for
+// nested tool calls.
 //
 //  1. Acquire pipeline (no-op pass-through if none configured)
 //  2. Run PreMCPHooks — plugins may mutate the request or short-circuit
@@ -34,11 +36,11 @@ type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRespo
 //
 // Returns *BifrostError so callers can preserve rich error fields (AllowFallbacks,
 // MCPAuthRequired).
-func (m *MCPManager) runWithPluginPipeline(
+func (m *MCPManager) RunWithPluginPipeline(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostMCPRequest,
 	op MCPOpFunc,
-) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+) (finalResponse *schemas.BifrostMCPResponse, finalError *schemas.BifrostError) {
 	// Ensure a request ID exists so plugin hooks have something to correlate on.
 	// Connect/ping/list_tools fire from background contexts that typically lack one.
 	if ctx != nil {
@@ -57,9 +59,51 @@ func (m *MCPManager) runWithPluginPipeline(
 			spanName = fmt.Sprintf("%s.%s", spanName, req.ClientName)
 		}
 		_, spanHandle = tracer.StartSpan(ctx, spanName, schemas.SpanKindMCPClient)
+		// Emit OTel GenAI tool-execution attributes on execute-tool spans so downstream
+		// backends can correlate tool calls with their requesting llm.call.
+		if req != nil && req.RequestType.IsExecuteTool() {
+			tracer.SetAttribute(spanHandle, schemas.AttrOperationName, schemas.OTelOperationNameExecuteTool)
+			tracer.SetAttribute(spanHandle, schemas.AttrToolType, "function")
+			if name := req.GetToolName(); name != "" {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolName, name)
+			}
+			// GetToolArguments returns interface{}; the Responses branch boxes a
+			// *string, so a nil pointer survives the != nil guard. Unwrap and skip
+			// it explicitly, and deref non-nil so the attribute is the JSON string.
+			if args := req.GetToolArguments(); args != nil {
+				if p, ok := args.(*string); ok {
+					if p != nil {
+						tracer.SetAttribute(spanHandle, schemas.AttrToolCallArguments, *p)
+					}
+				} else {
+					tracer.SetAttribute(spanHandle, schemas.AttrToolCallArguments, args)
+				}
+			}
+			if req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.ID != nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallID, *req.ChatAssistantMessageToolCall.ID)
+			} else if req.ResponsesToolMessage != nil && req.ResponsesToolMessage.CallID != nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallID, *req.ResponsesToolMessage.CallID)
+			}
+		}
 	}
 	defer func() {
-		if tracer != nil {
+		if tracer == nil {
+			return
+		}
+		// Tool-call result captured via named returns — set just before EndSpan so the
+		// attribute lands on the open span before it's frozen.
+		if finalResponse != nil && req != nil && req.RequestType.IsExecuteTool() {
+			if data, err := schemas.MarshalString(finalResponse); err == nil {
+				tracer.SetAttribute(spanHandle, schemas.AttrToolCallResult, data)
+			}
+		}
+		if finalError != nil {
+			msg := ""
+			if finalError.Error != nil {
+				msg = finalError.Error.Message
+			}
+			tracer.EndSpan(spanHandle, schemas.SpanStatusError, msg)
+		} else {
 			tracer.EndSpan(spanHandle, schemas.SpanStatusOk, "")
 		}
 	}()
@@ -319,7 +363,7 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
 
-	resp, bErr := m.runWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	resp, bErr := m.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		detailed, opErr := retrieveExternalToolsDetailed(ctx, conn, clientName, m.logger)
 		if opErr != nil {
 			return nil, opErr
@@ -360,7 +404,7 @@ func (chm *ClientHealthMonitor) runPingWithHooks(ctx context.Context, conn *clie
 	}
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
-	_, bErr := chm.manager.runWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	_, bErr := chm.manager.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		if pingErr := conn.Ping(ctx); pingErr != nil {
 			return nil, pingErr
 		}

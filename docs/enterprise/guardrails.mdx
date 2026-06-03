@@ -27,16 +27,16 @@ icon: "road-barrier"
   <Card title="Azure Content Safety" icon="microsoft" href="/integrations/guardrails/azure-content-safety">
     Multi-modal content moderation with severity-based filtering.
   </Card>
-  <Card title="Google Model Armor" icon="/media/google-model-armor.png" href="/integrations/guardrails/google-model-armor">
+  <Card title="Google Model Armor" icon="/media/google-model-armor-card.svg" href="/integrations/guardrails/google-model-armor">
     Google Cloud policy enforcement for prompt injection, content safety, malicious URLs, and Sensitive Data Protection.
   </Card>
-  <Card title="CrowdStrike AIDR" icon="/media/crowdstrike-white.svg" href="/integrations/guardrails/crowdstrike-aidr">
+  <Card title="CrowdStrike AIDR" icon="/media/crowdstrike-card.svg" href="/integrations/guardrails/crowdstrike-aidr">
     Inline AI threat detection, policy enforcement, redaction, and AIDR audit visibility.
   </Card>
-  <Card title="GraySwan Cygnal" icon="shield-check" href="/integrations/guardrails/grayswan">
+  <Card title="GraySwan Cygnal" icon="/media/grayswan-logo-card.svg" href="/integrations/guardrails/grayswan">
     AI safety monitoring with natural language rule definitions.
   </Card>
-  <Card title="Patronus AI" icon="brain" href="/integrations/guardrails/patronus-ai">
+  <Card title="Patronus AI" icon="/media/patronus-logo-card.svg" href="/integrations/guardrails/patronus-ai">
     LLM security, hallucination detection, and safety evaluation.
   </Card>
 </CardGroup>
@@ -155,7 +155,7 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `cel_expression` | string | Yes | CEL expression for rule evaluation |
 | `apply_to` | enum | Yes | When to apply: `input`, `output`, or `both` |
 | `sampling_rate` | integer | No | Percentage of requests to evaluate (0-100) |
-| `timeout` | integer | No | Execution timeout in milliseconds |
+| `timeout` | integer | No | Execution timeout in seconds (default: 60) |
 | `provider_config_ids` | array | No | IDs of profiles to use for evaluation |
 
 ### Creating Rules
@@ -185,7 +185,7 @@ Guardrail Rules are custom policies that define when and how content validation 
   - `both` - Validate both inputs and outputs
 - **CEL Expression**: Define the validation logic
 - **Sampling Rate**: Set percentage of requests to evaluate (default: 100%)
-- **Timeout**: Set maximum execution time in milliseconds
+- **Timeout**: Set maximum execution time in seconds (default: 60)
 
 3. **Link Profiles**
    - Select one or more profiles to use for evaluation

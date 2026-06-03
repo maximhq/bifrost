@@ -142,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -156,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
@@ -1171,6 +1179,29 @@ export interface UserRankingEntry {
 
 export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
+}
+
+export type RankingDimension = "team" | "customer" | "business_unit" | "user";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
 }
 
 // Date utility functions for URL state management

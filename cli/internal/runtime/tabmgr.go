@@ -29,8 +29,8 @@ import (
 // without creating any tabs.
 var ErrQuit = errors.New("user quit")
 
-// ErrBackToTabs is returned by the newTabFn when the user presses Ctrl+B
-// to dismiss the chooser and return to tab command mode.
+// ErrBackToTabs is returned by the newTabFn when the user presses Ctrl+B to
+// dismiss the chooser and return to tab command mode.
 var ErrBackToTabs = errors.New("back to tabs")
 
 // ErrUpdateRequested is returned by RunTabbed when the user presses U in
@@ -106,6 +106,7 @@ type TabManager struct {
 	cols         uint16
 	paused       bool // true while chooser overlay is active
 	commandMode  bool // true while the tab-mode overlay owns the terminal
+	commandIdx   int  // selected row in the tab command overlay; len(tabs) is "new tab"
 	scrollMode   bool // true while the active tab's scrollback view is frozen for browsing
 	scrollOffset int  // lines scrolled up from the bottom of the (scrollback ++ live grid) stream
 	needsRender  bool // set by readPTY/switchTab/resize, cleared by renderFrame
@@ -115,6 +116,7 @@ type TabManager struct {
 	noticeLevel  TabNoticeLevel
 	noticeUntil  time.Time
 	noticeSticky bool
+	quitConfirm  bool
 
 	closeCh     chan struct{} // closed when all tabs are gone
 	closeOnce   sync.Once
@@ -501,9 +503,13 @@ func (tm *TabManager) readPTY(tab *Tab) {
 	}
 }
 
-// prefix is the bifrost prefix key: Ctrl+B (0x02).
-// When pressed, PTY output is frozen and bifrost enters tab mode.
+// prefix is the primary bifrost prefix key: Ctrl+B (0x02). When pressed, PTY
+// output is frozen and bifrost enters tab mode.
 const prefix = 0x02
+
+// tmuxSafePrefix is an alternate prefix key: Ctrl+G (0x07). tmux consumes
+// Ctrl+B by default, so this gives users a one-press tab selector inside tmux.
+const tmuxSafePrefix = 0x07
 
 // inputLoop is the main event loop that reads stdin and dispatches to tabs or hotkeys.
 //
@@ -512,6 +518,7 @@ const prefix = 0x02
 //	Ctrl+1…9    — jump to tab N
 //	Ctrl+Tab    — cycle to next tab
 //	Ctrl+B      — toggle tab command mode
+//	Ctrl+G      — toggle tab command mode; useful inside tmux
 //
 // Keybindings while in tab command mode (^B prefix):
 //
@@ -521,7 +528,7 @@ const prefix = 0x02
 //	H/L or J/K      — move left/right
 //	1…9             — jump to tab N
 //	U               — update bifrost (if available)
-//	Esc/Enter/Ctrl+B — resume the active tab
+//	Esc/Enter/Ctrl+B/Ctrl+G — resume the active tab
 func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termState *term.State) error {
 	pending := make([]byte, 0, 4096)
 
@@ -588,7 +595,7 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 
 			if isPrefix {
 				if tm.isCommandMode() {
-					if err := tm.handleCommandKey(ctx, newTabFn, termState, prefix); err != nil {
+					if err := tm.handleCommandKey(ctx, newTabFn, termState, token[0]); err != nil {
 						return err
 					}
 				} else {
@@ -616,6 +623,12 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 			}
 
 			if tm.isCommandMode() {
+				if b, ok := decodeCommandNavigationByte(token); ok {
+					if err := tm.handleCommandKey(ctx, newTabFn, termState, b); err != nil {
+						return err
+					}
+					continue
+				}
 				if b, ok := decodeCommandByte(token); ok {
 					if err := tm.handleCommandKey(ctx, newTabFn, termState, b); err != nil {
 						return err
@@ -667,7 +680,7 @@ func nextInputToken(buf []byte) ([]byte, int, bool, bool) {
 		return nil, 0, false, false
 	}
 
-	if buf[0] == prefix {
+	if buf[0] == prefix || buf[0] == tmuxSafePrefix {
 		return buf[:1], 1, true, true
 	}
 
@@ -706,7 +719,7 @@ func nextInputToken(buf []byte) ([]byte, int, bool, bool) {
 	for i := 2; i < len(buf); i++ {
 		if buf[i] >= 0x40 && buf[i] <= 0x7e {
 			token := buf[:i+1]
-			return token, i + 1, isCtrlBSequence(token), true
+			return token, i + 1, isPrefixSequence(token), true
 		}
 	}
 
@@ -785,7 +798,11 @@ func containsStandaloneBEL(data []byte, state *belParserState) bool {
 	return found
 }
 
-func isCtrlBSequence(seq []byte) bool {
+// isPrefixSequence reports whether a CSI sequence encodes a bifrost prefix key
+// (Ctrl+B or the tmux-safe Ctrl+G) under the kitty keyboard protocol (CSI u) or
+// xterm modifyOtherKeys (CSI 27 ~), so it triggers command mode just like the
+// raw single-byte prefix.
+func isPrefixSequence(seq []byte) bool {
 	if len(seq) < 4 || seq[0] != 0x1b || seq[1] != '[' {
 		return false
 	}
@@ -802,7 +819,7 @@ func isCtrlBSequence(seq []byte) bool {
 		if isReleaseEvent(parts[1]) {
 			return false
 		}
-		return isCtrlBCode(parts[0]) && modifierHasCtrl(parts[1])
+		return isPrefixKeyCode(parts[0]) && modifierHasCtrl(parts[1])
 	case '~':
 		parts := strings.Split(body, ";")
 		if len(parts) < 3 || parts[0] != "27" {
@@ -811,7 +828,7 @@ func isCtrlBSequence(seq []byte) bool {
 		if isReleaseEvent(parts[1]) {
 			return false
 		}
-		return isCtrlBCode(parts[2]) && modifierHasCtrl(parts[1])
+		return isPrefixKeyCode(parts[2]) && modifierHasCtrl(parts[1])
 	default:
 		return false
 	}
@@ -826,8 +843,12 @@ func isReleaseEvent(modField string) bool {
 	return false
 }
 
-func isCtrlBCode(s string) bool {
-	return s == "98" || s == "66"
+// isPrefixKeyCode reports whether a CSI codepoint field encodes one of the
+// bifrost prefix keys: Ctrl+B (b/B, 98/66) or the tmux-safe Ctrl+G (g/G,
+// 103/71). Used so CSI-encoded prefixes (kitty protocol / modifyOtherKeys)
+// are recognized the same way as their raw single-byte forms.
+func isPrefixKeyCode(s string) bool {
+	return s == "98" || s == "66" || s == "103" || s == "71"
 }
 
 // parseCtrlDigit checks if a CSI sequence is Ctrl+1..9 and returns the
@@ -950,6 +971,22 @@ func decodeCommandByte(token []byte) (byte, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// decodeCommandNavigationByte maps arrow-key escape sequences to the command
+// overlay's existing h/j/k/l navigation bytes.
+func decodeCommandNavigationByte(token []byte) (byte, bool) {
+	switch string(token) {
+	case "\x1b[A":
+		return 'k', true
+	case "\x1b[B":
+		return 'j', true
+	case "\x1b[C":
+		return 'l', true
+	case "\x1b[D":
+		return 'h', true
+	}
+	return 0, false
 }
 
 // isCSIu checks if a token is a kitty keyboard protocol CSI u sequence.
@@ -1318,7 +1355,7 @@ func (tm *TabManager) handleScrollKey(token []byte) bool {
 func (tm *TabManager) shouldExitWithoutTabs() bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	return len(tm.tabs) == 0 && !tm.commandMode
+	return len(tm.tabs) == 0 && !tm.commandMode && !tm.quitConfirm
 }
 
 func (tm *TabManager) emitNotice(level TabNoticeLevel, message string) {
@@ -1397,6 +1434,14 @@ func (tm *TabManager) hasTabs() bool {
 func (tm *TabManager) enterCommandMode() {
 	tm.mu.Lock()
 	tm.commandMode = true
+	tm.quitConfirm = false
+	if len(tm.tabs) == 0 {
+		tm.commandIdx = 0
+	} else if tm.activeIdx >= 0 && tm.activeIdx < len(tm.tabs) {
+		tm.commandIdx = tm.activeIdx
+	} else {
+		tm.commandIdx = 0
+	}
 	tm.needsRender = true
 	hasTabs := len(tm.tabs) > 0
 	tm.mu.Unlock()
@@ -1404,25 +1449,44 @@ func (tm *TabManager) enterCommandMode() {
 	if !hasTabs {
 		tm.writeString("\x1b[2J\x1b[H")
 		tm.drawTabBar()
+		return
 	}
+	tm.renderFrame()
 }
 
 func (tm *TabManager) exitCommandMode() {
 	tm.mu.Lock()
 	tm.commandMode = false
+	tm.commandIdx = 0
+	tm.quitConfirm = false
 	tm.needsRender = true
 	tm.mu.Unlock()
 }
 
 func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc, termState *term.State, b byte) error {
 	switch {
+	case b == 0x03:
+		if tm.handleHomeCtrlC() {
+			tm.signalClose()
+		}
 	case b == ' ':
 		if tm.hasStickyErrorNotice() {
 			tm.clearNoticeAndStayInCommandMode()
 			return nil
 		}
 		tm.clearNoticeAndResume()
-	case b == prefix || b == 0x1b || b == '\r' || b == '\n':
+	case b == 0x1b || b == prefix || b == tmuxSafePrefix:
+		tm.mu.Lock()
+		if tm.quitConfirm {
+			tm.quitConfirm = false
+			tm.needsRender = true
+			tm.mu.Unlock()
+			tm.writeString("\x1b[2J\x1b[H")
+			tm.drawHomeOverlay()
+			tm.drawTabBar()
+			return nil
+		}
+		tm.mu.Unlock()
 		if tm.hasStickyErrorNotice() {
 			if b == 0x1b {
 				tm.clearNoticeAndStayInCommandMode()
@@ -1437,6 +1501,17 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 			return nil
 		}
 		tm.exitCommandMode()
+	case b == '\r' || b == '\n':
+		if tm.hasStickyErrorNotice() {
+			return nil
+		}
+		if !tm.hasTabs() {
+			return tm.openNewTab(ctx, newTabFn, termState)
+		}
+		if tm.commandSelectionIsNewTab() {
+			return tm.openNewTab(ctx, newTabFn, termState)
+		}
+		tm.switchTabAndResume(tm.currentCommandTabIndex())
 	case b >= '1' && b <= '9':
 		tm.switchTabAndResume(int(b - '1'))
 	case b == 'n' || b == 'N':
@@ -1446,9 +1521,9 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 	case b == 'x' || b == 'X' || b == 'w' || b == 'W':
 		tm.closeCurrentTab()
 	case b == 'l' || b == 'L' || b == 'j' || b == 'J' || b == '\t':
-		tm.moveTabSelection(1)
+		tm.moveCommandSelection(1)
 	case b == 'h' || b == 'H' || b == 'k' || b == 'K' || b == 'p' || b == 'P':
-		tm.moveTabSelection(-1)
+		tm.moveCommandSelection(-1)
 	case b == 'u' || b == 'U':
 		if tm.updateVersion != "" {
 			return ErrUpdateRequested
@@ -1472,6 +1547,7 @@ func (tm *TabManager) switchTabAndResume(idx int) {
 		return
 	}
 	tm.commandMode = false
+	tm.commandIdx = 0
 	tm.activeIdx = idx
 	tab := tm.tabs[idx]
 	tab.statusMu.Lock()
@@ -1479,6 +1555,31 @@ func (tm *TabManager) switchTabAndResume(idx int) {
 	tab.statusMu.Unlock()
 	tm.needsRender = true
 	tm.mu.Unlock()
+}
+
+// currentCommandTabIndex returns the selected tab index in the command popup,
+// clamped to an existing tab row.
+func (tm *TabManager) currentCommandTabIndex() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(tm.tabs) == 0 {
+		return -1
+	}
+	if tm.commandIdx < 0 {
+		return 0
+	}
+	if tm.commandIdx >= len(tm.tabs) {
+		return len(tm.tabs) - 1
+	}
+	return tm.commandIdx
+}
+
+// commandSelectionIsNewTab reports whether the command popup cursor is on the
+// synthetic row that opens the chooser for a new tab.
+func (tm *TabManager) commandSelectionIsNewTab() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.commandIdx >= len(tm.tabs)
 }
 
 // forwardToActive writes bytes to the active tab's PTY.
@@ -1546,6 +1647,64 @@ func (tm *TabManager) handleActiveCtrlC(data []byte) bool {
 
 	tm.resetCtrlC()
 	return false
+}
+
+// handleHomeCtrlC manages Ctrl+C while Bifrost owns the Home/command screen.
+// The first press opens a quit confirmation; the second confirms exit.
+func (tm *TabManager) handleHomeCtrlC() bool {
+	tm.mu.Lock()
+	if len(tm.tabs) > 0 {
+		tm.mu.Unlock()
+		return false
+	}
+	if tm.quitConfirm {
+		tm.mu.Unlock()
+		return true
+	}
+	tm.commandMode = true
+	tm.quitConfirm = true
+	tm.needsRender = true
+	tm.mu.Unlock()
+
+	tm.writeString("\x1b[2J\x1b[H")
+	tm.drawHomeOverlay()
+	tm.drawTabBar()
+	return false
+}
+
+// drawHomeOverlay renders the Home screen content used when no harness tabs are
+// active.
+func (tm *TabManager) drawHomeOverlay() {
+	tm.mu.Lock()
+	rows := int(tm.rows)
+	cols := int(tm.cols)
+	confirm := tm.quitConfirm
+	tm.mu.Unlock()
+
+	message := "Bifrost CLI"
+	detail := "Home"
+	if confirm {
+		message = "Quit Bifrost?"
+		detail = "Press Ctrl+C again to quit, or Esc to cancel"
+	}
+
+	row := rows / 2
+	if row < 1 {
+		row = 1
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[1;36m%s\x1b[0m", row, centerColumn(cols, message), message)
+	fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[2m%s\x1b[0m", row+1, centerColumn(cols, detail), detail)
+	tm.writeString(b.String())
+}
+
+// centerColumn returns a 1-based column that centers text in the terminal.
+func centerColumn(cols int, text string) int {
+	col := (cols-len(text))/2 + 1
+	if col < 1 {
+		return 1
+	}
+	return col
 }
 
 func (tm *TabManager) noteCtrlC(now time.Time) bool {
@@ -1634,6 +1793,17 @@ func (tm *TabManager) moveTabSelection(delta int) {
 	tm.mu.Unlock()
 }
 
+// moveCommandSelection moves the command popup cursor across existing tabs and
+// the trailing "New tab" action row.
+func (tm *TabManager) moveCommandSelection(delta int) {
+	tm.mu.Lock()
+	total := len(tm.tabs) + 1 // final row opens a new tab; always >= 1
+	tm.commandIdx = (tm.commandIdx + delta + total) % total
+	tm.needsRender = true
+	tm.mu.Unlock()
+	tm.renderFrame()
+}
+
 // closeAllTabs sends SIGHUP to every tab's process for a clean exit.
 func (tm *TabManager) closeAllTabs() {
 	tm.mu.Lock()
@@ -1695,6 +1865,11 @@ func (tm *TabManager) removeTab(tab *Tab) {
 	tm.tabs = append(tm.tabs[:idx], tm.tabs[idx+1:]...)
 
 	if len(tm.tabs) == 0 {
+		// Closing the last tab (e.g. from the command popup or quit-confirm)
+		// must also clear overlay state. Otherwise shouldExitWithoutTabs()
+		// stays false and inputLoop() spins on the already-closed closeCh.
+		tm.commandMode = false
+		tm.quitConfirm = false
 		tm.mu.Unlock()
 		tm.signalClose()
 		return
@@ -2045,6 +2220,7 @@ func (tm *TabManager) renderFrame() {
 	scrollMode := tm.isScrollMode()
 	tm.mu.Lock()
 	scrollOffset := tm.scrollOffset
+	commandMode := tm.commandMode
 	tm.mu.Unlock()
 
 	tab.vt.Lock()
@@ -2092,11 +2268,15 @@ func (tm *TabManager) renderFrame() {
 	var frame strings.Builder
 	frame.Grow(len(screenContent) + len(tabBar) + 128)
 	frame.WriteString(tm.syncHostInputModes(vtMode))
-	frame.WriteString("\x1b[?2026h")        // begin synchronized update
-	frame.WriteString("\x1b[?25l")          // hide cursor during render
-	frame.WriteString("\x1b[r")             // reset scroll region (clear any DECSTBM left by child/chooser)
-	frame.WriteString("\x1b[H")             // cursor to home (top-left)
-	frame.WriteString(screenContent)        // VT emulator content (rows-1 lines)
+	frame.WriteString("\x1b[?2026h") // begin synchronized update
+	frame.WriteString("\x1b[?25l")   // hide cursor during render
+	frame.WriteString("\x1b[r")      // reset scroll region (clear any DECSTBM left by child/chooser)
+	frame.WriteString("\x1b[H")      // cursor to home (top-left)
+	frame.WriteString(screenContent) // VT emulator content (rows-1 lines)
+	if commandMode {
+		frame.WriteString(tm.renderCommandPopup(rows, cols))
+		showCursor = false
+	}
 	fmt.Fprintf(&frame, "\x1b[%d;1H", rows) // position on last row
 	frame.WriteString(tabBar)               // tab bar
 
@@ -2169,6 +2349,171 @@ func renderVTScreen(vt vt10x.View, cols, rows int) string {
 	}
 	b.WriteString("\x1b[0m")
 	return b.String()
+}
+
+// renderCommandPopup draws the Ctrl+B tab selector overlay on top of the active
+// tab frame. The overlay lists all existing tabs plus a final new-tab action.
+func (tm *TabManager) renderCommandPopup(rows, cols int) string {
+	tm.mu.Lock()
+	tabs := make([]*Tab, len(tm.tabs))
+	copy(tabs, tm.tabs)
+	active := tm.activeIdx
+	selected := tm.commandIdx
+	tm.mu.Unlock()
+
+	if selected < 0 {
+		selected = 0
+	}
+	maxSelection := len(tabs)
+	if selected > maxSelection {
+		selected = maxSelection
+	}
+
+	width := 56
+	if cols-4 < width {
+		width = cols - 4
+	}
+	// Only enforce the 28-column minimum when the pane can fit it; otherwise
+	// clamp to the available width so the overlay never overflows a tiny pane.
+	if cols >= 32 && width < 28 {
+		width = 28
+	}
+	if width < 1 {
+		width = 1
+	}
+
+	maxTabRows := 9
+	if len(tabs) < maxTabRows {
+		maxTabRows = len(tabs)
+	}
+	bodyRows := maxTabRows + 1
+	height := bodyRows + 4
+	contentRows := rows - 1
+	if height > contentRows {
+		height = contentRows
+	}
+	if contentRows >= 6 && height < 6 {
+		height = 6
+	}
+	if height < 1 {
+		height = 1
+	}
+
+	top := (contentRows-height)/2 + 1
+	left := (cols-width)/2 + 1
+	if top < 1 {
+		top = 1
+	}
+	if left < 1 {
+		left = 1
+	}
+
+	inner := width - 2
+	visibleTabs := height - 5
+	if visibleTabs < 0 {
+		visibleTabs = 0
+	}
+	if visibleTabs > len(tabs) {
+		visibleTabs = len(tabs)
+	}
+	start := 0
+	if selected < len(tabs) && visibleTabs > 0 {
+		start, _ = commandPopupScrollWindow(selected, len(tabs), visibleTabs)
+	}
+	end := start + visibleTabs
+	if end > len(tabs) {
+		end = len(tabs)
+	}
+
+	var b strings.Builder
+	writeAt := func(row int, text string) {
+		fmt.Fprintf(&b, "\x1b[%d;%dH%s", row, left, text)
+	}
+	pad := func(text string) string {
+		if len(text) > inner {
+			if inner > 1 {
+				text = text[:inner-1] + "…"
+			} else {
+				text = text[:inner]
+			}
+		}
+		if len(text) < inner {
+			text += strings.Repeat(" ", inner-len(text))
+		}
+		return text
+	}
+	rowText := func(idx int, text string) string {
+		prefix := "  "
+		if idx == selected {
+			prefix = "> "
+		}
+		return pad(prefix + text)
+	}
+
+	topBorder := "┌" + strings.Repeat("─", inner) + "┐"
+	bottomBorder := "└" + strings.Repeat("─", inner) + "┘"
+	writeAt(top, "\x1b[38;5;240m"+topBorder+"\x1b[0m")
+	writeAt(top+1, "\x1b[38;5;240m│\x1b[0m"+pad(" Tabs")+"\x1b[38;5;240m│\x1b[0m")
+
+	row := top + 2
+	if start > 0 {
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+pad(fmt.Sprintf("  ... %d more above", start))+"\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+	for i := start; i < end && row < top+height-2; i++ {
+		label := fmt.Sprintf("%d:%s", i+1, tabs[i].label)
+		if i == active {
+			label += "  active"
+		}
+		style := "\x1b[37m"
+		if i == selected {
+			style = "\x1b[0;48;5;28;1;37m"
+		}
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+style+rowText(i, label)+"\x1b[0m\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+	if end < len(tabs) && row < top+height-2 {
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+pad(fmt.Sprintf("  ... %d more below", len(tabs)-end))+"\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+
+	if row < top+height-2 {
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+pad("")+"\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+	newStyle := "\x1b[37m"
+	if selected == len(tabs) {
+		newStyle = "\x1b[0;48;5;28;1;37m"
+	}
+	if row < top+height-1 {
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+newStyle+rowText(len(tabs), "+ New tab")+"\x1b[0m\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+	for row < top+height-1 {
+		writeAt(row, "\x1b[38;5;240m│\x1b[0m"+pad("")+"\x1b[38;5;240m│\x1b[0m")
+		row++
+	}
+	writeAt(top+height-1, "\x1b[38;5;240m"+bottomBorder+"\x1b[0m")
+	return b.String()
+}
+
+// commandPopupScrollWindow calculates the visible tab range for the command
+// popup while keeping the selected tab near the middle of the list.
+func commandPopupScrollWindow(cursor, total, maxVisible int) (start, end int) {
+	if total <= maxVisible {
+		return 0, total
+	}
+	half := maxVisible / 2
+	start = cursor - half
+	if start < 0 {
+		start = 0
+	}
+	end = start + maxVisible
+	if end > total {
+		end = total
+		start = end - maxVisible
+	}
+	return start, end
 }
 
 // writeStyleSequence emits an SGR reset + attribute/color sequence for a glyph.
@@ -2369,6 +2714,7 @@ func (tm *TabManager) buildTabBarString() string {
 	active := tm.activeIdx
 	cols := int(tm.cols)
 	cmdMode := tm.commandMode
+	quitConfirm := tm.quitConfirm
 	scrollMode := tm.scrollMode
 	scrollOffset := tm.scrollOffset
 	noticeText := tm.noticeText
@@ -2425,13 +2771,15 @@ func (tm *TabManager) buildTabBarString() string {
 		}
 	}
 
-	hint := " ^B tab mode "
+	hint := " " + tabModeHintLabel() + " tab mode "
 	if noticeText != "" {
 		if noticeLevel == TabNoticeError {
 			hint = " error: " + noticeText + "  Esc: clear "
 		} else {
 			hint = " " + noticeText + " "
 		}
+	} else if quitConfirm {
+		hint = " Quit Bifrost?  Ctrl+C: confirm  Esc: cancel "
 	} else if scrollMode {
 		sbLen := 0
 		if active < len(tabs) && tabs[active] != nil && tabs[active].sb != nil {
@@ -2445,7 +2793,13 @@ func (tm *TabManager) buildTabBarString() string {
 		}
 		hint += " Esc:resume "
 	}
-	used := tm.tabBarContentWidth(tabs) + len(hint) + len(versionLabel)
+	contentWidth := tm.tabBarContentWidth(tabs)
+	availableHint := cols - contentWidth - len(versionLabel)
+	if availableHint < 0 {
+		availableHint = 0
+	}
+	hint = truncateCells(hint, availableHint)
+	used := contentWidth + len(hint) + len(versionLabel)
 	if cols > used {
 		b.WriteString(bg + strings.Repeat(" ", cols-used))
 	}
@@ -2453,7 +2807,7 @@ func (tm *TabManager) buildTabBarString() string {
 	if versionLabel != "" {
 		b.WriteString(bg + "\x1b[36m" + versionLabel)
 	}
-	b.WriteString(reset)	
+	b.WriteString(reset)
 	return b.String()
 }
 
@@ -2676,6 +3030,31 @@ func normalizedVersionLabel(version string) string {
 		return version
 	}
 	return "v" + version
+}
+
+// tabModeHintLabel returns the tab-mode shortcut shown in the bottom bar.
+// Inside tmux, Ctrl+B is normally tmux's own prefix, so Bifrost advertises
+// Ctrl+G as the one-press shortcut.
+func tabModeHintLabel() string {
+	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
+		return "^G"
+	}
+	return "^B"
+}
+
+// truncateCells trims a plain ASCII status string to fit in the requested cell
+// width. It is used only for tab-bar hints, which intentionally avoid ANSI.
+func truncateCells(value string, maxCells int) string {
+	if maxCells <= 0 {
+		return ""
+	}
+	if len(value) <= maxCells {
+		return value
+	}
+	if maxCells <= 1 {
+		return value[:maxCells]
+	}
+	return value[:maxCells-1] + "…"
 }
 
 func (tm *TabManager) contentRows() uint16 {

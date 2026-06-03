@@ -22,6 +22,7 @@ type BifrostConfig struct {
 	LLMPlugins         []LLMPlugin
 	MCPPlugins         []MCPPlugin
 	OAuth2Provider     OAuth2Provider
+	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
 	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
@@ -192,6 +193,7 @@ const (
 	BifrostContextKeyVirtualKey        BifrostContextKey = "x-bf-vk"               // string
 	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
 
@@ -244,7 +246,7 @@ const (
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
 	BifrostContextKeyMCPSessionID                        BifrostContextKey = "bifrost-mcp-session-id"                           // string (session-mode identity: any opaque value asserted by the caller via x-bf-mcp-session-id; binds the OAuth token row to subsequent /mcp calls when no VK or user is present)
-	BifrostContextKeyOAuthRedirectURI                    BifrostContextKey = "bifrost-oauth-redirect-uri"                       // string (OAuth callback URL, e.g. https://host/api/oauth/callback - set by HTTP middleware)
+	BifrostContextKeyMCPCallbackBaseURL                  BifrostContextKey = "bifrost-mcp-callback-base-url"                    // string (base URL like "https://host" — set by HTTP middleware. OAuth resolver appends /api/oauth/callback; headers resolver appends the workspace submit path. Used for both per-user OAuth and per-user headers auth flows)
 	BifrostContextKeyIsMCPGateway                        BifrostContextKey = "bifrost-is-mcp-gateway"                           // bool (true when request is being handled via the MCP gateway path)
 	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
@@ -255,6 +257,7 @@ const (
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResolvedProvider                    BifrostContextKey = "bifrost-resolved-provider"                        // ModelProvider (set by routing - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStoreRawRequestResponse             BifrostContextKey = "bifrost-store-raw-request-response"               // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyCaptureRawRequest                   BifrostContextKey = "bifrost-capture-raw-request"                      // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw request bytes
 	BifrostContextKeyCaptureRawResponse                  BifrostContextKey = "bifrost-capture-raw-response"                     // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw response bytes
@@ -349,14 +352,27 @@ const (
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
-// FailReason is supplementary retry metadata: it is populated only when another retry will be
-// attempted (i.e. a non-terminal attempt), and is nil on any terminal attempt — including success,
-// non-retryable failure, or a retryable error when no retries remain.
+//
+// FailReason is populated on every failed attempt (retryable or terminal) and is nil only on a
+// successful attempt. Status-derived values are: `rate_limit_error` (429), `authentication_error`
+// (401/403), `billing_error` (402); otherwise the provider's error Type is used, falling back to
+// `unknown`. Use it to inspect what went wrong on a given try.
+//
+// TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
+// rotate to a *different* key. It is false on:
+//   - the final (terminal) attempt of a request, regardless of outcome,
+//   - any successful attempt,
+//   - same-key retries (transient 5xx / network errors keep the same key),
+//   - non-retryable failures,
+//   - fixed-key paths and 429 pool-resets that re-pick the same key (no rotation actually happened).
+//
+// Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {
-	Attempt    int     `json:"attempt"`
-	KeyID      string  `json:"key_id"`
-	KeyName    string  `json:"key_name"`
-	FailReason *string `json:"fail_reason,omitempty"`
+	Attempt           int     `json:"attempt"`
+	KeyID             string  `json:"key_id"`
+	KeyName           string  `json:"key_name"`
+	FailReason        *string `json:"fail_reason,omitempty"`
+	TriggeredRotation bool    `json:"triggered_rotation"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine
@@ -1417,6 +1433,7 @@ type BifrostResponseExtraFields struct {
 	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
 	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath          string             `json:"passthrough_path,omitempty"`             // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -1663,5 +1680,5 @@ type BifrostErrorExtraFields struct {
 	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
 	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
-	MCPAuthRequired           *MCPUserOAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user OAuth MCP tool requires authentication
+	MCPAuthRequired           *MCPAuthRequiredError      `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 }

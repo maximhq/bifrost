@@ -291,12 +291,12 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 		wantAbsent   []string // substrings that must NOT appear in the wire JSON
 	}{
 		{
-			name:         "nullable type produces type+nullable fields not array",
+			name:         "nullable union array is passed through unchanged",
 			propertyJSON: `"timeout_secs":{"type":["integer","null"],"description":"Timeout"}`,
 			propertyName: "timeout_secs",
-			// Vertex requires a single string "type"; array would be rejected
-			wantContains: []string{`"type":"integer"`, `"nullable":true`},
-			wantAbsent:   []string{`"type":["integer"`, `"type":["null"`},
+			// parametersJsonSchema passthrough: array form is preserved as-is
+			wantContains: []string{`"type":["integer","null"]`},
+			wantAbsent:   []string{`"nullable"`, `"anyOf"`},
 		},
 		{
 			name:         "plain string type passes through unchanged",
@@ -306,18 +306,18 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			wantAbsent:   []string{`"nullable"`, `"anyOf"`},
 		},
 		{
-			name:         "multi-type union produces anyOf not array type",
+			name:         "multi-type union array is passed through unchanged",
 			propertyJSON: `"value":{"type":["integer","string"]}`,
 			propertyName: "value",
-			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"}]`},
-			wantAbsent:   []string{`"type":["integer"`, `"type":["string"`},
+			wantContains: []string{`"type":["integer","string"]`},
+			wantAbsent:   []string{`"anyOf"`, `"nullable"`},
 		},
 		{
-			name:         "multi-type nullable union folds null into anyOf",
+			name:         "multi-type nullable union array is passed through unchanged",
 			propertyJSON: `"value":{"type":["integer","string","null"]}`,
 			propertyName: "value",
-			wantContains: []string{`"anyOf":[{"type":"integer"},{"type":"string"},{"type":"null"}]`},
-			wantAbsent:   []string{`"type":["integer"`, `"nullable":true`},
+			wantContains: []string{`"type":["integer","string","null"]`},
+			wantAbsent:   []string{`"anyOf"`, `"nullable"`},
 		},
 	}
 
@@ -346,4 +346,24 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertBifrostToolsToGemini_WirePayloadPreservesDefs(t *testing.T) {
+	toolJSON := `{"type":"function","function":{"name":"suggest_time","parameters":{"type":"object","properties":{"attendeeEmails":{"type":"array","items":{"type":"string"},"description":"The attendee emails to find free time for."},"preferences":{"$ref":"#/$defs/Preferences"}},"required":["attendeeEmails"],"$defs":{"Preferences":{"type":"object","properties":{"startHour":{"type":"string"}}}}}}}`
+
+	var chatTool schemas.ChatTool
+	require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
+
+	copied := schemas.DeepCopyChatTool(chatTool)
+	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{copied})
+	require.NoError(t, err)
+	require.Len(t, geminiTools, 1)
+
+	wire, err := providerUtils.MarshalSorted(geminiTools[0])
+	require.NoError(t, err)
+	wireStr := string(wire)
+
+	assert.Contains(t, wireStr, `"$defs"`)
+	assert.Contains(t, wireStr, `"Preferences"`)
+	assert.Contains(t, wireStr, `"$ref":"#/$defs/Preferences"`)
 }

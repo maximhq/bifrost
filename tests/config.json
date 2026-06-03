@@ -215,8 +215,7 @@
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           },
           "aliases": {
             "gpt-5.4": "gpt-5.4",

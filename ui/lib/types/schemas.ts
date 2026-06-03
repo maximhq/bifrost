@@ -79,7 +79,6 @@ export const azureKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
 		endpoint: envVarSchema.optional(),
-		api_version: envVarSchema.optional(),
 		client_id: envVarSchema.optional(),
 		client_secret: envVarSchema.optional(),
 		tenant_id: envVarSchema.optional(),
@@ -328,6 +327,7 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -380,6 +380,7 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
@@ -675,6 +676,7 @@ export const coreConfigSchema = z.object({
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 
 // Bifrost config schema
@@ -739,14 +741,16 @@ export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({
+		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
+		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
-		collector_url: z.string().default(""),
+		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
 		trace_type: z
 			.enum(["genai_extension", "vercel", "open_inference"], {
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
-		headers: z.record(z.string(), z.string()).optional(),
+		headers: z.record(z.string(), envVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -757,10 +761,14 @@ export const otelConfigSchema = z
 		insecure: z.boolean().default(true),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
-		metrics_endpoint: z.string().optional(),
+		metrics_endpoint: envVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
+		request_headers: z.array(z.string()).default([]),
 	})
 	.superRefine((data, ctx) => {
+		// A disabled profile is not sent anywhere, so skip all validation for it.
+		if (data.enabled === false) return;
+
 		const protocol = data.protocol;
 		const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
 
@@ -810,54 +818,52 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Validate collector_url format (emptiness check is at form level, gated by enabled)
-		const collectorUrl = (data.collector_url || "").trim();
-		if (collectorUrl && protocol === "http") {
+		// Collector address is required for an enabled profile.
+		if (!isEnvVarSet(data.collector_url)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["collector_url"],
+				message: "Collector address is required",
+			});
+		}
+
+		// Validate collector_url format — skip format check for env var references
+		const collectorUrl = (data.collector_url?.value || "").trim();
+		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && protocol === "grpc") {
+		} else if (collectorUrl && !data.collector_url?.from_env && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
 		if (data.metrics_enabled) {
-			const metricsEndpoint = (data.metrics_endpoint || "").trim();
-			if (!metricsEndpoint) {
+			const metricsEndpoint = (data.metrics_endpoint?.value || "").trim();
+			if (!isEnvVarSet(data.metrics_endpoint)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["metrics_endpoint"],
 					message: "Metrics endpoint is required when metrics push is enabled",
 				});
-			} else if (protocol === "http") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
-			} else if (protocol === "grpc") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
 	});
 
-// OTEL form schema for the OtelFormFragment
-export const otelFormSchema = z
-	.object({
-		enabled: z.boolean().default(true),
-		otel_config: otelConfigSchema,
-	})
-	.superRefine((data, ctx) => {
-		if (data.enabled) {
-			const collectorUrl = (data.otel_config.collector_url || "").trim();
-			if (!collectorUrl) {
-				ctx.addIssue({
-					code: "custom",
-					path: ["otel_config", "collector_url"],
-					message: "Collector address is required",
-				});
-			}
-		}
-	});
+// OTEL form schema for the OtelFormFragment. The plugin itself is gated by `enabled`;
+// it carries one or more export profiles, each independently enable-able.
+export const otelFormSchema = z.object({
+	enabled: z.boolean().default(true),
+	profiles: z.array(otelConfigSchema).min(1, "At least one profile is required"),
+});
 
 // Maxim Configuration Schema
 export const maximConfigSchema = z.object({
 	api_key: z.string().default(""),
 	log_repo_id: z.string().optional(),
+	request_headers: z.array(z.string()).default([]),
 });
 
 // Maxim form schema for the MaximFormFragment
@@ -888,17 +894,17 @@ export const maximFormSchema = z
 // Prometheus Push Gateway Configuration Schema
 export const prometheusConfigSchema = z
 	.object({
-		push_gateway_url: z.string().optional(),
+		push_gateway_url: envVarSchema.optional(),
 		job_name: z.string().default("bifrost"),
 		instance_id: z.string().optional(),
 		push_interval: z.number().min(1).max(300).default(15),
-		basic_auth_username: z.string().optional(),
-		basic_auth_password: z.string().optional(),
+		basic_auth_username: envVarSchema.optional(),
+		basic_auth_password: envVarSchema.optional(),
 	})
 	.superRefine((data, ctx) => {
-		// Validate push_gateway_url format
-		const url = (data.push_gateway_url || "").trim();
-		if (url) {
+		// Validate push_gateway_url format — skip for env var references
+		const url = (data.push_gateway_url?.value || "").trim();
+		if (url && !data.push_gateway_url?.from_env) {
 			try {
 				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {
@@ -918,8 +924,8 @@ export const prometheusConfigSchema = z
 		}
 
 		// Validate basic auth: if one credential is provided, both must be provided
-		const hasUsername = !!data.basic_auth_username?.trim();
-		const hasPassword = !!data.basic_auth_password?.trim();
+		const hasUsername = isEnvVarSet(data.basic_auth_username);
+		const hasPassword = isEnvVarSet(data.basic_auth_password);
 		if (hasUsername && !hasPassword) {
 			ctx.addIssue({
 				code: "custom",
@@ -945,8 +951,8 @@ export const prometheusFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.push_gateway_enabled) {
-			const url = (data.prometheus_config.push_gateway_url || "").trim();
-			if (!url) {
+			const urlIsSet = isEnvVarSet(data.prometheus_config.push_gateway_url);
+			if (!urlIsSet) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["prometheus_config", "push_gateway_url"],
@@ -975,6 +981,17 @@ export const mcpClientUpdateSchema = z.object({
 			message: "Client name cannot start with a number",
 		}),
 	headers: z.record(z.string(), envVarSchema).optional().nullable(),
+	per_user_header_keys: z
+		.array(z.string().trim().min(1, "Header name cannot be empty"))
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers) return true;
+				const normalized = headers.map((h) => h.trim().toLowerCase());
+				return normalized.length === new Set(normalized).size;
+			},
+			{ message: "Duplicate header names are not allowed" },
+		),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -1028,6 +1045,12 @@ export const mcpClientUpdateSchema = z.object({
 		.object({
 			client_id: envVarSchema.optional(),
 			client_secret: envVarSchema.optional(),
+		})
+		.optional(),
+	tls_config: z
+		.object({
+			insecure_skip_verify: z.boolean().optional(),
+			ca_cert_pem: envVarSchema.optional(),
 		})
 		.optional(),
 });

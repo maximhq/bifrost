@@ -1544,6 +1544,65 @@ type UserRankingResult struct {
 	Rankings []UserRankingWithTrend `json:"rankings"`
 }
 
+// RankingDimension is the column used for grouping in dimension rankings.
+type RankingDimension string
+
+const (
+	RankingDimensionTeam         RankingDimension = "team"
+	RankingDimensionCustomer     RankingDimension = "customer"
+	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionUser         RankingDimension = "user"
+)
+
+var ValidRankingDimensions = map[RankingDimension]bool{
+	RankingDimensionTeam:         true,
+	RankingDimensionCustomer:     true,
+	RankingDimensionBusinessUnit: true,
+	RankingDimensionUser:         true,
+}
+
+type dimensionColumnDef struct {
+	IDCol   string
+	NameCol string
+}
+
+var dimensionColumns = map[RankingDimension]dimensionColumnDef{
+	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
+	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
+	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+}
+
+func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
+	def, exists := dimensionColumns[d]
+	return def.IDCol, def.NameCol, exists
+}
+
+type DimensionRankingEntry struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name,omitempty"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+type DimensionRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+}
+
+type DimensionRankingWithTrend struct {
+	DimensionRankingEntry
+	Trend DimensionRankingTrend `json:"trend"`
+}
+
+type DimensionRankingResult struct {
+	Rankings  []DimensionRankingWithTrend `json:"rankings"`
+	Dimension RankingDimension            `json:"dimension"`
+}
+
 // NodeUsageCursor identifies the last log row included in a node usage scan.
 // The initial scan uses Timestamp + LogID because each ghost has a timestamp
 // lower bound. Once rows written with IncNumber are seen, subsequent scans use
