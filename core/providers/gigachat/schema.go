@@ -109,8 +109,8 @@ func sanitizeGigaChatSchemaMap(schema *schemas.OrderedMap, root *schemas.Ordered
 	if err := sanitizeGigaChatSchemaAdditionalProperties(schema, root, resolving, path); err != nil {
 		return nil, false, err
 	}
-	if err := sanitizeGigaChatSchemaAllOf(schema, root, resolving, path); err != nil {
-		return nil, false, err
+	if nullOnly, err := sanitizeGigaChatSchemaAllOf(schema, root, resolving, path); err != nil || nullOnly {
+		return nil, nullOnly, err
 	}
 
 	schema.Delete("$defs")
@@ -298,28 +298,31 @@ func sanitizeGigaChatSchemaAdditionalProperties(schema *schemas.OrderedMap, root
 	return nil
 }
 
-func sanitizeGigaChatSchemaAllOf(schema *schemas.OrderedMap, root *schemas.OrderedMap, resolving map[string]bool, path string) error {
+func sanitizeGigaChatSchemaAllOf(schema *schemas.OrderedMap, root *schemas.OrderedMap, resolving map[string]bool, path string) (bool, error) {
 	value, ok := schema.Get("allOf")
 	if !ok || value == nil {
-		return nil
+		return false, nil
 	}
 	branches, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("%s.allOf: expected an array", path)
+		return false, fmt.Errorf("%s.allOf: expected an array", path)
 	}
 
 	sanitizedBranches := make([]interface{}, 0, len(branches))
 	for index, branch := range branches {
 		sanitized, nullOnly, err := sanitizeGigaChatNestedSchemaValue(branch, root, resolving, fmt.Sprintf("%s.allOf[%d]", path, index))
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !nullOnly {
 			sanitizedBranches = append(sanitizedBranches, sanitized)
 		}
 	}
+	if len(branches) > 0 && len(sanitizedBranches) == 0 {
+		return true, nil
+	}
 	schema.Set("allOf", sanitizedBranches)
-	return nil
+	return false, nil
 }
 
 func sanitizeGigaChatNestedSchemaValue(value interface{}, root *schemas.OrderedMap, resolving map[string]bool, path string) (interface{}, bool, error) {

@@ -134,7 +134,6 @@ export interface GigaChatKeyConfig {
 	base_url?: string;
 	cert_file?: string;
 	key_file?: string;
-	key_file_password?: EnvVar;
 	ca_bundle_file?: string;
 }
 
@@ -148,7 +147,6 @@ export const DefaultGigaChatKeyConfig: GigaChatKeyConfig = {
 	base_url: "",
 	cert_file: "",
 	key_file: "",
-	key_file_password: { value: "", env_var: "", from_env: false },
 	ca_bundle_file: "",
 } as const satisfies Required<GigaChatKeyConfig>;
 

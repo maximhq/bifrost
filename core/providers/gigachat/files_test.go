@@ -144,6 +144,7 @@ func TestGigaChatFilesHTTP(t *testing.T) {
 	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
 	t.Run("ListUsesKeyBaseURLAndAuthHeaders", testGigaChatFileListUsesKeyBaseURLAndAuthHeaders)
 	t.Run("ListAppliesLimitAndRawRequest", testGigaChatFileListAppliesLimitAndRawRequest)
+	t.Run("ListPreservesUpstreamPurposeWhenFiltering", testGigaChatFileListPreservesUpstreamPurposeWhenFiltering)
 	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
 	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
 	t.Run("ContentBase64Wrapper", testGigaChatFileContentBase64Wrapper)
@@ -307,6 +308,72 @@ func TestGigaChatFileUploadMetadata(t *testing.T) {
 	}
 }
 
+func TestGigaChatMultipartFilenameEscaping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		filename string
+		want     string
+	}{
+		{
+			name:     "normal unicode filename is preserved",
+			filename: "отчет.txt",
+			want:     "отчет.txt",
+		},
+		{
+			name:     "quotes are escaped",
+			filename: `report "final".txt`,
+			want:     `report \"final\".txt`,
+		},
+		{
+			name:     "backslashes are escaped",
+			filename: `dir\file.txt`,
+			want:     `dir\\file.txt`,
+		},
+		{
+			name:     "line feed is replaced",
+			filename: "bad\nname.txt",
+			want:     "bad_name.txt",
+		},
+		{
+			name:     "carriage return is replaced",
+			filename: "bad\rname.txt",
+			want:     "bad_name.txt",
+		},
+		{
+			name:     "crlf is replaced",
+			filename: "bad\r\nname.txt",
+			want:     "bad__name.txt",
+		},
+		{
+			name:     "other control characters are replaced",
+			filename: "bad\x00\t\x7fname.txt",
+			want:     "bad___name.txt",
+		},
+		{
+			name:     "sanitized filename can still escape quotes and backslashes",
+			filename: "bad\r\ndir\\file \"final\".txt",
+			want:     "bad__dir\\\\file \\\"final\\\".txt",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := escapeGigaChatMultipartFilename(tt.filename)
+			if got != tt.want {
+				t.Fatalf("escapeGigaChatMultipartFilename(%q) = %q, want %q", tt.filename, got, tt.want)
+			}
+			if strings.ContainsAny(got, "\r\n") {
+				t.Fatalf("escaped filename still contains CR/LF: %q", got)
+			}
+		})
+	}
+}
+
 func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -390,6 +457,38 @@ func testGigaChatFileListAppliesLimitAndRawRequest(t *testing.T) {
 	}
 	if response.ExtraFields.RawResponse == nil {
 		t.Fatal("expected raw response")
+	}
+}
+
+func testGigaChatFileListPreservesUpstreamPurposeWhenFiltering(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s, want GET", request.Method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"general-file","object":"file","bytes":10,"created_at":1780306293,"filename":"general.txt","purpose":"general"},{"id":"assistant-file","object":"file","bytes":20,"created_at":1780306294,"filename":"assistant.txt","purpose":"assistant"}]}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.FileList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("files-token")}, &schemas.BifrostFileListRequest{
+		Provider: schemas.GigaChat,
+		Purpose:  schemas.FilePurposeAssistants,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileList returned error: %v", bifrostErr)
+	}
+	if len(response.Data) != 1 {
+		t.Fatalf("file count mismatch: got %d files: %#v", len(response.Data), response.Data)
+	}
+	if response.Data[0].ID != "assistant-file" || response.Data[0].Purpose != schemas.FilePurposeAssistants {
+		t.Fatalf("unexpected filtered file: %#v", response.Data[0])
 	}
 }
 

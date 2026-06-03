@@ -474,10 +474,6 @@ func mergeGigaChatKeyConfigSecrets(updateConfig, oldRedactedConfig, oldRawConfig
 		updateConfig.AccessToken.IsRedacted() && updateConfig.AccessToken.Equals(oldRedactedConfig.AccessToken) {
 		mergedConfig.AccessToken = oldRawConfig.AccessToken
 	}
-	if updateConfig.KeyFilePassword != nil && oldRedactedConfig.KeyFilePassword != nil &&
-		updateConfig.KeyFilePassword.IsRedacted() && updateConfig.KeyFilePassword.Equals(oldRedactedConfig.KeyFilePassword) {
-		mergedConfig.KeyFilePassword = oldRawConfig.KeyFilePassword
-	}
 	if updateConfig.CertFile == oldRedactedConfig.CertFile && updateConfig.CertFile == "<REDACTED>" {
 		mergedConfig.CertFile = oldRawConfig.CertFile
 	}

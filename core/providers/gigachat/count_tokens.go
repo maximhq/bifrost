@@ -158,6 +158,9 @@ func toGigaChatCountTokensContentBlockText(index int, blockIndex int, block sche
 	if block.ResponsesOutputMessageContentRefusal != nil && strings.TrimSpace(block.ResponsesOutputMessageContentRefusal.Refusal) != "" {
 		return block.ResponsesOutputMessageContentRefusal.Refusal, true, nil
 	}
+	if block.ResponsesOutputMessageContentText != nil {
+		return "", false, nil
+	}
 
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText,
@@ -186,7 +189,6 @@ func isGigaChatCountTokensUnsupportedMediaBlock(block schemas.ResponsesMessageCo
 
 func hasGigaChatCountTokensNonTextBlockPayload(block schemas.ResponsesMessageContentBlock) bool {
 	return block.Signature != nil ||
-		block.ResponsesOutputMessageContentText != nil ||
 		block.ResponsesOutputMessageContentRenderedContent != nil ||
 		block.ResponsesOutputMessageContentCompaction != nil ||
 		block.CacheControl != nil ||

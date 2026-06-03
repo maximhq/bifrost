@@ -698,7 +698,7 @@ func toBifrostGigaChatMessage(message *GigaChatChatMessage) *schemas.ChatMessage
 	return bifrostMessage
 }
 
-func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *schemas.ChatStreamResponseChoiceDelta {
+func toBifrostGigaChatStreamDelta(_ int, delta *GigaChatChatStreamDelta) *schemas.ChatStreamResponseChoiceDelta {
 	if delta == nil {
 		return &schemas.ChatStreamResponseChoiceDelta{}
 	}
@@ -714,7 +714,7 @@ func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *sc
 		toolCallType := string(schemas.ChatToolTypeFunction)
 		bifrostDelta.ToolCalls = []schemas.ChatAssistantMessageToolCall{
 			{
-				Index: uint16(index),
+				Index: 0,
 				Type:  &toolCallType,
 				ID:    delta.FunctionsStateID,
 				Function: schemas.ChatAssistantMessageToolCallFunction{

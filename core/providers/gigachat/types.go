@@ -235,6 +235,7 @@ type GigaChatBatchMethod string
 
 const (
 	GigaChatBatchMethodChatCompletions GigaChatBatchMethod = "chat_completions"
+	GigaChatBatchMethodResponses       GigaChatBatchMethod = "responses"
 	GigaChatBatchMethodEmbedder        GigaChatBatchMethod = "embedder"
 )
 

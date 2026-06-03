@@ -2632,10 +2632,6 @@
                   "type": "string",
                   "description": "Client private key file for GigaChat mTLS. Must be configured with cert_file."
                 },
-                "key_file_password": {
-                  "type": "string",
-                  "description": "Reserved for encrypted GigaChat client private keys (can use env. prefix). Encrypted private keys are currently rejected by the provider."
-                },
                 "ca_bundle_file": {
                   "type": "string",
                   "description": "CA bundle file for GigaChat TLS roots. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
@@ -2645,8 +2641,7 @@
                 "user": ["password"],
                 "password": ["user"],
                 "cert_file": ["key_file"],
-                "key_file": ["cert_file"],
-                "key_file_password": ["cert_file", "key_file"]
+                "key_file": ["cert_file"]
               },
               "additionalProperties": false
             }

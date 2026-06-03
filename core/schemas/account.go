@@ -280,17 +280,16 @@ const (
 
 // GigaChatKeyConfig represents GigaChat-specific authentication and endpoint settings.
 type GigaChatKeyConfig struct {
-	Credentials     *EnvVar `json:"credentials,omitempty"`       // Authorization key for OAuth token exchange (supports env.*)
-	Scope           string  `json:"scope,omitempty"`             // OAuth scope. Defaults to GIGACHAT_API_PERS.
-	User            *EnvVar `json:"user,omitempty"`              // Username for password auth mode (supports env.*)
-	Password        *EnvVar `json:"password,omitempty"`          // Password for password auth mode (supports env.*)
-	AccessToken     *EnvVar `json:"access_token,omitempty"`      // Pre-obtained access token (supports env.*)
-	AuthURL         string  `json:"auth_url,omitempty"`          // OAuth token endpoint override
-	BaseURL         string  `json:"base_url,omitempty"`          // API base URL override for this key
-	CertFile        string  `json:"cert_file,omitempty"`         // Client certificate file for mTLS
-	KeyFile         string  `json:"key_file,omitempty"`          // Client private key file for mTLS
-	KeyFilePassword *EnvVar `json:"key_file_password,omitempty"` // Reserved for encrypted client private keys; currently unsupported (supports env.*)
-	CABundleFile    string  `json:"ca_bundle_file,omitempty"`    // CA bundle file for GigaChat TLS roots
+	Credentials  *EnvVar `json:"credentials,omitempty"`    // Authorization key for OAuth token exchange (supports env.*)
+	Scope        string  `json:"scope,omitempty"`          // OAuth scope. Defaults to GIGACHAT_API_PERS.
+	User         *EnvVar `json:"user,omitempty"`           // Username for password auth mode (supports env.*)
+	Password     *EnvVar `json:"password,omitempty"`       // Password for password auth mode (supports env.*)
+	AccessToken  *EnvVar `json:"access_token,omitempty"`   // Pre-obtained access token (supports env.*)
+	AuthURL      string  `json:"auth_url,omitempty"`       // OAuth token endpoint override
+	BaseURL      string  `json:"base_url,omitempty"`       // API base URL override for this key
+	CertFile     string  `json:"cert_file,omitempty"`      // Client certificate file for mTLS
+	KeyFile      string  `json:"key_file,omitempty"`       // Client private key file for mTLS
+	CABundleFile string  `json:"ca_bundle_file,omitempty"` // CA bundle file for GigaChat TLS roots
 }
 
 // CheckAndSetDefaults applies GigaChat defaults that are safe at config-parse time.
@@ -321,10 +320,6 @@ func (config *GigaChatKeyConfig) Validate() error {
 	if hasCertFile != hasKeyFile {
 		return fmt.Errorf("gigachat_key_config.cert_file and gigachat_key_config.key_file must be set together")
 	}
-	if config.KeyFilePassword.IsSet() && !hasKeyFile {
-		return fmt.Errorf("gigachat_key_config.key_file_password requires cert_file and key_file")
-	}
-
 	return nil
 }
 
@@ -349,7 +344,6 @@ func (config *GigaChatKeyConfig) HasTLSMaterial() bool {
 	}
 	return strings.TrimSpace(config.CertFile) != "" ||
 		strings.TrimSpace(config.KeyFile) != "" ||
-		config.KeyFilePassword.IsSet() ||
 		strings.TrimSpace(config.CABundleFile) != ""
 }
 
@@ -363,7 +357,6 @@ func (config *GigaChatKeyConfig) Redacted() *GigaChatKeyConfig {
 	redacted.User = config.User.FullyRedacted()
 	redacted.Password = config.Password.FullyRedacted()
 	redacted.AccessToken = config.AccessToken.FullyRedacted()
-	redacted.KeyFilePassword = config.KeyFilePassword.FullyRedacted()
 	redacted.CertFile = redactNonEmptyString(config.CertFile)
 	redacted.KeyFile = redactNonEmptyString(config.KeyFile)
 	redacted.CABundleFile = redactNonEmptyString(config.CABundleFile)

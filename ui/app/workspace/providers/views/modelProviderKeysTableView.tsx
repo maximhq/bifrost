@@ -242,7 +242,6 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															key.gigachat_key_config?.access_token?.from_env ||
 															key.gigachat_key_config?.user?.from_env ||
 															key.gigachat_key_config?.password?.from_env ||
-															key.gigachat_key_config?.key_file_password?.from_env ||
 															key.value?.from_env;
 														const isEnvResolutionError =
 															hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);

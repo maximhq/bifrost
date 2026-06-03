@@ -842,6 +842,21 @@ func TestGigaChatFunctionSchemaSanitizerRejectsAmbiguousUnions(t *testing.T) {
 	}
 }
 
+func TestGigaChatFunctionSchemaSanitizerRejectsNullOnlyAllOf(t *testing.T) {
+	t.Parallel()
+
+	parameters := mustGigaChatToolParameters(t, `{
+		"type": "object",
+		"properties": {
+			"value": {"allOf": [{"type": "null"}]}
+		}
+	}`)
+	_, err := sanitizeGigaChatFunctionSchema(parameters)
+	if err == nil || !strings.Contains(err.Error(), "$.properties.value") || !strings.Contains(err.Error(), "null-only schemas") {
+		t.Fatalf("expected null-only allOf error, got %v", err)
+	}
+}
+
 func TestGigaChatFunctionSchemaSanitizerHandlesTopLevelNullableObject(t *testing.T) {
 	t.Parallel()
 

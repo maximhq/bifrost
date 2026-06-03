@@ -199,15 +199,16 @@ func gigaChatChatFileUpload(blockIndex int, file *schemas.ChatInputFile) (gigaCh
 		}, nil
 	}
 
+	if isGigaChatTextContentType(contentType) {
+		return gigaChatChatAttachmentUpload{
+			file:        []byte(fileData),
+			filename:    filenameForGigaChatAttachment(filename, contentType, "file"),
+			contentType: normalizeGigaChatContentType(contentType),
+		}, nil
+	}
+
 	decoded, err := decodeGigaChatAttachmentBase64(fileData)
 	if err != nil {
-		if isGigaChatTextContentType(contentType) {
-			return gigaChatChatAttachmentUpload{
-				file:        []byte(fileData),
-				filename:    filenameForGigaChatAttachment(filename, contentType, "file"),
-				contentType: normalizeGigaChatContentType(contentType),
-			}, nil
-		}
 		return gigaChatChatAttachmentUpload{}, fmt.Errorf("content block %d: file_data must be a base64 data URL or base64-encoded content: %w", blockIndex, err)
 	}
 

@@ -2,6 +2,7 @@ package gigachat
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -97,6 +98,34 @@ func TestBuildGigaChatURL(t *testing.T) {
 				t.Fatalf("buildGigaChatURL() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRedactGigaChatSensitiveText(t *testing.T) {
+	t.Parallel()
+
+	input := `"access_token":"double-secret" "password": "spaced-secret" 'client_secret':'single-secret' credentials=plain-secret authorization=assignment-secret Bearer header-secret -----BEGIN PRIVATE KEY-----
+private-secret
+-----END PRIVATE KEY-----`
+
+	got := redactGigaChatSensitiveText(input)
+	for _, secret := range []string{"double-secret", "spaced-secret", "single-secret", "plain-secret", "assignment-secret", "header-secret", "private-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redacted text leaked %q in %s", secret, got)
+		}
+	}
+	for _, want := range []string{
+		`"access_token":"<redacted>"`,
+		`"password": "<redacted>"`,
+		`'client_secret':'<redacted>'`,
+		`credentials=<redacted>`,
+		`authorization=<redacted>`,
+		`Bearer <redacted>`,
+		`<redacted-private-key>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("redacted text missing %q in %s", want, got)
+		}
 	}
 }
 

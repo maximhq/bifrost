@@ -241,7 +241,7 @@ func toGigaChatBatchMethod(endpoint schemas.BatchEndpoint) (GigaChatBatchMethod,
 	case "/v1/chat/completions", "/chat/completions":
 		return GigaChatBatchMethodChatCompletions, nil
 	case "/v1/responses", "/responses":
-		return GigaChatBatchMethodChatCompletions, nil
+		return GigaChatBatchMethodResponses, nil
 	case "/v1/embeddings", "/embeddings":
 		return GigaChatBatchMethodEmbedder, nil
 	default:
@@ -429,6 +429,8 @@ func toBifrostGigaChatBatchEndpoint(method GigaChatBatchMethod) string {
 	switch method {
 	case GigaChatBatchMethodChatCompletions:
 		return string(schemas.BatchEndpointChatCompletions)
+	case GigaChatBatchMethodResponses:
+		return string(schemas.BatchEndpointResponses)
 	case GigaChatBatchMethodEmbedder:
 		return string(schemas.BatchEndpointEmbeddings)
 	default:

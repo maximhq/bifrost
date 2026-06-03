@@ -243,7 +243,6 @@ export const gigachatKeyConfigSchema = z
 		base_url: z.union([z.string().url("Must be a valid URL"), z.string().length(0)]).optional(),
 		cert_file: z.string().optional(),
 		key_file: z.string().optional(),
-		key_file_password: envVarSchema.optional(),
 		ca_bundle_file: z.string().optional(),
 	})
 	.superRefine((data, ctx) => {
@@ -267,13 +266,6 @@ export const gigachatKeyConfigSchema = z
 			});
 		}
 
-		if (isEnvVarSet(data.key_file_password)) {
-			ctx.addIssue({
-				code: "custom",
-				message: "Encrypted GigaChat client private keys are not supported",
-				path: ["key_file_password"],
-			});
-		}
 	});
 
 function isGigaChatAuthConfigured(config: z.infer<typeof gigachatKeyConfigSchema> | undefined): boolean {

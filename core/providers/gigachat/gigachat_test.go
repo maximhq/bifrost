@@ -31,9 +31,9 @@ func TestGigachat(t *testing.T) {
 	t.Run("Tools", testGigaChatTools)
 	t.Run("Errors", testGigaChatErrors)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
+	t.Run("ReusesTLSClientWithCABundle", testGigaChatReusesTLSClientWithCABundle)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
-	t.Run("RejectsEncryptedKeyPassword", testGigaChatRejectsEncryptedKeyPassword)
 }
 
 func testNewGigaChatProvider(t *testing.T) {
@@ -135,6 +135,38 @@ func testGigaChatBuildsTLSClientWithCABundle(t *testing.T) {
 	}
 }
 
+func testGigaChatReusesTLSClientWithCABundle(t *testing.T) {
+	t.Parallel()
+
+	certPEM, _ := generateGigaChatTestCertificate(t)
+	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM)
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	keyConfig := &schemas.GigaChatKeyConfig{CABundleFile: caBundleFile}
+	client, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error: %v", err)
+	}
+	if client == provider.client {
+		t.Fatal("expected a cloned client when TLS material is configured")
+	}
+	if err := os.Remove(caBundleFile); err != nil {
+		t.Fatalf("failed to remove CA bundle file: %v", err)
+	}
+
+	cachedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error after CA file removal: %v", err)
+	}
+	if cachedClient != client {
+		t.Fatal("expected cached TLS client to be reused")
+	}
+}
+
 func testGigaChatBuildsTLSClientWithCertificate(t *testing.T) {
 	t.Parallel()
 
@@ -173,30 +205,6 @@ func testGigaChatRejectsMissingCertificatePair(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cert_file and gigachat_key_config.key_file") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func testGigaChatRejectsEncryptedKeyPassword(t *testing.T) {
-	t.Parallel()
-
-	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
-	if err != nil {
-		t.Fatalf("NewGigaChatProvider returned error: %v", err)
-	}
-
-	_, err = buildGigaChatTLSClient(provider.client, &schemas.GigaChatKeyConfig{
-		CertFile:        "client.pem",
-		KeyFile:         "client.key",
-		KeyFilePassword: schemas.NewEnvVar("super-secret-password"),
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "encrypted gigachat_key_config.key_file is not supported") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(err.Error(), "super-secret-password") {
-		t.Fatalf("secret leaked in error: %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -103,11 +104,7 @@ func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContex
 
 	files := make([]schemas.FileObject, 0, len(gigaChatResponse.Data))
 	for _, file := range gigaChatResponse.Data {
-		var requestedPurpose schemas.FilePurpose
-		if request != nil {
-			requestedPurpose = request.Purpose
-		}
-		converted := toBifrostFileObject(file, requestedPurpose)
+		converted := toBifrostFileObject(file, "")
 		if request != nil && request.Purpose != "" && converted.Purpose != request.Purpose {
 			continue
 		}
@@ -243,15 +240,18 @@ func (provider *GigaChatProvider) executeGigaChatFileRequest(
 	rawRequestForError []byte,
 	forceRefresh bool,
 ) ([]byte, map[string]string, string, time.Duration, *schemas.BifrostError) {
-	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	var headers map[string]string
+	var bifrostErr *schemas.BifrostError
 	if forceRefresh {
 		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	} else {
+		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
 	}
 	if bifrostErr != nil {
 		return nil, nil, "", 0, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, nil, "", 0, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -496,7 +496,16 @@ func looksLikeTextFile(file []byte) bool {
 }
 
 func escapeGigaChatMultipartFilename(filename string) string {
-	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(filename)
+	var sanitized strings.Builder
+	sanitized.Grow(len(filename))
+	for _, r := range filename {
+		if unicode.IsControl(r) {
+			sanitized.WriteByte('_')
+			continue
+		}
+		sanitized.WriteRune(r)
+	}
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(sanitized.String())
 }
 
 func toBifrostFileObject(file GigaChatUploadedFile, requestedPurpose schemas.FilePurpose) schemas.FileObject {

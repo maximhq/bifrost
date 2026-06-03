@@ -107,8 +107,8 @@ func TestToGigaChatBatchMethod(t *testing.T) {
 	}{
 		{name: "chat completions", endpoint: schemas.BatchEndpointChatCompletions, want: GigaChatBatchMethodChatCompletions},
 		{name: "chat completions without version", endpoint: "/chat/completions", want: GigaChatBatchMethodChatCompletions},
-		{name: "responses", endpoint: schemas.BatchEndpointResponses, want: GigaChatBatchMethodChatCompletions},
-		{name: "responses without version", endpoint: "/responses", want: GigaChatBatchMethodChatCompletions},
+		{name: "responses", endpoint: schemas.BatchEndpointResponses, want: GigaChatBatchMethodResponses},
+		{name: "responses without version", endpoint: "/responses", want: GigaChatBatchMethodResponses},
 		{name: "embeddings", endpoint: schemas.BatchEndpointEmbeddings, want: GigaChatBatchMethodEmbedder},
 		{name: "embeddings without version", endpoint: "/embeddings", want: GigaChatBatchMethodEmbedder},
 		{name: "unknown", endpoint: schemas.BatchEndpointCompletions, wantErr: "do not support endpoint"},
@@ -131,6 +131,32 @@ func TestToGigaChatBatchMethod(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("toGigaChatBatchMethod() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToBifrostGigaChatBatchEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method GigaChatBatchMethod
+		want   string
+	}{
+		{name: "chat completions", method: GigaChatBatchMethodChatCompletions, want: string(schemas.BatchEndpointChatCompletions)},
+		{name: "responses", method: GigaChatBatchMethodResponses, want: string(schemas.BatchEndpointResponses)},
+		{name: "embeddings", method: GigaChatBatchMethodEmbedder, want: string(schemas.BatchEndpointEmbeddings)},
+		{name: "unknown", method: GigaChatBatchMethod("unknown"), want: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := toBifrostGigaChatBatchEndpoint(tt.method); got != tt.want {
+				t.Fatalf("toBifrostGigaChatBatchEndpoint(%q) = %q, want %q", tt.method, got, tt.want)
 			}
 		})
 	}
@@ -192,6 +218,7 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Run("ListParsesEmptyRootArray", testGigaChatBatchListParsesEmptyRootArray)
 	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
 	t.Run("RetrieveMapsResultFileID", testGigaChatBatchRetrieveMapsResultFileID)
+	t.Run("PreservesResponsesEndpoint", testGigaChatBatchPreservesResponsesEndpoint)
 	t.Run("ResultsDownloadsOutputFile", testGigaChatBatchResultsDownloadsOutputFile)
 	t.Run("ResultsWithoutOutputFileID", testGigaChatBatchResultsWithoutOutputFileID)
 	t.Run("UnsupportedEndpoint", testGigaChatBatchCreateUnsupportedEndpoint)
@@ -408,7 +435,14 @@ func testGigaChatBatchCreateTransformsFileRows(t *testing.T) {
 	if response.ExtraFields.Provider != schemas.GigaChat {
 		t.Fatalf("provider mismatch: got %q", response.ExtraFields.Provider)
 	}
-	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "batch-create-request-id" {
+	requestID := ""
+	for key, value := range response.ExtraFields.ProviderResponseHeaders {
+		if strings.EqualFold(key, "x-request-id") {
+			requestID = value
+			break
+		}
+	}
+	if requestID != "batch-create-request-id" {
 		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
 	}
 }
@@ -647,6 +681,87 @@ func testGigaChatBatchRetrieveMapsResultFileID(t *testing.T) {
 	}
 	if response.ProviderExtraFields["gigachat_result_file_id"] != "result-file" {
 		t.Fatalf("result_file_id was not preserved in provider extra fields: %#v", response.ProviderExtraFields)
+	}
+}
+
+func testGigaChatBatchPreservesResponsesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer batch-responses-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		switch request.Method {
+		case http.MethodPost:
+			if got := request.URL.Query().Get("method"); got != string(GigaChatBatchMethodResponses) {
+				t.Fatalf("method query mismatch: got %q, want %q", got, GigaChatBatchMethodResponses)
+			}
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll returned error: %v", err)
+			}
+			row := decodeGigaChatBatchTestRow(t, body)
+			if row.ID != "responses-1" {
+				t.Fatalf("row id mismatch: got %q", row.ID)
+			}
+			_, _ = w.Write([]byte(`{"id":"batch-responses","object":"batch","method":"responses","status":"created","completion_window":"24h","request_counts":{"total":1}}`))
+		case http.MethodGet:
+			if got := request.URL.Query().Get("batch_id"); got == "" {
+				_, _ = w.Write([]byte(`{"data":[{"id":"batch-responses","object":"batch","method":"responses","status":"in_progress","created_at":1780306293,"request_counts":{"total":1}}]}`))
+			} else if got == "batch-responses" {
+				_, _ = w.Write([]byte(`{"id":"batch-responses","object":"batch","method":"responses","status":"completed","created_at":1780306293,"request_counts":{"total":1,"completed":1}}`))
+			} else {
+				t.Fatalf("batch_id query mismatch: got %q", got)
+			}
+		default:
+			t.Fatalf("method mismatch: got %s", request.Method)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	key := testGigaChatAccessTokenKey("batch-responses-token")
+	createResponse, bifrostErr := provider.BatchCreate(testBifrostContext(), key, &schemas.BifrostBatchCreateRequest{
+		Provider:         schemas.GigaChat,
+		Endpoint:         schemas.BatchEndpointResponses,
+		CompletionWindow: "24h",
+		Requests: []schemas.BatchRequestItem{{
+			CustomID: "responses-1",
+			Body: map[string]interface{}{
+				"model": "GigaChat-2",
+				"input": "Summarize this",
+			},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchCreate returned error: %v", bifrostErr)
+	}
+	if createResponse.Endpoint != string(schemas.BatchEndpointResponses) {
+		t.Fatalf("create endpoint mismatch: got %q", createResponse.Endpoint)
+	}
+
+	listResponse, bifrostErr := provider.BatchList(testBifrostContext(), []schemas.Key{key}, &schemas.BifrostBatchListRequest{Provider: schemas.GigaChat})
+	if bifrostErr != nil {
+		t.Fatalf("BatchList returned error: %v", bifrostErr)
+	}
+	if len(listResponse.Data) != 1 || listResponse.Data[0].Endpoint != string(schemas.BatchEndpointResponses) {
+		t.Fatalf("list did not preserve responses endpoint: %#v", listResponse.Data)
+	}
+
+	retrieveResponse, bifrostErr := provider.BatchRetrieve(testBifrostContext(), []schemas.Key{key}, &schemas.BifrostBatchRetrieveRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-responses",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchRetrieve returned error: %v", bifrostErr)
+	}
+	if retrieveResponse.Endpoint != string(schemas.BatchEndpointResponses) {
+		t.Fatalf("retrieve endpoint mismatch: got %q", retrieveResponse.Endpoint)
 	}
 }
 

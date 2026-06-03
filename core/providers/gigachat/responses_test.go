@@ -57,6 +57,7 @@ func testGigaChatResponses(t *testing.T) {
 	t.Run("ConverterMapsWebSearchSources", testGigaChatResponsesConverterMapsWebSearchSources)
 	t.Run("ConverterMapsReasoningRole", testGigaChatResponsesConverterMapsReasoningRole)
 	t.Run("ConverterMapsToolCall", testGigaChatResponsesConverterMapsToolCall)
+	t.Run("ConverterUsesUniqueCallIDsUnderSharedToolsStateID", testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID)
 	t.Run("ConverterUsesToolStateIDAliasAsCallID", testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID)
 	t.Run("ConverterFallsBackToResponseToolsStateID", testGigaChatResponsesConverterFallsBackToResponseToolsStateID)
 	t.Run("ConverterPreservesOrdinaryMessageToolStateID", testGigaChatResponsesConverterPreservesOrdinaryMessageToolStateID)
@@ -1137,6 +1138,104 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	}
 	if output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "tools-state-call" {
 		t.Fatalf("call id mismatch: %#v", output.ResponsesToolMessage.CallID)
+	}
+}
+
+func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *testing.T) {
+	t.Parallel()
+
+	response := &GigaChatResponsesResponse{
+		Model: "GigaChat-2-Max",
+		Messages: []GigaChatResponsesMessage{{
+			Role:         "assistant",
+			MessageID:    schemas.Ptr("tool-message"),
+			ToolsStateID: schemas.Ptr("shared-tools-state"),
+			Content: []GigaChatResponsesContentPart{
+				{
+					FunctionCall: &GigaChatResponsesFunctionCall{
+						Name:      "get_weather",
+						Arguments: map[string]interface{}{"city": "Moscow"},
+					},
+				},
+				{
+					FunctionCall: &GigaChatResponsesFunctionCall{
+						Name:      "get_time",
+						Arguments: map[string]interface{}{"city": "Moscow"},
+					},
+				},
+			},
+		}},
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil || len(converted.Output) != 2 {
+		t.Fatalf("converted output mismatch: %#v", converted)
+	}
+	firstCall := converted.Output[0].ResponsesToolMessage
+	secondCall := converted.Output[1].ResponsesToolMessage
+	if firstCall == nil || firstCall.CallID == nil || *firstCall.CallID != "shared-tools-state" {
+		t.Fatalf("first call id mismatch: %#v", firstCall)
+	}
+	wantSecondCallID := "shared-tools-state" + gigaChatResponsesGeneratedCallIDSuffix + "1"
+	if secondCall == nil || secondCall.CallID == nil || *secondCall.CallID != wantSecondCallID {
+		t.Fatalf("second call id mismatch: %#v", secondCall)
+	}
+	if *firstCall.CallID == *secondCall.CallID {
+		t.Fatalf("call ids must be unique: first=%q second=%q", *firstCall.CallID, *secondCall.CallID)
+	}
+
+	weatherOutput := `{"temperature":5}`
+	timeOutput := `{"time":"12:00"}`
+	request := &schemas.BifrostResponsesRequest{
+		Model: "GigaChat-2-Max",
+		Input: []schemas.ResponsesMessage{
+			converted.Output[0],
+			converted.Output[1],
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: firstCall.CallID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &weatherOutput,
+					},
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: secondCall.CallID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &timeOutput,
+					},
+				},
+			},
+		},
+	}
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Messages) != 4 {
+		t.Fatalf("message count mismatch: got %d", len(gigaChatReq.Messages))
+	}
+	assertGigaChatResponsesToolStateID(t, gigaChatReq.Messages[0], "shared-tools-state")
+	assertGigaChatResponsesToolStateID(t, gigaChatReq.Messages[1], "shared-tools-state")
+	assertGigaChatResponsesToolStateID(t, gigaChatReq.Messages[2], "shared-tools-state")
+	assertGigaChatResponsesToolStateID(t, gigaChatReq.Messages[3], "shared-tools-state")
+	if gigaChatReq.Messages[2].Content[0].FunctionResult == nil || gigaChatReq.Messages[2].Content[0].FunctionResult.Name != "get_weather" {
+		t.Fatalf("first function result name mismatch: %#v", gigaChatReq.Messages[2].Content)
+	}
+	if gigaChatReq.Messages[3].Content[0].FunctionResult == nil || gigaChatReq.Messages[3].Content[0].FunctionResult.Name != "get_time" {
+		t.Fatalf("second function result name mismatch: %#v", gigaChatReq.Messages[3].Content)
+	}
+}
+
+func assertGigaChatResponsesToolStateID(t *testing.T, message GigaChatResponsesMessage, want string) {
+	t.Helper()
+
+	if message.ToolsStateID == nil || *message.ToolsStateID != want {
+		t.Fatalf("tools_state_id mismatch: got %#v, want %q", message.ToolsStateID, want)
 	}
 }
 

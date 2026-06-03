@@ -29,6 +29,7 @@ type gigaChatIntegrationConfig struct {
 	reasoningEffort string
 	batchModel      string
 	webSearchModel  string
+	hasAccessToken  bool
 	hasOAuth        bool
 	hasPassword     bool
 	runBatch        bool
@@ -36,7 +37,6 @@ type gigaChatIntegrationConfig struct {
 	caBundleFile    string
 	certFile        string
 	keyFile         string
-	keyFileHasPass  bool
 }
 
 func TestGigaChatIntegration(t *testing.T) {
@@ -238,11 +238,42 @@ func TestGigaChatIntegration(t *testing.T) {
 	})
 }
 
+func TestGigaChatIntegrationConfigUsesAccessToken(t *testing.T) {
+	t.Setenv("GIGACHAT_ACCESS_TOKEN", "integration-test-access-token")
+	t.Setenv("GIGACHAT_CREDENTIALS", "")
+	t.Setenv("GIGACHAT_SCOPE", "")
+	t.Setenv("GIGACHAT_USER", "")
+	t.Setenv("GIGACHAT_PASSWORD", "")
+	t.Setenv("GIGACHAT_BASE_URL", "")
+	t.Setenv("GIGACHAT_CERT_FILE", "")
+	t.Setenv("GIGACHAT_KEY_FILE", "")
+
+	config := loadGigaChatIntegrationConfig(t)
+	if !config.hasAccessToken {
+		t.Fatal("access-token-only integration config was not accepted")
+	}
+	if config.hasOAuth || config.hasPassword {
+		t.Fatalf("unexpected token flow flags: oauth=%t password=%t", config.hasOAuth, config.hasPassword)
+	}
+
+	key := config.inferenceKey()
+	if key.Name != "gigachat-integration-access-token" {
+		t.Fatalf("inference key name mismatch: got %q", key.Name)
+	}
+	if key.GigaChatKeyConfig == nil || !key.GigaChatKeyConfig.AccessToken.IsSet() {
+		t.Fatalf("inference key did not use access-token auth: %#v", key.GigaChatKeyConfig)
+	}
+	if key.GigaChatKeyConfig.AccessToken.EnvVar != "env.GIGACHAT_ACCESS_TOKEN" {
+		t.Fatalf("access token env var mismatch: got %q", key.GigaChatKeyConfig.AccessToken.EnvVar)
+	}
+}
+
 func loadGigaChatIntegrationConfig(t *testing.T) gigaChatIntegrationConfig {
 	t.Helper()
 
 	baseURL := gigaChatIntegrationEnv("GIGACHAT_BASE_URL")
 	scope := gigaChatIntegrationEnv("GIGACHAT_SCOPE")
+	hasAccessToken := gigaChatIntegrationEnv("GIGACHAT_ACCESS_TOKEN") != ""
 	hasCredentials := gigaChatIntegrationEnv("GIGACHAT_CREDENTIALS") != ""
 	hasUser := gigaChatIntegrationEnv("GIGACHAT_USER") != ""
 	hasPasswordValue := gigaChatIntegrationEnv("GIGACHAT_PASSWORD") != ""
@@ -257,6 +288,7 @@ func loadGigaChatIntegrationConfig(t *testing.T) gigaChatIntegrationConfig {
 		reasoningEffort: gigaChatIntegrationEnvWithDefault("GIGACHAT_REASONING_EFFORT", "low"),
 		batchModel:      gigaChatIntegrationEnvWithDefault("GIGACHAT_BATCH_MODEL", gigaChatIntegrationEnvWithDefault("GIGACHAT_CHAT_MODEL", gigaChatIntegrationDefaultChatModel)),
 		webSearchModel:  gigaChatIntegrationEnvWithDefault("GIGACHAT_WEB_SEARCH_MODEL", gigaChatIntegrationEnvWithDefault("GIGACHAT_CHAT_MODEL", gigaChatIntegrationDefaultChatModel)),
+		hasAccessToken:  hasAccessToken,
 		hasOAuth:        hasCredentials && scope != "",
 		hasPassword:     hasUser && hasPasswordValue && baseURL != "",
 		runBatch:        gigaChatIntegrationEnvBool("GIGACHAT_ENABLE_BATCH_TEST"),
@@ -264,17 +296,13 @@ func loadGigaChatIntegrationConfig(t *testing.T) gigaChatIntegrationConfig {
 		caBundleFile:    gigaChatIntegrationEnv("GIGACHAT_CA_BUNDLE_FILE"),
 		certFile:        gigaChatIntegrationEnv("GIGACHAT_CERT_FILE"),
 		keyFile:         gigaChatIntegrationEnv("GIGACHAT_KEY_FILE"),
-		keyFileHasPass:  gigaChatIntegrationEnv("GIGACHAT_KEY_FILE_PASSWORD") != "",
 	}
 
-	if !config.hasOAuth && !config.hasPassword {
-		t.Skip("set either GIGACHAT_CREDENTIALS+GIGACHAT_SCOPE or GIGACHAT_USER+GIGACHAT_PASSWORD+GIGACHAT_BASE_URL to run GigaChat integration tests")
+	if !config.hasAccessToken && !config.hasOAuth && !config.hasPassword {
+		t.Skip("set either GIGACHAT_ACCESS_TOKEN, GIGACHAT_CREDENTIALS+GIGACHAT_SCOPE, or GIGACHAT_USER+GIGACHAT_PASSWORD+GIGACHAT_BASE_URL to run GigaChat integration tests")
 	}
 	if (config.certFile == "") != (config.keyFile == "") {
 		t.Fatal("GIGACHAT_CERT_FILE and GIGACHAT_KEY_FILE must be set together")
-	}
-	if config.keyFileHasPass {
-		t.Skip("GIGACHAT_KEY_FILE_PASSWORD is set, but encrypted GigaChat client private keys are not supported")
 	}
 
 	return config
@@ -316,10 +344,23 @@ func newGigaChatIntegrationProvider(t *testing.T, config gigaChatIntegrationConf
 }
 
 func (config gigaChatIntegrationConfig) inferenceKey() schemas.Key {
+	if config.hasAccessToken {
+		return config.accessTokenKey()
+	}
 	if config.hasOAuth {
 		return config.oauthKey()
 	}
 	return config.passwordKey()
+}
+
+func (config gigaChatIntegrationConfig) accessTokenKey() schemas.Key {
+	keyConfig := config.keyConfig()
+	keyConfig.AccessToken = schemas.NewEnvVar("env.GIGACHAT_ACCESS_TOKEN")
+	return schemas.Key{
+		Name:              "gigachat-integration-access-token",
+		Models:            schemas.WhiteList{"*"},
+		GigaChatKeyConfig: keyConfig,
+	}
 }
 
 func (config gigaChatIntegrationConfig) oauthKey() schemas.Key {
@@ -694,10 +735,10 @@ func failGigaChatIntegrationError(t *testing.T, operation string, err error) {
 
 func redactGigaChatIntegrationSecrets(message string) string {
 	for _, envName := range []string{
+		"GIGACHAT_ACCESS_TOKEN",
 		"GIGACHAT_CREDENTIALS",
 		"GIGACHAT_USER",
 		"GIGACHAT_PASSWORD",
-		"GIGACHAT_KEY_FILE_PASSWORD",
 		"GIGACHAT_CERT_FILE",
 		"GIGACHAT_KEY_FILE",
 		"GIGACHAT_CA_BUNDLE_FILE",

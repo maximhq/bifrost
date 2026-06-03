@@ -48,6 +48,16 @@ func testGigaChatCountTokensConverterMapsTextInput(t *testing.T) {
 					{
 						Type: schemas.ResponsesOutputMessageContentTypeText,
 						Text: schemas.Ptr("third"),
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
+					{
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
 					},
 				}},
 			},

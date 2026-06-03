@@ -64,19 +64,4 @@ describe("modelProviderKeySchema GigaChat auth", () => {
 		);
 	});
 
-	it("rejects encrypted client key passwords", () => {
-		const result = modelProviderKeySchema.safeParse({
-			...baseKey,
-			gigachat_key_config: {
-				credentials: { value: "credentials" },
-				cert_file: "/secure/client.pem",
-				key_file: "/secure/client.key",
-				key_file_password: { value: "secret" },
-			},
-		});
-
-		expect(result.success).toBe(false);
-		if (result.success) return;
-		expect(result.error.issues[0]?.message).toBe("Encrypted GigaChat client private keys are not supported");
-	});
 });

@@ -21,6 +21,48 @@ func testGigaChatListModels(t *testing.T) {
 	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatListModelsRefreshesTokenAfterUnauthorized)
 }
 
+func TestGigaChatSupportedMethods(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		modelType string
+		want      []string
+	}{
+		{
+			name:      "chat includes responses",
+			modelType: "chat",
+			want: []string{
+				string(schemas.ChatCompletionRequest),
+				string(schemas.ChatCompletionStreamRequest),
+				string(schemas.ResponsesRequest),
+				string(schemas.ResponsesStreamRequest),
+			},
+		},
+		{
+			name:      "embedder only supports embeddings",
+			modelType: "embedder",
+			want:      []string{string(schemas.EmbeddingRequest)},
+		},
+		{
+			name:      "unknown has no advertised methods",
+			modelType: "reranker",
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := toGigaChatSupportedMethods(tt.modelType); fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Fatalf("toGigaChatSupportedMethods(%q) = %#v, want %#v", tt.modelType, got, tt.want)
+			}
+		})
+	}
+}
+
 func testGigaChatListModelsConverterMapsResponse(t *testing.T) {
 	t.Parallel()
 
@@ -46,7 +88,12 @@ func testGigaChatListModelsConverterMapsResponse(t *testing.T) {
 	if converted.Data[0].OwnedBy == nil || *converted.Data[0].OwnedBy != "salutedevices" {
 		t.Fatalf("owned_by mismatch: %#v", converted.Data[0].OwnedBy)
 	}
-	wantMethods := []string{string(schemas.ChatCompletionRequest), string(schemas.ChatCompletionStreamRequest)}
+	wantMethods := []string{
+		string(schemas.ChatCompletionRequest),
+		string(schemas.ChatCompletionStreamRequest),
+		string(schemas.ResponsesRequest),
+		string(schemas.ResponsesStreamRequest),
+	}
 	if fmt.Sprint(converted.Data[0].SupportedMethods) != fmt.Sprint(wantMethods) {
 		t.Fatalf("supported methods mismatch: got %#v, want %#v", converted.Data[0].SupportedMethods, wantMethods)
 	}

@@ -42,7 +42,6 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		user: { ...(DefaultGigaChatKeyConfig.user ?? {}) },
 		password: { ...(DefaultGigaChatKeyConfig.password ?? {}) },
 		access_token: { ...(DefaultGigaChatKeyConfig.access_token ?? {}) },
-		key_file_password: { ...(DefaultGigaChatKeyConfig.key_file_password ?? {}) },
 	};
 	const defaultKey = {
 		id: uuid(),

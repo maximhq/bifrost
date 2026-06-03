@@ -11,7 +11,10 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-const gigaChatResponsesRoleReasoning = "reasoning"
+const (
+	gigaChatResponsesRoleReasoning         = "reasoning"
+	gigaChatResponsesGeneratedCallIDSuffix = "__bifrost_fc_"
+)
 
 // ToGigaChatResponsesRequest converts a Bifrost Responses request to GigaChat v2 chat completions format.
 func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GigaChatResponsesRequest, error) {
@@ -425,6 +428,8 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 	output := make([]schemas.ResponsesMessage, 0, len(message.Content)+1)
 	contentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content))
 	hasFunctionCall := false
+	functionCallOrdinal := 0
+	functionResultOrdinal := 0
 	for index, part := range message.Content {
 		sourceRefs := toBifrostGigaChatResponsesInlineSources(part.InlineData)
 		if part.Text != nil {
@@ -451,14 +456,16 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 		}
 		if part.FunctionCall != nil {
 			hasFunctionCall = true
-			if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, toolsStateID, index, part.FunctionCall); toolCall != nil {
+			if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, toolsStateID, index, functionCallOrdinal, part.FunctionCall); toolCall != nil {
 				output = append(output, *toolCall)
 			}
+			functionCallOrdinal++
 		}
 		if part.FunctionResult != nil {
-			if toolResult := toBifrostGigaChatResponsesFunctionResult(messageID, toolsStateID, index, part.FunctionResult); toolResult != nil {
+			if toolResult := toBifrostGigaChatResponsesFunctionResult(messageID, toolsStateID, index, functionResultOrdinal, part.FunctionResult); toolResult != nil {
 				output = append(output, *toolResult)
 			}
+			functionResultOrdinal++
 		}
 	}
 	if len(contentBlocks) > 0 {
@@ -478,7 +485,7 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 		}}, output...)
 	}
 	if !hasFunctionCall && message.FunctionCall != nil {
-		if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, toolsStateID, 0, message.FunctionCall); toolCall != nil {
+		if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, toolsStateID, 0, 0, message.FunctionCall); toolCall != nil {
 			output = append(output, *toolCall)
 		}
 	}
@@ -738,13 +745,13 @@ func toBifrostGigaChatResponsesReasoningOutput(message GigaChatResponsesMessage,
 	}}
 }
 
-func toBifrostGigaChatResponsesFunctionCall(messageID *string, toolsStateID *string, index int, functionCall *GigaChatResponsesFunctionCall) *schemas.ResponsesMessage {
+func toBifrostGigaChatResponsesFunctionCall(messageID *string, toolsStateID *string, index int, callOrdinal int, functionCall *GigaChatResponsesFunctionCall) *schemas.ResponsesMessage {
 	if functionCall == nil || strings.TrimSpace(functionCall.Name) == "" {
 		return nil
 	}
 
 	itemID := toBifrostGigaChatResponsesItemID("fc", messageID, index)
-	callID := toBifrostGigaChatResponsesCallID(toolsStateID, itemID)
+	callID := toBifrostGigaChatResponsesCallID(toolsStateID, itemID, callOrdinal)
 	arguments := stringifyGigaChatResponsesPayload(functionCall.Arguments)
 	messageType := schemas.ResponsesMessageTypeFunctionCall
 	role := schemas.ResponsesInputMessageRoleAssistant
@@ -761,13 +768,13 @@ func toBifrostGigaChatResponsesFunctionCall(messageID *string, toolsStateID *str
 	}
 }
 
-func toBifrostGigaChatResponsesFunctionResult(messageID *string, toolsStateID *string, index int, functionResult *GigaChatResponsesFunctionResult) *schemas.ResponsesMessage {
+func toBifrostGigaChatResponsesFunctionResult(messageID *string, toolsStateID *string, index int, resultOrdinal int, functionResult *GigaChatResponsesFunctionResult) *schemas.ResponsesMessage {
 	if functionResult == nil || strings.TrimSpace(functionResult.Name) == "" {
 		return nil
 	}
 
 	itemID := toBifrostGigaChatResponsesItemID("fr", messageID, index)
-	callID := toBifrostGigaChatResponsesCallID(toolsStateID, itemID)
+	callID := toBifrostGigaChatResponsesCallID(toolsStateID, itemID, resultOrdinal)
 	output := stringifyGigaChatResponsesPayload(functionResult.Result)
 	messageType := schemas.ResponsesMessageTypeFunctionCallOutput
 	return &schemas.ResponsesMessage{
@@ -784,9 +791,13 @@ func toBifrostGigaChatResponsesFunctionResult(messageID *string, toolsStateID *s
 	}
 }
 
-func toBifrostGigaChatResponsesCallID(toolsStateID *string, fallback string) string {
+func toBifrostGigaChatResponsesCallID(toolsStateID *string, fallback string, ordinal int) string {
 	if toolsStateID != nil && strings.TrimSpace(*toolsStateID) != "" {
-		return strings.TrimSpace(*toolsStateID)
+		trimmed := strings.TrimSpace(*toolsStateID)
+		if ordinal > 0 {
+			return fmt.Sprintf("%s%s%d", trimmed, gigaChatResponsesGeneratedCallIDSuffix, ordinal)
+		}
+		return trimmed
 	}
 	return fallback
 }
@@ -1209,12 +1220,28 @@ func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage, 
 
 func toGigaChatResponsesToolsStateID(message schemas.ResponsesMessage) *string {
 	if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.CallID != nil && strings.TrimSpace(*message.ResponsesToolMessage.CallID) != "" {
-		return schemas.Ptr(strings.TrimSpace(*message.ResponsesToolMessage.CallID))
+		return schemas.Ptr(toGigaChatResponsesToolsStateIDFromCallID(*message.ResponsesToolMessage.CallID))
 	}
 	if message.ID != nil && strings.TrimSpace(*message.ID) != "" {
 		return schemas.Ptr(strings.TrimSpace(*message.ID))
 	}
 	return nil
+}
+
+func toGigaChatResponsesToolsStateIDFromCallID(callID string) string {
+	trimmed := strings.TrimSpace(callID)
+	suffixIndex := strings.LastIndex(trimmed, gigaChatResponsesGeneratedCallIDSuffix)
+	if suffixIndex <= 0 {
+		return trimmed
+	}
+	suffix := trimmed[suffixIndex+len(gigaChatResponsesGeneratedCallIDSuffix):]
+	if suffix == "" {
+		return trimmed
+	}
+	if _, err := strconv.Atoi(suffix); err != nil {
+		return trimmed
+	}
+	return strings.TrimSpace(trimmed[:suffixIndex])
 }
 
 func toGigaChatResponsesReasoningMessage(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {

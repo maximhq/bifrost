@@ -24,6 +24,10 @@ func testGigaChatErrors(t *testing.T) {
 	t.Run("RedactsTextPayloads", testGigaChatErrorRedactsTextPayloads)
 }
 
+func TestGigaChatErrors(t *testing.T) {
+	testGigaChatErrors(t)
+}
+
 func testGigaChatErrorParsesCommonPayloads(t *testing.T) {
 	t.Parallel()
 
@@ -132,7 +136,6 @@ func testGigaChatErrorRedactsExpandedRawAuthMaterial(t *testing.T) {
 		"key_file":"/secure/client.key",
 		"cert_file":"/secure/client.crt",
 		"ca_bundle_file":"/secure/ca.crt",
-		"key_file_password":"super-secret-key-password",
 		"private_key":"-----BEGIN PRIVATE KEY-----\nsuper-secret-private-key\n-----END PRIVATE KEY-----",
 		"messages":[{"role":"user","content":"safe prompt"}]
 	}`)
@@ -159,7 +162,6 @@ func testGigaChatErrorRedactsExpandedRawAuthMaterial(t *testing.T) {
 		"/secure/client.key",
 		"/secure/client.crt",
 		"/secure/ca.crt",
-		"super-secret-key-password",
 		"super-secret-private-key",
 	})
 	assertGigaChatOutputOmits(t, "raw response", responseOutput, []string{

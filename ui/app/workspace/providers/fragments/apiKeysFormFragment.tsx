@@ -916,28 +916,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						/>
 						<FormField
 							control={control}
-							name="key.gigachat_key_config.key_file_password"
-							render={({ field }) => (
-								<FormItem>
-									<FormLabel>Key File Password (Unsupported)</FormLabel>
-									<FormControl>
-										<EnvVarInput
-											data-testid="apikey-gigachat-key-file-password-input"
-											placeholder="env.GIGACHAT_KEY_FILE_PASSWORD"
-											type="password"
-											redactNonEnvValue
-											{...field}
-										/>
-									</FormControl>
-									<FormDescription>
-										Leave empty. Encrypted GigaChat client private keys are currently unsupported.
-									</FormDescription>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<FormField
-							control={control}
 							name="key.gigachat_key_config.ca_bundle_file"
 							render={({ field }) => (
 								<FormItem>

@@ -133,7 +133,6 @@ func gigaChatAttachmentKeyHash(key schemas.Key) string {
 		writePart("base_url", config.BaseURL)
 		writePart("cert_file", config.CertFile)
 		writePart("key_file", config.KeyFile)
-		writePart("key_file_password", config.KeyFilePassword.GetValue())
 		writePart("ca_bundle_file", config.CABundleFile)
 	}
 

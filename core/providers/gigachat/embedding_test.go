@@ -28,6 +28,10 @@ func testGigaChatEmbedding(t *testing.T) {
 	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatEmbeddingRefreshesTokenAfterUnauthorized)
 }
 
+func TestGigaChatEmbedding(t *testing.T) {
+	testGigaChatEmbedding(t)
+}
+
 func testGigaChatEmbeddingConverterMapsStringInput(t *testing.T) {
 	t.Parallel()
 

@@ -1177,14 +1177,13 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			ARN:          schemas.NewEnvVar("arn:aws:bedrock:eu-west-1:123:role"),
 		},
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			Credentials:     schemas.NewEnvVar("gigachat-credentials"),
-			Scope:           schemas.DefaultGigaChatScope,
-			BaseURL:         "https://api.giga.chat",
-			AuthURL:         "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-			CertFile:        "/secure/client.pem",
-			KeyFile:         "/secure/client.key",
-			KeyFilePassword: schemas.NewEnvVar("gigachat-key-password"),
-			CABundleFile:    "/secure/ca.pem",
+			Credentials:  schemas.NewEnvVar("gigachat-credentials"),
+			Scope:        schemas.DefaultGigaChatScope,
+			BaseURL:      "https://api.giga.chat",
+			AuthURL:      "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+			CertFile:     "/secure/client.pem",
+			KeyFile:      "/secure/client.key",
+			CABundleFile: "/secure/ca.pem",
 		},
 	}
 
@@ -1211,7 +1210,6 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	}
 	require.NotEmpty(t, rawGigaChatStr, "gigachat_key_config_json should not be empty")
 	assert.NotContains(t, rawGigaChatStr, "gigachat-credentials")
-	assert.NotContains(t, rawGigaChatStr, "gigachat-key-password")
 	assert.NotContains(t, rawGigaChatStr, "/secure/client.pem")
 	rawAliasesVal2 := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
@@ -1258,8 +1256,6 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	require.NotNil(t, found.GigaChatKeyConfig)
 	require.NotNil(t, found.GigaChatKeyConfig.Credentials)
 	assert.Equal(t, "gigachat-credentials", found.GigaChatKeyConfig.Credentials.GetValue())
-	require.NotNil(t, found.GigaChatKeyConfig.KeyFilePassword)
-	assert.Equal(t, "gigachat-key-password", found.GigaChatKeyConfig.KeyFilePassword.GetValue())
 	assert.Equal(t, "/secure/client.pem", found.GigaChatKeyConfig.CertFile)
 	assert.Equal(t, "/secure/client.key", found.GigaChatKeyConfig.KeyFile)
 	assert.Equal(t, "/secure/ca.pem", found.GigaChatKeyConfig.CABundleFile)

@@ -52,7 +52,6 @@ Key characteristics:
 | Explicit token | `access_token` and legacy key `value` are sent as-is and are not refreshed. Use them only for short-lived or externally managed token flows. |
 | Password flow | Requires a deployment that exposes the SDK-compatible `POST <base_url>/v1/token` endpoint. |
 | TLS/mTLS | TLS material supplements bearer auth. `ca_bundle_file` only affects trust roots, and `cert_file`/`key_file` must be configured together for mTLS. |
-| Encrypted private keys | `key_file_password` is reserved for redaction/future compatibility, but encrypted GigaChat client private keys are not supported. Leave it empty. |
 | CountTokens | Text input only through `/v1/tokens/count`; image, audio, and file inputs are rejected, and the response is an input-token estimate only. |
 | Files and attachments | Use the Files API first, then reference pre-uploaded `file_id` values in Responses. Inline file bytes and file URLs are rejected. |
 | Batches | Create/list/retrieve/results and file-backed batch input are supported for chat, Responses, and embeddings rows. Cancel/delete are unsupported. |
@@ -252,12 +251,6 @@ Use `ca_bundle_file` when your runtime does not trust the GigaChat CA chain. Use
   }
 }
 ```
-
-<Warning>
-  Do not set `key_file_password`. The field remains reserved for redaction and
-  future compatibility, but encrypted GigaChat client private keys are currently
-  rejected by the UI validation and by the provider TLS setup.
-</Warning>
 
 Provider-level `network_config.extra_headers` and request-level extra headers cannot include `Authorization` for GigaChat. Configure one of the auth modes instead.
 
@@ -461,7 +454,7 @@ Bifrost maps OpenAI-compatible batch requests to GigaChat `/batches`.
 | Bifrost endpoint | GigaChat `method` | Notes |
 | ---------------- | ----------------- | ----- |
 | `/v1/chat/completions` or `/chat/completions` | `chat_completions` | Rows are converted through the same GigaChat chat request transformer. |
-| `/v1/responses` or `/responses` | `chat_completions` | Rows are converted through the Responses-to-v2-chat transformer. |
+| `/v1/responses` or `/responses` | `responses` | Rows are converted through the Responses-to-v2-chat transformer. |
 | `/v1/embeddings` or `/embeddings` | `embedder` | Rows are converted through the embedding transformer. |
 
 `BatchCreate` accepts either `input_file_id` or an inline `requests` array. When `input_file_id` is used, Bifrost downloads the file through GigaChat Files, transforms the JSONL rows, and submits the transformed body to `POST /batches?method=<method>` as `application/octet-stream`.
@@ -503,7 +496,7 @@ Current public GigaChat generation model docs list second-generation models such
 
 ## Raw Payloads and Redaction
 
-When raw request or raw response echoing is enabled, Bifrost redacts GigaChat-sensitive values before exposing them through `extra_fields` or errors. Redacted fields include authorization headers, `access_token`, `credentials`, `password`, `key_file_password`, client secrets, and refresh tokens. The GigaChat key-config redaction path also masks configured certificate, key, and CA bundle file paths.
+When raw request or raw response echoing is enabled, Bifrost redacts GigaChat-sensitive values before exposing them through `extra_fields` or errors. Redacted fields include authorization headers, `access_token`, `credentials`, `password`, client secrets, and refresh tokens. The GigaChat key-config redaction path also masks configured certificate, key, and CA bundle file paths.
 
 ## Example Requests
 
@@ -636,7 +629,7 @@ GigaChat live tests are opt-in. The default GitHub workflows do not configure Gi
 | OAuth credentials | `GIGACHAT_CREDENTIALS` | `GIGACHAT_SCOPE` is optional and defaults to `GIGACHAT_API_PERS`. |
 | Password flow | `GIGACHAT_USER`, `GIGACHAT_PASSWORD`, `GIGACHAT_BASE_URL` | `GIGACHAT_BASE_URL` is required because password token deployments expose provider-specific endpoints. |
 
-Optional comprehensive-test env vars: `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_AUTH_URL`, `GIGACHAT_BASE_URL`, `GIGACHAT_CA_BUNDLE_FILE`, and the paired `GIGACHAT_CERT_FILE` + `GIGACHAT_KEY_FILE`. `GIGACHAT_KEY_FILE_PASSWORD` is intentionally skipped because encrypted client private keys are not supported.
+Optional comprehensive-test env vars: `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_AUTH_URL`, `GIGACHAT_BASE_URL`, `GIGACHAT_CA_BUNDLE_FILE`, and the paired `GIGACHAT_CERT_FILE` + `GIGACHAT_KEY_FILE`.
 
 The provider-level integration smoke test is separate and can be run with:
 

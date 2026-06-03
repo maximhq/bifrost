@@ -48,9 +48,6 @@ func validateGigaChatComprehensiveEnv(t *testing.T) {
 	if hasCertFile != hasKeyFile {
 		t.Fatal("GIGACHAT_CERT_FILE and GIGACHAT_KEY_FILE must be set together")
 	}
-	if strings.TrimSpace(os.Getenv("GIGACHAT_KEY_FILE_PASSWORD")) != "" {
-		t.Skip("GIGACHAT_KEY_FILE_PASSWORD is set, but encrypted GigaChat client private keys are not supported")
-	}
 
 	hasUser := strings.TrimSpace(os.Getenv("GIGACHAT_USER")) != ""
 	hasPassword := strings.TrimSpace(os.Getenv("GIGACHAT_PASSWORD")) != ""
