@@ -3024,7 +3024,7 @@ func (provider *VertexProvider) Passthrough(
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3176,7 +3176,7 @@ func (provider *VertexProvider) PassthroughStream(
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	bodyStream := resp.BodyStream()
