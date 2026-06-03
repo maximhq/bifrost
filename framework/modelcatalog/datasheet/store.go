@@ -400,6 +400,21 @@ func (s *Store) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *Entr
 	return convertTablePricingToEntry(&pricing)
 }
 
+// NewTestStore constructs a minimal Store for unit tests without I/O.
+// Optionally seed baseModelIndex so BaseModelName lookups resolve.
+func NewTestStore(baseModelIndex map[string]string) *Store {
+	if baseModelIndex == nil {
+		baseModelIndex = make(map[string]string)
+	}
+	return &Store{
+		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		baseModelIndex:         baseModelIndex,
+		supportedResponseTypes: make(map[string][]string),
+		supportedParams:        make(map[string][]string),
+		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
+	}
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex and datasheetByProvider
