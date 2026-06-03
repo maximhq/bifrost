@@ -4683,6 +4683,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
+		// Layer on Primary/IsFallback — the per-attempt code populates only
+		// attempt-level RoutingInfo (Provider/Model/Key/ResolvedKeyAlias);
+		// fallback-relative signals belong to the orchestrator scope.
+		result.SetFallbackRoutingInfo(provider, model)
+		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -4794,6 +4799,12 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
+		// Layer on Primary/IsFallback on errors. For the success case the
+		// result is a chan of stream chunks emitted asynchronously — those
+		// chunks already carry per-attempt RoutingInfo populated upstream,
+		// but Primary/IsFallback aren't reachable from here without wrapping
+		// the channel. See SetFallbackRoutingInfo doc.
+		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -6081,6 +6092,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// line 5653). Streaming postHookRunner must NOT capture this var by reference — it
 		// snapshots its own attemptResolvedModel inside the per-attempt closure.
 		var resolvedModel string
+		// attemptRoutingInfo holds the LAST attempt's RoutingInfo. Same single-writer/
+		// single-reader contract as resolvedModel — assigned inside the per-attempt
+		// closure, read after retries finish by the post-retry populate below.
+		// Streaming postHookRunner must NOT capture by reference — it snapshots its
+		// own copy inside the per-attempt closure.
+		var attemptRoutingInfo schemas.RoutingInfo
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
 		// loop's per-attempt closure) and single-threaded read (after retries finish), so
@@ -6108,6 +6125,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
+				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Per-attempt snapshot for the async postHookRunner closure (it must
+				// not capture the outer var by reference — a later retry would race).
+				perAttemptRoutingInfo := attemptRoutingInfo
 				// Snapshot RequestType before the closure. After tryStreamRequest receives
 				// the stream channel it releases the *ChannelMessage back to the pool;
 				// a concurrent request can then reuse it and overwrite RequestType.
@@ -6121,9 +6142,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// reference would let a later retry's alias bleed into this attempt's chunks.
 					if result != nil {
 						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						result.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						err.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
@@ -6131,9 +6154,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					if bifrostErr != nil {
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
 						return nil, bifrostErr
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
 					return resp, nil
 				}
@@ -6170,6 +6195,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
@@ -6192,6 +6218,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		if bifrostError != nil {
 			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
 
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -6207,6 +6234,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		} else {
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+				result.PopulateRoutingInfo(attemptRoutingInfo)
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
