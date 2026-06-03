@@ -1,10 +1,22 @@
-## 🔒 Security
+## ✨ Features
 
-- **Go Dependency CVE Remediation** — Updated `golang.org/x` dependencies flagged by Docker Scout, clearing 20 advisories (severity up to 10.0): `crypto` v0.49.0 → v0.52.0, `net` v0.52.0 → v0.55.0, `sys` v0.42.0 → v0.45.0, `text` v0.35.0 → v0.37.0, `term` v0.41.0 → v0.43.0 (cli). Verified with `govulncheck` against the live Go vulnerability database: zero vulnerabilities remain in any module (#3900)
-- **Hardened Container Image** — Removed the standalone GNU `wget` package from the Alpine runtime image, eliminating CVE-2025-69194 (8.8); the `HEALTHCHECK` now uses the built-in busybox `wget` applet, with no functional change
+- **Virtual Key Blocked Models** — Block specific models at the virtual key provider-config level; blocked models take priority over allowed models and are enforced by governance (#3653)
+- **Virtual Key Ownership** — Virtual keys now capture and display a `created_by` user attribution (#3672)
+- **MCP Log Attribution** — MCP tool logs are stamped with user, team, customer, and business unit IDs so MCP usage can be traced like LLM usage
+- **Team & Business Unit Filters** — Added team and business unit filters across the dashboard and logs views (#3650)
+- **Sticky Time Filters** — Time filter selections are preserved when navigating between sidebar items (#3647)
 
 ## 🐞 Fixed
 
-- **Ollama Streaming Auth** — Ollama streaming text and chat requests now forward the configured API key as an `Authorization: Bearer` header (#3906)
-- **SGL Streaming Auth** — SGL provider now sends the `Authorization` header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
-- **Governance & Logging APIs** — Removed the `from_memory` query parameter; virtual key and config list APIs now return consistent DB-backed results, with VK names batch-fetched in a single query (#3903)
+- **Idle Timeout Panic** — Fixed a panic in the streaming idle-timeout reader and added a guard to skip reads once the connection is closed (#3672)
+- **Anthropic Streaming** — Preserve the tool-call stop reason in the Anthropic streaming fallback (#3640) (thanks [@dicnunz](https://github.com/dicnunz)!)
+- **TTFT Metric** — Fixed the request start-time setting so the time-to-first-token metric is accurate (#3668)
+- **Vertex Service Tier** — Map the Vertex traffic type to the correct Bifrost service tier (#3662)
+- **Keyless Providers** — Fixed `ListModels` for providers configured without an API key (#3655)
+- **Anthropic Tools** — Stopped forcing `type: custom` on Anthropic tool definitions (#3652)
+- **Node Usage Reconciliation** — Added a monotonic log cursor so reconciliation no longer skips late async log writes (#3664)
+- **Fallback Budget Tracking** — Clear the stale governance rejection flag on allow so successful fallback retries count toward budgets and rate limits (#3645)
+- **Virtual Keys Table** — Table now fills available height with a sticky header and scrollable body (#3676)
+- **Sheet Layout** — Removed save/cancel icons and fixed sheet layout growth in routing rule and virtual key sheets (#3675)
+- **Toast Click-Through** — Toasts remain clickable above modal overlays (#3674)
+- **Direct Access Control** — Reverted the virtual key `access_profile_id` direct access profile assignment shipped in v1.5.3; the `access_profile_id` column has been dropped (#3669, #3670)

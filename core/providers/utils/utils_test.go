@@ -1827,6 +1827,58 @@ func TestExtractProviderResponseHeaders_StripsProviderSecrets(t *testing.T) {
 	}
 }
 
+// TestExtractPassthroughProviderResponseHeaders verifies that the passthrough
+// variant preserves content-type while still blocking transport headers and
+// provider secrets. Regression guard for the providerResponseFilterHeaders[kLower] &&
+// kLower != "content-type" carve-out.
+func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
+	resp := &fasthttp.Response{}
+	// content-type must be forwarded.
+	resp.Header.Set("Content-Type", "application/json")
+	// transport headers that must still be stripped.
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.Header.Set("Transfer-Encoding", "chunked")
+	resp.Header.Set("Content-Length", "42")
+	// provider secrets that must still be stripped.
+	resp.Header.Set("x-goog-api-key", "AIzaSyEXAMPLE_SECRET")
+	resp.Header.Set("X-Api-Key", "sk-secret")
+	resp.Header.Set("Authorization", "Bearer token")
+	// benign headers that must be preserved.
+	resp.Header.Set("x-request-id", "req-456")
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+
+	lookup := func(name string) (string, bool) {
+		for k, v := range headers {
+			if strings.EqualFold(k, name) {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	// content-type must pass through.
+	if v, ok := lookup("content-type"); !ok || v != "application/json" {
+		t.Fatalf("content-type should be forwarded by passthrough extractor, got %q ok=%v", v, ok)
+	}
+	// transport headers must still be stripped.
+	for _, stripped := range []string{"content-encoding", "transfer-encoding", "content-length"} {
+		if _, ok := lookup(stripped); ok {
+			t.Fatalf("transport header %q should be stripped by passthrough extractor", stripped)
+		}
+	}
+	// provider secrets must still be stripped.
+	for _, secret := range []string{"x-goog-api-key", "x-api-key", "authorization"} {
+		if _, ok := lookup(secret); ok {
+			t.Fatalf("provider secret %q should be stripped by passthrough extractor", secret)
+		}
+	}
+	// benign header must pass through.
+	if v, ok := lookup("x-request-id"); !ok || v != "req-456" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+}
+
 // TestCheckAndSetDefaultProviderUsesResolvedProvider verifies routing-selected
 // providers take precedence over the route default when still allowed.
 func TestCheckAndSetDefaultProviderUsesResolvedProvider(t *testing.T) {
