@@ -6057,6 +6057,29 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					continue
 				}
+				// Scope to a single key when ListModelsRequest.KeyID is set, so
+				// callers (the catalog composer) can cache per-key without an
+				// extra round-trip and without the provider aggregating across
+				// every configured key.
+				if lmr := req.BifrostRequest.ListModelsRequest; lmr != nil && lmr.KeyID != nil {
+					target := *lmr.KeyID
+					keys = filterKeysByID(keys, target)
+					if len(keys) == 0 {
+						req.Err <- schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:               provider.GetProviderKey(),
+								RequestType:            req.RequestType,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
+							},
+						}
+						continue
+					}
+				}
 			} else {
 				// Determine if this is a multi-key batch/file/container operation
 				// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
@@ -7523,6 +7546,20 @@ func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
 func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
 	resetBifrostRequest(req)
 	bifrost.bifrostRequestPool.Put(req)
+}
+
+// filterKeysByID returns the subset of keys whose ID equals target. Used to
+// scope a ListModels request to a single key when ListModelsRequest.KeyID is
+// set. Returns an empty slice when no key matches; the input slice is not
+// mutated.
+func filterKeysByID(keys []schemas.Key, target string) []schemas.Key {
+	out := make([]schemas.Key, 0, len(keys))
+	for _, k := range keys {
+		if k.ID == target {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.
