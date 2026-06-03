@@ -452,19 +452,6 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
-// loggingHeaderMatchesPattern returns true if headerName matches pattern.
-// Supports trailing wildcard ("x-custom-*") and bare wildcard ("*").
-// Both pattern and headerName must be pre-lowercased by the caller.
-func loggingHeaderMatchesPattern(pattern, headerName string) bool {
-	if pattern == "*" {
-		return true
-	}
-	if strings.HasSuffix(pattern, "*") {
-		return strings.HasPrefix(headerName, pattern[:len(pattern)-1])
-	}
-	return pattern == headerName
-}
-
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context. Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
@@ -481,7 +468,7 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		for _, h := range *p.loggingHeaders {
 			pattern := strings.ToLower(strings.TrimSpace(h))
 			for hKey, hVal := range allHeaders {
-				if loggingHeaderMatchesPattern(pattern, hKey) {
+				if schemas.MatchHeaderPattern(hKey, pattern) {
 					if metadata == nil {
 						metadata = make(map[string]any)
 					}
