@@ -708,7 +708,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {

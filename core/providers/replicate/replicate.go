@@ -731,7 +731,8 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 					nil, // usage - not available in done event
 					finishReason,
 					chunkIndex,
-					schemas.TextCompletionStreamRequest)
+					schemas.TextCompletionStreamRequest,
+					request.Model)
 
 				// Set raw request if enabled
 				if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
