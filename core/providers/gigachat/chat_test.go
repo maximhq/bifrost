@@ -322,7 +322,11 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 	defer server.Close()
 
 	provider := newTestGigaChatChatProvider(t, server.URL)
+	provider.sendBackRawRequest = true
+	provider.sendBackRawResponse = true
 	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	response, bifrostErr := provider.ChatCompletion(ctx, testGigaChatOAuthKey(server.URL+"/oauth", "", "super-secret-credentials"), testGigaChatChatRequest())
@@ -950,7 +954,11 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 	defer server.Close()
 
 	provider := newTestGigaChatChatProvider(t, server.URL)
+	provider.sendBackRawRequest = true
+	provider.sendBackRawResponse = true
 	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	stream, bifrostErr := provider.ChatCompletionStream(ctx, testGigaChatPostHookRunner, nil, testGigaChatOAuthKey(server.URL+"/oauth", "", "super-secret-credentials"), testGigaChatChatRequest())
@@ -971,7 +979,13 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 
 	assertGigaChatStreamContentChunk(t, chunks[0], "З")
 	assertGigaChatStreamReasoningChunk(t, chunks[0], "Думаю")
+	if chunks[0].BifrostChatResponse.ExtraFields.RawResponse == nil {
+		t.Fatal("expected raw response on content chunk")
+	}
 	assertGigaChatStreamContentChunk(t, chunks[1], "дравствуйте")
+	if chunks[1].BifrostChatResponse.ExtraFields.RawResponse == nil {
+		t.Fatal("expected raw response on content chunk")
+	}
 	finalChunk := chunks[2].BifrostChatResponse
 	if finalChunk == nil {
 		t.Fatalf("final chunk missing chat response: %#v", chunks[2])
@@ -984,6 +998,9 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 	}
 	if len(finalChunk.Choices) != 1 || finalChunk.Choices[0].FinishReason == nil || *finalChunk.Choices[0].FinishReason != "stop" {
 		t.Fatalf("finish reason mismatch: %#v", finalChunk.Choices)
+	}
+	if finalChunk.ExtraFields.RawRequest == nil {
+		t.Fatalf("expected raw request on final chunk, got request=%#v", finalChunk.ExtraFields.RawRequest)
 	}
 	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
 		t.Fatal("provider response headers were not stored in context")

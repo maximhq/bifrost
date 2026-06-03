@@ -129,6 +129,16 @@ func testGigaChatToolsChatToolChoiceVariants(t *testing.T) {
 			wantMode: "auto",
 		},
 		{
+			name:       "StringRequired",
+			choice:     &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")},
+			wantForced: toolName,
+		},
+		{
+			name:       "StringAny",
+			choice:     &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("any")},
+			wantForced: toolName,
+		},
+		{
 			name:     "StringNone",
 			choice:   &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("none")},
 			wantMode: "none",
@@ -146,6 +156,20 @@ func testGigaChatToolsChatToolChoiceVariants(t *testing.T) {
 				Type: schemas.ChatToolChoiceTypeNone,
 			}},
 			wantMode: "none",
+		},
+		{
+			name: "StructRequired",
+			choice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type: schemas.ChatToolChoiceTypeRequired,
+			}},
+			wantForced: toolName,
+		},
+		{
+			name: "StructAny",
+			choice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type: schemas.ChatToolChoiceTypeAny,
+			}},
+			wantForced: toolName,
 		},
 		{
 			name: "StructFunction",
@@ -203,6 +227,7 @@ func testGigaChatToolsChatRejectsUnsupportedPolicy(t *testing.T) {
 
 	parallelToolCalls := true
 	strict := true
+	timeTool := testGigaChatChatFunctionTool(t, "get_time")
 	tests := []struct {
 		name    string
 		mutate  func(*schemas.BifrostChatRequest)
@@ -248,11 +273,12 @@ func testGigaChatToolsChatRejectsUnsupportedPolicy(t *testing.T) {
 			wantErr: "parallel_tool_calls",
 		},
 		{
-			name: "RequiredToolChoice",
+			name: "RequiredToolChoiceWithMultipleFunctions",
 			mutate: func(request *schemas.BifrostChatRequest) {
+				request.Params.Tools = append(request.Params.Tools, timeTool)
 				request.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")}
 			},
-			wantErr: "tool_choice",
+			wantErr: "cannot require an arbitrary",
 		},
 		{
 			name: "AutoToolChoiceWithoutFunctions",
@@ -462,6 +488,16 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 			wantMode: "auto",
 		},
 		{
+			name:         "StringRequired",
+			choice:       &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")},
+			wantFunction: toolName,
+		},
+		{
+			name:         "StringAny",
+			choice:       &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")},
+			wantFunction: toolName,
+		},
+		{
 			name:     "StringNone",
 			choice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("none")},
 			wantMode: "none",
@@ -479,6 +515,20 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 				Type: schemas.ResponsesToolChoiceTypeNone,
 			}},
 			wantMode: "none",
+		},
+		{
+			name: "StructRequired",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeRequired,
+			}},
+			wantFunction: toolName,
+		},
+		{
+			name: "StructAny",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeAny,
+			}},
+			wantFunction: toolName,
 		},
 		{
 			name: "StructFunction",
@@ -815,6 +865,14 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 
 	parallelToolCalls := true
 	strict := true
+	timeTool := schemas.ResponsesTool{
+		Type:        schemas.ResponsesToolTypeFunction,
+		Name:        schemas.Ptr("get_time"),
+		Description: schemas.Ptr("Gets current time."),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{
+			Parameters: mustGigaChatToolParameters(t, `{"type":"object","properties":{"timezone":{"type":"string"}},"required":["timezone"]}`),
+		},
+	}
 	tests := []struct {
 		name    string
 		mutate  func(*schemas.BifrostResponsesRequest)
@@ -861,27 +919,30 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 			wantErr: "parallel_tool_calls",
 		},
 		{
-			name: "RequiredToolChoice",
+			name: "RequiredToolChoiceWithMultipleTools",
 			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = append(request.Params.Tools, timeTool)
 				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
 			},
-			wantErr: "tool_choice",
+			wantErr: "cannot require an arbitrary",
 		},
 		{
-			name: "AnyToolChoice",
+			name: "AnyToolChoiceWithMultipleTools",
 			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = append(request.Params.Tools, timeTool)
 				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}
 			},
-			wantErr: "cannot require an arbitrary tool",
+			wantErr: "cannot require an arbitrary",
 		},
 		{
-			name: "StructRequiredToolChoice",
+			name: "StructRequiredToolChoiceWithMultipleTools",
 			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = append(request.Params.Tools, timeTool)
 				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
 					Type: schemas.ResponsesToolChoiceTypeRequired,
 				}}
 			},
-			wantErr: "cannot require an arbitrary tool",
+			wantErr: "cannot require an arbitrary",
 		},
 		{
 			name: "AllowedToolsChoice",

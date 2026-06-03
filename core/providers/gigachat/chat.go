@@ -150,13 +150,22 @@ func ToBifrostChatStreamResponse(providerName schemas.ModelProvider, response *G
 		Choices:           choices,
 		Created:           response.Created,
 		Model:             response.Model,
-		Object:            response.Object,
+		Object:            toBifrostGigaChatChatStreamObject(response.Object),
 		SystemFingerprint: response.SystemFingerprint,
 		Usage:             toBifrostGigaChatUsage(response.Usage),
 		ExtraParams:       response.ExtraParams,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 		},
+	}
+}
+
+func toBifrostGigaChatChatStreamObject(object string) string {
+	switch strings.TrimSpace(object) {
+	case "", "chat.completion", "chat.completions":
+		return "chat.completion.chunk"
+	default:
+		return object
 	}
 }
 

@@ -136,6 +136,8 @@ func toGigaChatChatFunctionCall(toolChoice *schemas.ChatToolChoice, functionName
 				return nil, fmt.Errorf("tool_choice auto requires at least one declared GigaChat function tool")
 			}
 			return "auto", nil
+		case "required", "any":
+			return forceSingleGigaChatChatFunctionChoice(functionNames, strings.TrimSpace(*toolChoice.ChatToolChoiceStr))
 		case "none":
 			return "none", nil
 		default:
@@ -164,9 +166,24 @@ func toGigaChatChatFunctionCall(toolChoice *schemas.ChatToolChoice, functionName
 		return "auto", nil
 	case schemas.ChatToolChoiceTypeNone:
 		return "none", nil
+	case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
+		return forceSingleGigaChatChatFunctionChoice(functionNames, string(choice.Type))
 	default:
 		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat chat completions", choice.Type)
 	}
+}
+
+func forceSingleGigaChatChatFunctionChoice(functionNames map[string]struct{}, choice string) (GigaChatFunctionCallChoice, error) {
+	if len(functionNames) == 0 {
+		return GigaChatFunctionCallChoice{}, fmt.Errorf("tool_choice %s requires at least one declared GigaChat function tool", choice)
+	}
+	if len(functionNames) > 1 {
+		return GigaChatFunctionCallChoice{}, fmt.Errorf("tool_choice %s cannot require an arbitrary GigaChat function when multiple function tools are declared", choice)
+	}
+	for name := range functionNames {
+		return GigaChatFunctionCallChoice{Name: name}, nil
+	}
+	return GigaChatFunctionCallChoice{}, fmt.Errorf("tool_choice %s requires at least one declared GigaChat function tool", choice)
 }
 
 func toGigaChatResponsesTools(tools []schemas.ResponsesTool) (*gigaChatResponsesToolsConversion, error) {
@@ -479,7 +496,7 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 		case "none":
 			return &GigaChatResponsesToolConfig{Mode: "none"}, nil
 		case "required", "any":
-			return nil, fmt.Errorf("tool_choice %q is not supported by GigaChat Responses because tool_config cannot require an arbitrary tool without a function_name or tool_name", strings.TrimSpace(*toolChoice.ResponsesToolChoiceStr))
+			return forceSingleGigaChatResponsesToolConfig(targets, strings.TrimSpace(*toolChoice.ResponsesToolChoiceStr))
 		default:
 			return nil, fmt.Errorf("tool_choice %q is not supported by GigaChat Responses", *toolChoice.ResponsesToolChoiceStr)
 		}
@@ -511,7 +528,7 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 	case schemas.ResponsesToolChoiceTypeNone:
 		return &GigaChatResponsesToolConfig{Mode: "none"}, nil
 	case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
-		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat Responses because tool_config cannot require an arbitrary tool without a function_name or tool_name", choice.Type)
+		return forceSingleGigaChatResponsesToolConfig(targets, string(choice.Type))
 	case schemas.ResponsesToolChoiceTypeAllowedTools:
 		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat Responses because tool_config supports one forced tool_name or function_name, not an allowed tools set", choice.Type)
 	case schemas.ResponsesToolChoiceTypeFileSearch, schemas.ResponsesToolChoiceTypeComputerUsePreview, schemas.ResponsesToolChoiceTypeMCP, schemas.ResponsesToolChoiceTypeCustom:
@@ -526,6 +543,29 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 			ToolName: &toolName,
 		}, nil
 	}
+}
+
+func forceSingleGigaChatResponsesToolConfig(targets gigaChatResponsesToolChoiceTargets, choice string) (*GigaChatResponsesToolConfig, error) {
+	targetCount := len(targets.Functions) + len(targets.BuiltIns)
+	if targetCount == 0 {
+		return nil, fmt.Errorf("tool_choice %s requires at least one declared GigaChat tool", choice)
+	}
+	if targetCount > 1 {
+		return nil, fmt.Errorf("tool_choice %s cannot require an arbitrary GigaChat tool when multiple tools are declared", choice)
+	}
+	for _, name := range targets.Functions {
+		return &GigaChatResponsesToolConfig{
+			Mode:         "forced",
+			FunctionName: &name,
+		}, nil
+	}
+	for _, name := range targets.BuiltIns {
+		return &GigaChatResponsesToolConfig{
+			Mode:     "forced",
+			ToolName: &name,
+		}, nil
+	}
+	return nil, fmt.Errorf("tool_choice %s requires at least one declared GigaChat tool", choice)
 }
 
 type gigaChatResponsesToolChoiceTargets struct {

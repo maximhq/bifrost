@@ -143,6 +143,7 @@ func TestGigaChatFilesHTTP(t *testing.T) {
 
 	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
 	t.Run("ListUsesKeyBaseURLAndAuthHeaders", testGigaChatFileListUsesKeyBaseURLAndAuthHeaders)
+	t.Run("ListAppliesLimitAndRawRequest", testGigaChatFileListAppliesLimitAndRawRequest)
 	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
 	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
 	t.Run("ContentBase64Wrapper", testGigaChatFileContentBase64Wrapper)
@@ -347,6 +348,48 @@ func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
 	}
 	if response.Object != "list" || len(response.Data) != 0 {
 		t.Fatalf("unexpected list response: %#v", response)
+	}
+}
+
+func testGigaChatFileListAppliesLimitAndRawRequest(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s, want GET", request.Method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"file-1","object":"file","bytes":10,"created_at":1780306293,"filename":"one.txt","purpose":"general"},{"id":"file-2","object":"file","bytes":20,"created_at":1780306294,"filename":"two.txt","purpose":"general"}]}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	provider.sendBackRawRequest = true
+	provider.sendBackRawResponse = true
+
+	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+
+	response, bifrostErr := provider.FileList(ctx, []schemas.Key{testGigaChatAccessTokenKey("files-token")}, &schemas.BifrostFileListRequest{
+		Provider: schemas.GigaChat,
+		Limit:    1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileList returned error: %v", bifrostErr)
+	}
+	if len(response.Data) != 1 || response.Data[0].ID != "file-1" {
+		t.Fatalf("limit was not applied: %#v", response.Data)
+	}
+	if got := stringifyGigaChatRaw(response.ExtraFields.RawRequest); got != `{}` {
+		t.Fatalf("raw request mismatch: got %s", got)
+	}
+	if response.ExtraFields.RawResponse == nil {
+		t.Fatal("expected raw response")
 	}
 }
 

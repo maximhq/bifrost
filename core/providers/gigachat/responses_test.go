@@ -401,6 +401,52 @@ func testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID(t *testing.
 	}
 }
 
+func TestGigaChatResponsesFunctionCallOutputInfersNameFromPriorCallID(t *testing.T) {
+	t.Parallel()
+
+	toolName := "get_weather"
+	callID := "019e8282-bb13-73fc-bbe8-5f52856d166b"
+	arguments := `{"city":"Moscow"}`
+	toolOutput := `{"temperature":5}`
+	request := &schemas.BifrostResponsesRequest{
+		Model: "GigaChat-2-Max",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name:      &toolName,
+					CallID:    &callID,
+					Arguments: &arguments,
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &toolOutput,
+					},
+				},
+			},
+		},
+	}
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Messages) != 2 {
+		t.Fatalf("message count mismatch: got %d", len(gigaChatReq.Messages))
+	}
+	functionResult := gigaChatReq.Messages[1].Content[0].FunctionResult
+	if functionResult == nil {
+		t.Fatalf("function result missing: %#v", gigaChatReq.Messages[1].Content)
+	}
+	if functionResult.Name != toolName || functionResult.Result != toolOutput {
+		t.Fatalf("function result mismatch: %#v", functionResult)
+	}
+}
+
 func testGigaChatResponsesThreadStorage(t *testing.T) {
 	t.Parallel()
 

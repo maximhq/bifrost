@@ -1247,9 +1247,6 @@ func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []s
 	if request == nil {
 		request = &schemas.BifrostFileListRequest{Provider: provider.GetProviderKey()}
 	}
-	if request.Limit > 0 {
-		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support limit pagination", nil)
-	}
 	if request.Order != nil && strings.TrimSpace(*request.Order) != "" {
 		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support order sorting", nil)
 	}

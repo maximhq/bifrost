@@ -25,6 +25,10 @@ const (
 	gigaChatFilePurposeGeneral   = "general"
 )
 
+func emptyGigaChatJSONRequestBody() []byte {
+	return []byte("{}")
+}
+
 func toGigaChatFilePurpose(purpose schemas.FilePurpose) string {
 	if purpose == schemas.FilePurposeAssistants {
 		return gigaChatFilePurposeAssistant
@@ -82,7 +86,8 @@ func (provider *GigaChatProvider) fileUploadWithRefresh(ctx *schemas.BifrostCont
 func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileListRequest, forceRefresh bool) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 	ctx = ensureGigaChatContext(ctx)
 
-	responseBody, providerResponseHeaders, _, latency, bifrostErr := provider.executeGigaChatFileRequest(ctx, key, schemas.FileListRequest, http.MethodGet, "/files", "", "application/json", nil, nil, forceRefresh)
+	rawRequestBody := emptyGigaChatJSONRequestBody()
+	responseBody, providerResponseHeaders, _, latency, bifrostErr := provider.executeGigaChatFileRequest(ctx, key, schemas.FileListRequest, http.MethodGet, "/files", "", "application/json", nil, rawRequestBody, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -91,9 +96,9 @@ func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContex
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	gigaChatResponse := &GigaChatUploadedFiles{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, nil, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, rawRequestBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, enrichGigaChatError(ctx, bifrostErr, nil, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, rawRequestBody, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	files := make([]schemas.FileObject, 0, len(gigaChatResponse.Data))
@@ -107,6 +112,9 @@ func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContex
 			continue
 		}
 		files = append(files, converted)
+	}
+	if request != nil && request.Limit > 0 && len(files) > request.Limit {
+		files = files[:request.Limit]
 	}
 
 	response := &schemas.BifrostFileListResponse{

@@ -49,6 +49,53 @@ func TestGigaChatBatchTypesJSON(t *testing.T) {
 	}
 }
 
+func TestGigaChatBatchesUnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+		wantLen int
+		wantID  string
+	}{
+		{
+			name:    "data wrapper",
+			payload: `{"data":[{"id":"batch-wrapper","object":"batch","method":"chat_completions","status":"created"}]}`,
+			wantLen: 1,
+			wantID:  "batch-wrapper",
+		},
+		{
+			name:    "root array",
+			payload: `[{"id":"batch-array","object":"batch","method":"embedder","status":"completed"}]`,
+			wantLen: 1,
+			wantID:  "batch-array",
+		},
+		{
+			name:    "empty root array",
+			payload: `[]`,
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var decoded GigaChatBatches
+			if err := json.Unmarshal([]byte(tt.payload), &decoded); err != nil {
+				t.Fatalf("unmarshal GigaChatBatches returned error: %v", err)
+			}
+			if len(decoded.Data) != tt.wantLen {
+				t.Fatalf("decoded %d batches, want %d", len(decoded.Data), tt.wantLen)
+			}
+			if tt.wantLen > 0 && decoded.Data[0].ID != tt.wantID {
+				t.Fatalf("decoded id %q, want %q", decoded.Data[0].ID, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestToGigaChatBatchMethod(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +189,7 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Run("CreateTransformsFileRows", testGigaChatBatchCreateTransformsFileRows)
 	t.Run("CreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized", testGigaChatBatchCreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized)
 	t.Run("ListParsesWrapper", testGigaChatBatchListParsesWrapper)
+	t.Run("ListParsesEmptyRootArray", testGigaChatBatchListParsesEmptyRootArray)
 	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
 	t.Run("RetrieveMapsResultFileID", testGigaChatBatchRetrieveMapsResultFileID)
 	t.Run("ResultsDownloadsOutputFile", testGigaChatBatchResultsDownloadsOutputFile)
@@ -497,6 +545,34 @@ func testGigaChatBatchListParsesWrapper(t *testing.T) {
 	}
 	if response.FirstID == nil || *response.FirstID != "batch-1" || response.LastID == nil || *response.LastID != "batch-2" {
 		t.Fatalf("list ids mismatch: first=%v last=%v", response.FirstID, response.LastID)
+	}
+}
+
+func testGigaChatBatchListParsesEmptyRootArray(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s", request.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-list-token")}, &schemas.BifrostBatchListRequest{Provider: schemas.GigaChat})
+	if bifrostErr != nil {
+		t.Fatalf("BatchList returned error: %v", bifrostErr)
+	}
+	if response.Object != "list" || len(response.Data) != 0 {
+		t.Fatalf("unexpected list response: %#v", response)
+	}
+	if response.FirstID != nil || response.LastID != nil {
+		t.Fatalf("empty list should not set cursors: first=%v last=%v", response.FirstID, response.LastID)
 	}
 }
 

@@ -2,6 +2,7 @@
 package gigachat
 
 import (
+	"bytes"
 	"encoding/json"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -273,6 +274,28 @@ type GigaChatBatch struct {
 // GigaChatBatches is a list wrapper for GigaChat batch metadata.
 type GigaChatBatches struct {
 	Data []GigaChatBatch `json:"data"`
+}
+
+// UnmarshalJSON accepts both the wrapper shape returned by some GigaChat
+// environments and the root list shape documented for empty task lists.
+func (batches *GigaChatBatches) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var items []GigaChatBatch
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return err
+		}
+		batches.Data = items
+		return nil
+	}
+
+	type Alias GigaChatBatches
+	var aux Alias
+	if err := json.Unmarshal(trimmed, &aux); err != nil {
+		return err
+	}
+	*batches = GigaChatBatches(aux)
+	return nil
 }
 
 // GigaChatBatchInputRow is a single JSONL row accepted by GigaChat batches.

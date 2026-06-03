@@ -32,8 +32,9 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 		})
 	}
 
+	functionCallNamesByID := collectGigaChatResponsesFunctionCallNames(bifrostReq.Input)
 	for index, message := range bifrostReq.Input {
-		convertedMessages, err := toGigaChatResponsesMessages(message)
+		convertedMessages, err := toGigaChatResponsesMessages(message, functionCallNamesByID)
 		if err != nil {
 			return nil, fmt.Errorf("input[%d]: %w", index, err)
 		}
@@ -1076,7 +1077,31 @@ func trimStringPtr(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
-func toGigaChatResponsesMessages(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {
+func collectGigaChatResponsesFunctionCallNames(messages []schemas.ResponsesMessage) map[string]string {
+	functionNamesByID := make(map[string]string)
+	for _, message := range messages {
+		if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Name == nil {
+			continue
+		}
+		name := strings.TrimSpace(*message.ResponsesToolMessage.Name)
+		if name == "" {
+			continue
+		}
+		if message.ResponsesToolMessage.CallID != nil {
+			if callID := strings.TrimSpace(*message.ResponsesToolMessage.CallID); callID != "" {
+				functionNamesByID[callID] = name
+			}
+		}
+		if message.ID != nil {
+			if id := strings.TrimSpace(*message.ID); id != "" {
+				functionNamesByID[id] = name
+			}
+		}
+	}
+	return functionNamesByID
+}
+
+func toGigaChatResponsesMessages(message schemas.ResponsesMessage, functionCallNamesByID map[string]string) ([]GigaChatResponsesMessage, error) {
 	messageType := schemas.ResponsesMessageTypeMessage
 	if message.Type != nil {
 		messageType = *message.Type
@@ -1088,7 +1113,7 @@ func toGigaChatResponsesMessages(message schemas.ResponsesMessage) ([]GigaChatRe
 	case schemas.ResponsesMessageTypeFunctionCall:
 		return toGigaChatResponsesFunctionCallMessage(message)
 	case schemas.ResponsesMessageTypeFunctionCallOutput:
-		return toGigaChatResponsesFunctionResultMessage(message)
+		return toGigaChatResponsesFunctionResultMessage(message, functionCallNamesByID)
 	case schemas.ResponsesMessageTypeReasoning:
 		return toGigaChatResponsesReasoningMessage(message)
 	default:
@@ -1147,11 +1172,21 @@ func toGigaChatResponsesFunctionCallMessage(message schemas.ResponsesMessage) ([
 	}}, nil
 }
 
-func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {
+func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage, functionCallNamesByID map[string]string) ([]GigaChatResponsesMessage, error) {
 	if message.ResponsesToolMessage == nil {
 		return nil, fmt.Errorf("function_call_output item requires tool message fields")
 	}
-	if message.ResponsesToolMessage.Name == nil || strings.TrimSpace(*message.ResponsesToolMessage.Name) == "" {
+	name := ""
+	if message.ResponsesToolMessage.Name != nil {
+		name = strings.TrimSpace(*message.ResponsesToolMessage.Name)
+	}
+	if name == "" {
+		name = functionCallNamesByID[trimStringPtr(message.ResponsesToolMessage.CallID)]
+	}
+	if name == "" {
+		name = functionCallNamesByID[trimStringPtr(message.ID)]
+	}
+	if name == "" {
 		return nil, fmt.Errorf("function_call_output item name is required")
 	}
 
@@ -1165,7 +1200,7 @@ func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage) 
 		ToolsStateID: toGigaChatResponsesToolsStateID(message),
 		Content: []GigaChatResponsesContentPart{{
 			FunctionResult: &GigaChatResponsesFunctionResult{
-				Name:   toGigaChatResponsesFunctionName(*message.ResponsesToolMessage.Name),
+				Name:   toGigaChatResponsesFunctionName(name),
 				Result: result,
 			},
 		}},
