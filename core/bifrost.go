@@ -5977,6 +5977,35 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					continue
 				}
+				// Scope to a single key when ListModelsRequest.KeyID is set, so
+				// callers (the catalog composer) can cache per-key without an
+				// extra round-trip and without the provider aggregating across
+				// every configured key.
+				if lmr := req.BifrostRequest.ListModelsRequest; lmr != nil && lmr.KeyID != nil {
+					target := *lmr.KeyID
+					filtered := keys[:0]
+					for _, k := range keys {
+						if k.ID == target {
+							filtered = append(filtered, k)
+						}
+					}
+					keys = filtered
+					if len(keys) == 0 {
+						req.Err <- schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:               provider.GetProviderKey(),
+								RequestType:            req.RequestType,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
+							},
+						}
+						continue
+					}
+				}
 			} else {
 				// Determine if this is a multi-key batch/file/container operation
 				// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
