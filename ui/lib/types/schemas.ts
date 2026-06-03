@@ -158,6 +158,7 @@ export const bedrockKeyConfigSchema = z
 		secret_key: envVarSchema.optional(),
 		session_token: envVarSchema.optional(),
 		region: envVarSchema.optional(),
+		profile: envVarSchema.optional(),
 		role_arn: envVarSchema.optional(),
 		external_id: envVarSchema.optional(),
 		session_name: envVarSchema.optional(),
@@ -189,6 +190,19 @@ export const bedrockKeyConfigSchema = z
 		{
 			message: "Both Access Key and Secret Key are required for explicit credentials",
 			path: ["access_key"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Profile is only meaningful when credentials are resolved through the
+			// default chain. It is silently ignored by the backend when explicit
+			// keys are supplied, so reject the ambiguous combination here.
+			if (!isEnvVarSet(data.profile)) return true;
+			return !isEnvVarSet(data.access_key) && !isEnvVarSet(data.secret_key);
+		},
+		{
+			message: "Profile cannot be combined with explicit Access Key / Secret Key",
+			path: ["profile"],
 		},
 	);
 

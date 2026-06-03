@@ -148,6 +148,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockRoleARN = nil
 			key.BedrockExternalID = nil
 			key.BedrockRoleSessionName = nil
+			key.BedrockProfile = nil
 			key.BedrockKeyConfig = nil
 
 			pc.Keys[i] = *key

@@ -7,63 +7,57 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// uploadToS3 uploads content to an S3 bucket using the provided credentials.
+// uploadToS3 uploads content to an S3 bucket using the credentials configured
+// on the supplied BedrockKeyConfig. Resolution (static keys, default chain,
+// named profile, STS AssumeRole) goes through resolveAWSConfig so this path
+// honors the same auth modes as the request-signing path — in particular
+// role_arn is applied when set, so a key configured for cross-account
+// AssumeRole uploads under the assumed role rather than the source identity.
 func uploadToS3(
 	ctx context.Context,
-	accessKey, secretKey string,
-	sessionToken *string,
+	cfg *schemas.BedrockKeyConfig,
 	region string,
 	bucket, key string,
 	content []byte,
 ) *schemas.BifrostError {
-	// Create AWS config with credentials
-	var cfg aws.Config
-	var err error
-
-	if accessKey != "" && secretKey != "" {
-		// Use provided credentials
-		var creds aws.CredentialsProvider
-		if sessionToken != nil && *sessionToken != "" {
-			creds = credentials.NewStaticCredentialsProvider(accessKey, secretKey, *sessionToken)
-		} else {
-			creds = credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
+	if cfg == nil {
+		// Default credential chain only (no profile / role).
+		empty := schemas.EnvVar{}
+		awsCfg, bifrostErr := resolveAWSConfig(ctx, empty, empty, nil, nil, nil, nil, nil, region)
+		if bifrostErr != nil {
+			return bifrostErr
 		}
-
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(creds),
-		)
-	} else {
-		// Use default credentials chain (IAM role, env vars, etc.)
-		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
+		return s3PutObject(ctx, awsCfg, bucket, key, content)
 	}
-
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load aws config for s3", err)
+	awsCfg, bifrostErr := resolveAWSConfig(ctx,
+		cfg.AccessKey, cfg.SecretKey,
+		cfg.SessionToken, cfg.Profile,
+		cfg.RoleARN, cfg.ExternalID, cfg.RoleSessionName,
+		region)
+	if bifrostErr != nil {
+		return bifrostErr
 	}
+	return s3PutObject(ctx, awsCfg, bucket, key, content)
+}
 
-	// Create S3 client
-	client := s3.NewFromConfig(cfg)
-
-	// Upload the content
-	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+// s3PutObject performs the actual S3 PutObject call. Split out so callers can
+// share the same client construction without duplicating the resolveAWSConfig
+// boilerplate.
+func s3PutObject(ctx context.Context, awsCfg aws.Config, bucket, key string, content []byte) *schemas.BifrostError {
+	client := s3.NewFromConfig(awsCfg)
+	if _, err := client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(content),
 		ContentType: aws.String("application/jsonl"),
-	})
-
-	if err != nil {
+	}); err != nil {
 		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to upload to s3: %s/%s", bucket, key), err)
 	}
-
 	return nil
 }
 

@@ -233,6 +233,12 @@ type BedrockKeyConfig struct {
 	SessionToken *EnvVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
 	Region       *EnvVar `json:"region,omitempty"`        // AWS region for service access
 	ARN          *EnvVar `json:"arn,omitempty"`           // Amazon Resource Name for resource identification
+	// Profile selects a named profile from the shared AWS config and credentials files
+	// (~/.aws/config, ~/.aws/credentials). Used when AccessKey/SecretKey are empty.
+	// Supports SSO profiles after `aws sso login --profile <name>` has been run.
+	// Composes with RoleARN: the profile's resolved credentials are used as the source
+	// identity for STS AssumeRole.
+	Profile *EnvVar `json:"profile,omitempty"`
 	// IAM role for STS AssumeRole
 	RoleARN         *EnvVar `json:"role_arn,omitempty"`
 	ExternalID      *EnvVar `json:"external_id,omitempty"`
@@ -242,6 +248,7 @@ type BedrockKeyConfig struct {
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
+// To use a non-default named profile (including SSO), set Profile while leaving AccessKey/SecretKey empty.
 // To use Bedrock API Key authentication, set Value in Key struct instead.
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
