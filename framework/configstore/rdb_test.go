@@ -32,6 +32,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
+		&tables.TableModelConfig{},
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
@@ -639,6 +640,97 @@ func TestDeleteVirtualKey(t *testing.T) {
 
 	_, err = store.GetVirtualKey(ctx, "vk-delete")
 	assert.Error(t, err, "Should not find deleted virtual key")
+}
+
+func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-scoped",
+		Name:     "Scoped VK",
+		Value:    "vk-scoped-value",
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	budget := &tables.TableBudget{ID: "b-scoped", MaxLimit: 100, ResetDuration: "1h"}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+	rateLimit := &tables.TableRateLimit{
+		ID:                 "rl-scoped",
+		TokenMaxLimit:      schemas.Ptr(int64(1000)),
+		TokenResetDuration: schemas.Ptr("1h"),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, rateLimit))
+
+	mc := &tables.TableModelConfig{
+		ID:          "mc-scoped",
+		ModelName:   "gpt-4",
+		Scope:       tables.ModelConfigScopeVirtualKey,
+		ScopeID:     schemas.Ptr(vk.ID),
+		BudgetID:    &budget.ID,
+		RateLimitID: &rateLimit.ID,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	// Sanity: the scoped config exists before deletion.
+	_, err := store.GetModelConfigByID(ctx, "mc-scoped")
+	require.NoError(t, err)
+
+	// Deleting the VK must cascade-clean its scoped model config and owned budget/rate-limit.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	_, err = store.GetModelConfigByID(ctx, "mc-scoped")
+	assert.Error(t, err, "scoped model config should be deleted with the VK")
+
+	var budgetCount int64
+	require.NoError(t, store.DB().Model(&tables.TableBudget{}).Where("id = ?", "b-scoped").Count(&budgetCount).Error)
+	assert.Equal(t, int64(0), budgetCount, "owned budget should be deleted")
+
+	var rlCount int64
+	require.NoError(t, store.DB().Model(&tables.TableRateLimit{}).Where("id = ?", "rl-scoped").Count(&rlCount).Error)
+	assert.Equal(t, int64(0), rlCount, "owned rate limit should be deleted")
+}
+
+func TestDeleteProvider_CleansUpProviderModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	require.NoError(t, store.DB().Create(&tables.TableProvider{Name: "openai", CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableBudget{ID: "pb", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableRateLimit{ID: "prl", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+
+	providerName := "openai"
+	mc := &tables.TableModelConfig{
+		ID:          "mc-wildcard",
+		ModelName:   tables.ModelConfigAllModels,
+		Provider:    &providerName,
+		Scope:       tables.ModelConfigScopeGlobal,
+		BudgetID:    schemas.Ptr("pb"),
+		RateLimitID: schemas.Ptr("prl"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	require.NoError(t, store.DeleteProvider(ctx, schemas.ModelProvider("openai")))
+
+	// The provider's wildcard model config and its owned budget/rate-limit are cleaned up.
+	_, err := store.GetModelConfigByID(ctx, "mc-wildcard")
+	assert.Error(t, err, "provider-scoped model config should be deleted with the provider")
+	for _, q := range []struct {
+		model any
+		id    string
+		label string
+	}{
+		{&tables.TableBudget{}, "pb", "budget"},
+		{&tables.TableRateLimit{}, "prl", "rate limit"},
+	} {
+		var count int64
+		require.NoError(t, store.DB().Model(q.model).Where("id = ?", q.id).Count(&count).Error)
+		assert.Equal(t, int64(0), count, "owned "+q.label+" should be deleted")
+	}
 }
 
 // =============================================================================

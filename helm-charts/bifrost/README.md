@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.21
+
+- Added `scope` and `scope_id` fields to `bifrost.governance.modelConfigs[]` items in `values.yaml` and `values.schema.json`. `scope` accepts `"global"` (default, applies to all traffic) or `"virtual_key"` (applies to a specific virtual key); `scope_id` is required when `scope` is `"virtual_key"` and must reference a virtual key `id`. The `_helpers.tpl` already passes `modelConfigs` through as-is so no template change was needed.
+
 ### 2.1.20
 
 - Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:

@@ -377,6 +377,12 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = downgradeRawMidConversationSystemMessages(jsonBody)
 		if err != nil {
 			return nil, fmt.Errorf("downgrade raw mid-conversation system messages: %w", err)
+	// diagnostics — undocumented Claude Code field; gated through the feature
+	// map like every other field. Only Anthropic direct keeps it (fail-closed).
+	if !features.Diagnostics && providerUtils.JSONFieldExists(jsonBody, "diagnostics") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "diagnostics")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw diagnostics: %w", err)
 		}
 	}
 

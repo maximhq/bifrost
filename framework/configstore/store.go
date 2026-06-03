@@ -28,9 +28,11 @@ type VirtualKeyQueryParams struct {
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
 type ModelConfigsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string
+	Limit    int
+	Offset   int
+	Search   string
+	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
@@ -216,7 +218,7 @@ type ConfigStore interface {
 	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
-	DeleteTeam(ctx context.Context, id string) error
+	DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Customer CRUD
 	GetCustomers(ctx context.Context) ([]tables.TableCustomer, error)
@@ -224,7 +226,7 @@ type ConfigStore interface {
 	GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
 	CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	UpdateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
-	DeleteCustomer(ctx context.Context, id string) error
+	DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Rate limit CRUD
 	GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error)
@@ -256,13 +258,15 @@ type ConfigStore interface {
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error)
+	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
-	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)
+	GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error)
 	GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
 	UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
 	UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error
-	DeleteModelConfig(ctx context.Context, id string) error
+	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)

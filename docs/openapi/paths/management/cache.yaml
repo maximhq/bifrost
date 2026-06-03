@@ -15,6 +15,8 @@ clear-by-cache-id:
         description: Storage ID of the cache entry to delete
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Cache cleared successfully
@@ -41,6 +43,8 @@ clear-by-cache-key:
         description: Cache key to clear
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Cache cleared successfully

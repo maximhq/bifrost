@@ -452,6 +452,19 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
+// loggingHeaderMatchesPattern returns true if headerName matches pattern.
+// Supports trailing wildcard ("x-custom-*") and bare wildcard ("*").
+// Both pattern and headerName must be pre-lowercased by the caller.
+func loggingHeaderMatchesPattern(pattern, headerName string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(headerName, pattern[:len(pattern)-1])
+	}
+	return pattern == headerName
+}
+
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context. Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
@@ -463,15 +476,17 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 
 	var metadata map[string]any
 
-	// Check configured logging headers
+	// Check configured logging headers (supports wildcard patterns like "x-custom-*")
 	if p.loggingHeaders != nil {
 		for _, h := range *p.loggingHeaders {
-			key := strings.ToLower(h)
-			if val, ok := allHeaders[key]; ok {
-				if metadata == nil {
-					metadata = make(map[string]any)
+			pattern := strings.ToLower(strings.TrimSpace(h))
+			for hKey, hVal := range allHeaders {
+				if loggingHeaderMatchesPattern(pattern, hKey) {
+					if metadata == nil {
+						metadata = make(map[string]any)
+					}
+					metadata[hKey] = hVal
 				}
-				metadata[key] = val
 			}
 		}
 	}
@@ -675,6 +690,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				Method:   req.PassthroughRequest.Method,
 				Path:     req.PassthroughRequest.Path,
 				RawQuery: req.PassthroughRequest.RawQuery,
+				Model:    req.PassthroughRequest.Model,
 			}
 			if len(req.PassthroughRequest.Body) > 0 {
 				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
@@ -1045,6 +1061,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
 				entry.Status = "error"
+			}
+			// Compute cost for streaming passthrough using StreamUsage set by the accumulator.
+			if entry.Cost == nil && p.pricingManager != nil && result.PassthroughResponse.PassthroughUsage != nil {
+				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+					entry.Cost = &cost
+				}
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)

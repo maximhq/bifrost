@@ -22,6 +22,8 @@ mcp-tool-groups:
         description: Search by name.
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -47,6 +49,8 @@ mcp-tool-groups:
         application/json:
           schema:
             $ref: '../../schemas/management/mcptoolgroups.yaml#/CreateMCPToolGroupRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Group created
@@ -71,6 +75,8 @@ mcp-tool-groups-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -103,6 +109,8 @@ mcp-tool-groups-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/mcptoolgroups.yaml#/UpdateMCPToolGroupRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Group updated
@@ -129,6 +137,8 @@ mcp-tool-groups-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Group deleted
