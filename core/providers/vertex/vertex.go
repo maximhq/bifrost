@@ -1,13 +1,16 @@
 package vertex
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"strings"
@@ -19,6 +22,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -96,13 +100,14 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	config.CheckAndSetDefaults()
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         requestTimeout,
-		WriteTimeout:        requestTimeout,
-		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  requestTimeout,
-		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
-		ConnPoolStrategy:    fasthttp.FIFO,
+		ReadTimeout:            requestTimeout,
+		WriteTimeout:           requestTimeout,
+		MaxConnsPerHost:        config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConnDuration:    30 * time.Second,
+		MaxConnWaitTimeout:     requestTimeout,
+		MaxConnDuration:        time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:       fasthttp.FIFO,
+		DisablePathNormalizing: true,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
@@ -2648,30 +2653,629 @@ func (provider *VertexProvider) BatchResults(_ *schemas.BifrostContext, _ []sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// FileUpload is not yet implemented for Vertex AI provider.
-// Vertex AI uses Google Cloud Storage (GCS) for batch input/output files.
-func (provider *VertexProvider) FileUpload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+const (
+	gcsStorageBase = "https://storage.googleapis.com/storage/v1"
+	gcsUploadBase  = "https://storage.googleapis.com/upload/storage/v1"
+)
+
+// --- GCS helpers ---
+
+func gcsObjectKey(prefix, filename string) string {
+	key := "vertex-files/" + uuid.New().String() + "/" + filename
+	if prefix != "" {
+		key = strings.Trim(prefix, "/") + "/" + key
+	}
+	return key
 }
 
-// FileList is not yet implemented for Vertex AI provider.
-func (provider *VertexProvider) FileList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
+// gcsEncodeObjectName percent-encodes a GCS object name for the URL path,
+// encoding slashes as %2F (url.PathEscape preserves them).
+func gcsEncodeObjectName(name string) string {
+	return strings.ReplaceAll(url.PathEscape(name), "/", "%2F")
 }
 
-// FileRetrieve is not yet implemented for Vertex AI provider.
-func (provider *VertexProvider) FileRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
+func parseGCSURI(uri string) (bucket, objectKey string, err error) {
+	if !strings.HasPrefix(uri, "gs://") {
+		return "", "", fmt.Errorf("invalid GCS URI %q: must start with gs://", uri)
+	}
+	rest := strings.TrimPrefix(uri, "gs://")
+	idx := strings.IndexByte(rest, '/')
+	if idx < 0 {
+		return rest, "", nil
+	}
+	return rest[:idx], rest[idx+1:], nil
 }
 
-// FileDelete is not yet implemented for Vertex AI provider.
-func (provider *VertexProvider) FileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
+func gcsParseTime(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
-// FileContent is not yet implemented for Vertex AI provider.
-func (provider *VertexProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
+func gcsParseSize(s string) int64 {
+	var n int64
+	fmt.Sscanf(s, "%d", &n)
+	return n
+}
+
+func gcsMetadataToFileObject(bucket string, obj gcsObjectMetadata) schemas.FileObject {
+	filename := obj.Metadata["bifrost_filename"]
+	if filename == "" {
+		// Fall back to last path segment of the object key.
+		if idx := strings.LastIndexByte(obj.Name, '/'); idx >= 0 {
+			filename = obj.Name[idx+1:]
+		} else {
+			filename = obj.Name
+		}
+	}
+	return schemas.FileObject{
+		ID:        "gs://" + bucket + "/" + obj.Name,
+		Object:    "file",
+		Bytes:     gcsParseSize(obj.Size),
+		CreatedAt: gcsParseTime(obj.TimeCreated),
+		UpdatedAt: gcsParseTime(obj.Updated),
+		Filename:  filename,
+		Purpose:   schemas.FilePurpose(obj.Metadata["bifrost_purpose"]),
+		Status:    schemas.FileStatusProcessed,
+	}
+}
+
+func gcsGetAuthHeader(key schemas.Key) (string, error) {
+	tokenSrc, err := getAuthTokenSource(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to get GCS auth token source: %w", err)
+	}
+	tok, err := tokenSrc.Token()
+	if err != nil {
+		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		return "", fmt.Errorf("failed to acquire GCS access token: %w", err)
+	}
+	return "Bearer " + tok.AccessToken, nil
+}
+
+func parseGCSAPIError(body []byte, statusCode int, op string) *schemas.BifrostError {
+	var gcsErr gcsErrorBody
+	_ = sonic.Unmarshal(body, &gcsErr)
+	msg := gcsErr.Error.Message
+	if msg == "" {
+		msg = fmt.Sprintf("GCS %s failed with HTTP %d", op, statusCode)
+	}
+	return providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
+}
+
+// FileUpload uploads a file to GCS for use with Vertex AI inference.
+//
+// Two modes based on whether file bytes are provided:
+//   - Direct (request.File non-empty): uploads bytes via GCS multipart upload.
+//   - Resumable (request.File empty): mints a GCS resumable upload session URL.
+//     The client uploads bytes directly to GCS; Bifrost stays out of the data path.
+func (provider *VertexProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	var bucket, prefix string
+	if request.StorageConfig != nil && request.StorageConfig.GCS != nil {
+		bucket = request.StorageConfig.GCS.Bucket
+		prefix = request.StorageConfig.GCS.Prefix
+	}
+	if bucket == "" {
+		return nil, providerUtils.NewBifrostOperationError("gcs_bucket is required for Vertex FileUpload (provide in storage_config.gcs)", nil)
+	}
+
+	filename := request.Filename
+	if filename == "" {
+		filename = "file-" + uuid.New().String()
+	}
+
+	objectKey := gcsObjectKey(prefix, filename)
+	gcsURI := "gs://" + bucket + "/" + objectKey
+
+	contentType := "application/octet-stream"
+	if request.ContentType != nil && *request.ContentType != "" {
+		contentType = *request.ContentType
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	gcsMeta := map[string]string{
+		"bifrost_filename":     filename,
+		"bifrost_purpose":      string(request.Purpose),
+		"bifrost_content_type": contentType,
+	}
+
+	// GCS object metadata JSON, shared by both upload modes (multipart part 1
+	// for direct uploads, session body for resumable uploads).
+	metaJSON, err := sonic.Marshal(map[string]interface{}{
+		"name":        objectKey,
+		"contentType": contentType,
+		"metadata":    gcsMeta,
+	})
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to marshal GCS object metadata", err)
+	}
+
+	startTime := time.Now()
+
+	if len(request.File) == 0 {
+		return provider.gcsFileUploadResumable(ctx, key, authHeader, bucket, contentType, gcsURI, metaJSON, request, filename, startTime)
+	}
+	return provider.gcsFileUploadDirect(ctx, key, authHeader, bucket, contentType, gcsURI, metaJSON, request, filename, startTime)
+}
+
+func (provider *VertexProvider) gcsFileUploadDirect(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	authHeader, bucket, contentType, gcsURI string,
+	metaJSON []byte,
+	request *schemas.BifrostFileUploadRequest,
+	filename string,
+	startTime time.Time,
+) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	// Build GCS multipart/related body: part 1 = JSON object metadata, part 2 = file bytes.
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	metaPartHeader := textproto.MIMEHeader{}
+	metaPartHeader.Set("Content-Type", "application/json; charset=UTF-8")
+	metaPart, err := mw.CreatePart(metaPartHeader)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create GCS metadata part", err)
+	}
+	if _, err := metaPart.Write(metaJSON); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write GCS metadata part", err)
+	}
+
+	filePartHeader := textproto.MIMEHeader{}
+	filePartHeader.Set("Content-Type", contentType)
+	filePart, err := mw.CreatePart(filePartHeader)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create GCS file part", err)
+	}
+	if _, err := filePart.Write(request.File); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write file bytes", err)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to finalise GCS multipart body", err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o?uploadType=multipart", gcsUploadBase, url.PathEscape(bucket)))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("multipart/related; boundary=" + mw.Boundary())
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+	req.SetBody(buf.Bytes())
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload")
+	}
+
+	return &schemas.BifrostFileUploadResponse{
+		ID:             gcsURI,
+		Object:         "file",
+		Bytes:          int64(len(request.File)),
+		CreatedAt:      startTime.Unix(),
+		Filename:       filename,
+		Purpose:        request.Purpose,
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageGCS,
+		StorageURI:     gcsURI,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+func (provider *VertexProvider) gcsFileUploadResumable(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	authHeader, bucket, contentType, gcsURI string,
+	metaJSON []byte,
+	request *schemas.BifrostFileUploadRequest,
+	filename string,
+	startTime time.Time,
+) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o?uploadType=resumable", gcsUploadBase, url.PathEscape(bucket)))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json; charset=UTF-8")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("X-Upload-Content-Type", contentType)
+	req.SetBody(metaJSON)
+
+	// content_length is optional but helps GCS validate the upload size.
+	if request.ExtraParams != nil {
+		if cl, ok := request.ExtraParams["content_length"].(float64); ok && cl > 0 {
+			req.Header.Set("X-Upload-Content-Length", fmt.Sprintf("%d", int64(cl)))
+		}
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation")
+	}
+
+	sessionURL := string(resp.Header.Peek("Location"))
+	if sessionURL == "" {
+		return nil, providerUtils.NewBifrostOperationError("GCS did not return a Location header for the resumable session", nil)
+	}
+
+	return &schemas.BifrostFileUploadResponse{
+		ID:             gcsURI,
+		Object:         "file",
+		Bytes:          0,
+		CreatedAt:      startTime.Unix(),
+		Filename:       filename,
+		Purpose:        request.Purpose,
+		Status:         schemas.FileStatusPendingUpload,
+		StorageBackend: schemas.FileStorageGCS,
+		StorageURI:     gcsURI,
+		UploadURL:      &sessionURL,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// FileList lists GCS objects under the configured prefix.
+// Bucket must be provided via storage_config.gcs.
+// Pagination is serial across keys: each key's GCS pages are exhausted (via the
+// native pageToken) before moving to the next key.
+func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileList", nil)
+	}
+	var bucket, prefix string
+	if request.StorageConfig != nil && request.StorageConfig.GCS != nil {
+		bucket = request.StorageConfig.GCS.Bucket
+		prefix = request.StorageConfig.GCS.Prefix
+	}
+	if bucket == "" {
+		return nil, providerUtils.NewBifrostOperationError("gcs_bucket is required for Vertex FileList (provide in storage_config.gcs)", nil)
+	}
+
+	// Serial pagination across keys: exhaust one key's pages before moving to the next.
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		// All keys exhausted
+		return &schemas.BifrostFileListResponse{
+			Object:  "list",
+			Data:    []schemas.FileObject{},
+			HasMore: false,
+		}, nil
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	params := url.Values{}
+	if prefix != "" {
+		params.Set("prefix", prefix)
+	}
+	limit := request.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	if nativeCursor != "" {
+		params.Set("pageToken", nativeCursor)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o?%s", gcsStorageBase, url.PathEscape(bucket), params.Encode()))
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "list")
+	}
+
+	var listResp gcsObjectListResponse
+	if err := sonic.Unmarshal(resp.Body(), &listResp); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to parse GCS list response", err)
+	}
+
+	files := make([]schemas.FileObject, 0, len(listResp.Items))
+	for _, item := range listResp.Items {
+		files = append(files, gcsMetadataToFileObject(bucket, item))
+	}
+
+	// Build cursor for next request: stay on this key while it has more pages,
+	// then advance to the next key.
+	nextCursor, hasMore := helper.BuildNextCursor(listResp.NextPageToken != "", listResp.NextPageToken)
+
+	result := &schemas.BifrostFileListResponse{
+		Object:  "list",
+		Data:    files,
+		HasMore: hasMore,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}
+	if nextCursor != "" {
+		result.After = &nextCursor
+	}
+	return result, nil
+}
+
+// FileRetrieve fetches GCS object metadata, trying each key until one succeeds.
+// FileID must be a gs:// URI.
+func (provider *VertexProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileRetrieve", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, err := provider.fileRetrieveByKey(ctx, key, request)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		provider.logger.Debug("Vertex FileRetrieve failed for key %s: %v", key.Name, err.Error)
+	}
+	return nil, lastErr
+}
+
+// fileRetrieveByKey fetches GCS object metadata for a single key.
+func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	bucket, objectKey, parseErr := parseGCSURI(request.FileID)
+	if parseErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve")
+	}
+
+	var obj gcsObjectMetadata
+	if err := sonic.Unmarshal(resp.Body(), &obj); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to parse GCS object metadata", err)
+	}
+
+	filename := obj.Metadata["bifrost_filename"]
+	if filename == "" {
+		if idx := strings.LastIndexByte(obj.Name, '/'); idx >= 0 {
+			filename = obj.Name[idx+1:]
+		} else {
+			filename = obj.Name
+		}
+	}
+
+	return &schemas.BifrostFileRetrieveResponse{
+		ID:             request.FileID,
+		Object:         "file",
+		Bytes:          gcsParseSize(obj.Size),
+		CreatedAt:      gcsParseTime(obj.TimeCreated),
+		UpdatedAt:      gcsParseTime(obj.Updated),
+		Filename:       filename,
+		Purpose:        schemas.FilePurpose(obj.Metadata["bifrost_purpose"]),
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageGCS,
+		StorageURI:     request.FileID,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// FileDelete deletes a GCS object, trying each key until one succeeds.
+// FileID must be a gs:// URI. Deleting a non-existent object is treated as
+// success (idempotent).
+func (provider *VertexProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileDelete", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, err := provider.fileDeleteByKey(ctx, key, request)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		provider.logger.Debug("Vertex FileDelete failed for key %s: %v", key.Name, err.Error)
+	}
+	return nil, lastErr
+}
+
+// fileDeleteByKey deletes a GCS object for a single key.
+func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	bucket, objectKey, parseErr := parseGCSURI(request.FileID)
+	if parseErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.SetMethod(http.MethodDelete)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// 204 = deleted; 404 = already gone — both succeed for an idempotent delete.
+	if resp.StatusCode() != fasthttp.StatusNoContent && resp.StatusCode() != fasthttp.StatusNotFound {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete")
+	}
+
+	return &schemas.BifrostFileDeleteResponse{
+		ID:      request.FileID,
+		Object:  "file",
+		Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// FileContent downloads the raw bytes of a GCS object, trying each key until one
+// succeeds. FileID must be a gs:// URI.
+func (provider *VertexProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileContent", nil)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, err := provider.fileContentByKey(ctx, key, request)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		provider.logger.Debug("Vertex FileContent failed for key %s: %v", key.Name, err.Error)
+	}
+	return nil, lastErr
+}
+
+// fileContentByKey downloads the raw bytes of a GCS object for a single key.
+func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	bucket, objectKey, parseErr := parseGCSURI(request.FileID)
+	if parseErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s?alt=media", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+	}
+
+	// Copy body before deferred ReleaseResponse invalidates the buffer.
+	content := make([]byte, len(resp.Body()))
+	copy(content, resp.Body())
+
+	contentType := string(resp.Header.Peek("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	return &schemas.BifrostFileContentResponse{
+		FileID:      request.FileID,
+		Content:     content,
+		ContentType: contentType,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
 }
 
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.

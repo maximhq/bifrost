@@ -14,7 +14,7 @@ import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex"];
 
 interface Props {
 	control: Control<any>;
@@ -345,7 +345,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</>
 			)}
-			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
+			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -624,6 +624,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							)}
 						/>
 					)}
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
 			{isReplicate && (
