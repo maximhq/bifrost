@@ -25,11 +25,11 @@ func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T
 	mc := modelcatalog.NewTestCatalog(map[string]string{
 		"openai/gpt-5-nano": "gpt-5-nano",
 	})
-	mc.UpsertModelDataForProvider(schemas.Replicate, &schemas.BifrostListModelsResponse{
+	mc.UpsertLiveFromResponse(schemas.Replicate, "", false, &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
 			{ID: "replicate/openai/gpt-5-nano"},
 		},
-	}, nil)
+	})
 
 	virtualKey := buildVirtualKeyWithProviders(
 		"vk1",
