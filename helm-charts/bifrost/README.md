@@ -4,9 +4,12 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.20
+**Latest Version:** 2.1.21
 
 ## Changelog
+
+### 2.1.21
+- Add `per_user_oauth`/`per_user_headers` to `authType` enum in mcpClientConfig
 
 ### 2.1.20
 
