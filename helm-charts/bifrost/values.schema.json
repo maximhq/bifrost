@@ -1779,9 +1779,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -1893,9 +1902,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths)" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths)"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -1996,9 +2014,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -2257,7 +2284,9 @@
                     "allOf": [
                       {
                         "if": {
-                          "properties": { "credentialMode": { "const": "env" } },
+                          "properties": {
+                            "credentialMode": { "const": "env" }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -2266,7 +2295,9 @@
                       },
                       {
                         "if": {
-                          "properties": { "credentialMode": { "const": "file" } },
+                          "properties": {
+                            "credentialMode": { "const": "file" }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -2275,7 +2306,11 @@
                       },
                       {
                         "if": {
-                          "properties": { "credentialMode": { "enum": ["inherit", "env", "file"] } },
+                          "properties": {
+                            "credentialMode": {
+                              "enum": ["inherit", "env", "file"]
+                            }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -3877,7 +3912,13 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauthConfigId": {
