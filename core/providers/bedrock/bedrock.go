@@ -19,12 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -670,12 +666,13 @@ func signAWSRequest(
 	}
 
 	var accessKey, secretKey schemas.SecretVar
-	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
+	var sessionToken, profile, roleARN, externalID, sessionName *schemas.SecretVar
 
 	if keyCfg != nil {
 		accessKey = keyCfg.AccessKey
 		secretKey = keyCfg.SecretKey
 		sessionToken = keyCfg.SessionToken
+		profile = keyCfg.Profile
 		roleARN = keyCfg.RoleARN
 		externalID = keyCfg.ExternalID
 		sessionName = keyCfg.RoleSessionName
@@ -710,82 +707,9 @@ func signAWSRequest(
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
 	req.Header.Set("x-amz-content-sha256", bodyHash)
 
-	var cfg aws.Config
-	var err error
-
-	// If both accessKey and secretKey are empty, use the default credential provider chain
-	// This will automatically use IAM roles, environment variables, shared credentials, etc.
-	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-		)
-	} else {
-		// Use explicit credentials when provided
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-				creds := aws.Credentials{
-					AccessKeyID:     accessKey.GetValue(),
-					SecretAccessKey: secretKey.GetValue(),
-				}
-				if sessionToken != nil && sessionToken.GetValue() != "" {
-					creds.SessionToken = sessionToken.GetValue()
-				}
-				return creds, nil
-			})),
-		)
-	}
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load aws config", err)
-	}
-
-	if roleARN != nil && roleARN.GetValue() != "" {
-		extID := ""
-		if externalID != nil {
-			extID = externalID.GetValue()
-		}
-		sessName := "bifrost-session"
-		if sessionName != nil && sessionName.GetValue() != "" {
-			sessName = sessionName.GetValue()
-		}
-		sourceIdentity := "default_chain"
-		if accessKey.GetValue() != "" || secretKey.GetValue() != "" {
-			sourceIdentity = accessKey.GetValue()
-			if sessionToken != nil && sessionToken.GetValue() != "" {
-				tokenHash := sha256.Sum256([]byte(sessionToken.GetValue()))
-				sourceIdentity = sourceIdentity + "|" + hex.EncodeToString(tokenHash[:8])
-			}
-		}
-		cacheKey := strings.Join([]string{
-			region,
-			roleARN.GetValue(),
-			extID,
-			sessName,
-			sourceIdentity,
-		}, "|")
-
-		if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
-			cfg.Credentials = cached.(*aws.CredentialsCache)
-		} else {
-			stsClient := sts.NewFromConfig(cfg)
-
-			opts := func(o *stscreds.AssumeRoleOptions) {
-				if extID != "" {
-					o.ExternalID = aws.String(extID)
-				}
-				o.RoleSessionName = sessName
-			}
-
-			credsCache := aws.NewCredentialsCache(
-				stscreds.NewAssumeRoleProvider(
-					stsClient,
-					roleARN.GetValue(),
-					opts,
-				),
-			)
-			actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, credsCache)
-			cfg.Credentials = actual.(*aws.CredentialsCache)
-		}
+	cfg, bifrostErr := resolveAWSConfig(ctx, accessKey, secretKey, sessionToken, profile, roleARN, externalID, sessionName, region)
+	if bifrostErr != nil {
+		return bifrostErr
 	}
 
 	// The SDK signs every header still on the request, so lift the volatile ones out for
@@ -3353,11 +3277,6 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
-		var sessionKey *string
-		if key.BedrockKeyConfig.SessionToken != nil && key.BedrockKeyConfig.SessionToken.GetValue() != "" {
-			sessionKey = schemas.Ptr(key.BedrockKeyConfig.SessionToken.GetValue())
-		}
-
 		// Convert inline requests to Bedrock JSONL format
 		jsonlData, err := ConvertBedrockRequestsToJSONL(request.Requests, request.Model)
 		if err != nil {
@@ -3371,12 +3290,15 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		inputS3URI := deriveInputS3URIFromOutput(outputS3Uri, inputKey)
 		bucket, s3Key := parseS3URI(inputS3URI)
 
-		// Upload to S3 using Bedrock credentials
+		// Upload to S3 using the same Bedrock credential resolution path that
+		// signs requests — including STS AssumeRole, named profiles, and SSO.
+		// Using the BedrockKeyConfig directly here ensures the source-vs-assumed
+		// identity for the upload matches the credentials that will later submit
+		// the batch job; mismatched identities tend to fail with S3 access-denied
+		// errors when the input object is read by the assumed role.
 		if bifrostErr := uploadToS3(
 			ctx,
-			key.BedrockKeyConfig.AccessKey.GetValue(),
-			key.BedrockKeyConfig.SecretKey.GetValue(),
-			sessionKey,
+			key.BedrockKeyConfig,
 			region,
 			bucket,
 			s3Key,

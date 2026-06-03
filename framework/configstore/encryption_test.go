@@ -899,6 +899,7 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		SessionToken: schemas.NewSecretVar("session-tok"),
 		Region:       schemas.NewSecretVar("us-east-1"),
 		ARN:          schemas.NewSecretVar("arn:aws:iam::123456789:role/test"),
+		Profile:      schemas.NewSecretVar("my-corp-sso-profile"),
 	}
 
 	// Save a key using the shared config pointers (mimics UpdateProvidersConfig)
@@ -951,6 +952,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		"BeforeSave must not mutate shared BedrockKeyConfig.Region")
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", bedrockCfg.ARN.GetValue(),
 		"BeforeSave must not mutate shared BedrockKeyConfig.ARN")
+	assert.Equal(t, "my-corp-sso-profile", bedrockCfg.Profile.GetValue(),
+		"BeforeSave must not mutate shared BedrockKeyConfig.Profile")
 
 	// Verify the DB round-trip still works (encrypted + decryptable)
 	var found tables.TableKey
@@ -974,6 +977,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	assert.Equal(t, "session-tok", found.BedrockKeyConfig.SessionToken.GetValue())
 	assert.Equal(t, "us-east-1", found.BedrockKeyConfig.Region.GetValue())
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
+	require.NotNil(t, found.BedrockKeyConfig.Profile)
+	assert.Equal(t, "my-corp-sso-profile", found.BedrockKeyConfig.Profile.GetValue())
 }
 
 // ============================================================================

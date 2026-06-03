@@ -167,6 +167,7 @@ export const bedrockKeyConfigSchema = z
 		access_key: secretVarSchema.optional(),
 		secret_key: secretVarSchema.optional(),
 		session_token: secretVarSchema.optional(),
+		profile: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		role_arn: secretVarSchema.optional(),
 		external_id: secretVarSchema.optional(),
@@ -202,6 +203,16 @@ export const bedrockKeyConfigSchema = z
 		{
 			message: "Both Access Key and Secret Key are required for explicit credentials",
 			path: ["access_key"],
+		},
+	)
+	.refine(
+		(data) => {
+			if (!isSecretVarSet(data.profile)) return true;
+			return !isSecretVarSet(data.access_key) && !isSecretVarSet(data.secret_key);
+		},
+		{
+			message: "Profile cannot be combined with explicit Access Key / Secret Key",
+			path: ["profile"],
 		},
 	);
 

@@ -1247,8 +1247,11 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									form.setValue("key.bedrock_key_config.session_token", undefined, { shouldDirty: true });
 									form.setValue("key.value", undefined, { shouldDirty: true });
 								} else if (v === "explicit") {
-									// Clear API key when switching to Explicit Credentials
+									// Clear API key and profile when switching to Explicit Credentials.
+									// Profile is only meaningful when credentials are resolved through
+									// the default chain (i.e., the IAM Role tab).
 									form.setValue("key.value", undefined, { shouldDirty: true });
+									form.setValue("key.bedrock_key_config.profile", undefined, { shouldDirty: true });
 								} else if (v === "api_key") {
 									// Clear AWS credentials and assume-role fields when switching to API Key
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });
@@ -1257,6 +1260,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									form.setValue("key.bedrock_key_config.role_arn", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.external_id", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.session_name", undefined, { shouldDirty: true });
+									form.setValue("key.bedrock_key_config.profile", undefined, { shouldDirty: true });
 								}
 							}}
 						>
@@ -1379,6 +1383,29 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					{bedrockAuthType === "iam_role" && (
+						<FormField
+							control={control}
+							name={`key.bedrock_key_config.profile`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>AWS Profile (Optional)</FormLabel>
+									<FormDescription>
+										Named profile from ~/.aws/config or ~/.aws/credentials. Supports SSO profiles after `aws sso login --profile {"<name>"}`. Composes
+										with Role ARN below — the profile's resolved credentials become the source identity for AssumeRole.
+									</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid="apikey-bedrock-profile-input"
+											placeholder="my-profile or env.AWS_PROFILE"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 					{bedrockAuthType !== "api_key" && (
 						<>
 							<FormField

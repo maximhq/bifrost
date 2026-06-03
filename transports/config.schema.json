@@ -6162,6 +6162,11 @@
                   "type": "string",
                   "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
                 },
+                "profile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Named AWS profile (including AWS SSO profiles) for this Bedrock key; cannot be combined with explicit credentials (can use env. prefix)"
+                },
                 "external_id": {
                   "type": "string",
                   "description": "External ID for AssumeRole (can use env. prefix)"
