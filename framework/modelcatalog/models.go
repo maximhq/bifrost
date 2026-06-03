@@ -130,7 +130,7 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 		}
 	}
 
-	// Cross-provider special cases (preserved from pre-refactor models.go).
+	// Cross-provider special cases
 	if _, ok := seen[schemas.OpenRouter]; !ok {
 		openRouterModels := mc.GetModelsForProvider(schemas.OpenRouter)
 		for _, p := range providers {

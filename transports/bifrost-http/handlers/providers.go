@@ -31,6 +31,9 @@ type ModelsManager interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 }
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
