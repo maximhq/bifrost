@@ -213,6 +213,25 @@ type ImageTokenDetails struct {
 	TextTokens  int `json:"text_tokens,omitempty"`
 }
 
+// DeepCopy returns an independent copy of u with no shared pointer fields,
+// safe for callers (e.g. cost calculation) that need to derive values
+// without mutating the original response. Returns nil for a nil receiver.
+func (u *ImageUsage) DeepCopy() *ImageUsage {
+	if u == nil {
+		return nil
+	}
+	out := *u
+	if u.InputTokensDetails != nil {
+		details := *u.InputTokensDetails
+		out.InputTokensDetails = &details
+	}
+	if u.OutputTokensDetails != nil {
+		details := *u.OutputTokensDetails
+		out.OutputTokensDetails = &details
+	}
+	return &out
+}
+
 // Streaming Response
 type BifrostImageGenerationStreamResponse struct {
 	ID                string                     `json:"id,omitempty"`
