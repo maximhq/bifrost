@@ -1481,6 +1481,13 @@
                     "log_repo_id": {
                       "type": "string",
                       "description": "Optional default ID for the Maxim logger instance"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and attach as trace tags. Note: * captures all headers including sensitive ones like Authorization."
                     }
                   },
                   "required": ["api_key"],
@@ -1803,6 +1810,13 @@
           "default": 15,
           "minimum": 1,
           "maximum": 300
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
         },
         "headers": {
           "type": "object",

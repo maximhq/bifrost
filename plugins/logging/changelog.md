@@ -1,1 +1,1 @@
-- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+- feat: stamp MCP tool logs with governance ownership (user, team, customer, and business unit IDs) from the request context

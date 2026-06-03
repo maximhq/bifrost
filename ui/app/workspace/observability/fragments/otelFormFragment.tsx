@@ -7,6 +7,7 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { RequestHeadersTextarea } from "@/components/ui/requestHeadersTextarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { otelFormSchema, type EnvVar, type OtelFormSchema } from "@/lib/types/schemas";
 import { emptyEnvVar, toEnvVarFormValue, toEnvVarMapFormValue } from "@/lib/utils/envVarForm";
@@ -33,6 +34,7 @@ interface StoredOtelProfile {
 	metrics_enabled?: boolean;
 	metrics_endpoint?: string | EnvVar;
 	metrics_push_interval?: number;
+	request_headers?: string[];
 }
 
 // StoredOtelConfig is either the canonical { profiles: [...] } wrapper or a legacy single
@@ -93,6 +95,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_enabled: false,
 	metrics_endpoint: emptyEnvVar(),
 	metrics_push_interval: 15,
+	request_headers: [],
 });
 
 // toProfileForm normalizes a stored profile into the EnvVar-based form representation.
@@ -108,6 +111,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_enabled: p?.metrics_enabled ?? false,
 	metrics_endpoint: toEnvVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
+	request_headers: p?.request_headers ?? [],
 });
 
 // buildDefaults handles both stored shapes: the { profiles: [...] } wrapper and the legacy
@@ -404,6 +408,31 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							<FormItem className="w-full">
 								<FormControl>
 									<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useEnvVarInput />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`${base}.request_headers`}
+						render={({ field }) => (
+							<FormItem className="w-full">
+								<FormLabel>Request Headers <span className="text-muted-foreground font-normal">(Optional)</span></FormLabel>
+								<FormDescription>
+									Comma-separated list of request headers to capture and emit as span attributes. Supports exact names and wildcard
+									patterns (e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> captures
+									all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization).
+								</FormDescription>
+								<FormControl>
+									<RequestHeadersTextarea
+										className="h-24"
+										placeholder="X-Tenant-ID, X-Request-Source, x-custom-*"
+										disabled={!hasOtelAccess}
+										value={field.value ?? []}
+										onChange={field.onChange}
+										data-testid={`request-headers-textarea-${index}`}
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>
