@@ -442,7 +442,7 @@ func TestStaleConnectionRetryIfErr_WrappedErrors(t *testing.T) {
 		{
 			name:      "ErrConnectionClosed from fasthttp",
 			err:       fasthttp.ErrConnectionClosed,
-			wantRetry: false, // Not matched - this error appears AFTER the retry loop
+			wantRetry: true, // Explicitly matched to stay correct if future fasthttp versions surface it inside the retry loop
 		},
 	}
 
