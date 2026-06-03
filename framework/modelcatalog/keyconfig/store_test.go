@@ -342,3 +342,118 @@ func TestEntriesForReturnsDefensiveCopy(t *testing.T) {
 		t.Errorf("store mutated through EntriesFor: KeyID = %q", again[0].KeyID)
 	}
 }
+
+// --- regression tests ported from bifrost-enterprise/core/loadbalancing/lballowedmodels_test.go ---
+//
+// These lock down behaviors that the LB plugin used to maintain locally and
+// that the keyconfig store now owns. The "aliases don't leak into allowed"
+// suite documents the structural isolation: Aliases write to aliasIndex,
+// Models write to allowed — they never mix.
+
+func TestAliases_WildcardModels_AllowedStaysWildcard(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{
+				ID:      "bk1",
+				Enabled: ptrBool(true),
+				Models:  schemas.WhiteList{"*"},
+				Aliases: schemas.KeyAliases{
+					"my-claude-alias": schemas.AliasConfig{ModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+				},
+			},
+		},
+	})
+	if got := s.AllowedFor(schemas.Bedrock); !slices.Equal(got, schemas.WhiteList{"*"}) {
+		t.Errorf("AllowedFor = %v, want [*] (Models field wins; aliases do not leak)", got)
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "my-claude-alias"); !ok {
+		t.Error("alias missing from aliasIndex; should be present alongside ['*']")
+	}
+}
+
+func TestAliases_SpecificModels_AllowedDoesNotIncludeAliasName(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Azure: {
+			{
+				ID:      "az1",
+				Enabled: ptrBool(true),
+				Models:  schemas.WhiteList{"gpt-4o"},
+				Aliases: schemas.KeyAliases{
+					"gpt4o-prod": schemas.AliasConfig{ModelID: "gpt-4o"},
+				},
+			},
+		},
+	})
+	got := s.AllowedFor(schemas.Azure)
+	sort.Strings(got)
+	if !slices.Equal(got, schemas.WhiteList{"gpt-4o"}) {
+		t.Errorf("AllowedFor = %v, want [gpt-4o] only — alias name 'gpt4o-prod' must NOT appear in allowed", got)
+	}
+	if _, ok := s.ResolveAlias(schemas.Azure, "gpt4o-prod"); !ok {
+		t.Error("alias missing from aliasIndex")
+	}
+}
+
+func TestAliases_EmptyModels_ProviderAbsent(t *testing.T) {
+	// Models=[] with aliases present: aliases are name swappers, not implicit
+	// model grants. Operators must explicitly list models in Models field.
+	// Provider should be absent from aggregates (no enabled allow path).
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{
+				ID:      "bk1",
+				Enabled: ptrBool(true),
+				Models:  schemas.WhiteList{},
+				Aliases: schemas.KeyAliases{
+					"prod": schemas.AliasConfig{ModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+				},
+			},
+		},
+	})
+	if got := s.AllowedFor(schemas.Bedrock); got != nil {
+		t.Errorf("AllowedFor = %v, want nil — aliases alone must not produce an allowed entry", got)
+	}
+}
+
+func TestAllKeysBlockAll_ProviderAbsent(t *testing.T) {
+	// Every key has BlacklistedModels=["*"]. All are skipped by the aggregator,
+	// enabledKeysCount stays 0, provider is dropped from the store.
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}, BlacklistedModels: schemas.BlackList{"*"}},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"o1"}, BlacklistedModels: schemas.BlackList{"*"}},
+		},
+	})
+	if got := s.AllowedFor(schemas.OpenAI); got != nil {
+		t.Errorf("AllowedFor = %v, want nil — every key is block-all", got)
+	}
+	if s.IsAllowed(schemas.OpenAI, "gpt-4o") {
+		t.Error("IsAllowed = true for provider with all-block-all keys")
+	}
+}
+
+func TestExplicitModels_UnionAcrossEnabledKeys(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "o1"}},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "gpt-4.5"}},
+			{ID: "k3", Enabled: ptrBool(false), Models: schemas.WhiteList{"sekret-model"}},
+		},
+	})
+	got := s.AllowedFor(schemas.OpenAI)
+	sort.Strings(got)
+	want := schemas.WhiteList{"gpt-4.5", "gpt-4o", "gpt-4o", "o1"} // duplicates retained — IsAllowed dedupes via lookup
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("AllowedFor = %v, want union of enabled keys' Models = %v (k3 disabled, excluded)", got, want)
+	}
+	// Cross-check via IsAllowed (the actual consumer path).
+	for _, m := range []string{"gpt-4o", "o1", "gpt-4.5"} {
+		if !s.IsAllowed(schemas.OpenAI, m) {
+			t.Errorf("IsAllowed(%s) = false, want true (model is in union of enabled keys)", m)
+		}
+	}
+	if s.IsAllowed(schemas.OpenAI, "sekret-model") {
+		t.Error("IsAllowed(sekret-model) = true, want false (only on disabled key k3)")
+	}
+}
