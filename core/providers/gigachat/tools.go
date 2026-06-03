@@ -19,20 +19,16 @@ var gigaChatBuiltInFunctionNames = map[string]struct{}{
 }
 
 const (
-	gigaChatResponsesUserFunctionNamePrefix        = "__bifrost_gigachat_user_"
-	gigaChatResponsesToolNameCodeInterpreter       = "code_interpreter"
-	gigaChatResponsesToolNameImageGenerate         = "image_generate"
-	gigaChatResponsesToolNameModel3DGenerate       = "model_3d_generate"
-	gigaChatResponsesToolNameURLContentExtraction  = "url_content_extraction"
-	gigaChatResponsesToolNameWebSearch             = "web_search"
-	gigaChatResponsesToolTypeURLContentExtraction  = "url_content_extraction"
-	gigaChatResponsesToolTypeModel3DGenerate       = "model_3d_generate"
-	gigaChatResponsesSearchContextSizeFlagPrefix   = "search_context_size:"
-	gigaChatResponsesUserLocationUserInfoField     = "user_location"
-	gigaChatResponsesCodeInterpreterToolConfigType = "code_interpreter"
-	gigaChatResponsesImageGenerateToolConfigType   = "image_generation"
-	gigaChatResponsesURLExtractionToolConfigType   = "web_fetch"
-	gigaChatResponsesModel3DGenerateToolConfigType = "model_3d_generate"
+	gigaChatResponsesUserFunctionNamePrefix       = "__bifrost_gigachat_user_"
+	gigaChatResponsesToolNameCodeInterpreter      = "code_interpreter"
+	gigaChatResponsesToolNameImageGenerate        = "image_generate"
+	gigaChatResponsesToolNameModel3DGenerate      = "model_3d_generate"
+	gigaChatResponsesToolNameURLContentExtraction = "url_content_extraction"
+	gigaChatResponsesToolNameWebSearch            = "web_search"
+	gigaChatResponsesToolTypeURLContentExtraction = "url_content_extraction"
+	gigaChatResponsesToolTypeModel3DGenerate      = "model_3d_generate"
+	gigaChatResponsesSearchContextSizeFlagPrefix  = "search_context_size:"
+	gigaChatResponsesUserLocationUserInfoField    = "user_location"
 )
 
 var gigaChatResponsesReservedFunctionNames = map[string]struct{}{
@@ -337,9 +333,7 @@ func isGigaChatResponsesWebSearchToolType(toolType schemas.ResponsesToolType) bo
 }
 
 func toGigaChatResponsesWebSearchTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, map[string]interface{}, error) {
-	webSearch := &GigaChatResponsesWebSearchTool{
-		Type: schemas.Ptr(toGigaChatResponsesWebSearchType(tool.Type)),
-	}
+	webSearch := &GigaChatResponsesWebSearchTool{}
 	var userInfo map[string]interface{}
 
 	if tool.ResponsesToolWebSearch != nil {
@@ -374,14 +368,6 @@ func toGigaChatResponsesWebSearchTool(index int, tool schemas.ResponsesTool) (*G
 	return &GigaChatResponsesTool{WebSearch: webSearch}, userInfo, nil
 }
 
-func toGigaChatResponsesWebSearchType(toolType schemas.ResponsesToolType) string {
-	value := strings.TrimSpace(string(toolType))
-	if strings.HasPrefix(value, string(schemas.ResponsesToolTypeWebSearchPreview)) {
-		return string(schemas.ResponsesToolTypeWebSearchPreview)
-	}
-	return string(schemas.ResponsesToolTypeWebSearch)
-}
-
 func toGigaChatResponsesUserInfo(location *schemas.ResponsesToolWebSearchUserLocation) map[string]interface{} {
 	if location == nil {
 		return nil
@@ -409,7 +395,7 @@ func toGigaChatResponsesUserInfo(location *schemas.ResponsesToolWebSearchUserLoc
 }
 
 func toGigaChatResponsesCodeInterpreterTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
-	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolCodeInterpreter, gigaChatResponsesCodeInterpreterToolConfigType)
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolCodeInterpreter)
 	if err != nil {
 		return nil, fmt.Errorf("tools[%d]: code_interpreter config is invalid: %w", index, err)
 	}
@@ -417,7 +403,7 @@ func toGigaChatResponsesCodeInterpreterTool(index int, tool schemas.ResponsesToo
 }
 
 func toGigaChatResponsesImageGenerateTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
-	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolImageGeneration, gigaChatResponsesImageGenerateToolConfigType)
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolImageGeneration)
 	if err != nil {
 		return nil, fmt.Errorf("tools[%d]: image_generation config is invalid: %w", index, err)
 	}
@@ -425,11 +411,7 @@ func toGigaChatResponsesImageGenerateTool(index int, tool schemas.ResponsesTool)
 }
 
 func toGigaChatResponsesURLContentExtractionTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
-	configType := gigaChatResponsesURLExtractionToolConfigType
-	if string(tool.Type) == gigaChatResponsesToolTypeURLContentExtraction {
-		configType = gigaChatResponsesToolTypeURLContentExtraction
-	}
-	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolWebFetch, configType)
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolWebFetch)
 	if err != nil {
 		return nil, fmt.Errorf("tools[%d]: url_content_extraction config is invalid: %w", index, err)
 	}
@@ -438,7 +420,7 @@ func toGigaChatResponsesURLContentExtractionTool(index int, tool schemas.Respons
 }
 
 func toGigaChatResponsesModel3DGenerateTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
-	config, err := toGigaChatResponsesToolConfigMap(nil, gigaChatResponsesModel3DGenerateToolConfigType)
+	config, err := toGigaChatResponsesToolConfigMap(nil)
 	if err != nil {
 		return nil, fmt.Errorf("tools[%d]: model_3d_generate config is invalid: %w", index, err)
 	}
@@ -446,8 +428,8 @@ func toGigaChatResponsesModel3DGenerateTool(index int, tool schemas.ResponsesToo
 	return &GigaChatResponsesTool{Model3DGenerate: config}, nil
 }
 
-func toGigaChatResponsesToolConfigMap(value interface{}, toolType string) (map[string]interface{}, error) {
-	config := map[string]interface{}{"type": toolType}
+func toGigaChatResponsesToolConfigMap(value interface{}) (map[string]interface{}, error) {
+	config := map[string]interface{}{}
 	if value == nil {
 		return config, nil
 	}

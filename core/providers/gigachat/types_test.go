@@ -32,6 +32,13 @@ func TestGigaChatResponsesToolMarshalBuiltInTypes(t *testing.T) {
 			want: `{"image_generate":{"model":"Kandinsky","width":1024}}`,
 		},
 		{
+			name: "ImageGenerateEmpty",
+			tool: GigaChatResponsesTool{
+				ImageGenerate: map[string]interface{}{},
+			},
+			want: `{"image_generate":{}}`,
+		},
+		{
 			name: "WebSearch",
 			tool: GigaChatResponsesTool{
 				WebSearch: &GigaChatResponsesWebSearchTool{

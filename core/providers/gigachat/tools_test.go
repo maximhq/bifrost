@@ -20,6 +20,7 @@ func testGigaChatTools(t *testing.T) {
 	t.Run("ChatDeduplicatesEquivalentFunctionTools", testGigaChatToolsChatDeduplicatesEquivalentFunctionTools)
 	t.Run("ChatRejectsUnsupportedPolicy", testGigaChatToolsChatRejectsUnsupportedPolicy)
 	t.Run("ResponsesMapsBuiltInTools", testGigaChatToolsResponsesMapsBuiltInTools)
+	t.Run("ResponsesOmitNestedBuiltInToolTypes", testGigaChatToolsResponsesOmitNestedBuiltInToolTypes)
 	t.Run("ResponsesToolChoiceVariants", testGigaChatToolsResponsesToolChoiceVariants)
 	t.Run("ResponsesRemapsReservedFunctionNames", testGigaChatToolsResponsesRemapsReservedFunctionNames)
 	t.Run("ResponsesDeduplicatesEquivalentFunctionTools", testGigaChatToolsResponsesDeduplicatesEquivalentFunctionTools)
@@ -360,8 +361,11 @@ func testGigaChatToolsResponsesMapsBuiltInTools(t *testing.T) {
 	}
 
 	webSearchTool := gigaChatReq.Tools[1]
-	if webSearchTool.WebSearch == nil || webSearchTool.WebSearch.Type == nil || *webSearchTool.WebSearch.Type != "web_search_preview" {
+	if webSearchTool.WebSearch == nil {
 		t.Fatalf("web_search tool mismatch: %#v", webSearchTool)
+	}
+	if webSearchTool.WebSearch.Type != nil {
+		t.Fatalf("web_search should not include nested type, got %#v", webSearchTool.WebSearch.Type)
 	}
 	if len(webSearchTool.WebSearch.Flags) != 1 || webSearchTool.WebSearch.Flags[0] != "search_context_size:high" {
 		t.Fatalf("web_search flags mismatch: %#v", webSearchTool.WebSearch.Flags)
@@ -372,32 +376,71 @@ func testGigaChatToolsResponsesMapsBuiltInTools(t *testing.T) {
 	}
 
 	codeTool := gigaChatReq.Tools[2]
-	if codeTool.CodeInterpreter["type"] != "code_interpreter" {
-		t.Fatalf("code_interpreter config mismatch: %#v", codeTool.CodeInterpreter)
-	}
 	container, ok := codeTool.CodeInterpreter["container"].(map[string]interface{})
 	if !ok || container["type"] != "auto" {
 		t.Fatalf("code_interpreter container mismatch: %#v", codeTool.CodeInterpreter)
 	}
 
 	imageTool := gigaChatReq.Tools[3]
-	if imageTool.ImageGenerate["type"] != "image_generation" ||
+	if imageTool.ImageGenerate["type"] != nil ||
 		imageTool.ImageGenerate["model"] != imageModel ||
 		imageTool.ImageGenerate["size"] != imageSize {
 		t.Fatalf("image_generate config mismatch: %#v", imageTool.ImageGenerate)
 	}
 
 	urlTool := gigaChatReq.Tools[4]
-	if urlTool.URLContentExtraction["type"] != "web_fetch" ||
+	if urlTool.URLContentExtraction["type"] != nil ||
 		urlTool.URLContentExtraction["max_content_tokens"] != float64(maxContentTokens) {
 		t.Fatalf("url_content_extraction config mismatch: %#v", urlTool.URLContentExtraction)
 	}
 
 	model3DTool := gigaChatReq.Tools[5]
-	if model3DTool.Model3DGenerate["type"] != "model_3d_generate" ||
+	if model3DTool.Model3DGenerate["type"] != nil ||
 		model3DTool.Model3DGenerate["name"] != "make_model" ||
 		model3DTool.Model3DGenerate["description"] != "Generate a 3D model." {
 		t.Fatalf("model_3d_generate config mismatch: %#v", model3DTool.Model3DGenerate)
+	}
+}
+
+func testGigaChatToolsResponsesOmitNestedBuiltInToolTypes(t *testing.T) {
+	t.Parallel()
+
+	request := &schemas.BifrostResponsesRequest{
+		Model: "GigaChat-2",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Draw space.")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeImageGeneration},
+				{Type: schemas.ResponsesToolTypeWebSearch},
+				{Type: schemas.ResponsesToolTypeCodeInterpreter},
+				{Type: schemas.ResponsesToolTypeWebFetch},
+				{Type: schemas.ResponsesToolType("model_3d_generate")},
+			},
+		},
+	}
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	raw, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal GigaChat request: %v", err)
+	}
+	body := string(raw)
+	wantTools := `"tools":[{"image_generate":{}},{"web_search":{}},{"code_interpreter":{}},{"url_content_extraction":{}},{"model_3d_generate":{}}]`
+	if !strings.Contains(body, wantTools) {
+		t.Fatalf("built-in tool JSON mismatch:\n got: %s\nwant substring: %s", body, wantTools)
+	}
+	if strings.Contains(body, `"image_generate":{"type":`) ||
+		strings.Contains(body, `"web_search":{"type":`) ||
+		strings.Contains(body, `"code_interpreter":{"type":`) ||
+		strings.Contains(body, `"url_content_extraction":{"type":`) ||
+		strings.Contains(body, `"model_3d_generate":{"type":`) {
+		t.Fatalf("built-in tool JSON should not include nested type discriminators: %s", body)
 	}
 }
 

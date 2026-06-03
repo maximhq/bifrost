@@ -514,6 +514,32 @@ type GigaChatResponsesTool struct {
 	Functions            *GigaChatResponsesFunctionsTool `json:"functions,omitempty"`
 }
 
+func (tool GigaChatResponsesTool) MarshalJSON() ([]byte, error) {
+	fields := schemas.NewOrderedMap()
+	if tool.CodeInterpreter != nil {
+		fields.Set("code_interpreter", tool.CodeInterpreter)
+	}
+	if tool.ImageGenerate != nil {
+		fields.Set("image_generate", tool.ImageGenerate)
+	}
+	if tool.WebSearch != nil {
+		fields.Set("web_search", tool.WebSearch)
+	}
+	if tool.URLContentExtraction != nil {
+		fields.Set("url_content_extraction", tool.URLContentExtraction)
+	}
+	if tool.Model3DGenerate != nil {
+		fields.Set("model_3d_generate", tool.Model3DGenerate)
+	}
+	if tool.Functions != nil {
+		fields.Set("functions", tool.Functions)
+	}
+	if fields.Len() == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(fields)
+}
+
 // GigaChatResponsesWebSearchTool configures GigaChat v2 web search.
 type GigaChatResponsesWebSearchTool struct {
 	Type    *string  `json:"type,omitempty"`

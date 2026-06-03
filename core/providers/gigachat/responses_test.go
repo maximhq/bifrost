@@ -53,6 +53,8 @@ func testGigaChatResponses(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ConverterMapsTextAndUsage", testGigaChatResponsesConverterMapsTextAndUsage)
+	t.Run("ConverterMapsImageFileOutput", testGigaChatResponsesConverterMapsImageFileOutput)
+	t.Run("ConverterMapsWebSearchSources", testGigaChatResponsesConverterMapsWebSearchSources)
 	t.Run("ConverterMapsReasoningRole", testGigaChatResponsesConverterMapsReasoningRole)
 	t.Run("ConverterMapsToolCall", testGigaChatResponsesConverterMapsToolCall)
 	t.Run("ConverterUsesToolStateIDAliasAsCallID", testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID)
@@ -421,6 +423,9 @@ func testGigaChatResponsesThreadStorage(t *testing.T) {
 	if !strings.Contains(string(body), `"storage":{}`) {
 		t.Fatalf("default storage object missing from request: %s", body)
 	}
+	if !strings.Contains(string(body), `"model":"GigaChat-2"`) {
+		t.Fatalf("initial thread request should include model, got %s", body)
+	}
 
 	threadID := "thread-123"
 	metadata := map[string]any{"tenant": "test"}
@@ -438,6 +443,30 @@ func testGigaChatResponsesThreadStorage(t *testing.T) {
 	}
 	if storage.Metadata["tenant"] != "test" {
 		t.Fatalf("storage metadata mismatch: %#v", storage.Metadata)
+	}
+	if gigaChatReq.Model != "" {
+		t.Fatalf("previous_response_id request should omit provider model, got %q", gigaChatReq.Model)
+	}
+	body, err = json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal GigaChat request with previous_response_id: %v", err)
+	}
+	if strings.Contains(string(body), `"model"`) {
+		t.Fatalf("previous_response_id request should omit model from provider body, got %s", body)
+	}
+	if !strings.Contains(string(body), `"thread_id":"thread-123"`) {
+		t.Fatalf("previous_response_id request should include thread_id, got %s", body)
+	}
+
+	request.Params = &schemas.ResponsesParameters{
+		Conversation: &threadID,
+	}
+	gigaChatReq, err = ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest with conversation returned error: %v", err)
+	}
+	if gigaChatReq.Model != "" {
+		t.Fatalf("conversation request should omit provider model, got %q", gigaChatReq.Model)
 	}
 
 	store := false
@@ -769,6 +798,182 @@ func testGigaChatResponsesConverterMapsTextAndUsage(t *testing.T) {
 	}
 	if converted.ExtraFields.Provider != schemas.GigaChat {
 		t.Fatalf("provider mismatch: got %q, want %q", converted.ExtraFields.Provider, schemas.GigaChat)
+	}
+}
+
+func testGigaChatResponsesConverterMapsImageFileOutput(t *testing.T) {
+	t.Parallel()
+
+	fileID := "629ea825-963c-4178-bea4-1415c1d15a6e"
+	response := &GigaChatResponsesResponse{
+		Model: "GigaChat-3-Ultra",
+		Messages: []GigaChatResponsesMessage{{
+			Role:      "assistant",
+			MessageID: schemas.Ptr("msg-image"),
+			Content: []GigaChatResponsesContentPart{
+				{
+					Files: []GigaChatResponsesContentFile{{
+						ID:     fileID,
+						MIME:   schemas.Ptr("image/jpeg"),
+						Target: schemas.Ptr("image"),
+					}},
+				},
+				{
+					Text: schemas.Ptr("вот красивая картинка с коровой в космосе."),
+				},
+			},
+			FinishReason: schemas.Ptr("stop"),
+		}},
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if len(converted.Output) != 2 {
+		t.Fatalf("output count mismatch: got %d", len(converted.Output))
+	}
+
+	message := converted.Output[0]
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeMessage {
+		t.Fatalf("assistant output type mismatch: %#v", message.Type)
+	}
+	if message.Content == nil || len(message.Content.ContentBlocks) != 1 {
+		t.Fatalf("assistant content mismatch: %#v", message.Content)
+	}
+	textBlock := message.Content.ContentBlocks[0]
+	if textBlock.Text == nil || *textBlock.Text != "вот красивая картинка с коровой в космосе." {
+		t.Fatalf("assistant text mismatch: %#v", textBlock)
+	}
+
+	imageCall := converted.Output[1]
+	if imageCall.ID == nil || *imageCall.ID != "ig_msg-image_0" {
+		t.Fatalf("image output id mismatch: %#v", imageCall.ID)
+	}
+	if imageCall.Type == nil || *imageCall.Type != schemas.ResponsesMessageTypeImageGenerationCall {
+		t.Fatalf("image output type mismatch: %#v", imageCall.Type)
+	}
+	if imageCall.Status == nil || *imageCall.Status != "completed" {
+		t.Fatalf("image output status mismatch: %#v", imageCall.Status)
+	}
+	if imageCall.ResponsesToolMessage == nil || imageCall.ResponsesToolMessage.ResponsesImageGenerationCall == nil {
+		t.Fatalf("image generation call missing: %#v", imageCall.ResponsesToolMessage)
+	}
+	if imageCall.ResponsesToolMessage.ResponsesImageGenerationCall.Result != fileID {
+		t.Fatalf("image generation result mismatch: %#v", imageCall.ResponsesToolMessage.ResponsesImageGenerationCall)
+	}
+
+	raw, err := json.Marshal(imageCall)
+	if err != nil {
+		t.Fatalf("failed to marshal image output: %v", err)
+	}
+	var marshaled map[string]interface{}
+	if err := json.Unmarshal(raw, &marshaled); err != nil {
+		t.Fatalf("failed to unmarshal image output JSON: %v", err)
+	}
+	if marshaled["type"] != string(schemas.ResponsesMessageTypeImageGenerationCall) || marshaled["result"] != fileID {
+		t.Fatalf("image output JSON mismatch: %s", string(raw))
+	}
+}
+
+func testGigaChatResponsesConverterMapsWebSearchSources(t *testing.T) {
+	t.Parallel()
+
+	text := "На сегодня курс доллара США к рублю, установленный Центральным банком России, составляет 72,56 RUB за 1 USD. [sources=[2, 4]]"
+	response := &GigaChatResponsesResponse{
+		ThreadID:  schemas.Ptr("377b9094-29c4-4711-99a0-69145bb764ec"),
+		MessageID: schemas.Ptr("ba4c614c-9c04-4eea-970d-ee22f1f0f94e"),
+		Model:     "GigaChat-3-Ultra:32.3.18.5",
+		Messages: []GigaChatResponsesMessage{{
+			Role:        "assistant",
+			ToolStateID: schemas.Ptr("019e8cbd-1f65-77aa-9d24-400001ba0ccf"),
+			Content: []GigaChatResponsesContentPart{{
+				Text: schemas.Ptr(text),
+				InlineData: map[string]interface{}{
+					"images": []interface{}{},
+					"sources": map[string]interface{}{
+						"1": map[string]interface{}{
+							"url":   "https://cbr.ru/currency_base/daily/",
+							"title": "Официальные курсы валют на заданную дату, устанавливаемые...",
+						},
+						"2": map[string]interface{}{
+							"url":   "https://www.vbr.ru/banki/kurs-valut/cbrf/usd/",
+							"title": "Курс доллара США к рублю на сегодня и завтра — Официальный...",
+						},
+						"3": map[string]interface{}{
+							"url":   "https://www.banki.ru/products/currency/cash/moskva/",
+							"title": "Курсы валют в Москве на сегодня, выгодный курс обмена...",
+						},
+						"4": map[string]interface{}{
+							"url":   "https://www.profinance.ru/cbrf/usd",
+							"title": "Курс доллара к рублю сегодня: онлайн графики и все котировки",
+						},
+						"5": map[string]interface{}{
+							"url":   "https://news.ru/vlast/centrobank-rossii-ponizil-kurs-dollara",
+							"title": "Центробанк России понизил курс доллара",
+						},
+					},
+				},
+			}},
+			FinishReason: schemas.Ptr("stop"),
+		}},
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if len(converted.Output) != 2 {
+		t.Fatalf("output count mismatch: got %d", len(converted.Output))
+	}
+
+	message := converted.Output[0]
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeMessage {
+		t.Fatalf("assistant output type mismatch: %#v", message.Type)
+	}
+	if message.Content == nil || len(message.Content.ContentBlocks) != 1 {
+		t.Fatalf("assistant content mismatch: %#v", message.Content)
+	}
+	block := message.Content.ContentBlocks[0]
+	if block.ResponsesOutputMessageContentText == nil {
+		t.Fatalf("text metadata missing: %#v", block)
+	}
+	annotations := block.ResponsesOutputMessageContentText.Annotations
+	if len(annotations) != 2 {
+		t.Fatalf("annotations count mismatch: got %d, annotations=%#v", len(annotations), annotations)
+	}
+	marker := "[sources=[2, 4]]"
+	startIndex := strings.Index(text, marker)
+	endIndex := startIndex + len(marker)
+	if annotations[0].Type != "url_citation" || annotations[0].URL == nil || *annotations[0].URL != "https://www.vbr.ru/banki/kurs-valut/cbrf/usd/" {
+		t.Fatalf("first annotation mismatch: %#v", annotations[0])
+	}
+	if annotations[0].Title == nil || *annotations[0].Title != "Курс доллара США к рублю на сегодня и завтра — Официальный..." {
+		t.Fatalf("first annotation title mismatch: %#v", annotations[0].Title)
+	}
+	if annotations[0].StartIndex == nil || *annotations[0].StartIndex != startIndex || annotations[0].EndIndex == nil || *annotations[0].EndIndex != endIndex {
+		t.Fatalf("first annotation range mismatch: %#v", annotations[0])
+	}
+	if annotations[1].Type != "url_citation" || annotations[1].URL == nil || *annotations[1].URL != "https://www.profinance.ru/cbrf/usd" {
+		t.Fatalf("second annotation mismatch: %#v", annotations[1])
+	}
+
+	webSearch := converted.Output[1]
+	if webSearch.ID == nil || *webSearch.ID != "ws_ba4c614c-9c04-4eea-970d-ee22f1f0f94e_0" {
+		t.Fatalf("web search output id mismatch: %#v", webSearch.ID)
+	}
+	if webSearch.Type == nil || *webSearch.Type != schemas.ResponsesMessageTypeWebSearchCall {
+		t.Fatalf("web search output type mismatch: %#v", webSearch.Type)
+	}
+	if webSearch.ResponsesToolMessage == nil || webSearch.ResponsesToolMessage.Action == nil || webSearch.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction == nil {
+		t.Fatalf("web search action missing: %#v", webSearch.ResponsesToolMessage)
+	}
+	action := webSearch.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	if action.Type != "search" || len(action.Sources) != 5 {
+		t.Fatalf("web search sources mismatch: %#v", action)
+	}
+	if action.Sources[0].URL != "https://cbr.ru/currency_base/daily/" || action.Sources[4].URL != "https://news.ru/vlast/centrobank-rossii-ponizil-kurs-dollara" {
+		t.Fatalf("web search source ordering mismatch: %#v", action.Sources)
 	}
 }
 

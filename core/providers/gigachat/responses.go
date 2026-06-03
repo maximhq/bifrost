@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -56,6 +57,9 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 	}
 	if err := applyGigaChatResponsesParams(gigaChatReq, params); err != nil {
 		return nil, err
+	}
+	if hasGigaChatResponsesThreadID(params) {
+		gigaChatReq.Model = ""
 	}
 	return gigaChatReq, nil
 }
@@ -421,15 +425,28 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 	contentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content))
 	hasFunctionCall := false
 	for index, part := range message.Content {
+		sourceRefs := toBifrostGigaChatResponsesInlineSources(part.InlineData)
 		if part.Text != nil {
+			annotations := toBifrostGigaChatResponsesSourceAnnotations(*part.Text, sourceRefs)
+			if annotations == nil {
+				annotations = []schemas.ResponsesOutputMessageContentTextAnnotation{}
+			}
 			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesOutputMessageContentTypeText,
 				Text: part.Text,
 				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					Annotations: annotations,
 					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 				},
 			})
+		}
+		if webSearchCall := toBifrostGigaChatResponsesWebSearchCall(messageID, index, sourceRefs); webSearchCall != nil {
+			output = append(output, *webSearchCall)
+		}
+		for fileIndex, file := range part.Files {
+			if imageCall := toBifrostGigaChatResponsesImageGenerationCall(messageID, index, fileIndex, file); imageCall != nil {
+				output = append(output, *imageCall)
+			}
 		}
 		if part.FunctionCall != nil {
 			hasFunctionCall = true
@@ -465,6 +482,229 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 		}
 	}
 	return output
+}
+
+type gigaChatResponsesInlineSource struct {
+	Key      string
+	Order    int
+	HasOrder bool
+	URL      string
+	Title    string
+}
+
+func toBifrostGigaChatResponsesWebSearchCall(messageID *string, partIndex int, sources []gigaChatResponsesInlineSource) *schemas.ResponsesMessage {
+	if len(sources) == 0 {
+		return nil
+	}
+
+	actionSources := make([]schemas.ResponsesWebSearchToolCallActionSearchSource, 0, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source.URL) == "" {
+			continue
+		}
+		actionSource := schemas.ResponsesWebSearchToolCallActionSearchSource{
+			Type: "url",
+			URL:  source.URL,
+		}
+		if strings.TrimSpace(source.Title) != "" {
+			actionSource.Title = schemas.Ptr(source.Title)
+		}
+		actionSources = append(actionSources, actionSource)
+	}
+	if len(actionSources) == 0 {
+		return nil
+	}
+
+	itemID := toBifrostGigaChatResponsesFileItemID("ws", messageID, partIndex, 0)
+	messageType := schemas.ResponsesMessageTypeWebSearchCall
+
+	return &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   &messageType,
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+					Type:    "search",
+					Sources: actionSources,
+				},
+			},
+		},
+	}
+}
+
+func toBifrostGigaChatResponsesSourceAnnotations(text string, sources []gigaChatResponsesInlineSource) []schemas.ResponsesOutputMessageContentTextAnnotation {
+	if len(sources) == 0 {
+		return nil
+	}
+
+	citedSources, startIndex, endIndex := toBifrostGigaChatResponsesCitedSources(text)
+	useAllSources := len(citedSources) == 0
+	if useAllSources && text != "" {
+		startIndex = schemas.Ptr(0)
+		endIndex = schemas.Ptr(len(text))
+	}
+
+	annotations := make([]schemas.ResponsesOutputMessageContentTextAnnotation, 0, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source.URL) == "" {
+			continue
+		}
+		if !useAllSources {
+			if _, ok := citedSources[source.Key]; !ok {
+				continue
+			}
+		}
+
+		annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
+			Type:       "url_citation",
+			URL:        schemas.Ptr(source.URL),
+			StartIndex: startIndex,
+			EndIndex:   endIndex,
+		}
+		if strings.TrimSpace(source.Title) != "" {
+			annotation.Title = schemas.Ptr(source.Title)
+		}
+		annotations = append(annotations, annotation)
+	}
+	if len(annotations) == 0 {
+		return nil
+	}
+	return annotations
+}
+
+func toBifrostGigaChatResponsesCitedSources(text string) (map[string]struct{}, *int, *int) {
+	const markerPrefix = "[sources=["
+
+	start := strings.LastIndex(text, markerPrefix)
+	if start < 0 {
+		return nil, nil, nil
+	}
+
+	sourceListStart := start + len(markerPrefix)
+	remainder := text[sourceListStart:]
+	sourceListEnd := strings.Index(remainder, "]]")
+	markerSuffixLen := 2
+	if sourceListEnd < 0 {
+		sourceListEnd = strings.Index(remainder, "]")
+		markerSuffixLen = 1
+	}
+	if sourceListEnd < 0 {
+		return nil, nil, nil
+	}
+
+	citedSources := make(map[string]struct{})
+	for _, rawSource := range strings.Split(remainder[:sourceListEnd], ",") {
+		sourceKey := strings.TrimSpace(rawSource)
+		if sourceKey != "" {
+			citedSources[sourceKey] = struct{}{}
+		}
+	}
+	if len(citedSources) == 0 {
+		return nil, nil, nil
+	}
+
+	end := sourceListStart + sourceListEnd + markerSuffixLen
+	return citedSources, &start, &end
+}
+
+func toBifrostGigaChatResponsesInlineSources(inlineData map[string]interface{}) []gigaChatResponsesInlineSource {
+	if len(inlineData) == 0 {
+		return nil
+	}
+
+	rawSources, ok := inlineData["sources"]
+	if !ok {
+		return nil
+	}
+
+	sourcesMap, ok := schemas.SafeExtractOrderedMap(rawSources)
+	if !ok || sourcesMap.Len() == 0 {
+		return nil
+	}
+
+	sources := make([]gigaChatResponsesInlineSource, 0, sourcesMap.Len())
+	sourcesMap.Range(func(key string, value interface{}) bool {
+		if source, ok := toBifrostGigaChatResponsesInlineSource(key, value); ok {
+			sources = append(sources, source)
+		}
+		return true
+	})
+	if len(sources) == 0 {
+		return nil
+	}
+
+	sort.SliceStable(sources, func(i, j int) bool {
+		left := sources[i]
+		right := sources[j]
+		if left.HasOrder && right.HasOrder {
+			return left.Order < right.Order
+		}
+		if left.HasOrder != right.HasOrder {
+			return left.HasOrder
+		}
+		return left.Key < right.Key
+	})
+	return sources
+}
+
+func toBifrostGigaChatResponsesInlineSource(key string, value interface{}) (gigaChatResponsesInlineSource, bool) {
+	sourceMap, ok := schemas.SafeExtractOrderedMap(value)
+	if !ok {
+		return gigaChatResponsesInlineSource{}, false
+	}
+
+	rawURL, ok := sourceMap.Get("url")
+	if !ok {
+		return gigaChatResponsesInlineSource{}, false
+	}
+	url, ok := schemas.SafeExtractString(rawURL)
+	if !ok || strings.TrimSpace(url) == "" {
+		return gigaChatResponsesInlineSource{}, false
+	}
+
+	source := gigaChatResponsesInlineSource{
+		Key: strings.TrimSpace(key),
+		URL: strings.TrimSpace(url),
+	}
+	if order, err := strconv.Atoi(source.Key); err == nil {
+		source.Order = order
+		source.HasOrder = true
+	}
+	if rawTitle, ok := sourceMap.Get("title"); ok {
+		if title, ok := schemas.SafeExtractString(rawTitle); ok {
+			source.Title = strings.TrimSpace(title)
+		}
+	}
+	return source, true
+}
+
+func toBifrostGigaChatResponsesImageGenerationCall(messageID *string, partIndex int, fileIndex int, file GigaChatResponsesContentFile) *schemas.ResponsesMessage {
+	fileID := strings.TrimSpace(file.ID)
+	if fileID == "" || !isGigaChatResponsesImageFile(file) {
+		return nil
+	}
+
+	itemID := toBifrostGigaChatResponsesFileItemID("ig", messageID, partIndex, fileIndex)
+	messageType := schemas.ResponsesMessageTypeImageGenerationCall
+
+	return &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   &messageType,
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			ResponsesImageGenerationCall: &schemas.ResponsesImageGenerationCall{
+				Result: fileID,
+			},
+		},
+	}
+}
+
+func isGigaChatResponsesImageFile(file GigaChatResponsesContentFile) bool {
+	if file.Target != nil && strings.EqualFold(strings.TrimSpace(*file.Target), "image") {
+		return true
+	}
+	return file.MIME != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(*file.MIME)), "image/")
 }
 
 func toBifrostGigaChatResponsesReasoningOutput(message GigaChatResponsesMessage, messageID *string) []schemas.ResponsesMessage {
@@ -568,6 +808,23 @@ func toBifrostGigaChatResponsesItemID(prefix string, messageID *string, index in
 		return fmt.Sprintf("%s_%s_%d", prefix, strings.TrimSpace(*messageID), index)
 	}
 	return fmt.Sprintf("%s_%d", prefix, index)
+}
+
+func toBifrostGigaChatResponsesFileItemID(prefix string, messageID *string, partIndex int, fileIndex int) string {
+	trimmedPrefix := strings.TrimSpace(prefix)
+	if trimmedPrefix == "" {
+		trimmedPrefix = "file"
+	}
+	if messageID != nil && strings.TrimSpace(*messageID) != "" {
+		if fileIndex == 0 {
+			return fmt.Sprintf("%s_%s_%d", trimmedPrefix, strings.TrimSpace(*messageID), partIndex)
+		}
+		return fmt.Sprintf("%s_%s_%d_%d", trimmedPrefix, strings.TrimSpace(*messageID), partIndex, fileIndex)
+	}
+	if fileIndex == 0 {
+		return fmt.Sprintf("%s_%d", trimmedPrefix, partIndex)
+	}
+	return fmt.Sprintf("%s_%d_%d", trimmedPrefix, partIndex, fileIndex)
 }
 
 func toBifrostGigaChatResponsesReasoningItemID(messageID *string) *string {
@@ -800,9 +1057,16 @@ func hasGigaChatResponsesStorageParams(params *schemas.ResponsesParameters) bool
 	if params == nil {
 		return false
 	}
-	return trimStringPtr(params.Conversation) != "" ||
-		trimStringPtr(params.PreviousResponseID) != "" ||
+	return hasGigaChatResponsesThreadID(params) ||
 		(params.Metadata != nil && len(*params.Metadata) > 0)
+}
+
+func hasGigaChatResponsesThreadID(params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	return trimStringPtr(params.Conversation) != "" ||
+		trimStringPtr(params.PreviousResponseID) != ""
 }
 
 func trimStringPtr(value *string) string {
