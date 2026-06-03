@@ -19,6 +19,7 @@ interface DimensionRankingsTabProps {
 	loading: boolean;
 	dimensionLabel: string;
 	testIdPrefix: string;
+	attributed?: boolean;
 }
 
 function TopDimensionTooltip({ active, payload }: any) {
@@ -38,11 +39,13 @@ function TopDimensionChart({
 	loading,
 	dimensionLabel,
 	testIdPrefix,
+	attributed,
 }: {
 	data: DimensionRankingsResponse | null;
 	loading: boolean;
 	dimensionLabel: string;
 	testIdPrefix: string;
+	attributed?: boolean;
 }) {
 	const { chartData, grandTotal, rankedItems } = useMemo(() => {
 		if (!data?.rankings?.length) return { chartData: [], grandTotal: null, rankedItems: [] };
@@ -73,20 +76,27 @@ function TopDimensionChart({
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
 			className="z-[1] h-full"
-			totalLabel="Total Requests"
+			totalLabel={attributed ? "Total Requests (attributed)" : "Total Requests"}
 			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
+			totalTooltip={
+				grandTotal === null ? undefined : attributed ? (
+					<div className="space-y-1">
+						<div>{grandTotal.toLocaleString("en-US")} requests</div>
+						<div className="max-w-[240px] text-xs opacity-80">
+							Attributed — a request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the actual request
+							count.
+						</div>
+					</div>
+				) : (
+					grandTotal.toLocaleString("en-US")
+				)
+			}
 		>
 			<div style={{ height: Math.max(200, chartData.length * 40 + 40), marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${chartData.length}`}>
 						<ResponsiveContainer width="100%" height="100%">
-							<BarChart
-								data={chartData}
-								layout="vertical"
-								margin={{ top: 6, right: 20, left: 0, bottom: 0 }}
-								barCategoryGap={4}
-							>
+							<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 20, left: 0, bottom: 0 }} barCategoryGap={4}>
 								<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 								<XAxis
 									type="number"
@@ -101,10 +111,7 @@ function TopDimensionChart({
 									tick={(props: any) => {
 										const { x, y, payload } = props;
 										const maxChars = 14;
-										const label =
-											payload.value.length > maxChars
-												? `${payload.value.slice(0, maxChars)}…`
-												: payload.value;
+										const label = payload.value.length > maxChars ? `${payload.value.slice(0, maxChars)}…` : payload.value;
 										return (
 											<text x={x} y={y} dy={4} textAnchor="end" fontSize={11} className="fill-zinc-500">
 												<title>{payload.value}</title>
@@ -117,12 +124,7 @@ function TopDimensionChart({
 									width={92}
 								/>
 								<Tooltip content={<TopDimensionTooltip />} />
-								<Bar
-									dataKey="total_requests"
-									isAnimationActive={false}
-									barSize={24}
-									radius={[0, 4, 4, 0]}
-								>
+								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} radius={[0, 4, 4, 0]}>
 									{chartData.map((entry, idx) => (
 										<Cell key={entry.id} fill={getModelColor(idx)} />
 									))}
@@ -155,7 +157,7 @@ function TopDimensionChart({
 	);
 }
 
-function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix }: DimensionRankingsTabProps) {
+function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix, attributed }: DimensionRankingsTabProps) {
 	const [sortField, setSortField] = useState<SortField>("total_requests");
 	const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
@@ -187,6 +189,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix 
 				loading={loading}
 				dimensionLabel={dimensionLabel}
 				testIdPrefix={testIdPrefix}
+				attributed={attributed}
 			/>
 
 			{loading ? (
@@ -240,9 +243,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix 
 									<TableCell>
 										<div className="flex flex-col">
 											<span className="font-medium">{entry.name || entry.id}</span>
-											{entry.name && entry.name !== entry.id && (
-												<span className="text-muted-foreground text-xs">{entry.id}</span>
-											)}
+											{entry.name && entry.name !== entry.id && <span className="text-muted-foreground text-xs">{entry.id}</span>}
 										</div>
 									</TableCell>
 									<TableCell className="text-right">

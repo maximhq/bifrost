@@ -85,6 +85,62 @@ func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
 	return db
 }
 
+// multiValueDimensionFilterSQL builds a Postgres predicate matching logs by a
+// dimension that is single-valued on the scalar column (the primary, set by the
+// VK path / pre-migration rows) and multi-valued on the JSON-array column (the
+// full set, set by the enterprise user/AP path). It ORs the scalar `IN` (btree
+// index) with array containment per id (partial jsonb_path_ops GIN index). The
+// `IS NOT NULL AND IS JSON ARRAY` guard matches the partial index predicate so
+// the planner uses the GIN. Returns the parenthesised SQL and its args.
+func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (string, []interface{}) {
+	arrConds := make([]string, len(ids))
+	args := []interface{}{ids}
+	for i, id := range ids {
+		arrConds[i] = arrayCol + "::jsonb @> ?::jsonb"
+		frag, _ := sonic.Marshal([]string{id})
+		args = append(args, string(frag))
+	}
+	sql := fmt.Sprintf("(%s IN ? OR (%s IS NOT NULL AND %s IS JSON ARRAY AND (%s)))",
+		scalarCol, arrayCol, arrayCol, strings.Join(arrConds, " OR "))
+	return sql, args
+}
+
+// teamOrBUFanoutFrom returns a Postgres FROM subquery (aliased AS logs) that fans
+// each log row out to one row per associated team / business unit, exposing
+// derived `dim_id` and `dim_name` columns alongside all original log columns
+// (l.*) so DAC scope and filters still resolve. Rows with the JSON-array column
+// set are unnested (id+name aligned by ordinality); rows without it (pre-upgrade
+// or VK-team logs) fall back to the scalar id/name — so historical logs keep
+// contributing. The two branches are mutually exclusive, so no row is counted
+// twice for the same dimension value. Returns ("", false) for non-fan-out
+// dimensions. idCol is the scalar id column ("team_id" / "business_unit_id"),
+// which both the ranking and histogram dimensions resolve to. No bind args: all
+// identifiers are internal constants.
+func teamOrBUFanoutFrom(idCol string) (string, bool) {
+	var arrIDs, arrNames, scalarName string
+	switch idCol {
+	case "team_id":
+		arrIDs, arrNames, scalarName = "team_ids", "team_names", "team_name"
+	case "business_unit_id":
+		arrIDs, arrNames, scalarName = "business_unit_ids", "business_unit_names", "business_unit_name"
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(`(
+	SELECT l.*, fan.dim_id AS dim_id, fan.dim_name AS dim_name
+	FROM logs l
+	CROSS JOIN LATERAL (
+		SELECT t.value AS dim_id, COALESCE(n.value, '') AS dim_name
+		FROM jsonb_array_elements_text(l.%[1]s::jsonb) WITH ORDINALITY AS t(value, ord)
+		LEFT JOIN jsonb_array_elements_text(l.%[2]s::jsonb) WITH ORDINALITY AS n(value, ord) ON n.ord = t.ord
+		WHERE l.%[1]s IS NOT NULL AND l.%[1]s IS JSON ARRAY
+		UNION ALL
+		SELECT l.%[3]s, COALESCE(l.%[4]s, '')
+		WHERE l.%[1]s IS NULL OR l.%[1]s IS NOT JSON ARRAY
+	) AS fan
+) AS logs`, arrIDs, arrNames, idCol, scalarName), true
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
@@ -121,7 +177,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
-		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		}
 	}
 	if len(filters.CustomerIDs) > 0 {
 		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
@@ -130,7 +191,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		}
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
@@ -2003,7 +2069,25 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
 	}
 
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	// Multi-valued team / business-unit dimensions fan out over the JSON array
+	// (with scalar fallback for old / VK-team logs) so a request credits every
+	// team/BU it touches. Postgres-only; this forces the live path — the
+	// matview-accelerated equivalent is deferred to the partitioning work.
+	fanoutFrom := ""
+	if s.db.Dialector.Name() == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(idCol); isFanout {
+			fanoutFrom = f
+			idCol, nameCol = "dim_id", "dim_name"
+		}
+	}
+	baseTable := func(q *gorm.DB) *gorm.DB {
+		if fanoutFrom != "" {
+			return q.Table(fanoutFrom)
+		}
+		return q.Model(&Log{})
+	}
+
+	if fanoutFrom == "" && s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
 		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
 	}
 
@@ -2022,7 +2106,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		COALESCE(SUM(cost), 0) as total_cost
 	`, idCol, nameExpr)
 
-	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery := baseTable(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
 	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
@@ -2061,7 +2145,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
 
-		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery := baseTable(s.ScopedDB(ctx))
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
 		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
 		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
@@ -2663,12 +2747,29 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
-		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
-	}
 	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
-	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	// NOTE: under fan-out the per-bucket *total* cost is the attributed total
+	// (≥ real, since a shared request counts toward each of its teams/BUs); the
+	// per-dimension breakdown is exact. Surface it as "attributed" in the UI.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
@@ -2758,12 +2859,26 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
-		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
-	}
 	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
-	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 

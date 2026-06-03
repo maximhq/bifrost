@@ -518,6 +518,10 @@ export interface LogEntry {
 	customer_id?: string;
 	business_unit_id?: string;
 	business_unit_name?: string;
+	team_ids?: string[];
+	team_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;

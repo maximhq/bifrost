@@ -927,19 +927,28 @@ export function LogDetailView({
 							{log.number_of_retries > 0 && (
 								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
 							)}
-							{log.team_id && (
+							{(log.team_ids?.length || log.team_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Team"
+									label={(log.team_ids?.length ?? 0) > 1 ? "Teams" : "Team"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ team_ids: [log.team_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-team-link"
-										>
-											{log.team_name || log.team_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.team_ids?.length
+												? log.team_ids.map((id, i) => ({ id, name: log.team_names?.[i] || id }))
+												: [{ id: log.team_id!, name: log.team_name || log.team_id! }]
+											).map((t, i, arr) => (
+												<Link
+													key={t.id}
+													to="/workspace/logs"
+													search={{ team_ids: [t.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid="logdetails-team-link"
+												>
+													{t.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
@@ -959,19 +968,28 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.business_unit_id && (
+							{(log.business_unit_ids?.length || log.business_unit_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Business Unit"
+									label={(log.business_unit_ids?.length ?? 0) > 1 ? "Business Units" : "Business Unit"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ business_unit_ids: [log.business_unit_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-business-unit-link"
-										>
-											{log.business_unit_name || log.business_unit_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.business_unit_ids?.length
+												? log.business_unit_ids.map((id, i) => ({ id, name: log.business_unit_names?.[i] || id }))
+												: [{ id: log.business_unit_id!, name: log.business_unit_name || log.business_unit_id! }]
+											).map((b, i, arr) => (
+												<Link
+													key={b.id}
+													to="/workspace/logs"
+													search={{ business_unit_ids: [b.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid="logdetails-business-unit-link"
+												>
+													{b.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
