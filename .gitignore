@@ -179,3 +179,6 @@ ui/app/routeTree.gen.ts
 # e2e test artifacts
 examples/mcps/auth-demo-server/auth-demo-server
 examples/mcps/oauth-demo-server/oauth-demo-server
+
+# compiled server binary (was committed once in history — never re-commit, bloats repo)
+/bifrost-server
