@@ -124,7 +124,7 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 	trace.RequestHeaders = nil
 
 	s.traces.Store(trace.InternalID, trace)
-	return trace.TraceID
+	return trace.InternalID
 }
 
 // GetTrace retrieves a trace by ID
