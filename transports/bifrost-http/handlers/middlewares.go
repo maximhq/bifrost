@@ -1174,6 +1174,16 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
 				}
 			}
+			// Capture request headers onto the trace when a connector has opted in.
+			// Gated so there is no overhead when no observability plugin wants headers.
+			if tracer.ShouldCaptureRequestHeaders() {
+				headers := make(map[string]string)
+				ctx.Request.Header.All()(func(key, value []byte) bool {
+					headers[strings.ToLower(string(key))] = string(value)
+					return true
+				})
+				tracer.SetTraceRequestHeaders(traceID, headers)
+			}
 			defer func() {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span

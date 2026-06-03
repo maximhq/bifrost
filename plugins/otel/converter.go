@@ -130,8 +130,9 @@ func (p *OtelPlugin) buildReparentMap(spans []*schemas.Span) map[string]string {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string) *ResourceSpan {
 	reparent := p.buildReparentMap(trace.Spans)
+	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.shouldExportSpan(span) {
@@ -156,6 +157,9 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
+			}
+			for k, v := range filteredHeaders {
+				otelSpan.Attributes = append(otelSpan.Attributes, kvStr("http.request.header."+k, v))
 			}
 		}
 		otelSpans = append(otelSpans, otelSpan)
