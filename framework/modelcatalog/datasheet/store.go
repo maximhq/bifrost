@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -398,6 +399,24 @@ func (s *Store) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *Entr
 	slices.Sort(matchingKeys)
 	pricing := s.pricingData[matchingKeys[0]]
 	return convertTablePricingToEntry(&pricing)
+}
+
+// NewTestStore constructs a minimal Store for unit tests without I/O.
+// Optionally seed baseModelIndex so BaseModelName lookups resolve. A no-op
+// logger is wired so cost / pricing paths (which assume Store.logger is
+// non-nil) don't panic from external test code.
+func NewTestStore(baseModelIndex map[string]string) *Store {
+	if baseModelIndex == nil {
+		baseModelIndex = make(map[string]string)
+	}
+	return &Store{
+		logger:                 bifrost.NewNoOpLogger(),
+		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		baseModelIndex:         baseModelIndex,
+		supportedResponseTypes: make(map[string][]string),
+		supportedParams:        make(map[string][]string),
+		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
+	}
 }
 
 // --- Internal: rebuild the datasheet view from current pricingData ---

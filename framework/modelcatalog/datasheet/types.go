@@ -341,7 +341,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "completion"
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return "chat"
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return "responses"
 	case schemas.EmbeddingRequest:
 		return "embedding"
