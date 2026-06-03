@@ -21,12 +21,13 @@ import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
+import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerSheet from "./customerSheet";
 import { CustomersEmptyState } from "./customersEmptyState";
+import CustomerSheet from "./customerSheet";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -66,10 +67,13 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					disabled={!canUpdate}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
+						e.stopPropagation()
 						e.preventDefault();
 						onEdit(customer);
 						setIsOpen(false);
 					}}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Edit className="h-4 w-4" />
 					Edit
@@ -83,6 +87,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						onDelete(customer);
 						setIsOpen(false);
 					}}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
@@ -122,6 +128,7 @@ export default function CustomersTable({
 	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
+	const [viewingCustomer, setViewingCustomer] = useState<Customer | null>(null);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -196,6 +203,14 @@ export default function CustomersTable({
 					}}
 					customer={editingCustomer}
 					onSuccess={handleCustomerSaved}
+				/>
+
+				<CustomerDetailSheet
+					open={!!viewingCustomer}
+					onOpenChange={(open) => {
+						if (!open) setViewingCustomer(null);
+					}}
+					customer={viewingCustomer}
 				/>
 
 				<div className="flex flex-col grow">
@@ -279,7 +294,20 @@ export default function CustomersTable({
 											<TableRow
 												key={customer.id}
 												data-testid={`customer-row-${customer.name}`}
-												className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
+												className={cn(
+													"group cursor-pointer transition-colors",
+													isExhausted ? "bg-red-500/5 hover:bg-red-500/10" : "hover:bg-muted/50",
+												)}
+												role="button"
+												tabIndex={0}
+												onClick={() => setViewingCustomer(customer)}
+												onKeyDown={(e) => {
+													if (e.target !== e.currentTarget) return;
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														setViewingCustomer(customer);
+													}
+												}}
 											>
 												<TableCell className="max-w-[200px] py-4">
 													<div className="flex flex-col gap-2">

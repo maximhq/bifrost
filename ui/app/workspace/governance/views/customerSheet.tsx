@@ -8,7 +8,6 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,10 +19,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
 import { CreateBudgetRequest, CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { formatDistanceToNow } from "date-fns";
 import isEqual from "lodash.isequal";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -264,8 +261,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="sm:max-w-2xl max-w-[900px]" data-testid="customer-dialog-content">
-				<SheetHeader className="flex flex-col items-start p-8 pb-6" headerClassName="mb-0">
+			<SheetContent className="sm:max-w-2xl max-w-[900px] p-0 pt-4" data-testid="customer-dialog-content">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -274,8 +271,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					</SheetDescription>
 				</SheetHeader>
 
-				<form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-hidden">
-					<div className="flex-1 overflow-y-auto px-8">
+				<form onSubmit={handleSubmit} className="flex flex-1 flex-col">
+					<div className="flex-1 px-8 py-4">
 						<div className="space-y-6">
 							<div className="space-y-4">
 								<div className="space-y-2">
@@ -365,81 +362,10 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 									</AlertDialogFooter>
 								</AlertDialogContent>
 							</AlertDialog>
-
-							{isEditing && ((customer?.budgets?.length ?? 0) > 0 || customer?.rate_limit) && (
-								<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
-									<p className="text-sm font-medium">Current Usage</p>
-									<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-										{customer?.budgets?.map((budget) => (
-											<div key={budget.id} className="space-y-1">
-												<p className="text-muted-foreground text-xs">Budget ({budget.reset_duration})</p>
-												<div className="flex items-center gap-2">
-													<span className="font-mono text-sm">
-														{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
-													</span>
-													<Badge
-														variant={budget.current_usage >= budget.max_limit ? "destructive" : "default"}
-														className="text-xs"
-													>
-														{Math.round((budget.current_usage / budget.max_limit) * 100)}%
-													</Badge>
-												</div>
-												<p className="text-muted-foreground text-xs">
-													Last Reset: {formatDistanceToNow(new Date(budget.last_reset), { addSuffix: true })}
-												</p>
-											</div>
-										))}
-										{customer?.rate_limit?.token_max_limit && (
-											<div className="space-y-1">
-												<p className="text-muted-foreground text-xs">Tokens</p>
-												<div className="flex items-center gap-2">
-													<span className="font-mono text-sm">
-														{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
-														{customer.rate_limit.token_max_limit.toLocaleString()}
-													</span>
-													<Badge
-														variant={
-															customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"
-														}
-														className="text-xs"
-													>
-														{Math.round((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100)}%
-													</Badge>
-												</div>
-												<p className="text-muted-foreground text-xs">
-													Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.token_last_reset), { addSuffix: true })}
-												</p>
-											</div>
-										)}
-										{customer?.rate_limit?.request_max_limit && (
-											<div className="space-y-1">
-												<p className="text-muted-foreground text-xs">Requests</p>
-												<div className="flex items-center gap-2">
-													<span className="font-mono text-sm">
-														{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
-														{customer.rate_limit.request_max_limit.toLocaleString()}
-													</span>
-													<Badge
-														variant={
-															customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"
-														}
-														className="text-xs"
-													>
-														{Math.round((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100)}%
-													</Badge>
-												</div>
-												<p className="text-muted-foreground text-xs">
-													Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.request_last_reset), { addSuffix: true })}
-												</p>
-											</div>
-										)}
-									</div>
-								</div>
-							)}
 						</div>
 					</div>
 
-					<SheetFooter className="flex-row justify-end gap-2 border-t px-6 py-4">
+					<SheetFooter className="flex-row justify-end gap-2 border-t px-6 py-4 sticky bottom-0 bg-card">
 						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
 							Cancel
 						</Button>
