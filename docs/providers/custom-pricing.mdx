@@ -98,6 +98,22 @@ For wildcard patterns, append a `*` at the end of the prefix. For example, `clau
 
 ---
 
+## Lookup precedence
+
+When pricing resolves a request, it tries lookup candidates in this order against the catalog (built-in entries + your overrides):
+
+1. The alias's canonical `model_name` (`routing_info.resolved_key_alias.model_name`)
+2. The alias's wire `model_id` (`routing_info.resolved_key_alias.model_id`)
+3. The model the caller sent (`routing_info.model`)
+
+The first non-empty candidate that matches a catalog entry wins. The precedence solves the **opaque deployment ID** case: when an admin aliases an unrecognisable wire ID (e.g. an Azure deployment `12345-azure-prod`) to a catalog-known canonical name (e.g. `claude-sonnet-4-5`) via [Static Aliasing](/providers/aliasing-models), pricing hits the catalog via the canonical name even though the wire identifier wouldn't.
+
+When no key-level alias matches, candidates (1) and (2) are absent and the lookup falls straight through to the model the caller sent — preserving pre-alias behavior.
+
+**Overrides** are matched against the wire model (`model_id` when an alias matched, otherwise the caller-sent model) so per-deployment override pricing stays addressable regardless of how the catalog entry was found.
+
+---
+
 ## Request type filtering
 
 `request_types` is **required** and must contain at least one value. Only request types that have pricing support are accepted. Stream variants are treated identically to their base type - specifying `chat_completion` covers both streaming and non-streaming chat requests.
