@@ -4089,7 +4089,7 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauthConfigId": {
