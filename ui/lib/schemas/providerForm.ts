@@ -108,6 +108,7 @@ const BedrockKeyConfigSchema = z
 		secret_key: z.string(),
 		session_token: z.string().optional(),
 		region: z.string().min(1, "Region is required for Bedrock keys"),
+		profile: z.string().optional(),
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
@@ -137,6 +138,22 @@ const BedrockKeyConfigSchema = z
 		{
 			message: "For Bedrock: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
 			path: ["access_key"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Profile is only meaningful when credentials are resolved through the
+			// default chain. The backend silently ignores it when explicit keys
+			// are supplied, so reject the ambiguous combination here.
+			const profile = data.profile?.trim() || "";
+			if (profile === "") return true;
+			const accessKey = data.access_key?.trim() || "";
+			const secretKey = data.secret_key?.trim() || "";
+			return accessKey === "" && secretKey === "";
+		},
+		{
+			message: "Profile cannot be combined with explicit Access Key / Secret Key",
+			path: ["profile"],
 		},
 	);
 

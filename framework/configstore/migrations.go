@@ -607,6 +607,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBedrockProfileColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddStoreRawRequestResponseColumn(ctx, db); err != nil {
 		return err
 	}
@@ -5659,6 +5662,39 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running widen encrypted varchar columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBedrockProfileColumn adds the bedrock_profile column to the config_keys
+// table so Bedrock keys can select a named profile from ~/.aws/config / ~/.aws/credentials
+// (including AWS SSO profiles) for the default credential chain.
+func migrationAddBedrockProfileColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_bedrock_profile_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "bedrock_profile") {
+				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_profile"); err != nil {
+					return fmt.Errorf("failed to add bedrock_profile column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "bedrock_profile") {
+				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_profile"); err != nil {
+					return fmt.Errorf("failed to drop bedrock_profile column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running bedrock profile column migration: %s", err.Error())
 	}
 	return nil
 }

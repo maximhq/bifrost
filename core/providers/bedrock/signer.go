@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/smithy-go/encoding/httpbinding"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -271,32 +270,41 @@ func buildCanonicalQueryString(queryString string) string {
 	return result.String()
 }
 
-// signAWSRequestFastHTTP signs a fasthttp request using AWS Signature Version 4
-// This is a native implementation that avoids allocating http.Request
+// signAWSRequestFastHTTP signs a fasthttp request using AWS Signature Version 4.
+// This is a native implementation that avoids allocating http.Request.
+//
+// Credential resolution mirrors signAWSRequest exactly via resolveAWSConfig,
+// so the fasthttp path honors the same set of auth modes — static keys,
+// session tokens, named profiles (including SSO), and STS AssumeRole — as
+// the net/http path. Callers should pass the full BedrockKeyConfig fields
+// rather than pre-resolved strings so that role-based and profile-based
+// auth can never silently degrade to source credentials.
 func signAWSRequestFastHTTP(
 	ctx context.Context,
 	req *fasthttp.Request,
 	body []byte,
-	accessKey, secretKey string,
-	sessionToken *string,
+	accessKey, secretKey schemas.EnvVar,
+	sessionToken *schemas.EnvVar,
+	profile *schemas.EnvVar,
+	roleARN *schemas.EnvVar,
+	externalID *schemas.EnvVar,
+	sessionNameEnv *schemas.EnvVar,
 	region, service string,
 ) *schemas.BifrostError {
-	// Get AWS credentials if not provided
-	if accessKey == "" && secretKey == "" {
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to load aws config", err)
-		}
-		creds, err := cfg.Credentials.Retrieve(ctx)
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
-		}
-		accessKey = creds.AccessKeyID
-		secretKey = creds.SecretAccessKey
-		if creds.SessionToken != "" {
-			st := creds.SessionToken
-			sessionToken = &st
-		}
+	cfg, bifrostErr := resolveAWSConfig(ctx, accessKey, secretKey, sessionToken, profile, roleARN, externalID, sessionNameEnv, region)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+	creds, err := cfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+	}
+	accessKeyID := creds.AccessKeyID
+	secretAccessKey := creds.SecretAccessKey
+	var resolvedSessionToken *string
+	if creds.SessionToken != "" {
+		st := creds.SessionToken
+		resolvedSessionToken = &st
 	}
 
 	// Get current time
@@ -324,8 +332,8 @@ func signAWSRequestFastHTTP(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set(amzDateKey, amzDate)
-	if sessionToken != nil && *sessionToken != "" {
-		req.Header.Set(amzSecurityToken, *sessionToken)
+	if resolvedSessionToken != nil && *resolvedSessionToken != "" {
+		req.Header.Set(amzSecurityToken, *resolvedSessionToken)
 	}
 
 	// Build canonical headers
@@ -415,13 +423,13 @@ func signAWSRequestFastHTTP(
 	}, "\n")
 
 	// Calculate signature
-	signingKey := getSigningKey(accessKey, secretKey, dateStamp, region, service)
+	signingKey := getSigningKey(accessKeyID, secretAccessKey, dateStamp, region, service)
 	signature := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
 
 	// Build authorization header
 	authHeader := fmt.Sprintf("%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
 		signingAlgorithm,
-		accessKey,
+		accessKeyID,
 		credentialScope,
 		signedHeaders,
 		signature,

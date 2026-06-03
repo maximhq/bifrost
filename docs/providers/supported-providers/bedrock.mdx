@@ -454,6 +454,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `secret_key`    | No       | -                 | AWS secret access key                                                                                                 |
 | `session_token` | No       | -                 | AWS session token (for temporary credentials)                                                                         |
 | `arn`           | No       | -                 | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
+| `profile`       | No       | -                 | Named profile from `~/.aws/config` / `~/.aws/credentials` (including SSO). Used when `access_key`/`secret_key` are empty. See [AWS Profile / SSO](#aws-profile--sso) |
 | `role_arn`      | No       | -                 | IAM role ARN for STS AssumeRole                                                                                       |
 | `external_id`   | No       | -                 | External ID for AssumeRole (when required by trust policy)                                                            |
 | `session_name`  | No       | `bifrost-session` | Session name for AssumeRole CloudTrail logs                                                                           |
@@ -1674,7 +1675,7 @@ Leave `access_key` and `secret_key` empty (or omit them). Bifrost calls AWS `Loa
 - EKS IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`)
 - ECS task role
 - EC2 instance profile (IMDS)
-- `~/.aws/credentials` default profile
+- `~/.aws/credentials` default profile (or any profile selected via `AWS_PROFILE` in Bifrost's process environment — for per-key profile selection use the `profile` field documented below)
 
 ```json
 {
@@ -1684,9 +1685,64 @@ Leave `access_key` and `secret_key` empty (or omit them). Bifrost calls AWS `Loa
 }
 ```
 
-### 3. STS AssumeRole
+### 3. AWS Profile / SSO
 
-Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity - it works when credentials are available either via explicit `access_key`/`secret_key` in key config, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from either source, AssumeRole will fail.**
+Set `profile` to a named profile from your shared AWS config (`~/.aws/config`) or credentials file (`~/.aws/credentials`). This is used when `access_key`/`secret_key` are empty and routes through `aws-sdk-go-v2`'s default credential chain with `WithSharedConfigProfile`, so it picks up SSO profiles, `credential_process` entries, and `[sso-session ...]`-style profiles transparently.
+
+```json
+{
+  "bedrock_key_config": {
+    "profile": "my-corp-sso-profile",
+    "region": "us-east-1"
+  }
+}
+```
+
+For load-balancing across multiple AWS accounts, list one key per profile:
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "acct-a",
+          "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
+          "weight": 1.0,
+          "bedrock_key_config": { "profile": "acct-a", "region": "us-east-1" }
+        },
+        {
+          "name": "acct-b",
+          "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
+          "weight": 1.0,
+          "bedrock_key_config": { "profile": "acct-b", "region": "us-west-2" }
+        }
+      ]
+    }
+  }
+}
+```
+
+`profile` composes with `role_arn`: the profile's resolved credentials become the source identity for STS AssumeRole.
+
+<Note>
+  **SSO token expiry.** Base SSO profiles return `InvalidTokenError` when the cached token in `~/.aws/sso/cache` expires; re-run `aws sso login --profile <name>`. Modern `[sso-session foo]`-style profiles auto-refresh the bearer token within the SSO session lifetime via the SDK's `SSOTokenProvider` — recommend that format for long-running deployments.
+
+  **Docker.** When running Bifrost in a container, mount the host's `~/.aws` directory so the SDK can read both the shared config files and any cached SSO tokens (the SSO cache lives under `~/.aws/sso/cache`, which is included by the parent mount):
+  ```bash
+  docker run -p 8080:8080 \
+    -e AWS_PROFILE \
+    -v ~/.aws:/root/.aws:ro \
+    -v "$PWD/config.json:/app/config.json" \
+    maximhq/bifrost
+  ```
+
+  **Region precedence.** `bedrock_key_config.region` always wins over a region set inside the profile.
+</Note>
+
+### 4. STS AssumeRole
+
+Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity - it works when credentials are available either via explicit `access_key`/`secret_key` in key config, via `profile`, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from any source, AssumeRole will fail.**
 
 ```json
 {

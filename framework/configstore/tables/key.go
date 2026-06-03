@@ -54,6 +54,7 @@ type TableKey struct {
 	BedrockRoleARN           *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
 	BedrockExternalID        *schemas.EnvVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
 	BedrockRoleSessionName   *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
+	BedrockProfile           *schemas.EnvVar `gorm:"type:text" json:"bedrock_profile,omitempty"`
 	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// VLLM config fields (embedded)
@@ -253,6 +254,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.BedrockRoleSessionName = nil
 		}
+		if k.BedrockKeyConfig.Profile != nil {
+			p := *k.BedrockKeyConfig.Profile
+			k.BedrockProfile = &p
+		} else {
+			k.BedrockProfile = nil
+		}
 		if k.BedrockKeyConfig.BatchS3Config != nil {
 			data, err := sonic.Marshal(k.BedrockKeyConfig.BatchS3Config)
 			if err != nil {
@@ -272,6 +279,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockRoleARN = nil
 		k.BedrockExternalID = nil
 		k.BedrockRoleSessionName = nil
+		k.BedrockProfile = nil
 		k.BedrockBatchS3ConfigJSON = nil
 	}
 
@@ -384,6 +392,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock role session name: %w", err)
 		}
+		if err := encryptEnvVarPtr(&k.BedrockProfile); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock profile: %w", err)
+		}
 		if err := encryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock batch s3 config: %w", err)
 		}
@@ -468,6 +479,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock role session name: %w", err)
 		}
+		if err := decryptEnvVarPtr(&k.BedrockProfile); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock profile: %w", err)
+		}
 		if err := decryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock batch s3 config: %w", err)
 		}
@@ -550,7 +564,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VertexKeyConfig = config
 	}
 	// Reconstruct Bedrock config if fields are present
-	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || k.BedrockRoleARN != nil || k.BedrockExternalID != nil || k.BedrockRoleSessionName != nil || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
+	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || k.BedrockRoleARN != nil || k.BedrockExternalID != nil || k.BedrockRoleSessionName != nil || k.BedrockProfile != nil || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
 		bedrockConfig := &schemas.BedrockKeyConfig{}
 
 		if k.BedrockAccessKey != nil {
@@ -563,6 +577,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		bedrockConfig.RoleARN = k.BedrockRoleARN
 		bedrockConfig.ExternalID = k.BedrockExternalID
 		bedrockConfig.RoleSessionName = k.BedrockRoleSessionName
+		bedrockConfig.Profile = k.BedrockProfile
 
 		if k.BedrockSecretKey != nil {
 			bedrockConfig.SecretKey = *k.BedrockSecretKey

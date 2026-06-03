@@ -2434,6 +2434,10 @@
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
                 },
+                "profile": {
+                  "type": "string",
+                  "description": "Named profile from ~/.aws/config or ~/.aws/credentials (including SSO profiles). Used when access_key/secret_key are empty. Composes with role_arn (profile credentials become the source identity for AssumeRole). Can use env. prefix"
+                },
                 "deployments": {
                   "type": "object",
                   "additionalProperties": {
