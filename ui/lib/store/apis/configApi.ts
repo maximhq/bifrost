@@ -1,7 +1,22 @@
-import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { BifrostConfig, GlobalProxyConfig, LatestReleaseResponse } from "@/lib/types/config";
 import axios from "axios";
 import { baseApi } from "./baseApi";
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+const applyMetadataPatch = (metadata: BifrostConfig["metadata"] | undefined, patch: Record<string, unknown>): Record<string, unknown> => {
+	const next = { ...(metadata ?? {}) };
+	Object.entries(patch).forEach(([key, value]) => {
+		if (value === null) {
+			delete next[key];
+			return;
+		}
+		const currentValue = next[key];
+		next[key] = isPlainObject(value) && isPlainObject(currentValue) ? applyMetadataPatch(currentValue, value) : value;
+	});
+	return next;
+};
 
 export const configApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -72,7 +87,7 @@ export const configApi = baseApi.injectEndpoints({
 			query: (data) => ({
 				url: "/config",
 				method: "PUT",
-				body: IS_ENTERPRISE ? { ...data, auth_config: undefined } : data,
+				body: data,
 			}),
 			invalidatesTags: ["Config"],
 		}),
@@ -95,6 +110,35 @@ export const configApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Config"],
 		}),
+
+		// Merge-patch the ClientConfig.metadata UI/admin preferences blob.
+		// Pass {key: null} to remove a key.
+		updateClientMetadata: builder.mutation<{ success: boolean }, Record<string, unknown>>({
+			query: (patch) => ({
+				url: "/config/metadata",
+				method: "POST",
+				body: patch,
+			}),
+			async onQueryStarted(patch, { dispatch, queryFulfilled }) {
+				const patchResults = [
+					dispatch(
+						configApi.util.updateQueryData("getCoreConfig", {}, (draft) => {
+							draft.metadata = applyMetadataPatch(draft.metadata, patch);
+						}),
+					),
+					dispatch(
+						configApi.util.updateQueryData("getCoreConfig", { fromDB: true }, (draft) => {
+							draft.metadata = applyMetadataPatch(draft.metadata, patch);
+						}),
+					),
+				];
+				try {
+					await queryFulfilled;
+				} catch {
+					patchResults.forEach((patchResult) => patchResult.undo());
+				}
+			},
+		}),
 	}),
 });
 
@@ -104,6 +148,7 @@ export const {
 	useUpdateCoreConfigMutation,
 	useUpdateProxyConfigMutation,
 	useForcePricingSyncMutation,
+	useUpdateClientMetadataMutation,
 	useLazyGetCoreConfigQuery,
 	useGetLatestReleaseQuery,
 	useLazyGetLatestReleaseQuery,

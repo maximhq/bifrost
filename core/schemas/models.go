@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 )
 
@@ -36,7 +37,7 @@ func (k KeyStatus) MarshalJSON() ([]byte, error) {
 		errCopy.ExtraFields.KeyStatuses = nil
 		alias.Error = &errCopy
 	}
-	return Marshal(alias)
+	return MarshalSorted(alias)
 }
 
 type BifrostListModelsRequest struct {
@@ -137,7 +138,8 @@ type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
-	Deployment          *string            `json:"deployment,omitempty"` // Name of the actual deployment
+	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
+	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
 	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`
@@ -151,8 +153,17 @@ type Model struct {
 	HuggingFaceID       *string            `json:"hugging_face_id,omitempty"`
 	Description         *string            `json:"description,omitempty"`
 
+	// AdditionalAttributes carries editorial per-model metadata stored on the
+	// governance_model_pricing row (e.g. description, tags). Preserved across
+	// the 24-hour pricing sync.
+	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
+
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`
+
+	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
+	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.
+	ProviderExtra json.RawMessage `json:"-"`
 }
 
 type Architecture struct {
@@ -209,7 +220,7 @@ func encodePaginationCursor(offset int, lastID string) (string, error) {
 		LastID: lastID,
 	}
 
-	jsonData, err := Marshal(cursor)
+	jsonData, err := MarshalSorted(cursor)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal pagination cursor: %w", err)
 	}

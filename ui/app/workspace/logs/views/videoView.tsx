@@ -1,13 +1,7 @@
-"use client";
-
 import { ExternalLink, Video } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import {
-	BifrostVideoDownloadOutput,
-	BifrostVideoGenerationOutput,
-	BifrostVideoListOutput,
-} from "@/lib/types/logs";
+import { BifrostVideoDownloadOutput, BifrostVideoGenerationOutput, BifrostVideoListOutput } from "@/lib/types/logs";
 
 import CollapsibleBox from "./collapsibleBox";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -38,10 +32,8 @@ function getMethodTypeLabel(requestType?: string): string {
 export default function VideoView({ videoInput, videoOutput, videoListOutput, requestType }: VideoViewProps) {
 	const methodTypeLabel = getMethodTypeLabel(requestType);
 	const isDownload = requestType?.toLowerCase().includes("video_download");
-	const downloadOutput =
-		isDownload && videoOutput ? (videoOutput as BifrostVideoDownloadOutput) : null;
-	const generationOutput =
-		!isDownload && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
+	const downloadOutput = isDownload && videoOutput ? (videoOutput as BifrostVideoDownloadOutput) : null;
+	const generationOutput = !isDownload && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
 	const outputURL = generationOutput?.videos?.[0]?.url;
 
 	return (
@@ -82,9 +74,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 										</div>
 									)}
 								</div>
-								<p className="text-muted-foreground text-xs">
-									Video content was successfully downloaded (content is not stored in logs)
-								</p>
+								<p className="text-muted-foreground text-xs">Video content was successfully downloaded (content is not stored in logs)</p>
 							</>
 						) : generationOutput ? (
 							<>
@@ -111,26 +101,15 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 									)}
 								</div>
 
-								{generationOutput.error &&
-									(generationOutput.error.message || generationOutput.error.code) && (
-										<div className="flex items-start gap-2 rounded-md border px-3 py-2 text-sm">
-											<div className="space-y-1">
-												<div className="font-medium text-muted-foreground">
-													Error from provider
-												</div>
-												{generationOutput.error.code && (
-													<div className="font-medium">
-														{generationOutput.error.code}
-													</div>
-												)}
-												{generationOutput.error.message && (
-													<div className="text-muted-foreground">
-														{generationOutput.error.message}
-													</div>
-												)}
-											</div>
+								{generationOutput.error && (generationOutput.error.message || generationOutput.error.code) && (
+									<div className="flex items-start gap-2 rounded-md border px-3 py-2 text-sm">
+										<div className="space-y-1">
+											<div className="text-muted-foreground font-medium">Error from provider</div>
+											{generationOutput.error.code && <div className="font-medium">{generationOutput.error.code}</div>}
+											{generationOutput.error.message && <div className="text-muted-foreground">{generationOutput.error.message}</div>}
 										</div>
-									)}
+									</div>
+								)}
 
 								{outputURL && (
 									<div className="space-y-2">
@@ -158,7 +137,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 				<CollapsibleBox
 					title={`Video List Output (${videoListOutput.data?.length ?? 0})`}
 					onCopy={() => JSON.stringify(videoListOutput, null, 2)}
-					>
+				>
 					<CodeEditor
 						className="z-0 w-full"
 						shouldAdjustInitialHeight={true}

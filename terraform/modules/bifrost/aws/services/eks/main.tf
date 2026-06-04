@@ -514,6 +514,10 @@ resource "kubernetes_horizontal_pod_autoscaler_v2" "bifrost" {
 
 # =============================================================================
 # Kubernetes Ingress (optional — created when create_load_balancer is true)
+#
+# PREREQUISITE: AWS Load Balancer Controller must be installed in the EKS
+# cluster for the ALB Ingress annotations to work. See:
+# https://docs.aws.amazon.com/eks/latest/userguide/aws-load-balancer-controller.html
 # =============================================================================
 
 resource "kubernetes_ingress_v1" "bifrost" {

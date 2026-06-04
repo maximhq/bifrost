@@ -3,10 +3,34 @@ package tracing
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func formatTraceValue(v any) string {
+	if v == nil {
+		return ""
+	}
+
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct:
+		if data, err := schemas.MarshalString(v); err == nil {
+			return data
+		}
+	}
+
+	return fmt.Sprint(rv.Interface())
+}
 
 // PopulateRequestAttributes extracts common request attributes from a BifrostRequest.
 // This is the main entry point for populating request attributes on a span.
@@ -17,8 +41,10 @@ func PopulateRequestAttributes(req *schemas.BifrostRequest) map[string]any {
 	}
 
 	provider, model, _ := req.GetRequestFields()
-	attrs[schemas.AttrProviderName] = string(provider)
+	attrs[schemas.AttrProviderName] = schemas.OTelProviderName(provider)
+	attrs[schemas.AttrBifrostProviderName] = string(provider) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 	attrs[schemas.AttrRequestModel] = model
+	attrs[schemas.AttrOperationName] = schemas.OTelOperationName(req.RequestType)
 
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
@@ -113,7 +139,8 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 
 	attrs[schemas.AttrError] = err.Error.Message
 	if err.Error.Type != nil {
-		attrs[schemas.AttrErrorType] = *err.Error.Type
+		attrs[schemas.AttrErrorType] = *err.Error.Type // legacy: gen_ai.error.type; spec uses the unprefixed error.type
+		attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
 	}
 	if err.Error.Code != nil {
 		attrs[schemas.AttrErrorCode] = *err.Error.Code
@@ -132,28 +159,44 @@ func PopulateContextAttributes(
 	customerID, customerName string,
 	numberOfRetries, fallbackIndex int,
 ) {
+	// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: a
+	// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
+	// are the canonical home going forward; drop the gen_ai.* lines once dashboards
+	// migrate (grep for "// legacy:" inside this function).
 	if virtualKeyID != "" {
-		attrs[schemas.AttrVirtualKeyID] = virtualKeyID
-		attrs[schemas.AttrVirtualKeyName] = virtualKeyName
+		attrs[schemas.AttrVirtualKeyID] = virtualKeyID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrVirtualKeyName] = virtualKeyName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostVirtualKeyID] = virtualKeyID
+		attrs[schemas.AttrBifrostVirtualKeyName] = virtualKeyName
 	}
 	if selectedKeyID != "" {
-		attrs[schemas.AttrSelectedKeyID] = selectedKeyID
-		attrs[schemas.AttrSelectedKeyName] = selectedKeyName
+		attrs[schemas.AttrSelectedKeyID] = selectedKeyID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrSelectedKeyName] = selectedKeyName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostSelectedKeyID] = selectedKeyID
+		attrs[schemas.AttrBifrostSelectedKeyName] = selectedKeyName
 	}
 	if routingRuleID != "" {
-		attrs[schemas.AttrRoutingRuleID] = routingRuleID
-		attrs[schemas.AttrRoutingRuleName] = routingRuleName
+		attrs[schemas.AttrRoutingRuleID] = routingRuleID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrRoutingRuleName] = routingRuleName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostRoutingRuleID] = routingRuleID
+		attrs[schemas.AttrBifrostRoutingRuleName] = routingRuleName
 	}
 	if teamID != "" {
-		attrs[schemas.AttrTeamID] = teamID
-		attrs[schemas.AttrTeamName] = teamName
+		attrs[schemas.AttrTeamID] = teamID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrTeamName] = teamName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostTeamID] = teamID
+		attrs[schemas.AttrBifrostTeamName] = teamName
 	}
 	if customerID != "" {
-		attrs[schemas.AttrCustomerID] = customerID
-		attrs[schemas.AttrCustomerName] = customerName
+		attrs[schemas.AttrCustomerID] = customerID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrCustomerName] = customerName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostCustomerID] = customerID
+		attrs[schemas.AttrBifrostCustomerName] = customerName
 	}
-	attrs[schemas.AttrNumberOfRetries] = numberOfRetries
-	attrs[schemas.AttrFallbackIndex] = fallbackIndex
+	attrs[schemas.AttrNumberOfRetries] = numberOfRetries // legacy: gen_ai.* placement of bifrost-internal attr
+	attrs[schemas.AttrFallbackIndex] = fallbackIndex     // legacy: gen_ai.* placement of bifrost-internal attr
+	attrs[schemas.AttrBifrostRetries] = numberOfRetries
+	attrs[schemas.AttrBifrostFallbackIndex] = fallbackIndex
 }
 
 // ===============================================
@@ -177,7 +220,8 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 			attrs[schemas.AttrTopP] = *req.Params.TopP
 		}
 		if req.Params.Stop != nil {
-			attrs[schemas.AttrStopSequences] = strings.Join(req.Params.Stop, ",")
+			attrs[schemas.AttrStopSequences] = append([]string(nil), req.Params.Stop...)
+			attrs[schemas.AttrBifrostStopSequencesJoined] = strings.Join(req.Params.Stop, ",") // legacy: comma-joined back-compat for dashboards predating the []string fix
 		}
 		if req.Params.PresencePenalty != nil {
 			attrs[schemas.AttrPresencePenalty] = *req.Params.PresencePenalty
@@ -193,7 +237,7 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -202,7 +246,9 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 		attrs[schemas.AttrMessageCount] = len(req.Input)
 		messages := extractChatMessages(req.Input)
 		if len(messages) > 0 {
-			attrs[schemas.AttrInputMessages] = messages
+			if data, err := schemas.MarshalString(messages); err == nil {
+				attrs[schemas.AttrInputMessages] = data
+			}
 		}
 	}
 }
@@ -229,19 +275,30 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 	// Extract output messages
 	outputMessages := extractChatResponseMessages(resp)
 	if len(outputMessages) > 0 {
-		attrs[schemas.AttrOutputMessages] = outputMessages
+		if data, err := schemas.MarshalString(outputMessages); err == nil {
+			attrs[schemas.AttrOutputMessages] = data
+		}
 	}
 
-	// Extract finish reason from first choice
-	if len(resp.Choices) > 0 && resp.Choices[0].FinishReason != nil {
-		attrs[schemas.AttrFinishReason] = *resp.Choices[0].FinishReason
+	// Extract finish reasons from all choices
+	var finishReasons []string
+	for _, choice := range resp.Choices {
+		if choice.FinishReason != nil {
+			finishReasons = append(finishReasons, *choice.FinishReason)
+		}
+	}
+	if len(finishReasons) > 0 {
+		attrs[schemas.AttrFinishReasons] = finishReasons
 	}
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 
 		if resp.Usage.PromptTokensDetails != nil {
 			if resp.Usage.PromptTokensDetails.TextTokens > 0 {
@@ -254,11 +311,25 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 				attrs[schemas.AttrPromptTokenDetailsImage] = resp.Usage.PromptTokensDetails.ImageTokens
 			}
 			if resp.Usage.PromptTokensDetails.CachedReadTokens > 0 {
-				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens // legacy: nested key; replaced by gen_ai.usage.cache_read.input_tokens
+				attrs[schemas.AttrUsageCacheReadInputTokens] = resp.Usage.PromptTokensDetails.CachedReadTokens
 			}
 			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
-				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens // legacy: nested key; replaced by gen_ai.usage.cache_creation.input_tokens
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = resp.Usage.PromptTokensDetails.CachedWriteTokens
 			}
+			if d := resp.Usage.PromptTokensDetails.CachedWriteTokenDetails; d != nil {
+				if d.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = d.CachedWriteTokens5m
+				}
+				if d.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = d.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
 		}
 
 		if resp.Usage.CompletionTokensDetails != nil {
@@ -272,7 +343,8 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 				attrs[schemas.AttrCompletionTokenDetailsImage] = *resp.Usage.CompletionTokensDetails.ImageTokens
 			}
 			if resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens
+				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = resp.Usage.CompletionTokensDetails.ReasoningTokens
 			}
 			if resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens > 0 {
 				attrs[schemas.AttrCompletionTokenDetailsAccept] = resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens
@@ -311,7 +383,8 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrTopP] = *req.Params.TopP
 		}
 		if req.Params.Stop != nil {
-			attrs[schemas.AttrStopSequences] = strings.Join(req.Params.Stop, ",")
+			attrs[schemas.AttrStopSequences] = append([]string(nil), req.Params.Stop...)
+			attrs[schemas.AttrBifrostStopSequencesJoined] = strings.Join(req.Params.Stop, ",") // legacy: comma-joined back-compat for dashboards predating the []string fix
 		}
 		if req.Params.PresencePenalty != nil {
 			attrs[schemas.AttrPresencePenalty] = *req.Params.PresencePenalty
@@ -326,13 +399,14 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrEcho] = *req.Params.Echo
 		}
 		if req.Params.LogitBias != nil {
-			attrs[schemas.AttrLogitBias] = fmt.Sprintf("%v", req.Params.LogitBias)
+			attrs[schemas.AttrLogitBias] = formatTraceValue(req.Params.LogitBias)
 		}
 		if req.Params.LogProbs != nil {
 			attrs[schemas.AttrLogProbs] = *req.Params.LogProbs
 		}
 		if req.Params.N != nil {
-			attrs[schemas.AttrN] = *req.Params.N
+			attrs[schemas.AttrN] = *req.Params.N // legacy: replaced by gen_ai.request.choice.count
+			attrs[schemas.AttrChoiceCount] = *req.Params.N
 		}
 		if req.Params.Seed != nil {
 			attrs[schemas.AttrSeed] = *req.Params.Seed
@@ -345,7 +419,7 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -374,22 +448,32 @@ func PopulateTextCompletionResponseAttributes(resp *schemas.BifrostTextCompletio
 		attrs[schemas.AttrSystemFprint] = resp.SystemFingerprint
 	}
 
-	// Extract output text
+	// Extract output text and finish reasons from all choices
 	var outputs []string
+	var finishReasons []string
 	for _, choice := range resp.Choices {
 		if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
 			outputs = append(outputs, *choice.TextCompletionResponseChoice.Text)
+		}
+		if choice.FinishReason != nil {
+			finishReasons = append(finishReasons, *choice.FinishReason)
 		}
 	}
 	if len(outputs) > 0 {
 		attrs[schemas.AttrOutputMessages] = outputs
 	}
+	if len(finishReasons) > 0 {
+		attrs[schemas.AttrFinishReasons] = finishReasons
+	}
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 	}
 }
 
@@ -405,14 +489,16 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 
 	if req.Params != nil {
 		if req.Params.Dimensions != nil {
-			attrs[schemas.AttrDimensions] = *req.Params.Dimensions
+			attrs[schemas.AttrDimensions] = *req.Params.Dimensions // legacy: replaced by gen_ai.embeddings.dimension.count
+			attrs[schemas.AttrEmbeddingsDimensionCount] = *req.Params.Dimensions
 		}
 		if req.Params.EncodingFormat != nil {
-			attrs[schemas.AttrEncodingFormat] = *req.Params.EncodingFormat
+			attrs[schemas.AttrEncodingFormat] = *req.Params.EncodingFormat // legacy: singular form; replaced by gen_ai.request.encoding_formats (string[])
+			attrs[schemas.AttrEncodingFormats] = []string{*req.Params.EncodingFormat}
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
-			attrs[k] = fmt.Sprintf("%v", v)
+			attrs[k] = formatTraceValue(v)
 		}
 	}
 
@@ -440,9 +526,12 @@ func PopulateEmbeddingResponseAttributes(resp *schemas.BifrostEmbeddingResponse,
 	}
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 	}
 }
 
@@ -563,7 +652,9 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		attrs[schemas.AttrMessageCount] = len(req.Input)
 		inputMessages := extractResponsesInputMessages(req.Input)
 		if len(inputMessages) > 0 {
-			attrs[schemas.AttrInputMessages] = inputMessages
+			if data, err := schemas.MarshalString(inputMessages); err == nil {
+				attrs[schemas.AttrInputMessages] = data
+			}
 		}
 	}
 
@@ -619,18 +710,34 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		}
 	}
 	if req.Params.Tools != nil {
-		tools := make([]string, len(req.Params.Tools))
-		for i, tool := range req.Params.Tools {
-			tools[i] = string(tool.Type)
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
 		}
-		attrs[schemas.AttrTools] = strings.Join(tools, ",")
+		tools := make([]toolInfo, 0, len(req.Params.Tools))
+		for _, tool := range req.Params.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools = append(tools, info)
+			} else {
+				tools = append(tools, toolInfo{Name: string(tool.Type)})
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
+			attrs[schemas.AttrTools] = data
+		}
 	}
 	if req.Params.Truncation != nil {
 		attrs[schemas.AttrTruncation] = *req.Params.Truncation
 	}
 	// ExtraParams
 	for k, v := range req.Params.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		if data, err := schemas.MarshalString(v); err == nil {
+			attrs[k] = data
+		}
 	}
 }
 
@@ -653,7 +760,9 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 	// Extract output messages (includes reasoning)
 	outputMessages := extractResponsesOutputMessages(resp)
 	if len(outputMessages) > 0 {
-		attrs[schemas.AttrOutputMessages] = outputMessages
+		if data, err := schemas.MarshalString(outputMessages); err == nil {
+			attrs[schemas.AttrOutputMessages] = data
+		}
 	}
 
 	// Additional response fields
@@ -667,7 +776,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespMaxToolCalls] = *resp.MaxToolCalls
 	}
 	if resp.Metadata != nil {
-		attrs[schemas.AttrRespMetadata] = fmt.Sprintf("%v", resp.Metadata)
+		attrs[schemas.AttrRespMetadata] = formatTraceValue(resp.Metadata)
 	}
 	if resp.PreviousResponseID != nil {
 		attrs[schemas.AttrRespPreviousRespID] = *resp.PreviousResponseID
@@ -721,11 +830,25 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrRespTruncation] = *resp.Truncation
 	}
 	if resp.Tools != nil {
-		tools := make([]string, len(resp.Tools))
-		for i, tool := range resp.Tools {
-			tools[i] = string(tool.Type)
+		type toolInfo struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
 		}
-		attrs[schemas.AttrRespTools] = strings.Join(tools, ",")
+		tools := make([]toolInfo, len(resp.Tools))
+		for i, tool := range resp.Tools {
+			if tool.Name != nil {
+				info := toolInfo{Name: *tool.Name}
+				if tool.Description != nil {
+					info.Description = *tool.Description
+				}
+				tools[i] = info
+			} else {
+				tools[i] = toolInfo{Name: string(tool.Type)}
+			}
+		}
+		if data, err := schemas.MarshalString(tools); err == nil {
+			attrs[schemas.AttrRespTools] = data
+		}
 	}
 
 	// Usage
@@ -733,6 +856,66 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrInputTokens] = resp.Usage.InputTokens
 		attrs[schemas.AttrOutputTokens] = resp.Usage.OutputTokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+
+		if resp.Usage.Cost != nil {
+			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
+		}
+
+		if d := resp.Usage.InputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsImage] = d.ImageTokens
+			}
+			if d.CachedReadTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens // legacy: nested key; replaced by gen_ai.usage.cache_read.input_tokens
+				attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
+			}
+			if d.CachedWriteTokens > 0 {
+				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens // legacy: nested key; replaced by gen_ai.usage.cache_creation.input_tokens
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
+			}
+			if wd := d.CachedWriteTokenDetails; wd != nil {
+				if wd.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+				}
+				if wd.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+				}
+			}
+		}
+
+		if d := resp.Usage.OutputTokensDetails; d != nil {
+			if d.TextTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsText] = d.TextTokens
+			}
+			if d.AudioTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAudio] = d.AudioTokens
+			}
+			if d.ImageTokens != nil && *d.ImageTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsImage] = *d.ImageTokens
+			}
+			if d.ReasoningTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = d.ReasoningTokens
+			}
+			if d.AcceptedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsAccept] = d.AcceptedPredictionTokens
+			}
+			if d.RejectedPredictionTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsReject] = d.RejectedPredictionTokens
+			}
+			if d.CitationTokens != nil && *d.CitationTokens > 0 {
+				attrs[schemas.AttrOutputTokenDetailsCite] = *d.CitationTokens
+			}
+			if d.NumSearchQueries != nil && *d.NumSearchQueries > 0 {
+				attrs[schemas.AttrOutputTokenDetailsSearch] = *d.NumSearchQueries
+			}
+		}
 	}
 }
 
@@ -759,11 +942,11 @@ func PopulateBatchCreateRequestAttributes(req *schemas.BifrostBatchCreateRequest
 		attrs[schemas.AttrBatchRequestsCount] = len(req.Requests)
 	}
 	if len(req.Metadata) > 0 {
-		attrs[schemas.AttrBatchMetadata] = fmt.Sprintf("%v", req.Metadata)
+		attrs[schemas.AttrBatchMetadata] = formatTraceValue(req.Metadata)
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -793,7 +976,7 @@ func PopulateBatchListRequestAttributes(req *schemas.BifrostBatchListRequest, at
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -808,7 +991,7 @@ func PopulateBatchRetrieveRequestAttributes(req *schemas.BifrostBatchRetrieveReq
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -823,7 +1006,7 @@ func PopulateBatchCancelRequestAttributes(req *schemas.BifrostBatchCancelRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -838,7 +1021,7 @@ func PopulateBatchResultsRequestAttributes(req *schemas.BifrostBatchResultsReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1013,7 +1196,7 @@ func PopulateFileUploadRequestAttributes(req *schemas.BifrostFileUploadRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1037,7 +1220,7 @@ func PopulateFileListRequestAttributes(req *schemas.BifrostFileListRequest, attr
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1052,7 +1235,7 @@ func PopulateFileRetrieveRequestAttributes(req *schemas.BifrostFileRetrieveReque
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1067,7 +1250,7 @@ func PopulateFileDeleteRequestAttributes(req *schemas.BifrostFileDeleteRequest, 
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 
@@ -1082,7 +1265,7 @@ func PopulateFileContentRequestAttributes(req *schemas.BifrostFileContentRequest
 	}
 	// ExtraParams
 	for k, v := range req.ExtraParams {
-		attrs[k] = fmt.Sprintf("%v", v)
+		attrs[k] = formatTraceValue(v)
 	}
 }
 

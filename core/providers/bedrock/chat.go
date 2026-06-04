@@ -7,15 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
-
-// contentBlockMeta stores type and length of a content block for multi-turn reconstruction.
-type contentBlockMeta struct {
-	T string `json:"t"` // "thinking" or "text"
-	L int    `json:"l"` // length in UTF-8 bytes
-}
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
 func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*BedrockConverseRequest, error) {
@@ -31,8 +24,17 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		ModelID: bifrostReq.Model,
 	}
 
+	input := bifrostReq.Input
+	if schemas.IsAnthropicModel(bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		trimmed := len(input)
+		for trimmed > 0 && input[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		input = input[:trimmed]
+	}
+
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(bifrostReq.Input)
+	messages, systemMessages, err := convertMessages(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -41,13 +43,30 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		bedrockReq.System = systemMessages
 	}
 
+	// Trim trailing whitespace from the last assistant message text blocks
+	// (only for Anthropic models which use text-based prefill)
+	lastMsgIndex := len(bedrockReq.Messages) - 1
+	if schemas.IsAnthropicModel(bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
+		blocks := bedrockReq.Messages[lastMsgIndex].Content
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Text != nil {
+				bedrockReq.Messages[lastMsgIndex].Content[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
+
 	// Convert parameters and configurations
 	if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
 		return nil, fmt.Errorf("failed to convert chat parameters: %w", err)
 	}
 
 	// Ensure tool config is present when needed
-	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
+
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
 
 	return bedrockReq, nil
 }
@@ -64,6 +83,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var reasoningDetails []schemas.ChatReasoningDetails
 	var reasoningText string
+	var usedStructuredOutputTool bool
 
 	if response.Output.Message != nil {
 		for _, contentBlock := range response.Output.Message.Content {
@@ -83,6 +103,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					if contentBlock.ToolUse.Input != nil {
 						jsonStr := string(contentBlock.ToolUse.Input)
 						contentStr = &jsonStr
+						usedStructuredOutputTool = true
 					}
 					continue // Skip adding to toolCalls
 				}
@@ -96,7 +117,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				}
 
 				toolUseID := contentBlock.ToolUse.ToolUseID
-				toolUseName := contentBlock.ToolUse.Name
+				toolUseName := bedrockRestoreToolName(ctx, contentBlock.ToolUse.Name)
 
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
 					Index: uint16(len(toolCalls)),
@@ -179,64 +200,9 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 	}
 
-	if len(contentBlocks) > 0 {
-		allText := true
-		for _, block := range contentBlocks {
-			if block.Type != schemas.ChatContentBlockTypeText {
-				allText = false
-				break
-			}
-		}
-		if allText {
-			needsCombine := len(contentBlocks) > 1 || len(reasoningDetails) > 0
-			if !needsCombine {
-				// Single text block, no thinking — simple collapse
-				contentStr = contentBlocks[0].Text
-			} else {
-				// Combine thinking (first) + text blocks into a single string
-				var parts []string
-				var blockMeta []contentBlockMeta
-
-				// Thinking blocks first
-				for _, rd := range reasoningDetails {
-					if rd.Type == schemas.BifrostReasoningDetailsTypeText && rd.Text != nil {
-						parts = append(parts, *rd.Text)
-						blockMeta = append(blockMeta, contentBlockMeta{T: "thinking", L: len(*rd.Text)})
-					}
-				}
-
-				// Then text blocks top to bottom
-				for _, block := range contentBlocks {
-					if block.Text != nil {
-						parts = append(parts, *block.Text)
-						blockMeta = append(blockMeta, contentBlockMeta{T: "text", L: len(*block.Text)})
-					}
-				}
-
-				joined := strings.Join(parts, "\n\n")
-				contentStr = &joined
-
-				// Record boundaries for multi-turn reconstruction
-				if len(blockMeta) > 1 {
-					if metaJSON, err := providerUtils.MarshalSorted(blockMeta); err == nil {
-						metaStr := string(metaJSON)
-						reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-							Index: len(reasoningDetails),
-							Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
-							Text:  &metaStr,
-						})
-					}
-				}
-
-				// Clear thinking text from reasoning_details (keep signature only)
-				for i := range reasoningDetails {
-					if reasoningDetails[i].Type == schemas.BifrostReasoningDetailsTypeText {
-						reasoningDetails[i].Text = nil
-					}
-				}
-			}
-			contentBlocks = nil
-		}
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
 	}
 
 	// Create the message content
@@ -258,7 +224,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 		assistantMessage.ReasoningDetails = reasoningDetails
 		if reasoningText != "" {
-			assistantMessage.Reasoning = &reasoningText
+			assistantMessage.Reasoning = new(reasoningText)
 		}
 	}
 
@@ -273,7 +239,14 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(convertBedrockStopReason(response.StopReason)),
+			FinishReason: func() *string {
+				mapped := convertBedrockStopReason(response.StopReason)
+				if usedStructuredOutputTool && len(toolCalls) == 0 &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				return &mapped
+			}(),
 		},
 	}
 	var usage *schemas.BifrostLLMUsage
@@ -297,26 +270,37 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
 			usage.PromptTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			if response.Usage.CacheDetails != nil {
+				if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+					usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+				}
+				for _, cacheDetail := range *response.Usage.CacheDetails {
+					if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+					if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
 			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{
-		ID:      uuid.New().String(),
-		Model:   model,
-		Object:  "chat.completion",
-		Choices: choices,
-		Usage:   usage,
-		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Bedrock,
-		},
+		ID:          uuid.New().String(),
+		Model:       model,
+		Object:      "chat.completion",
+		Choices:     choices,
+		Usage:       usage,
+		Created:     int(time.Now().Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
-		bifrostResponse.ServiceTier = &response.ServiceTier.Type
+		tier := mapBedrockServiceTierToBifrost(response.ServiceTier.Type)
+		bifrostResponse.ServiceTier = &tier
 	}
 
 	return bifrostResponse, nil
@@ -326,6 +310,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 type BedrockStreamState struct {
 	nextToolCallIndex         int
 	contentBlockToToolCallIdx map[int]int
+	ctx                       context.Context
 }
 
 // NewBedrockStreamState returns initialised stream state for one streaming response.
@@ -333,6 +318,13 @@ func NewBedrockStreamState() *BedrockStreamState {
 	return &BedrockStreamState{
 		contentBlockToToolCallIdx: make(map[int]int),
 	}
+}
+
+// NewBedrockStreamStateWithContext returns stream state that can restore aliased tool names.
+func NewBedrockStreamStateWithContext(ctx context.Context) *BedrockStreamState {
+	state := NewBedrockStreamState()
+	state.ctx = ctx
+	return state
 }
 
 func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
@@ -377,7 +369,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 		toolCall.Index = uint16(toolCallIdx)
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
-		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Function.Name = schemas.Ptr(bedrockRestoreToolName(state.ctx, toolUseStart.Name))
 		toolCall.Function.Arguments = "" // Start with empty arguments
 
 		streamResponse := &schemas.BifrostChatResponse{

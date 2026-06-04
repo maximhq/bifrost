@@ -28,8 +28,12 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 		params.llm_request_ids = filters.llm_request_ids.join(",");
 	}
-	if (filters.start_time) params.start_time = filters.start_time;
-	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.period) {
+		params.period = filters.period;
+	} else {
+		if (filters.start_time) params.start_time = filters.start_time;
+		if (filters.end_time) params.end_time = filters.end_time;
+	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
 	if (filters.content_search) params.content_search = filters.content_search;
@@ -42,8 +46,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		getMCPLogs: builder.query<
 			{
 				logs: MCPToolLogEntry[];
-				pagination: Pagination;
-				stats: MCPToolLogStats;
+				pagination: Pagination & { total_count: number };
 				has_logs: boolean;
 			},
 			{
@@ -75,8 +78,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
 				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
+				if (filters.period) {
+					params.period = filters.period;
+				} else {
+					if (filters.start_time) params.start_time = filters.start_time;
+					if (filters.end_time) params.end_time = filters.end_time;
+				}
 				if (filters.min_latency) params.min_latency = filters.min_latency;
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.content_search) params.content_search = filters.content_search;
@@ -87,6 +94,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				};
 			},
 			providesTags: ["MCPLogs"],
+		}),
+
+		// Get a single MCP tool log entry by ID
+		getMCPLogById: builder.query<MCPToolLogEntry, string>({
+			query: (id) => `/mcp-logs/${encodeURIComponent(id)}`,
+			providesTags: (result, error, id) => [{ type: "MCPLogs", id }],
 		}),
 
 		// Get MCP tool logs statistics with filters
@@ -115,8 +128,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
 				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
+				if (filters.period) {
+					params.period = filters.period;
+				} else {
+					if (filters.start_time) params.start_time = filters.start_time;
+					if (filters.end_time) params.end_time = filters.end_time;
+				}
 				if (filters.min_latency) params.min_latency = filters.min_latency;
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.content_search) params.content_search = filters.content_search;
@@ -129,17 +146,27 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
-		// Get available filter data (tool names, server labels)
-		getMCPAvailableFilterData: builder.query<MCPToolLogFilterData, void>({
-			query: () => "/mcp-logs/filterdata",
+		// Get available MCP filter data. Pass `dimensions` to fetch only a subset
+		// (tool_names, server_labels, virtual_keys); omit for all.
+		getMCPAvailableFilterData: builder.query<Partial<MCPToolLogFilterData>, { dimensions?: string[]; q?: string } | void>({
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/mcp-logs/filterdata?${qs}` : "/mcp-logs/filterdata";
+			},
 			providesTags: ["MCPLogs"],
 		}),
 
 		// Get MCP tool call volume histogram
-		getMCPHistogram: builder.query<
-			MCPHistogramResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPHistogram: builder.query<MCPHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram",
 				params: buildMCPFilterParams(filters),
@@ -148,10 +175,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get MCP cost histogram
-		getMCPCostHistogram: builder.query<
-			MCPCostHistogramResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPCostHistogram: builder.query<MCPCostHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram/cost",
 				params: buildMCPFilterParams(filters),
@@ -160,10 +184,7 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get top MCP tools by call count
-		getMCPTopTools: builder.query<
-			MCPTopToolsResponse,
-			{ filters: MCPToolLogFilters }
-		>({
+		getMCPTopTools: builder.query<MCPTopToolsResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram/top-tools",
 				params: buildMCPFilterParams(filters),
@@ -185,13 +206,18 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 
 export const {
 	useGetMCPLogsQuery,
+	useGetMCPLogByIdQuery,
 	useGetMCPLogsStatsQuery,
 	useGetMCPAvailableFilterDataQuery,
 	useGetMCPAvailableFilterDataQuery: useGetMCPLogsFilterDataQuery,
 	useLazyGetMCPLogsQuery,
+	useLazyGetMCPLogByIdQuery,
 	useLazyGetMCPLogsStatsQuery,
 	useLazyGetMCPAvailableFilterDataQuery,
+	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
+	useGetMCPCostHistogramQuery,
+	useGetMCPTopToolsQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,
 	useDeleteMCPLogsMutation,

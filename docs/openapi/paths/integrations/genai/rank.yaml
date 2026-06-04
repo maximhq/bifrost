@@ -1,0 +1,65 @@
+# Google GenAI / Vertex - Rerank Endpoint
+
+rank:
+  post:
+    operationId: vertexRank
+    summary: Rerank documents (Vertex Rank)
+    description: |
+      Reranks records using Google Vertex AI's Ranking API. The request body
+      follows the Vertex `rankRecords` schema.
+    tags:
+    - GenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              model:
+                type: string
+                description: Vertex ranking model identifier.
+              query:
+                type: string
+              records:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    title:
+                      type: string
+                    content:
+                      type: string
+                  additionalProperties: true
+              topN:
+                type: integer
+              ignoreRecordDetailsInResponse:
+                type: boolean
+            additionalProperties: true
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

@@ -8,8 +8,9 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
-import { cn } from "@/lib/utils";
 import { Folder, Prompt } from "@/lib/types/prompts";
+import { cn } from "@/lib/utils";
+import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -24,8 +25,6 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
-import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import { usePromptContext } from "../context";
 
 /**
@@ -57,7 +56,6 @@ export function PromptSidebar() {
 	const onCreatePrompt = useCallback((folderId?: string) => setPromptSheet({ open: true, folderId }), [setPromptSheet]);
 	const onEditPrompt = useCallback((prompt: Prompt) => setPromptSheet({ open: true, prompt }), [setPromptSheet]);
 	const onDeletePrompt = useCallback((prompt: Prompt) => setDeletePromptDialog({ open: true, prompt }), [setDeletePromptDialog]);
-	const pathname = usePathname();
 	const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 	const [searchQuery, setSearchQuery] = useState("");
 	const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
@@ -130,7 +128,11 @@ export function PromptSidebar() {
 
 		const filteredFolders = folders.filter((folder) => folder.name.toLowerCase().includes(query) || matchedFolderIds.has(folder.id));
 
-		return { folders: filteredFolders, promptsByFolder: filteredPromptsByFolder, rootPrompts: filteredRootPrompts };
+		return {
+			folders: filteredFolders,
+			promptsByFolder: filteredPromptsByFolder,
+			rootPrompts: filteredRootPrompts,
+		};
 	}, [folders, prompts, promptsByFolder, rootPrompts, searchQuery]);
 
 	// Prompt lookup for drag events
@@ -445,7 +447,7 @@ function DroppableFolder({
 							)}
 							{canDelete && (
 								<DropdownMenuItem
-									className="text-destructive"
+									variant="destructive"
 									data-testid="folder-action-delete"
 									onClick={(e) => {
 										e.stopPropagation();
@@ -510,7 +512,10 @@ interface DraggablePromptItemProps {
  * @returns The rendered prompt item JSX element.
  */
 function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
-	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}`, disabled: !canUpdate });
+	const { ref, isDragging } = useDraggable({
+		id: `prompt-${prompt.id}`,
+		disabled: !canUpdate,
+	});
 	const showActions = canUpdate || canDelete;
 
 	return (
@@ -522,7 +527,7 @@ function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, c
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
 				isDragging && "opacity-50",
 			)}
-			onClick={(e) => {
+			onClick={() => {
 				// Don't navigate if this was a drag
 				if (isDragging) return;
 				onSelect();
@@ -559,14 +564,15 @@ function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, c
 						)}
 						{canDelete && (
 							<DropdownMenuItem
-								className="text-destructive hover:text-destructive cursor-pointer"
+								variant="destructive"
+								className="cursor-pointer"
 								data-testid="prompt-action-delete"
 								onClick={(e) => {
 									e.stopPropagation();
 									onDelete();
 								}}
 							>
-								<Trash2 className="text-destructive h-4 w-4" />
+								<Trash2 className="h-4 w-4" />
 								Delete
 							</DropdownMenuItem>
 						)}

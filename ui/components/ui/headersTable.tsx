@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
@@ -7,10 +5,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { EnvVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
-import { useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 
 // Support both plain string values and EnvVar objects
 type HeaderValue = string | EnvVar;
+
+export interface CellRenderParams {
+	value: string;
+	onChange: (val: string) => void;
+	placeholder?: string;
+	disabled?: boolean;
+	rowKey: string;
+}
 
 interface HeadersTableProps<T extends HeaderValue> {
 	value: Record<string, T>;
@@ -20,6 +26,10 @@ interface HeadersTableProps<T extends HeaderValue> {
 	label?: string;
 	disabled?: boolean;
 	useEnvVarInput?: boolean;
+	/** Optional custom renderer for the key (name) cell input */
+	renderKeyInput?: (params: CellRenderParams) => React.ReactNode;
+	/** Optional custom renderer for the value cell input */
+	renderValueInput?: (params: CellRenderParams) => React.ReactNode;
 }
 
 // Empty EnvVar for new rows
@@ -54,6 +64,8 @@ export function HeadersTable<T extends HeaderValue>({
 	label = "Headers",
 	disabled = false,
 	useEnvVarInput,
+	renderKeyInput,
+	renderValueInput,
 }: HeadersTableProps<T>) {
 	// Use explicit prop if provided, otherwise detect from existing values
 	const isEnvVarMode = useEnvVarInput ?? Object.values(value || {}).some((v) => isEnvVar(v));
@@ -64,12 +76,6 @@ export function HeadersTable<T extends HeaderValue>({
 	const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
 	// Refs for each table row to enable scrolling
 	const rowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
-
-	const scrollToAndHighlightRow = (rowIndex: number) => {
-		rowRefs.current[rowIndex]?.scrollIntoView({ behavior: "smooth", block: "center" });
-		setHighlightedRow(rowIndex);
-		setTimeout(() => setHighlightedRow(null), 2000);
-	};
 
 	// Get the empty value based on mode
 	const getEmptyValue = (): T => {
@@ -103,27 +109,30 @@ export function HeadersTable<T extends HeaderValue>({
 			return next;
 		});
 
-		const newHeaders = { ...value };
-
-		// Remove old key if it exists and is not empty
-		if (oldKey !== "" && oldKey in newHeaders) {
-			delete newHeaders[oldKey];
+		// Rebuild the object preserving key order so the row doesn't jump to the end
+		const newHeaders: Record<string, T> = {};
+		for (const [k, v] of Object.entries(value) as [string, T][]) {
+			if (k === oldKey && oldKey !== "") {
+				// Replace old key with new key at the same position
+				if (newKey !== "") {
+					newHeaders[newKey] = currentValue;
+				}
+			} else if (k !== "") {
+				newHeaders[k] = v;
+			}
 		}
 
-		// Only add new entry if key is not empty
-		if (newKey !== "") {
+		// If this was a new (empty-key) row, append at the end
+		if (oldKey === "" && newKey !== "") {
 			newHeaders[newKey] = currentValue;
 		}
-
-		// Clean up any empty string keys
-		delete newHeaders[""];
 
 		onChange(newHeaders);
 	};
 
 	const handleValueChange = (currentKey: string, newValue: string | EnvVar, rowIndex: number) => {
 		const newHeaders = { ...value };
-		
+
 		if (isEnvVarMode) {
 			// If newValue is already an EnvVar, use it directly
 			if (typeof newValue === "object") {
@@ -134,7 +143,7 @@ export function HeadersTable<T extends HeaderValue>({
 			}
 		} else {
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;
-		}		
+		}
 
 		onChange(newHeaders);
 	};
@@ -205,6 +214,7 @@ export function HeadersTable<T extends HeaderValue>({
 							const hasConflict = duplicateConflicts.has(index);
 							const conflictKey = duplicateConflicts.get(index);
 							const isHighlighted = highlightedRow === index;
+							const isEmptyTrailingRow = index === rows.length - 1 && key === "" && isValueEmpty(headerValue);
 
 							return (
 								<TableRow
@@ -214,30 +224,45 @@ export function HeadersTable<T extends HeaderValue>({
 									}}
 									className={cn(
 										"border-b last:border-0 transition-colors",
-										isHighlighted && "bg-yellow-100 dark:bg-yellow-900/20 animate-pulse"
+										isHighlighted && "bg-yellow-100 dark:bg-yellow-900/20 animate-pulse",
 									)}
 								>
 									<TableCell className="p-2">
 										<div>
-											<Input
-												placeholder={keyPlaceholder}
-												value={hasConflict ? conflictKey : key}
-												data-row={index}
-												data-column="key"
-												onChange={(e) => handleKeyChange(key, e.target.value, headerValue, index)}
-												onKeyDown={(e) => handleKeyDown(e, index, "key")}
-												className={cn(
-													"border-0 focus-visible:ring-0 focus-visible:ring-offset-0",
-													hasConflict && "text-destructive"
-												)}
-												disabled={disabled}
-											/>
-											{hasConflict && <span className="px-3 text-xs text-destructive">Duplicate key</span>}
+											{renderKeyInput ? (
+												renderKeyInput({
+													value: hasConflict ? (conflictKey ?? "") : key,
+													onChange: (newKey) => handleKeyChange(key, newKey, headerValue, index),
+													placeholder: keyPlaceholder,
+													disabled,
+													rowKey: key,
+												})
+											) : (
+												<Input
+													placeholder={keyPlaceholder}
+													value={hasConflict ? conflictKey : key}
+													data-row={index}
+													data-column="key"
+													onChange={(e) => handleKeyChange(key, e.target.value, headerValue, index)}
+													onKeyDown={(e) => handleKeyDown(e, index, "key")}
+													className={cn("border-0 focus-visible:ring-0 focus-visible:ring-offset-0", hasConflict && "text-destructive")}
+													disabled={disabled}
+												/>
+											)}
+											{hasConflict && <span className="text-destructive px-3 text-xs">Duplicate key</span>}
 										</div>
 									</TableCell>
-								<TableCell className="p-2">
-									{isHeaderEnvVar ? (
-										<EnvVarInput
+									<TableCell className="p-2">
+										{renderValueInput ? (
+											renderValueInput({
+												value: getDisplayValue(headerValue),
+												onChange: (newVal) => handleValueChange(key, newVal, index),
+												placeholder: valuePlaceholder,
+												disabled,
+												rowKey: key,
+											})
+										) : isHeaderEnvVar ? (
+											<EnvVarInput
 												placeholder={valuePlaceholder}
 												value={headerValue as EnvVar}
 												data-row={index}
@@ -261,7 +286,7 @@ export function HeadersTable<T extends HeaderValue>({
 										)}
 									</TableCell>
 									<TableCell className="p-2">
-										{!disabled && (
+										{!disabled && !isEmptyTrailingRow && (
 											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
 												<Trash className="h-4 w-4" />
 											</Button>

@@ -34,10 +34,7 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Open
 	// Map parameters
 	if params != nil {
 		openaiReq.EmbeddingParameters = *params
-	}
-
-	if bifrostReq.Params != nil {
-		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		openaiReq.ExtraParams = params.ExtraParams
 	}
 	return openaiReq
 }

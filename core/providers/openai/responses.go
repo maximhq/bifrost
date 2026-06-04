@@ -201,16 +201,13 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				// Convert "minimal" to "low" for non-OpenAI providers
-				if effort == "minimal" {
-					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
-				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(req.Model, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := DefaultCompletionMaxTokens
+				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
@@ -218,6 +215,11 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			}
+
+			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
+			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
+				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
 			// Handle xAI-specific parameter filtering
@@ -310,6 +312,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		schemas.ResponsesToolTypeWebSearchPreview:   true,
 		schemas.ResponsesToolTypeMemory:             true,
 		schemas.ResponsesToolTypeToolSearch:         true,
+		schemas.ResponsesToolTypeNamespace:          true,
 	}
 
 	// Filter tools to only include supported types
@@ -348,6 +351,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 					// If only blocked domains or both empty, Filters stays nil
 				}
 
+				if tool.ResponsesToolWebSearch.ExternalWebAccess != nil {
+					externalWebAccess := *tool.ResponsesToolWebSearch.ExternalWebAccess
+					newWebSearch.ExternalWebAccess = &externalWebAccess
+				}
+				if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
+				}
+
 				// Copy other fields if they exist
 				if tool.ResponsesToolWebSearch.UserLocation != nil {
 					newWebSearch.UserLocation = tool.ResponsesToolWebSearch.UserLocation
@@ -365,4 +376,3 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	}
 	resp.Tools = filteredTools
 }
-

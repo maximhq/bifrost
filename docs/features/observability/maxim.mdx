@@ -188,6 +188,21 @@ Reserved keys are `session-id`, `trace-id`, `trace-name`, `generation-id`, `gene
 </Tab>
 </Tabs>
 
+### Shared observability dimensions
+
+For tags that should be visible beyond Maxim, use `x-bf-dim-*` instead of `x-bf-maxim-*`.
+
+`x-bf-dim-*` is the canonical per-request dimension prefix in Bifrost. Those dimensions are forwarded to Maxim as tags at lower priority than explicit `x-bf-maxim-*` tags, and they are also propagated to internal logs, OpenTelemetry spans, and Prometheus custom labels.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-dim-environment: production" \
+  -H "x-bf-dim-team: platform" \
+  -d '{"model": "gpt-4", "messages": [...]}'
+```
+
+If you send both `x-bf-dim-environment` and `x-bf-maxim-environment`, Maxim uses the explicit `x-bf-maxim-*` tag value while the shared dimension still flows to the other observability backends.
+
 ## Supported Request Types
 
 The plugin supports the following Bifrost request types:

@@ -14,7 +14,8 @@ type SpanHandle interface{}
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
 	RequestID             string                          // Request ID
-	Model                 string                          // Model used
+	RequestedModel        string                          // Original model requested by the caller
+	ResolvedModel         string                          // Actual model used by the provider (equals RequestedModel when no alias mapping exists)
 	Provider              ModelProvider                   // Provider used
 	Status                string                          // Status of the stream
 	Latency               int64                           // Latency in milliseconds
@@ -23,10 +24,12 @@ type StreamAccumulatorResult struct {
 	OutputMessages        []ResponsesMessage              // For responses API
 	TokenUsage            *BifrostLLMUsage                // Token usage
 	Cost                  *float64                        // Cost in dollars
+	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
 	ImageGenerationOutput *BifrostImageGenerationResponse // For image generation streaming
+	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
 	RawRequest            interface{}                     // Raw request
@@ -38,7 +41,8 @@ type StreamAccumulatorResult struct {
 type Tracer interface {
 	// CreateTrace creates a new trace with optional parent ID and returns the trace ID.
 	// The parentID can be extracted from W3C traceparent headers for distributed tracing.
-	CreateTrace(parentID string) string
+	// The requestID is optional and can be used to identify the request.
+	CreateTrace(parentID string, requestID ...string) string
 
 	// EndTrace completes a trace and returns the trace data for observation/export.
 	// After this call, the trace is removed from active tracking and returned for cleanup.
@@ -58,6 +62,10 @@ type Tracer interface {
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
 
+	// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+	// If spanID is nil, returns a handle for the trace's root span.
+	GetSpanHandleByID(traceID string, spanID *string) SpanHandle
+
 	// AddEvent adds a timestamped event to the span.
 	// Events represent discrete occurrences during the span's lifetime.
 	AddEvent(handle SpanHandle, name string, attrs map[string]any)
@@ -68,7 +76,7 @@ type Tracer interface {
 
 	// PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
 	// This includes output messages, tokens, usage stats, and error information if present.
-	PopulateLLMResponseAttributes(handle SpanHandle, resp *BifrostResponse, err *BifrostError)
+	PopulateLLMResponseAttributes(ctx *BifrostContext, handle SpanHandle, resp *BifrostResponse, err *BifrostError)
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -91,9 +99,9 @@ type Tracer interface {
 	// This is called for each streaming chunk to build up the complete response.
 	AddStreamingChunk(traceID string, response *BifrostResponse)
 
-	// GetAccumulatedChunks returns TTFT and chunk count for a deferred span.
-	// The response is always nil — full content accumulation is handled by the streaming.Accumulator
-	// via ProcessStreamingChunk. Callers should nil-check the response.
+	// GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for a deferred span.
+	// The response is built from the streaming accumulator during the final ProcessStreamingChunk call.
+	// Returns nil response if no plugin has called ProcessStreamingChunk (callers should nil-check).
 	// Returns nil, 0, 0 if no accumulated data exists.
 	GetAccumulatedChunks(traceID string) (response *BifrostResponse, ttftNs int64, chunkCount int)
 
@@ -109,7 +117,15 @@ type Tracer interface {
 	// Returns the accumulated result. IsFinal will be true when the stream is complete.
 	// This method is used by plugins to access accumulated streaming data.
 	// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-	ProcessStreamingChunk(traceID string, isFinalChunk bool, result *BifrostResponse, err *BifrostError) *StreamAccumulatorResult
+	ProcessStreamingChunk(ctx *BifrostContext, traceID string, isFinalChunk bool, result *BifrostResponse, err *BifrostError) *StreamAccumulatorResult
+
+	// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
+	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
+	AttachPluginLogs(traceID string, logs []PluginLogEntry)
+
+	// CompleteAndFlushTrace ends a trace, exports it to observability plugins, and
+	// releases the trace resources. Used by transports that bypass normal HTTP trace completion.
+	CompleteAndFlushTrace(traceID string)
 
 	// Stop releases resources associated with the tracer.
 	// Should be called during shutdown to stop background goroutines.
@@ -121,7 +137,7 @@ type Tracer interface {
 type NoOpTracer struct{}
 
 // CreateTrace returns an empty string (no trace created).
-func (n *NoOpTracer) CreateTrace(_ string) string { return "" }
+func (n *NoOpTracer) CreateTrace(_ string, _ ...string) string { return "" }
 
 // EndTrace returns nil (no trace to end).
 func (n *NoOpTracer) EndTrace(_ string) *Trace { return nil }
@@ -137,6 +153,9 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
 
+// GetSpanHandleByID returns nil.
+func (n *NoOpTracer) GetSpanHandleByID(_ string, _ *string) SpanHandle { return nil }
+
 // AddEvent does nothing.
 func (n *NoOpTracer) AddEvent(_ SpanHandle, _ string, _ map[string]any) {}
 
@@ -144,7 +163,7 @@ func (n *NoOpTracer) AddEvent(_ SpanHandle, _ string, _ map[string]any) {}
 func (n *NoOpTracer) PopulateLLMRequestAttributes(_ SpanHandle, _ *BifrostRequest) {}
 
 // PopulateLLMResponseAttributes does nothing.
-func (n *NoOpTracer) PopulateLLMResponseAttributes(_ SpanHandle, _ *BifrostResponse, _ *BifrostError) {
+func (n *NoOpTracer) PopulateLLMResponseAttributes(_ *BifrostContext, _ SpanHandle, _ *BifrostResponse, _ *BifrostError) {
 }
 
 // StoreDeferredSpan does nothing.
@@ -172,9 +191,15 @@ func (n *NoOpTracer) CreateStreamAccumulator(_ string, _ time.Time) {}
 func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
 
 // ProcessStreamingChunk returns nil.
-func (n *NoOpTracer) ProcessStreamingChunk(_ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {
+func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {
 	return nil
 }
+
+// AttachPluginLogs does nothing.
+func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
+
+// CompleteAndFlushTrace does nothing.
+func (n *NoOpTracer) CompleteAndFlushTrace(_ string) {}
 
 // Stop does nothing.
 func (n *NoOpTracer) Stop() {}

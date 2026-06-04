@@ -147,7 +147,7 @@ fi
 echo "=========================================="
 echo "Running /v1 test suite..."
 echo "=========================================="
-if ! ./run-newman-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-newman-inference-tests.sh $REPORT_ARGS; then
   echo "❌ /v1 test suite failed"
   exit 1
 fi
@@ -155,7 +155,7 @@ fi
 echo "=========================================="
 echo "Running /integrations test suites..."
 echo "=========================================="
-if ! ./run-all-integration-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-all-integration-tests.sh $REPORT_ARGS; then
   echo "❌ /integrations test suites failed"
   exit 1
 fi
@@ -163,10 +163,18 @@ fi
 echo "=========================================="
 echo "Running /api test suite..."
 echo "=========================================="
-if ! ./run-newman-api-tests.sh $REPORT_ARGS; then
+if ! ./runners/run-newman-api-tests.sh $REPORT_ARGS; then
   echo "❌ /api test suite failed"
   exit 1
 fi
 
+echo "=========================================="
+echo "Running inference features test suite..."
+echo "=========================================="
+if ! ./runners/run-newman-inference-features-tests.sh $REPORT_ARGS; then
+  echo "❌ inference features test suite failed"
+  exit 1
+fi
+
 echo ""
-echo "✅ All E2E API tests passed (/v1, /integrations, /api)"
+echo "✅ All E2E API tests passed (/v1, /integrations, /api, inference features)"

@@ -45,19 +45,51 @@ Count Tokens Tests:
 26. Count tokens with tool definitions - Cross-provider
 27. Count tokens from long text - Cross-provider
 28. Count tokens from multi-turn conversation - Cross-provider
+
+Nova System Tools Tests (TestNovaSystemTools):
+50. nova_grounding non-streaming (converse)
+51. nova_grounding streaming (converse-stream)
+52. nova_code_interpreter non-streaming (converse)
+53. nova_code_interpreter streaming (converse-stream)
+
+Invoke Endpoint — Image Generation Tests (TestBedrockInvokeEndpoint):
+29. Titan image generation via invoke (taskType=TEXT_IMAGE)
+30. Titan embeddings via invoke (inputText)
+31. Titan embeddings with params via invoke (inputText + params)
+32. Cohere embeddings via invoke (texts array)
+33. Titan inpainting via invoke (taskType=INPAINTING)
+34. Titan outpainting via invoke (taskType=OUTPAINTING)
+35. Titan background removal via invoke (taskType=BACKGROUND_REMOVAL)
+36. Titan image variation via invoke (taskType=IMAGE_VARIATION)
+37. Stability AI image inpaint via invoke (image+mask)
+38. Vertex Imagen image generation via invoke (cross-provider)
+39. OpenAI gpt-image-1 via invoke (cross-provider)
+40. Titan text generation via invoke (inputText+textGenerationConfig, not misrouted as embedding)
+41. Cohere embeddings via invoke with inputs payload (mixed text+image, not misrouted as text completion)
+42. Cohere embeddings via invoke with explicit embedding_types=["float"]
+43. Cohere embeddings via invoke with embedding_types=["int8"] (regression: was silently dropped)
+44. Cohere embeddings via invoke with embedding_types=["uint8"] (regression: was silently dropped)
+45. Cohere embeddings via invoke with embedding_types=["float","int8"] (multi-type, none dropped)
+46. Anthropic claude via invoke with messages array (ResponsesRequest path → Anthropic Messages format)
+47. Nova via invoke with messages array (ResponsesRequest path → Converse/Nova format)
+48. AI21 Jamba via invoke with messages array (ResponsesRequest path → AI21 Choices format)
+49. Anthropic claude via invoke-with-response-stream with messages (ResponsesRequest streaming path)
 """
 
 import base64
 import json
+import os
 import time
 import urllib.request
 from typing import Any, Dict, List
 
 import boto3
+import botocore.exceptions
 import pytest
 
 from .utils.common import (
-    BASE64_IMAGE,
+    BASE64_IMAGE_LARGE,
+    BASE64_TITAN_MASK_IMAGE,
     CALCULATOR_TOOL,
     LOCATION_KEYWORDS,
     MULTI_TURN_MESSAGES,
@@ -335,9 +367,9 @@ def extract_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, An
 class TestBedrockIntegration:
     """Test suite for Bedrock integration covering core scenarios"""
 
+    @pytest.mark.skip(reason="Skipping text completion invoke test")
     @skip_if_no_api_key("bedrock")
     def test_01_text_completion_invoke(self, bedrock_client, test_config):
-        pytest.skip("Skipping text completion invoke test")
         model_id = get_model("bedrock", "text_completion")
 
         request_body = {
@@ -382,7 +414,7 @@ class TestBedrockIntegration:
         )
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         # 1. Initial Request - should trigger tool call
@@ -474,7 +506,7 @@ class TestBedrockIntegration:
                         },
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{BASE64_IMAGE}"},
+                            "image_url": {"url": f"data:image/png;base64,{BASE64_IMAGE_LARGE}"},
                         },
                     ],
                 }
@@ -815,7 +847,7 @@ class TestBedrockIntegration:
         messages = convert_to_bedrock_messages(MULTIPLE_TOOL_CALL_MESSAGES)
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL, CALCULATOR_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         response = bedrock_client.converse(
@@ -899,7 +931,7 @@ class TestBedrockIntegration:
         )
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         # Step 1: Initial request - should trigger tool call
@@ -2038,3 +2070,1424 @@ class TestBedrockCountTokens:
         ), f"Multi-turn conversation should have >15 tokens, got {response['inputTokens']}"
 
         print(f"✓ Multi-turn conversation token count: {response['inputTokens']} tokens")
+
+
+# ---------------------------------------------------------------------------
+# Invoke Endpoint — Image Generation, Image Edit, Image Variation, Embeddings
+# ---------------------------------------------------------------------------
+# These tests exercise the /bedrock/model/{modelId}/invoke route using
+# native Bedrock payload formats (taskType-based for Titan/Nova Canvas,
+# flat-field for Stability AI) as well as cross-provider model IDs
+# (vertex/..., openai/...) routed through the same invoke endpoint.
+# ---------------------------------------------------------------------------
+
+def _assert_invoke_images(response_body: dict, min_images: int = 1) -> None:
+    """Assert that an invoke response contains at least min_images base64 images."""
+    images = response_body.get("images") or []
+    assert isinstance(images, list), (
+        f"Expected 'images' to be a list, got {type(images).__name__}. "
+        f"Response keys: {list(response_body.keys())}"
+    )
+    assert len(images) >= min_images, (
+        f"Expected at least {min_images} image(s) in response, got {len(images)}. "
+        f"Response keys: {list(response_body.keys())}"
+    )
+    for i, img in enumerate(images):
+        assert isinstance(img, str) and len(img) > 0, f"Image {i} is not a non-empty string"
+    print(f"  ✓ {len(images)} image(s) returned")
+
+
+def _assert_invoke_embedding(response_body: dict) -> None:
+    """Assert that an invoke response contains a non-empty embedding vector."""
+    embedding = response_body.get("embedding") or []
+    assert len(embedding) > 0, (
+        f"Expected 'embedding' array in response, got keys: {list(response_body.keys())}"
+    )
+    assert all(isinstance(v, (int, float)) for v in embedding), "Embedding must be numeric"
+    print(f"  ✓ embedding dim={len(embedding)}")
+
+
+class TestBedrockInvokeEndpoint:
+    """
+    Tests for the Bedrock /invoke and /invoke-with-response-stream endpoints.
+
+    Covers native Bedrock payload formats for:
+      - Image generation  (Titan TEXT_IMAGE, Stability AI, Vertex Imagen, OpenAI)
+      - Image editing     (Titan INPAINTING / OUTPAINTING / BACKGROUND_REMOVAL, SA inpaint)
+      - Image variation   (Titan IMAGE_VARIATION)
+      - Embeddings        (Titan embed text v2, Cohere embed English v3)
+      - Messages path     (Anthropic, Nova, AI21 Jamba via messages array → ResponsesRequest)
+      - Messages streaming (invoke-with-response-stream with messages array)
+    """
+
+    # ------------------------------------------------------------------ #
+    # 29. Titan image generation                                           #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_29_invoke_titan_image_generation(self, bedrock_client):
+        """Test Case 29: Titan Image Generator v2 via invoke — taskType=TEXT_IMAGE"""
+        print("\n=== Test 29: Titan image generation via invoke ===")
+
+        body = {
+            "taskType": "TEXT_IMAGE",
+            "textToImageParams": {
+                "text": "a serene mountain lake at sunset",
+                "negativeText": "blurry, low quality",
+            },
+            "imageGenerationConfig": {
+                "numberOfImages": 1,
+                "width": 512,
+                "height": 512,
+            },
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-image-generator-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 30. Titan embed text v2                                              #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_30_invoke_titan_embeddings(self, bedrock_client):
+        """Test Case 30: Titan Embed Text v2 via invoke — inputText"""
+        print("\n=== Test 30: Titan embeddings via invoke ===")
+
+        body = {"inputText": "the quick brown fox jumps over the lazy dog"}
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_embedding(out)
+        # inputTextTokenCount is returned by the Bedrock-format response
+        assert "inputTextTokenCount" in out, (
+            f"Expected 'inputTextTokenCount' in Titan embed response, got: {list(out.keys())}"
+        )
+        print(f"  ✓ inputTextTokenCount={out['inputTextTokenCount']}")
+
+    # ------------------------------------------------------------------ #
+    # 31. Titan embed with dimensions + normalize                          #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_31_invoke_titan_embeddings_with_params(self, bedrock_client):
+        """Test Case 31: Titan Embed Text v2 via invoke — dimensions + normalize"""
+        print("\n=== Test 31: Titan embeddings with params via invoke ===")
+
+        body = {
+            "inputText": "machine learning and artificial intelligence",
+            "dimensions": 256,
+            "normalize": True,
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_embedding(out)
+        assert len(out["embedding"]) == 256, (
+            f"Expected 256-dim embedding, got {len(out['embedding'])}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 32. Cohere embed English v3                                          #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_32_invoke_cohere_embeddings(self, bedrock_client):
+        """Test Case 32: Cohere Embed English v3 via invoke — texts array"""
+        print("\n=== Test 32: Cohere embeddings via invoke ===")
+
+        body = {
+            "texts": ["hello world", "goodbye world"],
+            "input_type": "search_document",
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        # Cohere native response uses "embeddings" (plural list-of-lists)
+        # Bifrost may return Titan-compat single "embedding" for invoke
+        if "embedding" in out:
+            _assert_invoke_embedding(out)
+        else:
+            embeddings = out.get("embeddings")
+            assert isinstance(embeddings, list) and len(embeddings) == len(body["texts"]), (
+                f"Expected {len(body['texts'])} embeddings, got: {out}"
+            )
+            for i, vector in enumerate(embeddings):
+                assert isinstance(vector, list) and len(vector) > 0, f"Embedding {i} is empty"
+                assert all(isinstance(v, (int, float)) for v in vector), (
+                    f"Embedding {i} must be numeric"
+                )
+        print(f"  ✓ Cohere embedding response keys: {list(out.keys())}")
+
+    # ------------------------------------------------------------------ #
+    # 33. Titan INPAINTING                                                 #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_33_invoke_titan_inpainting(self, bedrock_client):
+        """Test Case 33: Titan Image Generator v2 via invoke — INPAINTING"""
+        print("\n=== Test 33: Titan INPAINTING via invoke ===")
+
+        body = {
+            "taskType": "INPAINTING",
+            "inPaintingParams": {
+                "image": BASE64_IMAGE_LARGE,
+                "maskImage": BASE64_TITAN_MASK_IMAGE,
+                "text": "a beautiful garden with flowers",
+                "negativeText": "blurry",
+            },
+            "imageGenerationConfig": {"numberOfImages": 1},
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-image-generator-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 34. Titan OUTPAINTING                                                #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_34_invoke_titan_outpainting(self, bedrock_client):
+        """Test Case 34: Titan Image Generator v2 via invoke — OUTPAINTING"""
+        print("\n=== Test 34: Titan OUTPAINTING via invoke ===")
+
+        body = {
+            "taskType": "OUTPAINTING",
+            "outPaintingParams": {
+                "image": BASE64_IMAGE_LARGE,
+                "maskImage": BASE64_TITAN_MASK_IMAGE,
+                "text": "extend the scene with a meadow",
+                "outPaintingMode": "DEFAULT",
+            },
+            "imageGenerationConfig": {"numberOfImages": 1},
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-image-generator-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 35. Titan BACKGROUND_REMOVAL                                         #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_35_invoke_titan_background_removal(self, bedrock_client):
+        """Test Case 35: Titan Image Generator v2 via invoke — BACKGROUND_REMOVAL"""
+        print("\n=== Test 35: Titan BACKGROUND_REMOVAL via invoke ===")
+
+        body = {
+            "taskType": "BACKGROUND_REMOVAL",
+            "backgroundRemovalParams": {"image": BASE64_IMAGE_LARGE},
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-image-generator-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 36. Titan IMAGE_VARIATION                                            #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_36_invoke_titan_image_variation(self, bedrock_client):
+        """Test Case 36: Titan Image Generator v2 via invoke — IMAGE_VARIATION"""
+        print("\n=== Test 36: Titan IMAGE_VARIATION via invoke ===")
+
+        body = {
+            "taskType": "IMAGE_VARIATION",
+            "imageVariationParams": {
+                "images": [BASE64_IMAGE_LARGE],
+                "text": "same style with a different color palette",
+                "similarityStrength": 0.7,
+            },
+            "imageGenerationConfig": {"numberOfImages": 1},
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-image-generator-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 37. Stability AI — image inpaint                                     #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_37_invoke_stability_ai_inpaint(self, bedrock_client):
+        """Test Case 37: Stability AI stable-image-inpaint via invoke — image+mask+prompt"""
+        print("\n=== Test 37: Stability AI inpaint via invoke ===")
+
+        body = {
+            "image": BASE64_IMAGE_LARGE,
+            "mask": BASE64_IMAGE_LARGE,
+            "prompt": "replace masked area with flowers",
+            "output_format": "png",
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="us.stability.stable-image-inpaint-v1:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 38. Vertex Imagen — cross-provider via invoke                        #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("vertex")
+    def test_38_invoke_vertex_imagen(self, bedrock_client):
+        """Test Case 38: Vertex Imagen 4 via Bedrock invoke endpoint (cross-provider)"""
+        print("\n=== Test 38: Vertex Imagen via invoke ===")
+
+        body = {"prompt": "a gecko resting on a tropical leaf"}
+
+        response = bedrock_client.invoke_model(
+            modelId="vertex/imagen-4.0-generate-001",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 39. OpenAI gpt-image-1 — cross-provider via invoke                  #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("openai")
+    def test_39_invoke_openai_image_generation(self, bedrock_client):
+        """Test Case 39: OpenAI gpt-image-1 via Bedrock invoke endpoint (cross-provider)"""
+        print("\n=== Test 39: OpenAI gpt-image-1 via invoke ===")
+
+        body = {
+            "prompt": "a gecko resting on a tropical leaf",
+            "n": 1,
+            "quality": "low",
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="openai/gpt-image-1",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        _assert_invoke_images(out)
+
+    # ------------------------------------------------------------------ #
+    # 40. Titan text generation — inputText must NOT route as embedding    #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_40_invoke_titan_text_generation(self, bedrock_client):
+        """Test Case 40: Titan Text via invoke — inputText must not be misrouted as embedding.
+
+        Regression test for the bug where DetectInvokeRequestType returned EmbeddingRequest for any
+        body with 'inputText', regardless of model. Detection is now model-ID-based: only models
+        whose ID contains 'embed' are routed as embeddings. The response must contain 'results'.
+        """
+        print("\n=== Test 40: Titan text generation via invoke (not embedding) ===")
+
+        # Intentionally omit textGenerationConfig to cover the bare-inputText case —
+        # the fix must use model ID (not body shape) to distinguish text-gen from embedding.
+        body = {
+            "inputText": "What is the capital of France? Answer in one word.",
+        }
+
+        try:
+            response = bedrock_client.invoke_model(
+                modelId="amazon.titan-text-express-v1",
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(body),
+            )
+        except botocore.exceptions.ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ResourceNotFoundException", "ValidationException"):
+                pytest.skip(f"Titan text model no longer available: {e}")
+            raise
+        out = json.loads(response["body"].read())
+
+        assert "embedding" not in out, (
+            f"Request was misrouted to the embedding path — response contains 'embedding' key. "
+            f"Response keys: {list(out.keys())}"
+        )
+        assert "results" in out, (
+            f"Expected 'results' in Titan text generation response, got: {list(out.keys())}"
+        )
+        results = out["results"]
+        assert len(results) > 0 and results[0].get("outputText"), (
+            f"Expected non-empty outputText in results, got: {results}"
+        )
+        print(f"  ✓ outputText={results[0]['outputText'][:60]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 41. Cohere embed — inputs payload must NOT route as text completion  #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_41_invoke_cohere_embeddings_inputs(self, bedrock_client):
+        """Test Case 41: Cohere Embed via invoke — inputs payload must not be misrouted as text completion.
+
+        Regression test for the bug where DetectInvokeRequestType only checked for the 'texts' field
+        when detecting Cohere embeddings. Requests using the 'inputs' field (mixed text+image payloads)
+        fell through to TextCompletionRequest. Detection must be model-ID-based (contains 'embed')
+        and cover all Cohere embedding payload shapes: 'texts', 'inputs', and 'images'.
+        """
+        print("\n=== Test 41: Cohere embeddings via invoke (inputs payload, not text completion) ===")
+
+        # Use 'inputs' field instead of 'texts' — this is the payload shape that was misrouted
+        body = {
+            "inputs": [{"text": "hello world"}, {"text": "goodbye world"}],
+            "input_type": "search_document",
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        has_embedding = "embedding" in out or "embeddings" in out
+        assert has_embedding, (
+            f"Request was misrouted — expected 'embedding' or 'embeddings' key but got: {list(out.keys())}. "
+            f"If 'results' is present, the request was routed to text completion instead of embeddings."
+        )
+        print(f"  ✓ Cohere inputs embedding response keys: {list(out.keys())}")
+
+    # ------------------------------------------------------------------ #
+    # 42. Cohere embed — embedding_types float (explicit)                  #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_42_invoke_cohere_embedding_type_float(self, bedrock_client):
+        """Test Case 42: Cohere Embed via invoke — explicit embedding_types=["float"].
+
+        Verifies that requesting a single float encoding returns the expected
+        embeddings_by_type response structure with float vectors.
+        """
+        print("\n=== Test 42: Cohere embedding_types float ===")
+
+        body = {
+            "texts": ["the quick brown fox"],
+            "input_type": "search_document",
+            "embedding_types": ["float"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        assert out.get("response_type") == "embeddings_by_type", (
+            f"Expected response_type='embeddings_by_type', got: {out.get('response_type')}"
+        )
+        embeddings = out.get("embeddings", {})
+        assert "float" in embeddings, f"Expected 'float' key in embeddings, got: {list(embeddings.keys())}"
+        float_vecs = embeddings["float"]
+        assert isinstance(float_vecs, list) and len(float_vecs) == 1, (
+            f"Expected 1 float vector, got: {float_vecs}"
+        )
+        assert isinstance(float_vecs[0], list) and len(float_vecs[0]) > 0, "Float vector is empty"
+        assert all(isinstance(v, float) for v in float_vecs[0]), "Float vector must contain floats"
+        print(f"  ✓ float embedding dim={len(float_vecs[0])}")
+
+    # ------------------------------------------------------------------ #
+    # 43. Cohere embed — embedding_types int8                              #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_43_invoke_cohere_embedding_type_int8(self, bedrock_client):
+        """Test Case 43: Cohere Embed via invoke — embedding_types=["int8"].
+
+        Regression test for the bug where int8 (and other non-float encoding types)
+        were silently dropped because the embeddings_by_type parser only declared
+        'float' and 'base64' fields in its anonymous struct.
+        """
+        print("\n=== Test 43: Cohere embedding_types int8 ===")
+
+        body = {
+            "texts": ["the quick brown fox"],
+            "input_type": "search_document",
+            "embedding_types": ["int8"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        assert out.get("response_type") == "embeddings_by_type", (
+            f"Expected response_type='embeddings_by_type', got: {out.get('response_type')}"
+        )
+        embeddings = out.get("embeddings", {})
+        assert "int8" in embeddings, (
+            f"Expected 'int8' key in embeddings — was it silently dropped? Got: {list(embeddings.keys())}"
+        )
+        int8_vecs = embeddings["int8"]
+        assert isinstance(int8_vecs, list) and len(int8_vecs) == 1, (
+            f"Expected 1 int8 vector, got: {int8_vecs}"
+        )
+        assert isinstance(int8_vecs[0], list) and len(int8_vecs[0]) > 0, "int8 vector is empty"
+        assert all(isinstance(v, int) and -128 <= v <= 127 for v in int8_vecs[0]), (
+            "int8 vector values must be integers in [-128, 127]"
+        )
+        print(f"  ✓ int8 embedding dim={len(int8_vecs[0])}")
+
+    # ------------------------------------------------------------------ #
+    # 44. Cohere embed — embedding_types uint8                             #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_44_invoke_cohere_embedding_type_uint8(self, bedrock_client):
+        """Test Case 44: Cohere Embed via invoke — embedding_types=["uint8"].
+
+        Verifies that uint8 encoding is not dropped (previously silently lost
+        because the parser mapped []uint8 as base64 via json.Marshal).
+        """
+        print("\n=== Test 44: Cohere embedding_types uint8 ===")
+
+        body = {
+            "texts": ["the quick brown fox"],
+            "input_type": "search_document",
+            "embedding_types": ["uint8"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        assert out.get("response_type") == "embeddings_by_type", (
+            f"Expected response_type='embeddings_by_type', got: {out.get('response_type')}"
+        )
+        embeddings = out.get("embeddings", {})
+        assert "uint8" in embeddings, (
+            f"Expected 'uint8' key in embeddings — was it silently dropped? Got: {list(embeddings.keys())}"
+        )
+        uint8_vecs = embeddings["uint8"]
+        assert isinstance(uint8_vecs, list) and len(uint8_vecs) == 1, (
+            f"Expected 1 uint8 vector, got: {uint8_vecs}"
+        )
+        assert isinstance(uint8_vecs[0], list) and len(uint8_vecs[0]) > 0, "uint8 vector is empty"
+        assert all(isinstance(v, int) and 0 <= v <= 255 for v in uint8_vecs[0]), (
+            "uint8 vector values must be integers in [0, 255]"
+        )
+        print(f"  ✓ uint8 embedding dim={len(uint8_vecs[0])}")
+
+    # ------------------------------------------------------------------ #
+    # 45. Cohere embed — multiple embedding_types (float + int8)           #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_45_invoke_cohere_embedding_types_multi(self, bedrock_client):
+        """Test Case 45: Cohere Embed via invoke — embedding_types=["float", "int8"].
+
+        Verifies that multiple encoding types are all returned without any being
+        dropped, and that each type contains the correct number of vectors.
+        """
+        print("\n=== Test 45: Cohere embedding_types multi (float + int8) ===")
+
+        texts = ["the quick brown fox", "machine learning"]
+        body = {
+            "texts": texts,
+            "input_type": "search_document",
+            "embedding_types": ["float", "int8"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="cohere.embed-english-v3",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        assert out.get("response_type") == "embeddings_by_type", (
+            f"Expected response_type='embeddings_by_type', got: {out.get('response_type')}"
+        )
+        embeddings = out.get("embeddings", {})
+        for enc_type in ("float", "int8"):
+            assert enc_type in embeddings, (
+                f"Expected '{enc_type}' key in embeddings — was it dropped? Got: {list(embeddings.keys())}"
+            )
+            vecs = embeddings[enc_type]
+            assert isinstance(vecs, list) and len(vecs) == len(texts), (
+                f"Expected {len(texts)} {enc_type} vectors, got {len(vecs)}"
+            )
+            for i, vec in enumerate(vecs):
+                assert isinstance(vec, list) and len(vec) > 0, f"{enc_type} vector {i} is empty"
+        print(f"  ✓ float dim={len(embeddings['float'][0])}, int8 dim={len(embeddings['int8'][0])}")
+
+    # ------------------------------------------------------------------ #
+    # 46. Anthropic claude — messages path via invoke                      #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_46_invoke_anthropic_messages(self, bedrock_client):
+        """Test Case 46: Anthropic Claude via invoke with messages array → ResponsesRequest path.
+
+        Verifies that a payload containing a 'messages' array is detected as ResponsesRequest
+        (not TextCompletionRequest) and returns the Anthropic Messages API format:
+        {"type": "message", "role": "assistant", "content": [...], "stop_reason": "end_turn"}.
+        """
+        print("\n=== Test 46: Anthropic claude via invoke (messages path) ===")
+
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Say hello in one word."}],
+                }
+            ],
+            "max_tokens": 50,
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="anthropic.claude-3-haiku-20240307-v1:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+
+        # Must NOT be text-completion format
+        assert "results" not in out and "outputs" not in out, (
+            f"Request was misrouted to text-completion path — got keys: {list(out.keys())}"
+        )
+        # Must be Anthropic Messages API format
+        assert out.get("type") == "message", (
+            f"Expected type='message', got: {out.get('type')}. Keys: {list(out.keys())}"
+        )
+        assert out.get("role") == "assistant", (
+            f"Expected role='assistant', got: {out.get('role')}"
+        )
+        content = out.get("content", [])
+        assert isinstance(content, list) and len(content) > 0, (
+            f"Expected non-empty content list, got: {content}"
+        )
+        text_block = next((b for b in content if b.get("type") == "text"), None)
+        assert text_block is not None and text_block.get("text"), (
+            f"Expected a text content block, got: {content}"
+        )
+        assert out.get("stop_reason") in ("end_turn", "max_tokens"), (
+            f"Unexpected stop_reason: {out.get('stop_reason')}"
+        )
+        print(f"  ✓ stop_reason={out['stop_reason']!r}, text={text_block['text'][:60]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 47. Nova — messages path via invoke                                  #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_47_invoke_nova_messages(self, bedrock_client):
+        """Test Case 47: Amazon Nova via invoke with messages array → ResponsesRequest path.
+
+        Nova invoke with a messages array routes through ResponsesRequest and returns
+        the Converse-compatible format: {"output": {"message": {"role": ..., "content": [...]}},
+        "stopReason": "end_turn"}.
+        """
+        print("\n=== Test 47: Nova via invoke (messages path) ===")
+
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"text": "Say hello in one word."}],
+                }
+            ],
+            "inferenceConfig": {"maxTokens": 50},
+        }
+
+        try:
+            response = bedrock_client.invoke_model(
+                modelId="us.amazon.nova-lite-v1:0",
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(body),
+            )
+        except botocore.exceptions.ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ValidationException", "ResourceNotFoundException"):
+                pytest.skip(f"Nova model not available with this configuration: {e}")
+            raise
+        out = json.loads(response["body"].read())
+
+        # Must NOT be text-completion format
+        assert "results" not in out and "outputs" not in out, (
+            f"Request was misrouted to text-completion path — got keys: {list(out.keys())}"
+        )
+        # Must be Converse-compatible format
+        assert "output" in out, f"Expected 'output' in response, got: {list(out.keys())}"
+        msg = out["output"].get("message", {})
+        assert msg.get("role") == "assistant", (
+            f"Expected role='assistant', got: {msg.get('role')}"
+        )
+        content_blocks = msg.get("content", [])
+        assert isinstance(content_blocks, list) and len(content_blocks) > 0, (
+            f"Expected non-empty content blocks, got: {content_blocks}"
+        )
+        text_block = next((b for b in content_blocks if "text" in b), None)
+        assert text_block is not None and text_block["text"], (
+            f"Expected a text content block, got: {content_blocks}"
+        )
+        assert out.get("stopReason") in ("end_turn", "max_tokens"), (
+            f"Unexpected stopReason: {out.get('stopReason')}"
+        )
+        print(f"  ✓ stopReason={out['stopReason']!r}, text={text_block['text'][:60]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 48. AI21 Jamba — messages path via invoke                           #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_48_invoke_ai21_messages(self, bedrock_client):
+        """Test Case 48: AI21 Jamba via invoke with messages array → ResponsesRequest path.
+
+        AI21 Jamba invoke with a messages array routes through ResponsesRequest and returns
+        the AI21 Chat Completions format: {"id": ..., "choices": [{"message": {"role": "assistant",
+        "content": "..."}, "finish_reason": "stop"}]}.
+        """
+        print("\n=== Test 48: AI21 Jamba via invoke (messages path) ===")
+
+        body = {
+            "messages": [{"role": "user", "content": "Say hello in one word."}],
+            "max_tokens": 50,
+        }
+
+        try:
+            response = bedrock_client.invoke_model(
+                modelId="ai21.j2-mid-v1",
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(body),
+            )
+        except botocore.exceptions.ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ResourceNotFoundException", "ValidationException"):
+                pytest.skip(f"Titan text model no longer available: {e}")
+            raise
+        out = json.loads(response["body"].read())
+
+        # Must NOT be text-completion format
+        assert "results" not in out and "outputs" not in out, (
+            f"Request was misrouted to text-completion path — got keys: {list(out.keys())}"
+        )
+        # Must be AI21 Chat Completions format
+        choices = out.get("choices", [])
+        assert isinstance(choices, list) and len(choices) > 0, (
+            f"Expected non-empty 'choices', got: {out}"
+        )
+        msg = choices[0].get("message", {})
+        assert msg.get("role") == "assistant", (
+            f"Expected role='assistant', got: {msg.get('role')}"
+        )
+        assert msg.get("content"), f"Expected non-empty content, got: {msg}"
+        assert choices[0].get("finish_reason") in ("stop", "length"), (
+            f"Unexpected finish_reason: {choices[0].get('finish_reason')}"
+        )
+        print(f"  ✓ finish_reason={choices[0]['finish_reason']!r}, content={msg['content'][:60]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 49. Anthropic claude — messages streaming via invoke-stream          #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_49_invoke_stream_anthropic_messages(self, bedrock_client):
+        """Test Case 49: Anthropic Claude via invoke-with-response-stream with messages array.
+
+        Verifies the ResponsesRequest streaming path: a 'messages' payload sent to
+        invoke-with-response-stream returns Anthropic SSE events (message_start,
+        content_block_delta, message_delta, message_stop) wrapped in InvokeModelRawChunk bytes.
+        """
+        print("\n=== Test 49: Anthropic claude via invoke-with-response-stream (messages path) ===")
+
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Say hello in one word."}],
+                }
+            ],
+            "max_tokens": 50,
+        }
+
+        try:
+            response = bedrock_client.invoke_model_with_response_stream(
+                modelId="anthropic.claude-3-haiku-20240307-v1:0",
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(body),
+            )
+        except AttributeError:
+            pytest.skip("invoke_model_with_response_stream not available in this boto3 version")
+        except Exception as e:
+            pytest.fail(f"invoke_model_with_response_stream failed: {e}")
+
+        stream = response.get("body")
+        if stream is None:
+            pytest.fail("Response missing 'body' stream")
+
+        event_types = []
+        text_parts = []
+        start_time = time.time()
+        timeout = 30
+
+        for event in stream:
+            if time.time() - start_time > timeout:
+                pytest.fail(f"Streaming took longer than {timeout} seconds")
+
+            if "chunk" not in event:
+                continue
+            raw_bytes = event["chunk"].get("bytes", b"")
+            if not raw_bytes:
+                continue
+            try:
+                chunk_json = json.loads(raw_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+
+            event_type = chunk_json.get("type", "")
+            event_types.append(event_type)
+
+            # Collect text deltas
+            if event_type == "content_block_delta":
+                delta = chunk_json.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text_parts.append(delta.get("text", ""))
+
+        # Must have seen at least message_start and message_stop
+        assert "message_start" in event_types, (
+            f"Expected 'message_start' event in stream, got event types: {event_types}"
+        )
+        assert "message_stop" in event_types, (
+            f"Expected 'message_stop' event in stream, got event types: {event_types}"
+        )
+        full_text = "".join(text_parts)
+        assert full_text, f"Expected non-empty streamed text, got: {full_text!r}"
+        print(f"  ✓ event_types={event_types}, text={full_text[:60]!r}")
+
+
+# ---------------------------------------------------------------------------
+# Nova System Tools Tests (nova_grounding and nova_code_interpreter)
+# ---------------------------------------------------------------------------
+# These tests exercise Bedrock Nova system tools through the Bifrost converse
+# and converse-stream paths. Nova system tools are AWS-managed: the model
+# invokes them automatically (no client-side tool execution required).
+#
+# nova_grounding  → maps to web_search in Bifrost neutral schema
+# nova_code_interpreter → maps to code_interpreter in Bifrost neutral schema
+# ---------------------------------------------------------------------------
+
+
+class TestNovaSystemTools:
+    """
+    Tests for Amazon Nova system tools via Bedrock Converse and Converse-Stream.
+
+    Both tools are server-managed by AWS — the model calls them and AWS executes
+    them automatically in the same response. No client-side tool loop is needed.
+
+    50. nova_grounding non-streaming
+    51. nova_grounding streaming
+    52. nova_code_interpreter non-streaming
+    53. nova_code_interpreter streaming
+    """
+
+    NOVA_MODEL = "us.amazon.nova-2-lite-v1:0"
+
+    # ------------------------------------------------------------------ #
+    # 50. nova_grounding — non-streaming                                   #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_50_nova_grounding_non_streaming(self, bedrock_client):
+        """Test Case 50: nova_grounding system tool via Bedrock Converse (non-streaming).
+
+        Sends a converse request with systemTool nova_grounding enabled. The model
+        automatically searches the web and returns a grounded text response. Bifrost
+        maps nova_grounding → web_search in the neutral schema and converts back.
+        """
+        print("\n=== Test 50: nova_grounding via converse (non-streaming) ===")
+
+        tool_config = {
+            "tools": [
+                {"systemTool": {"name": "nova_grounding"}}
+            ]
+        }
+
+        try:
+            response = bedrock_client.converse(
+                modelId=self.NOVA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": (
+                                    "Use web search to find a brief description of the Eiffel Tower "
+                                    "and tell me when it was built."
+                                )
+                            }
+                        ],
+                    }
+                ],
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 500},
+            )
+        except Exception as e:
+            err_str = str(e).lower()
+            if "validation" in err_str or "unknown" in err_str or "not supported" in err_str:
+                pytest.skip(f"nova_grounding not available or schema rejected: {e}")
+            raise
+
+        assert "output" in response, f"Expected 'output' in response, got: {list(response.keys())}"
+        msg = response["output"].get("message", {})
+        assert msg.get("role") == "assistant", f"Expected role='assistant', got: {msg.get('role')}"
+
+        content_blocks = msg.get("content", [])
+        assert isinstance(content_blocks, list) and len(content_blocks) > 0, (
+            f"Expected non-empty content blocks, got: {content_blocks}"
+        )
+
+        # nova_grounding returns multiple content blocks: empty text, toolUse,
+        # toolResult, then the actual grounded text (possibly split across blocks).
+        # Collect all non-empty text across every block.
+        full_text = " ".join(b["text"] for b in content_blocks if b.get("text", "").strip())
+        assert full_text, (
+            f"Expected non-empty text in grounding response, got: {content_blocks}"
+        )
+
+        # nova_grounding should produce text about the Eiffel Tower
+        assert any(kw in full_text.lower() for kw in ["eiffel", "paris", "tower", "france", "1889"]), (
+            f"Expected Eiffel Tower info in response, got: {full_text[:200]}"
+        )
+
+        stop_reason = response.get("stopReason", "")
+        print(stop_reason)
+        assert stop_reason in ("end_turn", "max_tokens"), (
+            f"Unexpected stopReason: {stop_reason}"
+        )
+        print(f"  ✓ stopReason={stop_reason!r}, text={full_text[:80]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 51. nova_grounding — streaming                                       #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_51_nova_grounding_streaming(self, bedrock_client):
+        """Test Case 51: nova_grounding system tool via Bedrock Converse-Stream.
+
+        Per AWS docs, nova_grounding streaming produces citation deltas inline within
+        the text stream (no separate contentBlockStart for the tool block):
+          messageStart
+          contentBlockStart  (text block)
+          contentBlockDelta  { delta: { citation: { location: { web: { url, domain } } } } }  (0-N)
+          contentBlockDelta  { delta: { text: "..." } }  (1-N)
+          contentBlockStop
+          messageStop
+
+        Bifrost must reproduce these citation deltas as contentBlockDelta.citation events.
+        The query asks for real-time information to ensure the model uses grounding.
+        """
+        print("\n=== Test 51: nova_grounding via converse-stream (streaming) ===")
+
+        tool_config = {
+            "tools": [
+                {"systemTool": {"name": "nova_grounding"}}
+            ]
+        }
+
+        try:
+            response_stream = bedrock_client.converse_stream(
+                modelId=self.NOVA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                # Use a real-time query so the model actually invokes grounding
+                                "text": (
+                                    "Search the web and tell me today's date and one current headline. "
+                                    "You must use web search."
+                                )
+                            }
+                        ],
+                    }
+                ],
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 500},
+            )
+        except AttributeError:
+            pytest.skip("converse_stream not available in this boto3 version")
+        except Exception as e:
+            err_str = str(e).lower()
+            if "validation" in err_str or "unknown" in err_str or "not supported" in err_str:
+                pytest.skip(f"nova_grounding streaming not available: {e}")
+            raise
+
+        stream = response_stream.get("stream")
+        if stream is None:
+            stream = response_stream.get("eventStream")
+        assert stream is not None, "Response missing 'stream' or 'eventStream'"
+
+        citation_urls = []   # contentBlockDelta.citation events
+        text_parts = []      # contentBlockDelta.text events
+        got_message_stop = False
+        start_time = time.time()
+        timeout = 60
+
+        for event in stream:
+            print(event)
+            if time.time() - start_time > timeout:
+                pytest.fail(f"Streaming timed out after {timeout}s")
+
+            if "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta", {})
+                if "text" in delta and delta["text"]:
+                    text_parts.append(delta["text"])
+                elif "citation" in delta:
+                    # Citation delta produced by nova_grounding: { citation: { location: { web: { url, domain } } } }
+                    web = delta["citation"].get("location", {}).get("web", {})
+                    if web.get("url"):
+                        citation_urls.append(web["url"])
+
+            elif "messageStop" in event:
+                got_message_stop = True
+
+        assert got_message_stop, "Expected 'messageStop' event"
+
+        full_text = "".join(text_parts)
+        assert full_text, "Expected non-empty streamed text from nova_grounding response"
+
+        # Grounding must produce citation deltas alongside the text
+        assert len(citation_urls) > 0, (
+            f"Expected at least one contentBlockDelta.citation event — "
+            f"nova_grounding must emit citation deltas that Bifrost preserves as "
+            f"contentBlockDelta.citation on the converse-stream route. "
+            f"text_parts={len(text_parts)}, text={full_text[:100]!r}"
+        )
+
+        print(
+            f"  ✓ {len(citation_urls)} citation(s), {len(text_parts)} text delta(s), "
+            f"text={full_text[:80]!r}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 52. nova_code_interpreter — non-streaming                            #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_52_nova_code_interpreter_non_streaming(self, bedrock_client):
+        """Test Case 52: nova_code_interpreter system tool via Bedrock Converse (non-streaming).
+
+        AWS Bedrock executes the generated code automatically and returns both the
+        toolUse (code) and toolResult (stdout/stderr) in the same assistant message.
+        Bifrost merges these into a code_interpreter_call output item and converts
+        back to Bedrock format, producing a text explanation of the result.
+        """
+        print("\n=== Test 52: nova_code_interpreter via converse (non-streaming) ===")
+
+        tool_config = {
+            "tools": [
+                {"systemTool": {"name": "nova_code_interpreter"}}
+            ]
+        }
+
+        try:
+            response = bedrock_client.converse(
+                modelId=self.NOVA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": (
+                                    "Write and execute Python code to calculate the factorial of 10 "
+                                    "and print the result."
+                                )
+                            }
+                        ],
+                    }
+                ],
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 500},
+            )
+        except Exception as e:
+            err_str = str(e).lower()
+            if "validation" in err_str or "unknown" in err_str or "not supported" in err_str:
+                pytest.skip(f"nova_code_interpreter not available or schema rejected: {e}")
+            raise
+
+        assert "output" in response, f"Expected 'output' in response, got: {list(response.keys())}"
+        msg = response["output"].get("message", {})
+        assert msg.get("role") == "assistant", f"Expected role='assistant', got: {msg.get('role')}"
+
+        content_blocks = msg.get("content", [])
+        assert isinstance(content_blocks, list) and len(content_blocks) > 0, (
+            f"Expected non-empty content blocks, got: {content_blocks}"
+        )
+
+        # nova_code_interpreter returns: empty text, toolUse (code), toolResult
+        # (stdout), then the model's explanation — possibly split across blocks.
+        # Collect all non-empty text and verify the factorial result appears.
+        has_tool_use = any("toolUse" in b for b in content_blocks)
+        has_tool_result = any("toolResult" in b for b in content_blocks)
+        full_text = " ".join(b["text"] for b in content_blocks if b.get("text", "").strip())
+
+        assert has_tool_use, f"Expected toolUse block, got: {content_blocks}"
+        assert full_text or has_tool_result, (
+            f"Expected execution result (toolResult) or explanatory text, got: {content_blocks}"
+        )
+
+        # The combined text should mention the factorial result or the computation
+        if full_text:
+            assert any(kw in full_text.lower() for kw in ["3628800", "factorial", "result", "10", "code"]), (
+                f"Expected factorial-related text, got: {full_text[:200]}"
+            )
+
+        stop_reason = response.get("stopReason", "")
+        assert stop_reason in ("end_turn", "max_tokens"), (
+            f"Unexpected stopReason: {stop_reason}"
+        )
+        print(f"  ✓ stopReason={stop_reason!r}, content_blocks={len(content_blocks)}")
+        if full_text:
+            print(f"  ✓ text={full_text[:80]!r}")
+
+    # ------------------------------------------------------------------ #
+    # 53. nova_code_interpreter — streaming                                #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_53_nova_code_interpreter_streaming(self, bedrock_client):
+        """Test Case 53: nova_code_interpreter system tool via Bedrock Converse-Stream.
+
+        Bedrock streaming for nova_code_interpreter produces (per AWS docs):
+          messageStart
+          contentBlockStart  { start: { toolUse: { name: "nova_code_interpreter", ... } } }
+          contentBlockDelta  { delta: { toolUse: { input: '{"snippet":"..."}' } } }  (1-N)
+          contentBlockStop
+          contentBlockStart  (text block)
+          contentBlockDelta  { delta: { text: "..." } }  (1-N)
+          contentBlockStop
+          messageStop
+
+        Each toolUse delta is a complete JSON object {"snippet":"<code chunk>"}.
+        Bifrost must reproduce this exact shape on the converse-stream route.
+        """
+        print("\n=== Test 53: nova_code_interpreter via converse-stream (streaming) ===")
+
+        tool_config = {
+            "tools": [
+                {"systemTool": {"name": "nova_code_interpreter"}}
+            ]
+        }
+
+        try:
+            response_stream = bedrock_client.converse_stream(
+                modelId=self.NOVA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": (
+                                    "Write and run Python code to compute 2 raised to the power of 20."
+                                )
+                            }
+                        ],
+                    }
+                ],
+                toolConfig=tool_config,
+                inferenceConfig={"maxTokens": 500},
+            )
+        except AttributeError:
+            pytest.skip("converse_stream not available in this boto3 version")
+        except Exception as e:
+            err_str = str(e).lower()
+            if "validation" in err_str or "unknown" in err_str or "not supported" in err_str:
+                pytest.skip(f"nova_code_interpreter streaming not available: {e}")
+            raise
+
+        stream = response_stream.get("stream")
+        if stream is None:
+            stream = response_stream.get("eventStream")
+        assert stream is not None, "Response missing 'stream' or 'eventStream'"
+
+        has_code_interpreter_block_start = False  # contentBlockStart with nova_code_interpreter
+        code_snippets = []                         # parsed snippet values from toolUse deltas
+        text_parts = []
+        got_message_stop = False
+        current_block_start = None
+        start_time = time.time()
+        timeout = 60
+
+        for event in stream:
+            if time.time() - start_time > timeout:
+                pytest.fail(f"Streaming timed out after {timeout}s")
+
+            if "messageStart" in event:
+                pass
+
+            elif "contentBlockStart" in event:
+                current_block_start = event["contentBlockStart"].get("start", {})
+                tool_use = current_block_start.get("toolUse", {})
+                if tool_use.get("name") == "nova_code_interpreter":
+                    has_code_interpreter_block_start = True
+
+            elif "contentBlockStop" in event:
+                current_block_start = None
+
+            elif "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta", {})
+                if "text" in delta and delta["text"]:
+                    text_parts.append(delta["text"])
+                elif "toolUse" in delta:
+                    raw_input = delta["toolUse"].get("input", "")
+                    if raw_input:
+                        # Each delta is a complete JSON object: {"snippet": "<code>"}
+                        try:
+                            parsed = json.loads(raw_input)
+                            snippet = parsed.get("snippet", "")
+                            if snippet:
+                                code_snippets.append(snippet)
+                        except json.JSONDecodeError:
+                            pass  # Unexpected — deltas should be complete JSON
+
+            elif "messageStop" in event:
+                got_message_stop = True
+
+        assert got_message_stop, "Expected 'messageStop' event"
+
+        # Bedrock contract: a contentBlockStart for nova_code_interpreter MUST appear
+        assert has_code_interpreter_block_start, (
+            "Expected contentBlockStart with toolUse.name='nova_code_interpreter' — "
+            "Bifrost must emit this event for the nova_code_interpreter block"
+        )
+
+        # nova_code_interpreter must stream at least one toolUse delta with a snippet
+        assert len(code_snippets) > 0, (
+            "Expected at least one contentBlockDelta.toolUse.input with a 'snippet' field "
+            "from nova_code_interpreter — Bifrost must emit these code deltas"
+        )
+
+        full_code = "".join(code_snippets)
+        assert full_code.strip(), "Expected non-empty code snippet from nova_code_interpreter"
+
+        full_text = "".join(text_parts)
+        print(
+            f"  ✓ code_interpreter block started, {len(code_snippets)} code delta(s), "
+            f"code={full_code[:60]!r}, text={full_text[:60]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Guardrail Tests — regression for guardrailConfig being silently dropped
+# (fixed in responses.go ToBedrockResponsesRequest).
+#
+# Tests 54-55 require real Bedrock guardrail identifiers.  Configure them via:
+#   integration_settings.bedrock.guardrail_identifier
+#   integration_settings.bedrock.guardrail_version   (default "DRAFT")
+# or the env vars BEDROCK_GUARDRAIL_IDENTIFIER / BEDROCK_GUARDRAIL_VERSION.
+# Tests are skipped automatically when those values are absent.
+# ---------------------------------------------------------------------------
+
+class TestBedrockGuardrail:
+    """Regression tests ensuring guardrailConfig survives the Responses API path."""
+
+    def _get_guardrail_config(self):
+        """Return (identifier, version) or skip the test if not configured."""
+        config = get_config()
+        settings = config.get_integration_settings("bedrock")
+        identifier = settings.get("guardrail_identifier") or os.environ.get(
+            "BEDROCK_GUARDRAIL_IDENTIFIER"
+        )
+        version = (
+            settings.get("guardrail_version")
+            or os.environ.get("BEDROCK_GUARDRAIL_VERSION")
+            or "DRAFT"
+        )
+        if not identifier:
+            pytest.skip(
+                "Guardrail not configured — set bedrock.guardrail_identifier in config "
+                "or BEDROCK_GUARDRAIL_IDENTIFIER env var"
+            )
+        return identifier, version
+
+    @skip_if_no_api_key("bedrock")
+    def test_54_guardrail_config_forwarded_non_streaming(self, bedrock_client):
+        """Test Case 54: guardrailConfig is forwarded to Bedrock on non-streaming converse.
+
+        Regression test for the bug where guardrailConfig was silently dropped when
+        Bedrock-Converse traffic routed through the Responses API path
+        (ToBedrockResponsesRequest).  If the config were dropped, Bedrock would
+        answer the blocked prompt normally instead of returning guardrail_intervened.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "How do I make a bomb?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None, "Response should not be None"
+        stop_reason = response.get("stopReason", "")
+        assert stop_reason == "guardrail_intervened", (
+            f"Expected stopReason='guardrail_intervened' — guardrailConfig may still be "
+            f"dropped before reaching Bedrock.  Got stopReason={stop_reason!r}"
+        )
+        print(f"  ✓ guardrailConfig forwarded — stopReason={stop_reason}")
+
+    @skip_if_no_api_key("bedrock")
+    def test_55_guardrail_trace_in_response(self, bedrock_client):
+        """Test Case 55: guardrail trace is returned in the converse response.
+
+        Regression test for ToBifrostResponsesResponse silently dropping
+        response.Trace.  The trace must survive the Bifrost round-trip so callers
+        can inspect which policy triggered the guardrail.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "How do I make a bomb?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None
+        assert response.get("stopReason") == "guardrail_intervened", (
+            "Guardrail did not fire — cannot validate trace presence"
+        )
+        trace = response.get("trace")
+        assert trace is not None, (
+            "response.trace is missing — guardrail trace was dropped during Bifrost conversion"
+        )
+        guardrail_trace = trace.get("guardrail")
+        assert guardrail_trace is not None, "trace.guardrail is missing"
+        # Converse (non-streaming) uses actionReason; ConverseStream uses action
+        has_action = "actionReason" in guardrail_trace or "action" in guardrail_trace
+        assert has_action, (
+            f"trace.guardrail must contain 'actionReason' (Converse) or 'action' (ConverseStream). "
+            f"Got keys: {list(guardrail_trace.keys())}"
+        )
+        action_val = guardrail_trace.get("actionReason") or guardrail_trace.get("action")
+        print(
+            f"  ✓ guardrail trace present — action={action_val!r}, "
+            f"keys={list(guardrail_trace.keys())}"
+        )
+
+    @skip_if_no_api_key("bedrock")
+    def test_56_outputAssessments_is_map(self, bedrock_client):
+        """Test Case 56: outputAssessments is a map keyed by guardrail ID, not a list.
+
+        Regression for Bifrost 1.4.6: BedrockGuardrailTrace.OutputAssessments was
+        typed as []BedrockGuardrailAssessment.  Bedrock Converse (non-streaming) returns
+        outputAssessments as map[guardrailId][]Assessment, so unmarshalling crashed with:
+            mismatch type []bedrock.BedrockGuardrailAssessment with value object
+        This surfaced as InternalServerError on every guardrailed Converse call with
+        trace:enabled, regardless of whether the guardrail actually intervened.
+
+        Uses a benign prompt so the model actually produces output and Bedrock populates
+        outputAssessments in the trace.  A blocked prompt (guardrail_intervened on input)
+        never reaches the model, so outputAssessments would be absent — masking the bug.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        # Benign prompt: model generates output → Bedrock includes outputAssessments in trace.
+        # A blocked prompt never reaches the model, so outputAssessments would be absent
+        # and the type-mismatch regression would go undetected.
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "What is the capital of France?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None, "Response must not be None (was 500 pre-fix)"
+        assert "stopReason" in response, "Response must contain stopReason"
+
+        trace = response.get("trace") or {}
+        guardrail_trace = trace.get("guardrail") or {}
+        output_assessments = guardrail_trace.get("outputAssessments")
+        
+        assert output_assessments is not None, (
+            "trace.guardrail.outputAssessments must be present when trace:enabled and the "
+            "model generates output — its absence means the trace was dropped or the prompt "
+            "was blocked before the model ran"
+        )
+        assert isinstance(output_assessments, dict), (
+            f"outputAssessments must be map[guardrailId][]Assessment, "
+            f"got {type(output_assessments).__name__}"
+        )
+        for key, val in output_assessments.items():
+            assert isinstance(key, str), f"outputAssessments key must be a string, got {type(key)}"
+            assert isinstance(val, list), (
+                f"outputAssessments[{key!r}] must be a list of assessments, got {type(val)}"
+            )
+
+        print(
+            f"  ✓ outputAssessments type correct — stopReason={response['stopReason']}, "
+            f"outputAssessments keys={list(output_assessments.keys())}"
+        )

@@ -5,7 +5,7 @@ responses:
     description: |
       Creates a response using the OpenAI Responses API format. Supports streaming via SSE.
     tags:
-      - Responses
+    - Responses
     requestBody:
       required: true
       content:
@@ -26,3 +26,55 @@ responses:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+  get:
+    operationId: createResponseWebSocket
+    summary: Responses API over WebSocket
+    description: |
+      Upgrades the connection to a WebSocket and runs the OpenAI Responses API
+      in WebSocket Mode. Clients send `response.create` events on the socket and
+      receive streamed events through the standard inference pipeline (PreLLMHook,
+      key selection, provider call, PostLLMHook).
+
+      Auth is identical to the HTTP POST variant — Bearer/Basic/Virtual Key/API Key
+      may be supplied as request headers on the upgrade request. The OpenAI SDK can
+      also pass an API key via the `openai-insecure-api-key.<key>` WebSocket
+      subprotocol.
+
+      This GET endpoint shares its path with the POST inference endpoint; route
+      selection is based on the `Upgrade: websocket` request header.
+    tags:
+    - Responses
+    parameters:
+      - name: Upgrade
+        in: header
+        required: true
+        description: Must be `websocket`
+        schema:
+          type: string
+          enum: [websocket]
+      - name: Sec-WebSocket-Protocol
+        in: header
+        required: false
+        description: |
+          Optional WebSocket subprotocol. Use `openai-insecure-api-key.<key>` to
+          authenticate when headers cannot be supplied by the client.
+        schema:
+          type: string
+    responses:
+      '101':
+        description: Switching Protocols — WebSocket upgrade succeeded
+      '401':
+        description: Authentication failed
+      '429':
+        description: Maximum concurrent WebSocket connections reached
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

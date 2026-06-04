@@ -7,7 +7,7 @@ embed:
     description: |
       Creates embeddings using Cohere v2 API format.
     tags:
-      - Cohere Integration
+    - Cohere Integration
     requestBody:
       required: true
       content:
@@ -33,3 +33,8 @@ embed:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

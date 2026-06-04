@@ -69,7 +69,23 @@ type BifrostImageGenerationResponse struct {
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
 // - Quality (low, medium, high, auto) only
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
+	if r == nil || req == nil {
+		return
+	}
 	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
+
+	// Backfill Model from whichever inner request carries it. Some provider APIs
+	// (notably OpenAI /v1/images/*) omit model in the response body.
+	if r.Model == "" {
+		switch {
+		case req.ImageGenerationRequest != nil:
+			r.Model = req.ImageGenerationRequest.Model
+		case req.ImageEditRequest != nil:
+			r.Model = req.ImageEditRequest.Model
+		case req.ImageVariationRequest != nil:
+			r.Model = req.ImageVariationRequest.Model
+		}
+	}
 
 	// Backfill NumInputImages
 	if numInputImages > 0 {
@@ -94,6 +110,22 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.Quality = quality
 	}
+}
+
+// getModelFromRequest extracts the model from any image-related request.
+func getModelFromRequest(req *BifrostRequest) string {
+	if req == nil {
+		return ""
+	}
+	switch {
+	case req.ImageGenerationRequest != nil:
+		return req.ImageGenerationRequest.Model
+	case req.ImageEditRequest != nil:
+		return req.ImageEditRequest.Model
+	case req.ImageVariationRequest != nil:
+		return req.ImageVariationRequest.Model
+	}
+	return ""
 }
 
 // getNumInputImagesSizeAndQualityFromRequest extracts request params for cost calculation.
@@ -151,10 +183,12 @@ func normalizeImageQuality(q string) string {
 }
 
 type ImageGenerationResponseParameters struct {
-	Background   string `json:"background,omitempty"`
-	OutputFormat string `json:"output_format,omitempty"`
-	Quality      string `json:"quality,omitempty"`
-	Size         string `json:"size,omitempty"`
+	Background    string    `json:"background,omitempty"`
+	OutputFormat  string    `json:"output_format,omitempty"`
+	Quality       string    `json:"quality,omitempty"`
+	Size          string    `json:"size,omitempty"`
+	FinishReasons []*string `json:"finish_reasons,omitempty"`
+	Seeds         []int     `json:"seeds,omitempty"`
 }
 
 type ImageData struct {
@@ -254,7 +288,7 @@ type ImageInput struct {
 }
 
 type ImageEditParameters struct {
-	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal",
+	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale_fast", "upscale_creative", "upscale_conservative"
 	Background        *string                `json:"background,omitempty"`     // "transparent", "opaque", "auto"
 	InputFidelity     *string                `json:"input_fidelity,omitempty"` // "low", "high"
 	Mask              []byte                 `json:"mask,omitempty"`

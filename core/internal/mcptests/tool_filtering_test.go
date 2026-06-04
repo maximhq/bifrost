@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -44,25 +45,33 @@ func getActualToolsFromGoTestServer(t *testing.T) (tool1, tool2 string) {
 	return toolList[0], toolList[1]
 }
 
-// Helper to execute a tool via MCP manager and check if it's allowed
-func executeToolViaManager(t *testing.T, manager interface{ ExecuteToolCall(*schemas.BifrostContext, *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) }, toolName string) error {
+// Helper to execute a tool via MCP manager and check if it's allowed.
+// Runs through the canonical plugin-wrapped path (ExecuteChatTool); the
+// test setup wires a no-op plugin pipeline so this is functionally
+// equivalent to a direct execution for filtering assertions.
+func executeToolViaManager(t *testing.T, manager interface {
+	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+}, toolName string) error {
 	t.Helper()
 
 	ctx := createTestContext()
-	request := &schemas.BifrostMCPRequest{
-		RequestType: schemas.MCPRequestTypeChatToolCall,
-		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
-			ID:   schemas.Ptr("call-1"),
-			Type: schemas.Ptr("function"),
-			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name:      schemas.Ptr(toolName),
-				Arguments: `{}`,
-			},
+	toolCall := &schemas.ChatAssistantMessageToolCall{
+		ID:   schemas.Ptr("call-1"),
+		Type: schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr(toolName),
+			Arguments: `{}`,
 		},
 	}
 
-	_, err := manager.ExecuteToolCall(ctx, request)
-	return err
+	_, bErr := manager.ExecuteChatTool(ctx, toolCall)
+	if bErr == nil {
+		return nil
+	}
+	if bErr.Error != nil {
+		return fmt.Errorf("%s", bErr.Error.Message)
+	}
+	return fmt.Errorf("tool execution failed")
 }
 
 // TestToolsToExecute_Nil - FULLY IMPLEMENTED EXAMPLE
@@ -160,7 +169,7 @@ func TestToolsToExecute_ExplicitList(t *testing.T) {
 	// Verify configuration was set correctly
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
 }
 
 func TestToolsToExecute_SingleTool(t *testing.T) {
@@ -178,10 +187,10 @@ func TestToolsToExecute_SingleTool(t *testing.T) {
 	// Verify configuration
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
 
 	// Verify it's not allow-all
-	assert.NotEqual(t, []string{"*"}, clients[0].ExecutionConfig.ToolsToExecute, "should not be wildcard")
+	assert.NotEqual(t, schemas.WhiteList{"*"}, clients[0].ExecutionConfig.ToolsToExecute, "should not be wildcard")
 }
 
 // =============================================================================
@@ -204,8 +213,8 @@ func TestToolsToAutoExecute_Basic(t *testing.T) {
 	// Verify the client was created with correct configuration
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"*"}, clients[0].ExecutionConfig.ToolsToExecute)
-	assert.Equal(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
+	assert.Equal(t, schemas.WhiteList{"*"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
 }
 
 func TestToolsToAutoExecute_NotInExecuteList(t *testing.T) {
@@ -224,8 +233,8 @@ func TestToolsToAutoExecute_NotInExecuteList(t *testing.T) {
 	// Verify configuration
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
-	assert.Equal(t, []string{"hash"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
+	assert.Equal(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"hash"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
 	assert.NotEqual(t, clients[0].ExecutionConfig.ToolsToExecute, clients[0].ExecutionConfig.ToolsToAutoExecute)
 }
 
@@ -245,7 +254,7 @@ func TestToolsToAutoExecute_Wildcard(t *testing.T) {
 	// Verify configuration
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"*"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
+	assert.Equal(t, schemas.WhiteList{"*"}, clients[0].ExecutionConfig.ToolsToAutoExecute)
 }
 
 // =============================================================================
@@ -267,7 +276,7 @@ func TestContextFilteringRestrictsWildcard(t *testing.T) {
 	// Verify client configuration allows all
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"*"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"*"}, clients[0].ExecutionConfig.ToolsToExecute)
 
 	// Context restricts to only specific tools (verify context works separately)
 	ctx := CreateTestContextWithMCPFilter(nil, []string{"encode"})
@@ -305,9 +314,9 @@ func TestFilteringMultipleClients_DifferentRules(t *testing.T) {
 	// Find and verify each client
 	for _, client := range clients {
 		if client.ExecutionConfig.ID == "stdio-client-1" {
-			assert.Equal(t, []string{"encode"}, client.ExecutionConfig.ToolsToExecute)
+			assert.Equal(t, schemas.WhiteList{"encode"}, client.ExecutionConfig.ToolsToExecute)
 		} else if client.ExecutionConfig.ID == "stdio-client-2" {
-			assert.Equal(t, []string{"*"}, client.ExecutionConfig.ToolsToExecute)
+			assert.Equal(t, schemas.WhiteList{"*"}, client.ExecutionConfig.ToolsToExecute)
 		}
 	}
 }
@@ -331,7 +340,7 @@ func TestFilteringChangesAfterClientEdit(t *testing.T) {
 	// Verify initial configuration
 	clients := manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
 
 	// Edit client to only allow second tool
 	clientConfig.ToolsToExecute = []string{"hash"}
@@ -341,6 +350,6 @@ func TestFilteringChangesAfterClientEdit(t *testing.T) {
 	// Verify configuration changed
 	clients = manager.GetClients()
 	require.Len(t, clients, 1)
-	assert.Equal(t, []string{"hash"}, clients[0].ExecutionConfig.ToolsToExecute)
-	assert.NotEqual(t, []string{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.Equal(t, schemas.WhiteList{"hash"}, clients[0].ExecutionConfig.ToolsToExecute)
+	assert.NotEqual(t, schemas.WhiteList{"encode"}, clients[0].ExecutionConfig.ToolsToExecute)
 }

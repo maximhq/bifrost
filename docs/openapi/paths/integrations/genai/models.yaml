@@ -7,18 +7,18 @@ models:
     description: |
       Lists available models in Google Gemini API format.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: pageSize
-        in: query
-        schema:
-          type: integer
-        description: Maximum number of models to return
-      - name: pageToken
-        in: query
-        schema:
-          type: string
-        description: Page token for pagination
+    - name: pageSize
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of models to return
+    - name: pageToken
+      in: query
+      schema:
+        type: string
+      description: Page token for pagination
     responses:
       '200':
         description: Successful response
@@ -38,3 +38,8 @@ models:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

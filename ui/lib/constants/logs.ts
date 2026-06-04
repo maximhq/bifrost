@@ -22,12 +22,32 @@ export const KnownProvidersNames = [
 	"replicate",
 	"vllm",
 	"runway",
+	"fireworks",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
 export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
+
+// Built-in providers whose Bifrost implementation supports embedding requests.
+// Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
+export const EmbeddingSupportedProviders: readonly ProviderName[] = [
+	"azure",
+	"bedrock",
+	"cohere",
+	"fireworks",
+	"gemini",
+	"huggingface",
+	"mistral",
+	"nebius",
+	"ollama",
+	"openai",
+	"openrouter",
+	"sgl",
+	"vertex",
+	"vllm",
+] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
@@ -50,6 +70,8 @@ export const RequestTypes = [
 	"image_edit",
 	"image_edit_stream",
 	"image_variation",
+	"ocr",
+	"ocr_stream",
 	"video_generation",
 	"video_retrieve",
 	"video_download",
@@ -73,6 +95,7 @@ export const RequestTypes = [
 	// WebSocket/Realtime operations
 	"websocket_responses",
 	"realtime",
+	"realtime.turn",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -98,6 +121,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	replicate: "Replicate",
 	vllm: "vLLM",
 	runway: "Runway",
+	fireworks: "Fireworks AI",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -161,6 +185,8 @@ export const RequestTypeLabels = {
 	image_edit: "Image Edit",
 	image_edit_stream: "Image Edit Stream",
 	image_variation: "Image Variation",
+	ocr: "OCR",
+	ocr_stream: "OCR Stream",
 	video_generation: "Video Generation",
 	video_retrieve: "Video Retrieve",
 	video_download: "Video Download",
@@ -200,6 +226,7 @@ export const RequestTypeLabels = {
 	// WebSocket operations
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
+	"realtime.turn": "Realtime Turn",
 } as const;
 
 export const RequestTypeColors = {
@@ -240,6 +267,8 @@ export const RequestTypeColors = {
 	image_edit: "bg-emerald-100 text-emerald-800",
 	image_edit_stream: "bg-teal-100 text-teal-800",
 	image_variation: "bg-violet-100 text-violet-800",
+	ocr: "bg-amber-100 text-amber-800",
+	ocr_stream: "bg-yellow-100 text-yellow-800",
 	video_generation: "bg-fuchsia-100 text-fuchsia-800",
 	video_retrieve: "bg-blue-100 text-blue-800",
 	video_download: "bg-purple-100 text-purple-800",
@@ -280,18 +309,21 @@ export const RequestTypeColors = {
 	// WebSocket operations
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
+	"realtime.turn": "bg-cyan-100 text-cyan-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {
 	"routing-rule": "Routing Rule",
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
+	"model-catalog": "Model Catalog",
 } as const;
 
 export const RoutingEngineUsedColors = {
-	"routing-rule": "bg-blue-100 text-blue-800",
-	governance: "bg-green-100 text-green-800",
-	loadbalancing: "bg-red-100 text-red-800",
+	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
+	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
+	loadbalancing: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
+	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
 } as const;
 
 export type Status = (typeof Statuses)[number];

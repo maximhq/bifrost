@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -165,21 +167,78 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
-func TestSchemaVertexKeyDeployments(t *testing.T) {
-	schemaPath := getSchemaPath(t)
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		t.Fatalf("failed to read schema: %v", err)
-	}
-	var schema map[string]interface{}
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("failed to parse schema: %v", err)
+func TestSchemaSCIMConfigValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "disabled okta with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"okta","config":{}}}`,
+		},
+		{
+			name:   "disabled entra with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"entra","config":{}}}`,
+		},
+		{
+			name:   "disabled keycloak with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"keycloak","config":{}}}`,
+		},
+		{
+			name:      "enabled okta with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"okta","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled entra with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"entra","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled keycloak with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"keycloak","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled keycloak with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "keycloak",
+					"config": {
+						"serverUrl": "https://keycloak.company.com",
+						"realm": "bifrost-prod",
+						"clientId": "bifrost",
+						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
 	}
 
-	t.Run("vertex_key $def includes deployments field", func(t *testing.T) {
-		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchemaKeyAliases(t *testing.T) {
+	schema := loadSchema(t)
+
+	t.Run("base_key $def includes aliases field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "base_key", "properties", "aliases")
 		if !found {
-			t.Error("$defs/vertex_key is missing 'deployments' property — vertex provider uses getModelDeployment() on every request")
+			t.Error("$defs/base_key is missing 'aliases' property — aliases replaced per-provider deployments maps")
 		}
 	})
 
@@ -190,30 +249,60 @@ func TestSchemaVertexKeyDeployments(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex config with deployments validates successfully", func(t *testing.T) {
+	t.Run("vertex_key_config does not include deployments field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+		if found {
+			t.Error("$defs/vertex_key still has 'deployments' in vertex_key_config — deployments were moved to top-level key aliases")
+		}
+	})
+
+	t.Run("key with aliases validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)
 		config := `{
 			"providers": {
 				"vertex": {
 					"keys": [{
-						"key_id": "test",
 						"name": "test",
 						"value": "",
 						"weight": 1,
 						"models": ["gemini-2.0-flash"],
+						"aliases": {"gemini-2.0-flash": "gemini-2.0-flash-001"},
 						"vertex_key_config": {
 							"project_id": "my-project",
 							"region": "us-central1",
 							"auth_credentials": "",
-							"project_number": "123456",
-							"deployments": {"gemini-2.0-flash": "gemini-2.0-flash-001"}
+							"project_number": "123456"
 						}
 					}]
 				}
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
-			t.Errorf("vertex config with deployments should be valid, got: %v", err)
+			t.Errorf("key with aliases should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("azure key with aliases validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"azure": {
+					"keys": [{
+						"name": "test",
+						"value": "my-api-key",
+						"weight": 1,
+						"models": ["gpt-4o"],
+						"aliases": {"gpt-4o": "gpt-4o-deployment"},
+						"azure_key_config": {
+							"endpoint": "https://my-resource.openai.azure.com",
+							"api_version": "2024-02-01"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("azure key with aliases should be valid, got: %v", err)
 		}
 	})
 }
@@ -272,6 +361,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_tool_execution_timeout",
 		"mcp_code_mode_binding_level",
 		"mcp_tool_sync_interval",
+		"mcp_disable_auto_tool_inject",
+		"mcp_enable_temp_token_auth",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -290,7 +381,9 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_agent_depth": 5,
 				"mcp_tool_execution_timeout": 60,
 				"mcp_code_mode_binding_level": "server",
-				"mcp_tool_sync_interval": 10
+				"mcp_tool_sync_interval": 10,
+				"mcp_disable_auto_tool_inject": false,
+				"mcp_enable_temp_token_auth": true
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
@@ -430,6 +523,18 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("tool_manager_config with code_mode_binding_level should be valid, got: %v", err)
 		}
+		var root struct {
+			MCP schemas.MCPConfig `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(config), &root); err != nil {
+			t.Errorf("failed to unmarshal mcp config: %v", err)
+		}
+		if root.MCP.ToolManagerConfig == nil {
+			t.Fatal("tool_manager_config missing after unmarshal")
+		}
+		if root.MCP.ToolManagerConfig.ToolExecutionTimeout.D() != 30*time.Second {
+			t.Errorf("tool_execution_timeout should be 30 seconds, got: %v", root.MCP.ToolManagerConfig.ToolExecutionTimeout.D())
+		}
 	})
 }
 
@@ -561,6 +666,106 @@ func TestSchemaAllowedOriginsWildcard(t *testing.T) {
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("allowed_origins with '*' should be valid, got: %v", err)
+		}
+	})
+}
+
+func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
+	schema := loadSchema(t)
+
+	stsFields := []string{"role_arn", "external_id", "session_name"}
+	for _, field := range stsFields {
+		t.Run("$defs/bedrock_key has "+field, func(t *testing.T) {
+			_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", field)
+			if !found {
+				t.Errorf("$defs/bedrock_key bedrock_key_config is missing '%s' — BedrockKeyConfig Go struct defines this field for STS AssumeRole", field)
+			}
+		})
+	}
+
+	t.Run("$defs/bedrock_key has batch_s3_config", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", "batch_s3_config")
+		if !found {
+			t.Error("$defs/bedrock_key bedrock_key_config is missing 'batch_s3_config' — BedrockKeyConfig Go struct defines this field for batch operations")
+		}
+	})
+
+	t.Run("bedrock config with STS fields validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "cross-account",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-west-2",
+								"role_arn": "arn:aws:iam::123456789012:role/BedrockAccessRole",
+								"session_name": "bifrost-cross-account",
+								"external_id": "my-external-id"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with STS AssumeRole fields should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with batch_s3_config validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "batch-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"batch_s3_config": {
+									"buckets": [
+										{"bucket_name": "my-batch-bucket", "prefix": "bifrost/", "is_default": true},
+										{"bucket_name": "my-secondary-bucket"}
+									]
+								}
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with batch_s3_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with unknown fields is rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "bad-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"unknown_field": "should-fail"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("bedrock config with unknown fields should fail schema validation (additionalProperties: false)")
 		}
 	})
 }

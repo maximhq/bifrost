@@ -1,0 +1,90 @@
+bifrost:
+  # MCP catalog + runtime settings
+  mcp:
+    enabled: true
+    toolSyncInterval: "5m"
+    clientConfigs:
+      - name: "echo_http"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcpplaygroundonline.com/mcp-echo-server"
+        authType: "headers"
+        headers:
+          x-demo-auth: "demo-echo-header-value"
+        toolsToExecute:
+          - "echo"
+        allowOnAllVirtualKeys: false
+    toolGroups:
+      - name: "tg-echo-random-7f3"
+        description: "Random demo MCP tool group for echo server"
+        enabled: true
+        tools:
+          # This attaches the MCP server (catalog client) to the tool group.
+          - mcpClientName: "echo_http"
+            toolNames:
+              - "echo"
+        virtualKeyIds:
+          - "vk-acme-platform-primary"
+        teamIds:
+          - "team-acme-platform"
+        customerIds:
+          - "customer-acme-gold"
+        providerNames:
+          - "openai"
+      - name: "tg-echo-server-all-tools"
+        description: "Attach full echo_http server (all tools) to a separate group"
+        enabled: true
+        tools:
+          # Omitting toolNames means all tools from this MCP server.
+          - mcpClientName: "echo_http"
+        virtualKeyIds:
+          - "vk-beta-research-primary"
+        teamIds:
+          - "team-beta-research"
+        customerIds:
+          - "customer-beta-silver"
+        providerNames:
+          - "anthropic"
+    toolManagerConfig:
+      toolExecutionTimeout: 30
+      maxAgentDepth: 10
+      codeModeBindingLevel: "server"
+      disableAutoToolInject: false
+
+  # Virtual-key MCP bindings.
+  # Note: keep full virtualKeys objects here because Helm array merge is replace.
+  governance:
+    virtualKeys:
+      - id: "vk-acme-platform-primary"
+        name: "Acme Platform Primary Key"
+        description: "VK for Acme platform workloads"
+        value: "sk-bf-acme-platform-primary"
+        is_active: true
+        team_id: "team-acme-platform"
+        rate_limit_id: "rl-team-acme-platform"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models:
+              - "gpt-4o-mini"
+        mcp_configs:
+          - mcp_client_name: "echo_http"
+            tools_to_execute:
+              - "echo"
+
+      - id: "vk-beta-research-primary"
+        name: "Beta Research Primary Key"
+        description: "VK for Beta research workloads"
+        value: "sk-bf-beta-research-primary"
+        is_active: true
+        team_id: "team-beta-research"
+        rate_limit_id: "rl-team-beta-research"
+        provider_configs:
+          - provider: "anthropic"
+            weight: 1
+            allowed_models:
+              - "claude-3-5-sonnet-latest"
+        mcp_configs:
+          - mcp_client_name: "echo_http"
+            tools_to_execute:
+              - "echo"

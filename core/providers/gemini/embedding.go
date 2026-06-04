@@ -73,6 +73,26 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 	return batchRequest
 }
 
+// ToGeminiEmbedContentResponse converts a BifrostEmbeddingResponse to the single :embedContent wire format.
+func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *GeminiEmbedContentResponse {
+	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
+		return nil
+	}
+	values := bifrostResp.Data[0].Embedding.EmbeddingArray
+	if values == nil && len(bifrostResp.Data[0].Embedding.Embedding2DArray) > 0 {
+		values = bifrostResp.Data[0].Embedding.Embedding2DArray[0]
+	}
+	embedding := GeminiEmbedding{
+		Values: append([]float64(nil), values...),
+	}
+	if bifrostResp.Usage != nil {
+		embedding.Statistics = &ContentEmbeddingStatistics{
+			TokenCount: int32(bifrostResp.Usage.PromptTokens),
+		}
+	}
+	return &GeminiEmbedContentResponse{Embedding: embedding}
+}
+
 // ToGeminiEmbeddingResponse converts a BifrostResponse with embedding data to Gemini's embedding response format
 func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *GeminiEmbeddingResponse {
 	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
@@ -85,14 +105,14 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 
 	// Convert each embedding from Bifrost format to Gemini format
 	for i, embedding := range bifrostResp.Data {
-		var values []float32
+		var values []float64
 
 		// Extract embedding values from BifrostEmbeddingResponse
 		if embedding.Embedding.EmbeddingArray != nil {
-			values = embedding.Embedding.EmbeddingArray
+			values = append([]float64(nil), embedding.Embedding.EmbeddingArray...)
 		} else if len(embedding.Embedding.Embedding2DArray) > 0 {
 			// If it's a 2D array, take the first array
-			values = embedding.Embedding.Embedding2DArray[0]
+			values = append([]float64(nil), embedding.Embedding.Embedding2DArray[0]...)
 		}
 
 		geminiEmbedding := GeminiEmbedding{

@@ -1,0 +1,136 @@
+bifrost:
+  # MCP (Model Context Protocol) example layer using latest mcp.* settings
+  mcp:
+    enabled: true
+    # Global MCP tool sync interval as Go duration string.
+    toolSyncInterval: "15m"
+    clientConfigs:
+      # This one is best for quickly seeing entries in MCP Catalog/Registry UI.
+      # It does not depend on npx/node inside the Bifrost container.
+      - name: "echo_http"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcpplaygroundonline.com/mcp-echo-server"
+        authType: "none"
+        allowOnAllVirtualKeys: true
+        toolsToExecute:
+          - "*"
+      - name: "github_tools"
+        connectionType: "stdio"
+        allowOnAllVirtualKeys: true
+        toolsToExecute:
+          - "*"
+        stdioConfig:
+          command: "npx"
+          args:
+            - "-y"
+            - "@modelcontextprotocol/server-github"
+          envs:
+            - "GITHUB_PERSONAL_ACCESS_TOKEN=env.GITHUB_PERSONAL_ACCESS_TOKEN"
+      - name: "filesystem_tools"
+        connectionType: "stdio"
+        allowOnAllVirtualKeys: true
+        toolsToExecute:
+          - "*"
+        stdioConfig:
+          command: "npx"
+          args:
+            - "-y"
+            - "@modelcontextprotocol/server-filesystem"
+            - "/app/data"
+          envs: []
+    toolManagerConfig:
+      # Tool execution timeout in seconds
+      toolExecutionTimeout: 23
+      # Maximum MCP agent execution depth
+      maxAgentDepth: 14
+      # How tools are exposed in VFS: "server" or "tool"
+      codeModeBindingLevel: "server"
+      # When true, tools are injected only when explicitly requested
+      disableAutoToolInject: false
+
+  governance:
+    budgets:
+      - id: "budget-mcp-default"
+        max_limit: 600
+        reset_duration: "1M"
+    rateLimits:
+      - id: "rl-mcp-default"
+        token_max_limit: 200000
+        token_reset_duration: "1d"
+        request_max_limit: 5000
+        request_reset_duration: "1h"
+    customers:
+      - id: "customer-mcp-demo"
+        name: "MCP Demo Customer"
+        budget_id: "budget-mcp-default"
+        rate_limit_id: "rl-mcp-default"
+    teams:
+      - id: "team-mcp-demo"
+        name: "MCP Demo Team"
+        customer_id: "customer-mcp-demo"
+        budget_id: "budget-mcp-default"
+        rate_limit_id: "rl-mcp-default"
+    virtualKeys:
+      - id: "vk-mcp-demo"
+        name: "MCP Demo Key"
+        value: "sk-bf-mcp-demo"
+        is_active: true
+        team_id: "team-mcp-demo"
+        rate_limit_id: "rl-mcp-default"
+
+    # Keep routing config compatible with released schema versions.
+    routingRules:
+      - id: "route-mcp-openai-mini"
+        name: "MCP route OpenAI mini"
+        description: "UI-friendly MCP routing rule."
+        enabled: true
+        chain_rule: true
+        cel_expression: "model == 'gpt-4o-mini' && provider == 'openai'"
+        targets:
+          - provider: "openai"
+            model: "gpt-4o-mini"
+            weight: 0.7
+          - provider: "anthropic"
+            model: "claude-3-5-sonnet-latest"
+            weight: 0.3
+        fallbacks:
+          - "openai/gpt-4o-mini"
+          - "anthropic/claude-3-5-sonnet-latest"
+        scope: "global"
+        priority: 10
+        query:
+          combinator: and
+          rules:
+            - id: route-mini-model
+              field: model
+              operator: "="
+              value: "gpt-4o-mini"
+            - id: route-mini-provider
+              field: provider
+              operator: "="
+              value: "openai"
+      - id: "route-vk-scoped-anthropic"
+        name: "VK scoped Anthropic route"
+        description: "Example scoped rule with virtual_key scope and no query metadata."
+        enabled: false
+        chain_rule: false
+        cel_expression: "provider == 'anthropic'"
+        targets:
+          - provider: "anthropic"
+            model: "claude-3-5-sonnet-latest"
+            weight: 1
+        scope: "virtual_key"
+        scope_id: "vk-mcp-demo"
+        priority: 20
+
+    pricingOverrides:
+      - id: "override-global-mini"
+        name: "Global mini pricing override"
+        scope_kind: "global"
+        match_type: "exact"
+        pattern: "gpt-4o-mini"
+        request_types:
+          - "chat_completion"
+          - "responses"
+        pricing_patch: "{\"input_cost_per_token\":0.00000050,\"output_cost_per_token\":0.00000150}"

@@ -94,6 +94,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -288,6 +298,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -394,6 +414,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -408,7 +430,7 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle size conversion
 		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
-			imageSize, aspectRatio := convertSizeToImagenFormat(*bifrostReq.Params.Size)
+			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" && aspectRatio != "" {
 				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
 					ImageSize:   imageSize,
@@ -493,6 +515,8 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create instances array with prompt
 	prompt := bifrostReq.Input.Prompt
 	instances := []ImagenInstance{
@@ -513,7 +537,7 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle size conversion
 		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
-			imageSize, aspectRatio := convertSizeToImagenFormat(*bifrostReq.Params.Size)
+			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" {
 				req.Parameters.SampleImageSize = &imageSize
 			}
@@ -638,56 +662,6 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 	}
 }
 
-// convertSizeToImagenFormat converts standard size format (e.g., "1024x1024") to Imagen format
-// Returns (imageSize, aspectRatio) where imageSize is "1k", "2k", "4k" and aspectRatio is one of:
-// "1:1", "3:4", "4:3", "9:16", or "16:9"
-func convertSizeToImagenFormat(size string) (string, string) {
-	// Parse size string (format: "WIDTHxHEIGHT")
-	parts := strings.Split(size, "x")
-	if len(parts) != 2 {
-		return "", ""
-	}
-
-	width, err1 := strconv.Atoi(parts[0])
-	height, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return "", ""
-	}
-
-	// Validate width and height are positive integers
-	if width <= 0 || height <= 0 {
-		return "", ""
-	}
-
-	var imageSize string
-	if width <= 1024 && height <= 1024 {
-		imageSize = "1k"
-	} else if width <= 2048 && height <= 2048 {
-		imageSize = "2k"
-	} else if width <= 4096 && height <= 4096 {
-		imageSize = "4k"
-	}
-
-	// Calculate aspect ratio
-	var aspectRatio string
-	ratio := float64(width) / float64(height)
-
-	// Common aspect ratios with tolerance
-	if ratio >= 0.99 && ratio <= 1.01 {
-		aspectRatio = "1:1"
-	} else if ratio >= 0.74 && ratio <= 0.76 {
-		aspectRatio = "3:4"
-	} else if ratio >= 1.32 && ratio <= 1.34 {
-		aspectRatio = "4:3"
-	} else if ratio >= 0.56 && ratio <= 0.57 {
-		aspectRatio = "9:16"
-	} else if ratio >= 1.77 && ratio <= 1.78 {
-		aspectRatio = "16:9"
-	}
-
-	return imageSize, aspectRatio
-}
-
 // ToBifrostImageGenerationResponse converts an Imagen response to Bifrost format
 func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
 	if response == nil {
@@ -782,6 +756,8 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -792,6 +768,17 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Handle size conversion
+		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
+			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
+			if imageSize != "" && aspectRatio != "" {
+				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
+					ImageSize:   imageSize,
+					AspectRatio: aspectRatio,
+				}
+			}
+		}
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
@@ -974,6 +961,8 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.Images) == 0 {
 		return nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	req := &GeminiImagenRequest{
 		Parameters: GeminiImagenParameters{},

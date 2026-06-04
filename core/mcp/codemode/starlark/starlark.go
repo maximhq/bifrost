@@ -6,7 +6,6 @@
 package starlark
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -24,10 +23,9 @@ type StarlarkCodeMode struct {
 	toolExecutionTimeout atomic.Value // time.Duration
 
 	// Dependencies
-	clientManager          mcp.ClientManager
-	pluginPipelineProvider func() mcp.PluginPipeline
-	releasePluginPipeline  func(pipeline mcp.PluginPipeline)
-	fetchNewRequestIDFunc  func(ctx *schemas.BifrostContext) string
+	clientManager         mcp.ClientManager
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
+	credStore             schemas.MCPCredentialStore
 
 	// Logger for this instance
 	logger schemas.Logger
@@ -84,9 +82,8 @@ func NewStarlarkCodeMode(config *mcp.CodeModeConfig, logger schemas.Logger) *Sta
 func (s *StarlarkCodeMode) SetDependencies(deps *mcp.CodeModeDependencies) {
 	if deps != nil {
 		s.clientManager = deps.ClientManager
-		s.pluginPipelineProvider = deps.PluginPipelineProvider
-		s.releasePluginPipeline = deps.ReleasePluginPipeline
 		s.fetchNewRequestIDFunc = deps.FetchNewRequestIDFunc
+		s.credStore = deps.CredentialStore
 	}
 }
 
@@ -111,7 +108,7 @@ func (s *StarlarkCodeMode) GetTools() []schemas.ChatTool {
 // Returns:
 //   - *schemas.ChatMessage: The tool response message
 //   - error: Any error that occurred during execution
-func (s *StarlarkCodeMode) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+func (s *StarlarkCodeMode) ExecuteTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
 	if toolCall.Function.Name == nil {
 		return nil, fmt.Errorf("tool call missing function name")
 	}

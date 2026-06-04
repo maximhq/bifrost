@@ -37,8 +37,11 @@ By default, Bifrost does NOT automatically execute tool calls. All tool executio
   <Card title="Connect to MCP Servers" icon="plug" href="./connecting-to-servers">
     Connect to external MCP servers via STDIO, HTTP, or SSE protocols with automatic retry logic
   </Card>
-  <Card title="OAuth Authentication" icon="lock" href="./oauth">
-    Secure OAuth 2.0 authentication with automatic token refresh
+  <Card title="Authentication" icon="shield-check" href="./auth/overview">
+    Pick the right auth type for each MCP — None, Headers, OAuth, Per-User OAuth, Per-User Headers
+  </Card>
+  <Card title="MCP Sessions" icon="table" href="./sessions">
+    Inspect, re-authenticate, edit values, and revoke per-user MCP credentials
   </Card>
   <Card title="Tool Execution" icon="play" href="./tool-execution">
     Execute tools with full control over approval and conversation flow
@@ -52,7 +55,7 @@ By default, Bifrost does NOT automatically execute tool calls. All tool executio
   <Card title="Connection Resilience" icon="shield-check" href="./connecting-to-servers#connection-resilience-and-retry-logic">
     Automatic exponential backoff retry logic handles transient failures gracefully
   </Card>
-  <Card title="MCP Gateway URL" icon="server" href="./gateway-url">
+  <Card title="MCP Gateway Mode" icon="server" href="./gateway">
     Expose Bifrost as an MCP server for Claude Desktop and other clients
   </Card>
   <Card title="Tool Hosting" icon="toolbox" href="./tool-hosting">
@@ -114,7 +117,7 @@ This pattern ensures:
 
 If you're planning to use **3+ MCP servers**, read the [Code Mode](./code-mode) documentation carefully.
 
-Code Mode reduces token usage by **50%+ and execution latency by 40-50%** compared to classic MCP by having the AI write Python code to orchestrate tools in a sandbox, rather than exposing 100+ tool definitions directly to the LLM.
+Code Mode reduces input token usage by **up to 92.8%** and estimated cost by **up to 92.2%** compared to classic MCP by having the AI write Python code to orchestrate tools in a sandbox, rather than exposing 100+ tool definitions directly to the LLM.
 
 ---
 
@@ -125,10 +128,10 @@ Code Mode reduces token usage by **50%+ and execution latency by 40-50%** compar
     [Set up your first MCP client connection →](./connecting-to-servers)
   </Step>
   <Step title="Choose Authentication (if needed)">
-    [Learn about header-based and OAuth 2.0 authentication →](./oauth)
+    [Pick the right auth type for your MCP servers →](./auth/overview)
   </Step>
   <Step title="Enable Code Mode (for 3+ servers)">
-    [Learn how Code Mode reduces costs by 50% →](./code-mode)
+    [Learn how Code Mode reduces costs by up to 92.2% →](./code-mode)
   </Step>
   <Step title="Execute Tools">
     [Learn the tool execution workflow →](./tool-execution)

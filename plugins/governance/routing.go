@@ -5,23 +5,15 @@ import (
 	"math/rand/v2"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// headerKeyPattern matches header map access patterns like headers["X-Api-Key"] or headers['X-Api-Key']
-var headerKeyPattern = regexp.MustCompile(`headers\[["']([^"']+)["']\]`)
-
-// headerInPattern matches "in headers" membership test patterns like "X-Api-Key" in headers or 'X-Api-Key' in headers
-var headerInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+headers`)
-
-// paramKeyPattern matches param map access patterns like params["Region"] or params['Region']
-var paramKeyPattern = regexp.MustCompile(`params\[["']([^"']+)["']\]`)
-
-// paramInPattern matches "in params" membership test patterns like "Region" in params or 'Region' in params
-var paramInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+params`)
+// DefaultRoutingChainMaxDepth is the default maximum depth for routing rule chain evaluation.
+const DefaultRoutingChainMaxDepth = 10
 
 // ScopeLevel represents a level in the scope precedence hierarchy
 type ScopeLevel struct {
@@ -54,28 +46,41 @@ type RoutingContext struct {
 }
 
 type RoutingEngine struct {
-	store  GovernanceStore
-	logger schemas.Logger
+	store         GovernanceStore
+	logger        schemas.Logger
+	chainMaxDepth *int // pointer to live config value; changes are reflected immediately
 }
 
 // NewRoutingEngine creates a new RoutingEngine
-func NewRoutingEngine(store GovernanceStore, logger schemas.Logger) (*RoutingEngine, error) {
+func NewRoutingEngine(store GovernanceStore, logger schemas.Logger, chainMaxDepth *int) (*RoutingEngine, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store cannot be nil")
 	}
-
 	if logger == nil {
 		return nil, fmt.Errorf("logger cannot be nil")
 	}
+	if chainMaxDepth == nil {
+		return nil, fmt.Errorf("chainMaxDepth cannot be nil")
+	}
+	if *chainMaxDepth <= 0 {
+		return nil, fmt.Errorf("chainMaxDepth must be greater than 0")
+	}
 
 	return &RoutingEngine{
-		store:  store,
-		logger: logger,
+		store:         store,
+		logger:        logger,
+		chainMaxDepth: chainMaxDepth,
 	}, nil
 }
 
-// EvaluateRoutingRules evaluates routing rules for a given context and returns routing decision
-// Implements scope precedence: VirtualKey > Team > Customer > Global (first-match-wins)
+// EvaluateRoutingRules evaluates routing rules for a given context and returns a routing decision.
+// Implements scope precedence: VirtualKey > Team > Customer > Global (first-match-wins within each iteration).
+// When a matched rule has chain_rule=true, the resolved provider/model is fed back into the evaluator
+// and the full scope chain is re-evaluated with the updated context. This repeats until:
+//  1. No rule matches the current context
+//  2. A terminal rule matches (chain_rule=false, the default)
+//  3. Every chain-rule that could match has already fired once (all candidates exhausted)
+//  4. The chain exceeds the configured max depth (chainMaxDepth, default 10)
 func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *RoutingContext) (*RoutingDecision, error) {
 	if routingCtx == nil {
 		return nil, fmt.Errorf("routing context cannot be nil")
@@ -83,77 +88,133 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 	re.logger.Debug("[RoutingEngine] Starting rule evaluation for provider=%s, model=%s", routingCtx.Provider, routingCtx.Model)
 
-	// Extract CEL variables from routing context
-	variables, err := extractRoutingVariables(routingCtx)
-	if err != nil {
-		re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
-		return nil, fmt.Errorf("failed to extract routing variables: %w", err)
-	}
+	// Mutable provider/model that advances through the chain; all other context fields are immutable.
+	currentProvider := routingCtx.Provider
+	currentModel := routingCtx.Model
 
-	// Determine scope chain based on organizational hierarchy
+	// Track which rule IDs have already fired to prevent a rule from matching more than once per chain.
+	// This allows a self-looping rule (target == current state) to fire once and then let subsequent
+	// rules in the chain run, rather than halting with a cycle error.
+	visitedRuleIDs := map[string]struct{}{}
+
+	// Build scope chain once — it's based on the immutable VirtualKey and won't change across chain steps.
 	scopeChain := buildScopeChain(routingCtx.VirtualKey)
-	re.logger.Debug("[RoutingEngine] Scope chain: %v", scopeChainToStrings(scopeChain))
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
-	// Evaluate rules in scope precedence order (first-match-wins)
+	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
+	// and we re-evaluate the scope hierarchy on subsequent steps.
+	rulesPerScope := make(map[ScopeLevel][]*configstoreTables.TableRoutingRule, len(scopeChain))
 	for _, scope := range scopeChain {
-		scopeID := scope.ScopeID
-
-		// Get all enabled rules for this scope, ordered by priority ASC
-		rules := re.store.GetScopedRoutingRules(scope.ScopeName, scopeID)
-		re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scopeID, len(rules))
-
+		rules := re.store.GetScopedRoutingRules(ctx, scope.ScopeName, scope.ScopeID)
 		if len(rules) == 0 {
 			continue
 		}
+		re.logger.Debug("[RoutingEngine] Loaded %d rules for scope=%s, scopeID=%s", len(rules), scope.ScopeName, scope.ScopeID)
+		rulesPerScope[scope] = rules
+	}
 
-		ruleNames := make([]string, 0, len(rules))
-		for _, r := range rules {
-			ruleNames = append(ruleNames, r.Name)
+	if len(rulesPerScope) == 0 {
+		re.logger.Debug("[RoutingEngine] No routing rules found for any scope, skipping evaluation")
+		return nil, nil
+	}
+
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+		fmt.Sprintf("Evaluating routing rules for model=%s, provider=%s, requestType=%s", routingCtx.Model, routingCtx.Provider, routingCtx.RequestType))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
+
+	var finalDecision *RoutingDecision
+
+	for chainStep := 0; ; chainStep++ {
+		// TERMINATION 4: Chain exceeded configured max depth.
+		maxDepth := *re.chainMaxDepth
+		if chainStep >= maxDepth {
+			re.logger.Warn("[RoutingEngine] Routing rule chain exceeded max depth (%d), stopping", maxDepth)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelWarn, fmt.Sprintf("Chain exceeded max depth (%d) at step %d, stopping. Final resolved: provider=%s, model=%s", maxDepth, chainStep, currentProvider, currentModel))
+			break
 		}
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
 
-		// Evaluate each rule
-		for _, rule := range rules {
-			re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
+		if chainStep > 0 {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Chain step %d: re-evaluating with provider=%s, model=%s", chainStep, currentProvider, currentModel))
+		}
 
-			// Get or compile and cache the CEL program
-			program, err := re.store.GetRoutingProgram(rule)
-			if err != nil {
-				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
+		// Build CEL variables for the current chain step's provider/model.
+		iterCtx := *routingCtx
+		iterCtx.Provider = currentProvider
+		iterCtx.Model = currentModel
+		// Refresh budget/rate-limit status for the current provider/model so chained
+		// rules that test budget_used, tokens_used, or request see fresh data.
+		iterCtx.BudgetAndRateLimitStatus = re.store.GetBudgetAndRateLimitStatus(ctx, currentModel, currentProvider, routingCtx.VirtualKey, nil, nil, nil)
+
+		variables, err := extractRoutingVariables(&iterCtx)
+		if err != nil {
+			re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Failed to extract routing variables: %v", err))
+			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
+		}
+
+		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
+
+		var stepDecision *RoutingDecision
+		var matchedRule *configstoreTables.TableRoutingRule
+		var matchedTargetWeight float64
+
+	outerLoop:
+		for _, scope := range scopeChain {
+			rules, ok := rulesPerScope[scope]
+			if !ok {
 				continue
 			}
+			re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scope.ScopeID, len(rules))
 
-			// Evaluate the CEL expression
-			matched, err := evaluateCELExpression(program, variables)
-			if err != nil {
-				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
-				continue
+			ruleNames := make([]string, 0, len(rules))
+			for _, r := range rules {
+				ruleNames = append(ruleNames, r.Name)
 			}
 
-			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
 
-			if !matched {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
-			}
+			for _, rule := range rules {
+				if _, fired := visitedRuleIDs[rule.ID]; fired {
+					re.logger.Debug("[RoutingEngine] Skipping rule %s (already fired this chain)", rule.Name)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' skipped: already fired in this chain", rule.Name))
+					continue
+				}
+				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
-			// If rule matched, select a target probabilistically and return routing decision
-			if matched {
-				target, ok := selectWeightedTarget(rule.Targets)
-				if !ok {
-					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
-					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
+				program, err := re.store.GetRoutingProgram(ctx, rule)
+				if err != nil {
+					re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 					continue
 				}
 
-				provider := string(routingCtx.Provider)
+				matched, err := evaluateCELExpression(program, variables)
+				if err != nil {
+					re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
+					continue
+				}
+
+				re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
+
+				if !matched {
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+						fmt.Sprintf("Rule '%s' [%s] → no match (%s)", rule.Name, rule.CelExpression, buildNoMatchContext(rule.CelExpression, variables)))
+					continue
+				}
+
+				target, ok := selectWeightedTarget(rule.Targets)
+				if !ok {
+					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
+					continue
+				}
+
+				provider := string(currentProvider)
 				if target.Provider != nil && *target.Provider != "" {
 					provider = *target.Provider
 				}
 
-				model := routingCtx.Model
+				model := currentModel
 				if target.Model != nil && *target.Model != "" {
 					model = *target.Model
 				}
@@ -163,7 +224,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					keyID = *target.KeyID
 				}
 
-				decision := &RoutingDecision{
+				stepDecision = &RoutingDecision{
 					Provider:        provider,
 					Model:           model,
 					KeyID:           keyID,
@@ -171,21 +232,46 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}
-
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, rule.ID)
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
-
-				re.logger.Debug("[RoutingEngine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", target.Weight, provider, model, rule.ParsedFallbacks)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, target.Weight, provider, model, rule.ParsedFallbacks))
-				return decision, nil
+				matchedRule = rule
+				matchedTargetWeight = target.Weight
+				break outerLoop
 			}
-
 		}
+
+		// TERMINATION 1: No rule matched this iteration.
+		if stepDecision == nil {
+			break
+		}
+
+		// Accumulate: last match wins for all fields.
+		finalDecision = stepDecision
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
+
+		chainSuffix := ""
+		if matchedRule.ChainRule {
+			chainSuffix = " [chain_rule=true, continuing]"
+		}
+		re.logger.Debug("[RoutingEngine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedRule.Name, matchedRule.CelExpression, matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix))
+
+		// TERMINATION 2: Rule is terminal (chain_rule=false, the default).
+		if !matchedRule.ChainRule {
+			break
+		}
+
+		// Mark this chain-rule as fired; it will be skipped in all subsequent chain steps.
+		visitedRuleIDs[matchedRule.ID] = struct{}{}
+
+		// Advance context for next chain iteration.
+		currentProvider = schemas.ModelProvider(stepDecision.Provider)
+		currentModel = stepDecision.Model
 	}
 
-	// No rule matched - return nil decision (caller should use default routing)
-	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
-	return nil, nil
+	if finalDecision == nil {
+		re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
+	}
+	return finalDecision, nil
 }
 
 // selectWeightedTarget picks one target from the slice using weighted random selection.
@@ -283,7 +369,7 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
-func evaluateCELExpression(program cel.Program, variables map[string]interface{}) (bool, error) {
+func evaluateCELExpression(program cel.Program, variables map[string]any) (bool, error) {
 	if program == nil {
 		return false, fmt.Errorf("CEL program is nil")
 	}
@@ -404,50 +490,66 @@ func scopeChainToStrings(chain []ScopeLevel) []string {
 	return scopes
 }
 
-// validateCELExpression performs basic validation on CEL expression format
-func validateCELExpression(expr string) error {
-	if expr == "" || expr == "true" || expr == "false" {
-		return nil // Empty, true, or false are valid
+// buildNoMatchContext builds a compact debug string of scalar variables plus
+// only the headers/params keys actually referenced in the CEL expression.
+func buildNoMatchContext(expr string, variables map[string]any) string {
+	parts := []string{
+		fmt.Sprintf("model=%q", variables["model"]),
+		fmt.Sprintf("provider=%q", variables["provider"]),
+		fmt.Sprintf("request_type=%q", variables["request_type"]),
+		fmt.Sprintf("budget_used=%.1f%%", variables["budget_used"]),
+		fmt.Sprintf("tokens_used=%.1f%%", variables["tokens_used"]),
+		fmt.Sprintf("request=%.1f%%", variables["request"]),
 	}
-
-	// List of allowed operators and keywords
-	validPatterns := []string{
-		"==", "!=", "&&", "||", ">", "<", ">=", "<=",
-		"in ", "matches ", ".startsWith(", ".contains(", ".endsWith(",
-		"[", "]", "(", ")", "!",
-	}
-
-	// Check if expression contains at least one valid operator
-	hasPattern := false
-	for _, pattern := range validPatterns {
-		if strings.Contains(expr, pattern) {
-			hasPattern = true
-			break
+	for _, mapName := range []string{"headers", "params"} {
+		keys := extractMapKeysFromCEL(expr, mapName)
+		if len(keys) == 0 {
+			continue
+		}
+		if m, ok := variables[mapName].(map[string]string); ok {
+			kvs := make([]string, 0, len(keys))
+			for _, k := range keys {
+				if _, exists := m[k]; exists {
+					kvs = append(kvs, k+"=<present>")
+				} else {
+					kvs = append(kvs, k+"=<missing>")
+				}
+			}
+			parts = append(parts, mapName+"("+strings.Join(kvs, ", ")+")")
 		}
 	}
-
-	if !hasPattern {
-		return fmt.Errorf("expression must contain at least one operator: %s", expr)
-	}
-
-	return nil
+	return strings.Join(parts, ", ")
 }
 
-// normalizeMapKeysInCEL lowercases header and param keys in CEL expressions
-// so that headers["X-Api-Key"] becomes headers["x-api-key"], "X-Api-Key" in headers becomes "x-api-key" in headers,
-// params["Region"] becomes params["region"], and "Region" in params becomes "region" in params.
-// This ensures CEL expressions match against the normalized (lowercase) map keys at runtime.
-func normalizeMapKeysInCEL(expr string) string {
-	toLower := func(match string) string {
-		return strings.ToLower(match)
+// celMapKeyRegexCache caches one *regexp.Regexp per mapName to avoid
+// recompiling on every call. Lazy and concurrent-safe via sync.Map's
+// LoadOrStore atomicity; benign duplicate compiles on first concurrent miss.
+var celMapKeyRegexCache sync.Map // map[string]*regexp.Regexp
+
+// extractMapKeysFromCEL extracts unique map access keys for mapName from a CEL expression.
+// Handles mapName["key"], mapName['key'], and mapName.key patterns.
+func extractMapKeysFromCEL(expr, mapName string) []string {
+	v, ok := celMapKeyRegexCache.Load(mapName)
+	if !ok {
+		quoted := regexp.QuoteMeta(mapName)
+		compiled := regexp.MustCompile(quoted + `\["([^"]+)"\]|` + quoted + `\['([^']+)'\]|` + quoted + `\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+		v, _ = celMapKeyRegexCache.LoadOrStore(mapName, compiled)
 	}
-	// Normalize bracket access
-	expr = headerKeyPattern.ReplaceAllStringFunc(expr, toLower)
-	expr = paramKeyPattern.ReplaceAllStringFunc(expr, toLower)
-	// Normalize "in" membership test
-	expr = headerInPattern.ReplaceAllStringFunc(expr, toLower)
-	expr = paramInPattern.ReplaceAllStringFunc(expr, toLower)
-	return expr
+	re := v.(*regexp.Regexp)
+	seen := map[string]struct{}{}
+	var keys []string
+	for _, m := range re.FindAllStringSubmatch(expr, -1) {
+		for _, cap := range m[1:] {
+			if cap != "" {
+				if _, dup := seen[cap]; !dup {
+					seen[cap] = struct{}{}
+					keys = append(keys, cap)
+				}
+				break
+			}
+		}
+	}
+	return keys
 }
 
 // createCELEnvironment creates a new CEL environment for routing rules

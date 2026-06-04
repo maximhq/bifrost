@@ -45,11 +45,13 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	// Drop existing tables and migration tracking in the correct order
-	// Note: The migrator uses "migrations" table by default, not "gomigrate"
+	// Drop existing tables and migration tracking in the correct order.
+	// Preserve the shared migrations table — only clear its rows.
+	dropAllManagedMatViews(db)
 	db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 	db.Exec("DROP TABLE IF EXISTS logs")
-	db.Exec("DROP TABLE IF EXISTS migrations")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
 
 	// Create a minimal logs table with only the columns needed for the test
 	err := db.Exec(`
@@ -70,10 +72,20 @@ func setupLogsTableForGINIndexTest(t *testing.T, db *gorm.DB) {
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
+		dropAllManagedMatViews(db)
 		db.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin")
 		db.Exec("DROP TABLE IF EXISTS logs")
-		db.Exec("DROP TABLE IF EXISTS migrations")
+		db.Exec("DELETE FROM migrations")
 	})
+}
+
+func dropAllManagedMatViews(db *gorm.DB) {
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
+	for _, view := range legacyMatViewNames {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 }
 
 // insertTestLog inserts a test log entry with the given metadata value.
@@ -136,10 +148,20 @@ func TestMigrationAddMetadataGINIndex_ValidJSON(t *testing.T) {
 	insertTestLog(t, db, "log-valid-3", &validJSON3)
 	insertTestLog(t, db, "log-valid-4", &validJSON4)
 
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err = migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
-	err = ensureMetadataGINIndex(ctx, db)
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify all valid JSON object values are preserved
@@ -173,18 +195,18 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert logs with invalid JSON metadata (not valid JSON objects)
-	invalid1 := `{"key": invalid}`            // Unquoted value
-	invalid2 := `{key: "value"}`              // Unquoted key
-	invalid3 := `{"key": "value",}`           // Trailing comma
-	invalid4 := `just a string`               // Plain text
-	invalid5 := ``                            // Empty string
-	invalid6 := `{"unclosed": "brace"`        // Unclosed brace
-	invalid7 := `{"key": undefined}`          // JavaScript undefined
-	invalid8 := `{'single': 'quotes'}`        // Single quotes
-	invalid9 := `[NULL]`                      // Literal string [NULL] (not valid JSON)
-	invalid10 := `NULL`                       // Literal string NULL (not valid JSON)
-	invalid11 := `null`                       // Valid JSON but not a JSON object
-	invalid12 := `[1, 2, 3]`                  // Valid JSON array but not a JSON object
+	invalid1 := `{"key": invalid}`     // Unquoted value
+	invalid2 := `{key: "value"}`       // Unquoted key
+	invalid3 := `{"key": "value",}`    // Trailing comma
+	invalid4 := `just a string`        // Plain text
+	invalid5 := ``                     // Empty string
+	invalid6 := `{"unclosed": "brace"` // Unclosed brace
+	invalid7 := `{"key": undefined}`   // JavaScript undefined
+	invalid8 := `{'single': 'quotes'}` // Single quotes
+	invalid9 := `[NULL]`               // Literal string [NULL] (not valid JSON)
+	invalid10 := `NULL`                // Literal string NULL (not valid JSON)
+	invalid11 := `null`                // Valid JSON but not a JSON object
+	invalid12 := `[1, 2, 3]`           // Valid JSON array but not a JSON object
 
 	insertTestLog(t, db, "log-invalid-1", &invalid1)
 	insertTestLog(t, db, "log-invalid-2", &invalid2)
@@ -199,11 +221,19 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	insertTestLog(t, db, "log-invalid-11", &invalid11)
 	insertTestLog(t, db, "log-invalid-12", &invalid12)
 	insertTestLog(t, db, "log-actual-null", nil) // Actual SQL NULL
-
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
 	// Run the migration (cleanup only) then ensure the index is built.
-	err := migrationAddMetadataGINIndex(ctx, db)
+	err = migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed even with invalid JSON")
-	err = ensureMetadataGINIndex(ctx, db)
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed after invalid JSON cleanup")
 
 	// Verify all non-object values were set to NULL (only JSON objects are supported)
@@ -241,7 +271,18 @@ func TestMigrationAddMetadataGINIndex_MixedData(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
-	err = ensureMetadataGINIndex(ctx, db)
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify valid JSON is preserved
@@ -277,7 +318,18 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "First migration should succeed")
-	err = ensureMetadataGINIndex(ctx, db)
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify index exists
@@ -291,7 +343,7 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	// Run the migration second time (should be idempotent due to gomigrate tracking)
 	err = migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Second migration should succeed (idempotent)")
-	err = ensureMetadataGINIndex(ctx, db)
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "ensureMetadataGINIndex should be a no-op when index already exists")
 
 	// Verify index still exists
@@ -315,7 +367,18 @@ func TestMigrationAddMetadataGINIndex_EmptyTable(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed on empty table")
-	err = ensureMetadataGINIndex(ctx, db)
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed on empty table")
 
 	// Verify the GIN index was created
@@ -333,7 +396,7 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 
 	// Test edge cases that might be tricky (only JSON objects are supported)
 	emptyObject := `{}`
-	emptyArray := `[]`                        // Not a JSON object, should be nullified
+	emptyArray := `[]`                       // Not a JSON object, should be nullified
 	whitespaceJSON := `  {"key": "value"}  ` // Valid JSON with surrounding whitespace
 	unicodeJSON := `{"emoji": "🎉", "chinese": "中文"}`
 	largeNumber := `{"bignum": 99999999999999999999}`
@@ -349,7 +412,18 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
-	err = ensureMetadataGINIndex(ctx, db)
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("Failed to get SQL DB: %v", err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get SQL connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	err = ensureMetadataGINIndex(ctx, conn)
 	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify all edge cases are handled correctly

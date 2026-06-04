@@ -23,11 +23,11 @@ From `tests/e2e/api`:
 
 ```bash
 # Run for all providers (each bifrost-v1-*.postman_environment.json in this folder, except sgl and ollama)
-./run-newman-tests.sh
+./runners/run-newman-inference-tests.sh
 
 # Run for a single provider
-./run-newman-tests.sh --env openai
-./run-newman-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
+./runners/run-newman-inference-tests.sh --env openai
+./runners/run-newman-inference-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
 ```
 
 Ensure the Bifrost server is running and the chosen provider(s) are configured (API keys, etc.). Depending on provider capabilities, tests may either succeed (2xx) or return expected unsupported-operation responses.
@@ -40,7 +40,7 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 
 ## Files
 
-All Bifrost providers are included except **sgl** and **ollama** (excluded in `run-newman-tests.sh` when running “all providers”).
+All Bifrost providers are included except **sgl** and **ollama** (excluded in `runners/run-newman-inference-tests.sh` when running “all providers”).
 
 - `bifrost-v1-openai.postman_environment.json`
 - `bifrost-v1-anthropic.postman_environment.json`

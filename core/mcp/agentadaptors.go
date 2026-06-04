@@ -3,7 +3,6 @@ package mcp
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -60,6 +59,12 @@ type agentAPIAdapter interface {
 		executedToolCalls []schemas.ChatAssistantMessageToolCall,
 		nonAutoExecutableToolCalls []schemas.ChatAssistantMessageToolCall,
 	) interface{}
+
+	// extractUsage returns the token usage from a response as BifrostLLMUsage.
+	extractUsage(response interface{}) *schemas.BifrostLLMUsage
+
+	// applyUsage sets accumulated usage on the response in place.
+	applyUsage(response interface{}, usage *schemas.BifrostLLMUsage)
 }
 
 // chatAPIAdapter implements agentAPIAdapter for Chat API
@@ -176,6 +181,14 @@ func (c *chatAPIAdapter) createResponseWithExecutedTools(
 	)
 }
 
+func (c *chatAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMUsage {
+	return response.(*schemas.BifrostChatResponse).Usage
+}
+
+func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
+	response.(*schemas.BifrostChatResponse).Usage = usage
+}
+
 // createChatResponseWithExecutedToolsAndNonAutoExecutableCalls creates a chat response
 // that includes executed tool results and non-auto-executable tool calls. The response
 // contains a formatted text summary of executed tool results and includes the non-auto-executable
@@ -262,7 +275,7 @@ func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 		}
 
 		// Convert to JSON string for display
-		jsonBytes, err := sonic.Marshal(toolResultsMap)
+		jsonBytes, err := schemas.MarshalSorted(toolResultsMap)
 		if err != nil {
 			// Fallback to simple string representation
 			contentText = fmt.Sprintf("The Output from allowed tools calls is - %v\n\nNow I shall call these tools next...", toolResultsMap)
@@ -391,6 +404,14 @@ func (r *responsesAPIAdapter) createResponseWithExecutedTools(
 	)
 }
 
+func (r *responsesAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMUsage {
+	return response.(*schemas.BifrostResponsesResponse).Usage.ToBifrostLLMUsage()
+}
+
+func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
+	response.(*schemas.BifrostResponsesResponse).Usage = usage.ToResponsesResponseUsage()
+}
+
 // createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls creates a responses response
 // that includes executed tool results and non-auto-executable tool calls. The response
 // contains a formatted text summary of executed tool results and includes the non-auto-executable
@@ -412,35 +433,36 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 ) *schemas.BifrostResponsesResponse {
 	// Start with a copy of the original response, preserving all Response-specific fields
 	response := &schemas.BifrostResponsesResponse{
-		ID:                 originalResponse.ID,
-		Background:         originalResponse.Background,
-		Conversation:       originalResponse.Conversation,
-		CreatedAt:          originalResponse.CreatedAt,
-		Error:              originalResponse.Error,
-		Include:            originalResponse.Include,
-		IncompleteDetails:  originalResponse.IncompleteDetails,
-		Instructions:       originalResponse.Instructions,
-		MaxOutputTokens:    originalResponse.MaxOutputTokens,
-		MaxToolCalls:       originalResponse.MaxToolCalls,
-		Metadata:           originalResponse.Metadata,
-		ParallelToolCalls:  originalResponse.ParallelToolCalls,
-		PreviousResponseID: originalResponse.PreviousResponseID,
-		Prompt:             originalResponse.Prompt,
-		PromptCacheKey:     originalResponse.PromptCacheKey,
-		Reasoning:          originalResponse.Reasoning,
-		SafetyIdentifier:   originalResponse.SafetyIdentifier,
-		ServiceTier:        originalResponse.ServiceTier,
-		StreamOptions:      originalResponse.StreamOptions,
-		Store:              originalResponse.Store,
-		Temperature:        originalResponse.Temperature,
-		Text:               originalResponse.Text,
-		TopLogProbs:        originalResponse.TopLogProbs,
-		TopP:               originalResponse.TopP,
-		ToolChoice:         originalResponse.ToolChoice,
-		Tools:              originalResponse.Tools,
-		Truncation:         originalResponse.Truncation,
-		Usage:              originalResponse.Usage,
-		ExtraFields:        originalResponse.ExtraFields,
+		ID:                   originalResponse.ID,
+		Background:           originalResponse.Background,
+		Conversation:         originalResponse.Conversation,
+		CreatedAt:            originalResponse.CreatedAt,
+		Error:                originalResponse.Error,
+		Include:              originalResponse.Include,
+		IncompleteDetails:    originalResponse.IncompleteDetails,
+		Instructions:         originalResponse.Instructions,
+		MaxOutputTokens:      originalResponse.MaxOutputTokens,
+		MaxToolCalls:         originalResponse.MaxToolCalls,
+		Metadata:             originalResponse.Metadata,
+		ParallelToolCalls:    originalResponse.ParallelToolCalls,
+		PreviousResponseID:   originalResponse.PreviousResponseID,
+		Prompt:               originalResponse.Prompt,
+		PromptCacheKey:       originalResponse.PromptCacheKey,
+		PromptCacheRetention: originalResponse.PromptCacheRetention,
+		Reasoning:            originalResponse.Reasoning,
+		SafetyIdentifier:     originalResponse.SafetyIdentifier,
+		ServiceTier:          originalResponse.ServiceTier,
+		StreamOptions:        originalResponse.StreamOptions,
+		Store:                originalResponse.Store,
+		Temperature:          originalResponse.Temperature,
+		Text:                 originalResponse.Text,
+		TopLogProbs:          originalResponse.TopLogProbs,
+		TopP:                 originalResponse.TopP,
+		ToolChoice:           originalResponse.ToolChoice,
+		Tools:                originalResponse.Tools,
+		Truncation:           originalResponse.Truncation,
+		Usage:                originalResponse.Usage,
+		ExtraFields:          originalResponse.ExtraFields,
 		// Perplexity-specific fields
 		SearchResults: originalResponse.SearchResults,
 		Videos:        originalResponse.Videos,
@@ -498,7 +520,7 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 		}
 
 		// Convert to JSON string for display
-		jsonBytes, err := sonic.Marshal(toolResultsMap)
+		jsonBytes, err := schemas.MarshalSorted(toolResultsMap)
 		if err != nil {
 			// Fallback to simple string representation
 			contentText = fmt.Sprintf("The Output from allowed tools calls is - %v\n\nNow I shall call these tools next...", toolResultsMap)

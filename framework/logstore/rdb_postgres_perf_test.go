@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -20,15 +21,26 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 		t.Skip("Postgres not available, skipping test")
 	}
 
-	// Clean slate
+	// Clean slate — drop test-owned tables but preserve the shared migrations
+	// table so concurrent test packages (e.g. configstore) are not disrupted.
+	for _, view := range allMatViewNames() {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
+	for _, view := range legacyMatViewNames {
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+	}
 	db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS logs CASCADE")
-	db.Exec("DROP TABLE IF EXISTS migrations CASCADE")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
 
 	ctx := context.Background()
 	err := triggerMigrations(ctx, db)
 	require.NoError(t, err, "migrations should succeed")
+
+	err = ensureMatViews(ctx, db)
+	require.NoError(t, err, "matview creation should succeed")
 
 	store := &RDBLogStore{db: db}
 
@@ -36,13 +48,69 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 		for _, idx := range performanceIndexes {
 			db.Exec("DROP INDEX IF EXISTS " + idx.name)
 		}
+		for _, view := range allMatViewNames() {
+			db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+		}
+		for _, view := range legacyMatViewNames {
+			db.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE")
+		}
 		db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS logs CASCADE")
-		db.Exec("DROP TABLE IF EXISTS migrations CASCADE")
+		db.Exec("DELETE FROM migrations")
 	})
 
 	return store, db
+}
+
+// acquirePerfTestSQLConn returns a dedicated connection for ensurePerformanceIndexes (CONCURRENTLY + session SET).
+func acquirePerfTestSQLConn(t *testing.T, ctx context.Context, db *gorm.DB) *sql.Conn {
+	t.Helper()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+func matviewIndexReady(t *testing.T, db *gorm.DB, viewName, indexName string) bool {
+	t.Helper()
+	var ready bool
+	err := db.Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid AND pi.indisunique), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = ?
+		  AND ic.relname = ?
+	`, viewName, indexName).Scan(&ready).Error
+	require.NoError(t, err, "Failed to check matview index readiness")
+	return ready
+}
+
+func TestEnsureMatViewsCreatesUniqueIndexes(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+
+	for _, idx := range matviewUniqueIndexes {
+		assert.Truef(t, matviewIndexReady(t, db, idx.view, idx.name), "matview unique index %s on %s should be valid", idx.name, idx.view)
+	}
+}
+
+func TestEnsureMatViewsRebuildsBadSameNameIndex(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec("DROP INDEX IF EXISTS mv_logs_hourly_uniq").Error)
+	require.NoError(t, db.Exec("CREATE INDEX mv_logs_hourly_uniq ON mv_logs_hourly(hour)").Error)
+	require.False(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "same-name non-unique index should not be considered ready")
+
+	require.NoError(t, ensureMatViews(ctx, db))
+
+	assert.True(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "ensureMatViews should rebuild the required unique index")
+	for _, v := range filterMatViews {
+		assert.Truef(t, matviewIndexReady(t, db, v.name, filterMatViewUniqueIdxName(v)), "filter matview unique index %s should remain valid", filterMatViewUniqueIdxName(v))
+	}
 }
 
 type logOpts struct {
@@ -59,6 +127,7 @@ type logOpts struct {
 	SelectedKeyName    string
 	RoutingRuleID      string
 	RoutingRuleName    string
+	StopReason         string
 }
 
 func insertPerfLog(t *testing.T, db *gorm.DB, opts logOpts) {
@@ -77,13 +146,13 @@ func insertPerfLog(t *testing.T, db *gorm.DB, opts logOpts) {
 		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
 			routing_engines_used, metadata, content_summary,
 			virtual_key_id, virtual_key_name, selected_key_id, selected_key_name,
-			routing_rule_id, routing_rule_name, created_at, latency, cost,
+			routing_rule_id, routing_rule_name, stop_reason, created_at, latency, cost,
 			prompt_tokens, completion_tokens, total_tokens)
-		VALUES (?, ?, 'chat_completion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 0.01, 10, 5, 15)
+		VALUES (?, ?, 'chat_completion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 0.01, 10, 5, 15)
 	`, id, opts.Timestamp, opts.Provider, opts.Model, opts.Status,
 		opts.RoutingEnginesUsed, opts.Metadata, opts.ContentSummary,
 		opts.VirtualKeyID, opts.VirtualKeyName, opts.SelectedKeyID, opts.SelectedKeyName,
-		opts.RoutingRuleID, opts.RoutingRuleName, opts.Timestamp).Error
+		opts.RoutingRuleID, opts.RoutingRuleName, opts.StopReason, opts.Timestamp).Error
 	require.NoError(t, err, "Failed to insert test log")
 }
 
@@ -111,6 +180,16 @@ func insertPerfMCPLog(t *testing.T, db *gorm.DB, opts mcpLogOpts) {
 	require.NoError(t, err, "Failed to insert MCP test log")
 }
 
+// refreshTestMatViews refreshes materialized views after inserting test data.
+// This is needed because matviews are populated at creation time and don't
+// automatically reflect new inserts until explicitly refreshed.
+func refreshTestMatViews(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	ctx := context.Background()
+	err := refreshMatViews(ctx, db)
+	require.NoError(t, err, "Failed to refresh materialized views")
+}
+
 // ---------- Phase 1: Defensive Limits ----------
 
 func TestSearchLogs_LimitClamping(t *testing.T) {
@@ -121,6 +200,7 @@ func TestSearchLogs_LimitClamping(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		insertPerfLog(t, db, logOpts{Timestamp: now})
 	}
+	refreshTestMatViews(t, db)
 
 	// Limit=0 should be clamped (not return 0 results)
 	result, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 0})
@@ -175,6 +255,7 @@ func TestGetModelRankings_HasLimit(t *testing.T) {
 			Model: fmt.Sprintf("model-%d", i), Timestamp: now,
 		})
 	}
+	refreshTestMatViews(t, db)
 
 	result, err := store.GetModelRankings(ctx, SearchFilters{StartTime: &start, EndTime: &now})
 	require.NoError(t, err)
@@ -215,8 +296,9 @@ func TestGetDistinctModels_TimeCutoff(t *testing.T) {
 
 	insertPerfLog(t, db, logOpts{Model: "recent-model", Timestamp: recent})
 	insertPerfLog(t, db, logOpts{Model: "old-model", Timestamp: old})
+	refreshTestMatViews(t, db)
 
-	models, err := store.GetDistinctModels(ctx)
+	models, err := store.GetDistinctModels(ctx, 1000, "")
 	require.NoError(t, err)
 	assert.Contains(t, models, "recent-model")
 	assert.NotContains(t, models, "old-model")
@@ -235,8 +317,9 @@ func TestGetDistinctKeyPairs_TimeCutoff(t *testing.T) {
 	insertPerfLog(t, db, logOpts{
 		Timestamp: old, VirtualKeyID: "vk-old", VirtualKeyName: "Old Key",
 	})
+	refreshTestMatViews(t, db)
 
-	pairs, err := store.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name")
+	pairs, err := store.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 1000, "")
 	require.NoError(t, err)
 
 	var ids []string
@@ -260,8 +343,9 @@ func TestGetDistinctRoutingEngines_TimeCutoff(t *testing.T) {
 	insertPerfLog(t, db, logOpts{
 		Timestamp: old, RoutingEnginesUsed: "routing-rule",
 	})
+	refreshTestMatViews(t, db)
 
-	engines, err := store.GetDistinctRoutingEngines(ctx)
+	engines, err := store.GetDistinctRoutingEngines(ctx, 1000, "")
 	require.NoError(t, err)
 	assert.Contains(t, engines, "loadbalancing")
 	assert.Contains(t, engines, "governance")
@@ -282,10 +366,28 @@ func TestGetDistinctMetadataKeys_TimeCutoff(t *testing.T) {
 		Timestamp: old, Metadata: `{"old_key": "old_value"}`,
 	})
 
-	keys, err := store.GetDistinctMetadataKeys(ctx)
+	keys, err := store.GetDistinctMetadataKeys(ctx, 1000, "")
 	require.NoError(t, err)
 	assert.Contains(t, keys, "env")
 	assert.NotContains(t, keys, "old_key")
+}
+
+func TestGetDistinctStopReasons_TimeCutoff(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	recent := now.Add(-7 * 24 * time.Hour)
+	old := now.Add(-60 * 24 * time.Hour)
+
+	insertPerfLog(t, db, logOpts{Timestamp: recent, StopReason: "refusal"})
+	insertPerfLog(t, db, logOpts{Timestamp: recent, StopReason: "content_filter"})
+	insertPerfLog(t, db, logOpts{Timestamp: old, StopReason: "length"})
+
+	stopReasons, err := store.GetDistinctStopReasons(ctx, 1000, "")
+	require.NoError(t, err)
+	assert.Contains(t, stopReasons, "refusal")
+	assert.Contains(t, stopReasons, "content_filter")
+	assert.NotContains(t, stopReasons, "length")
 }
 
 func TestGetAvailableToolNames_TimeCutoff(t *testing.T) {
@@ -304,7 +406,7 @@ func TestGetAvailableToolNames_TimeCutoff(t *testing.T) {
 		VirtualKeyID: "vk-1", VirtualKeyName: "k1",
 	})
 
-	tools, err := store.GetAvailableToolNames(ctx)
+	tools, err := store.GetAvailableToolNames(ctx, 1000, "")
 	require.NoError(t, err)
 	assert.Contains(t, tools, "recent-tool")
 	assert.NotContains(t, tools, "old-tool")
@@ -326,7 +428,7 @@ func TestGetAvailableServerLabels_TimeCutoff(t *testing.T) {
 		VirtualKeyID: "vk-1", VirtualKeyName: "k1",
 	})
 
-	labels, err := store.GetAvailableServerLabels(ctx)
+	labels, err := store.GetAvailableServerLabels(ctx, 1000, "")
 	require.NoError(t, err)
 	assert.Contains(t, labels, "recent-server")
 	assert.NotContains(t, labels, "old-server")
@@ -348,7 +450,7 @@ func TestGetAvailableMCPVirtualKeys_TimeCutoff(t *testing.T) {
 		VirtualKeyID: "vk-old", VirtualKeyName: "Old VK",
 	})
 
-	keys, err := store.GetAvailableMCPVirtualKeys(ctx)
+	keys, err := store.GetAvailableMCPVirtualKeys(ctx, 1000, "")
 	require.NoError(t, err)
 
 	var ids []string
@@ -427,7 +529,8 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 	db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS logs CASCADE")
-	db.Exec("DROP TABLE IF EXISTS migrations CASCADE")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations")
 
 	ctx := context.Background()
 	err := triggerMigrations(ctx, db)
@@ -440,11 +543,12 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 		db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS logs CASCADE")
-		db.Exec("DROP TABLE IF EXISTS migrations CASCADE")
+		db.Exec("DELETE FROM migrations")
 	})
 
+	conn := acquirePerfTestSQLConn(t, ctx, db)
 	// First run
-	err = ensurePerformanceIndexes(ctx, db)
+	err = ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err, "ensurePerformanceIndexes should succeed")
 
 	// Verify all indexes exist and are valid
@@ -463,7 +567,7 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 	}
 
 	// Idempotent — second run should be a no-op
-	err = ensurePerformanceIndexes(ctx, db)
+	err = ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err, "ensurePerformanceIndexes should be idempotent")
 }
 
@@ -474,7 +578,9 @@ func TestContentSearch_Postgres(t *testing.T) {
 	start := now.Add(-1 * time.Hour)
 
 	// Build indexes
-	err := ensurePerformanceIndexes(ctx, db)
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+
+	err := ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err)
 
 	insertPerfLog(t, db, logOpts{
@@ -514,7 +620,8 @@ func TestMCPContentSearch_Postgres(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Build indexes
-	err := ensurePerformanceIndexes(ctx, db)
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	err := ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err)
 
 	insertPerfMCPLog(t, db, mcpLogOpts{

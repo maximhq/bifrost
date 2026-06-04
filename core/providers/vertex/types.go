@@ -3,13 +3,16 @@ package vertex
 import (
 	"time"
 
-	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 // Vertex AI Embedding API types
 
 const (
 	DefaultVertexAnthropicVersion = "vertex-2023-10-16"
+
+	// VertexServiceTierHeader is the HTTP header used to request priority or flex processing on the global endpoint.
+	VertexServiceTierHeader = "X-Vertex-AI-LLM-Shared-Request-Type"
 )
 
 // PhoneticEncoding represents the phonetic encoding of a phrase.
@@ -85,7 +88,7 @@ func (r *VertexRequestBody) GetExtraParams() map[string]interface{} {
 // MarshalJSON implements custom JSON marshalling for VertexRequestBody.
 // It marshals the RequestBody field directly without wrapping.
 func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(r.RequestBody)
+	return providerUtils.MarshalSorted(r.RequestBody)
 }
 
 // VertexRawRequestBody holds pre-serialized JSON bytes to preserve key ordering
@@ -192,23 +195,23 @@ type VertexModelLabels struct {
 // These types are for the publishers.models.list endpoint (Model Garden)
 
 type VertexPublisherModel struct {
-	Name           string                          `json:"name"`
-	VersionID      string                          `json:"versionId"`
-	OpenSourceCategory string                      `json:"openSourceCategory"`
-	LaunchStage    string                          `json:"launchStage"`
-	VersionState   string                          `json:"versionState"`
-	PublisherModelTemplate string                  `json:"publisherModelTemplate"`
-	SupportedActions *VertexPublisherModelActions  `json:"supportedActions"`
+	Name                   string                       `json:"name"`
+	VersionID              string                       `json:"versionId"`
+	OpenSourceCategory     string                       `json:"openSourceCategory"`
+	LaunchStage            string                       `json:"launchStage"`
+	VersionState           string                       `json:"versionState"`
+	PublisherModelTemplate string                       `json:"publisherModelTemplate"`
+	SupportedActions       *VertexPublisherModelActions `json:"supportedActions"`
 }
 
 type VertexPublisherModelActions struct {
-	OpenGenerationAIStudio      *VertexPublisherModelURI `json:"openGenerationAiStudio"`
-	OpenGenie                   *VertexPublisherModelURI `json:"openGenie"`
-	OpenPromptTuningPipeline    *VertexPublisherModelURI `json:"openPromptTuningPipeline"`
-	OpenNotebook                *VertexPublisherModelURI `json:"openNotebook"`
-	OpenFineTuningPipeline      *VertexPublisherModelURI `json:"openFineTuningPipeline"`
-	Deploy                      *VertexPublisherModelDeploy `json:"deploy"`
-	OpenEvaluationPipeline      *VertexPublisherModelURI `json:"openEvaluationPipeline"`
+	OpenGenerationAIStudio   *VertexPublisherModelURI    `json:"openGenerationAiStudio"`
+	OpenGenie                *VertexPublisherModelURI    `json:"openGenie"`
+	OpenPromptTuningPipeline *VertexPublisherModelURI    `json:"openPromptTuningPipeline"`
+	OpenNotebook             *VertexPublisherModelURI    `json:"openNotebook"`
+	OpenFineTuningPipeline   *VertexPublisherModelURI    `json:"openFineTuningPipeline"`
+	Deploy                   *VertexPublisherModelDeploy `json:"deploy"`
+	OpenEvaluationPipeline   *VertexPublisherModelURI    `json:"openEvaluationPipeline"`
 }
 
 type VertexPublisherModelURI struct {

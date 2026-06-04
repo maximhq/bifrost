@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +10,7 @@ import { toast } from "sonner";
 interface PricingFormData {
 	pricing_datasheet_url: string;
 	pricing_sync_interval_hours: number;
+	model_parameters_url: string;
 }
 
 export default function PricingConfigView() {
@@ -31,6 +30,7 @@ export default function PricingConfigView() {
 		defaultValues: {
 			pricing_datasheet_url: "",
 			pricing_sync_interval_hours: 24,
+			model_parameters_url: "",
 		},
 	});
 
@@ -41,6 +41,7 @@ export default function PricingConfigView() {
 			reset({
 				pricing_datasheet_url: config.pricing_url || "",
 				pricing_sync_interval_hours: Math.round(config.pricing_sync_interval / 3600) || 24,
+				model_parameters_url: config.model_parameters_url || "",
 			});
 		}
 	}, [config, bifrostConfig, reset]);
@@ -49,7 +50,12 @@ export default function PricingConfigView() {
 		if (!config || !isDirty) return false;
 		const serverUrl = config.pricing_url || "";
 		const serverInterval = Math.round(config.pricing_sync_interval / 3600);
-		return formValues.pricing_datasheet_url !== serverUrl || formValues.pricing_sync_interval_hours !== serverInterval;
+		const serverModelParamsUrl = config.model_parameters_url || "";
+		return (
+			formValues.pricing_datasheet_url !== serverUrl ||
+			formValues.pricing_sync_interval_hours !== serverInterval ||
+			formValues.model_parameters_url !== serverModelParamsUrl
+		);
 	}, [config, formValues, isDirty]);
 
 	const onSubmit = async (data: PricingFormData) => {
@@ -61,6 +67,7 @@ export default function PricingConfigView() {
 					id: bifrostConfig?.framework_config.id || 0,
 					pricing_url: data.pricing_datasheet_url,
 					pricing_sync_interval: data.pricing_sync_interval_hours * 3600,
+					model_parameters_url: data.model_parameters_url,
 				},
 			}).unwrap();
 			toast.success("Pricing configuration updated successfully.");
@@ -116,6 +123,34 @@ export default function PricingConfigView() {
 						{errors.pricing_datasheet_url && <p className="text-destructive text-sm">{errors.pricing_datasheet_url.message}</p>}
 					</div>
 
+					{/* Model Parameters URL */}
+					<div className="space-y-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
+							<p className="text-muted-foreground text-sm">URL to a custom model parameters datasheet. Leave empty to use default.</p>
+						</div>
+						<Input
+							id="model-parameters-url"
+							type="text"
+							placeholder="https://example.com/model-parameters.json"
+							data-testid="model-parameters-url-input"
+							{...register("model_parameters_url", {
+								pattern: {
+									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))([\/\w \.-]*)*\/?$/,
+									message: "Please enter a valid URL.",
+								},
+								validate: {
+									checkIfHttp: (value) => {
+										if (!value) return true;
+										return value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://";
+									},
+								},
+							})}
+							className={errors.model_parameters_url ? "border-destructive" : ""}
+						/>
+						{errors.model_parameters_url && <p className="text-destructive text-sm">{errors.model_parameters_url.message}</p>}
+					</div>
+
 					{/* Pricing Sync Interval */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-2">
@@ -147,7 +182,13 @@ export default function PricingConfigView() {
 					</div>
 				</div>
 				<div className="flex justify-end gap-2 pt-2">
-					<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess} data-testid="pricing-force-sync-btn">
+					<Button
+						variant="outline"
+						type="button"
+						onClick={handleForceSync}
+						disabled={isForceSyncing || !hasSettingsUpdateAccess}
+						data-testid="pricing-force-sync-btn"
+					>
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="pricing-save-btn">

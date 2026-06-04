@@ -38,6 +38,26 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 	return sonic.ConfigStd.Marshal(v)
 }
 
+// MarshalSortedIndent encodes v to indented JSON with map keys sorted alphabetically.
+func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	return sonic.ConfigStd.MarshalIndent(v, prefix, indent)
+}
+
+// ConvertViaJSON converts src to type T via JSON round-trip using sorted marshaling.
+// Use as fallback when direct type assertion fails (e.g., map[string]interface{} from JSON).
+func ConvertViaJSON[T any](src interface{}) (T, error) {
+	var zero T
+	data, err := MarshalSorted(src)
+	if err != nil {
+		return zero, err
+	}
+	var result T
+	if err := Unmarshal(data, &result); err != nil {
+		return zero, err
+	}
+	return result, nil
+}
+
 // MarshalDeeplySorted encodes v to JSON with all map keys sorted alphabetically,
 // including nested maps inside OrderedMap and other custom types with MarshalJSON.
 // This ensures fully deterministic output for hashing/caching purposes.
@@ -88,8 +108,8 @@ func normalizeForSortedMarshal(v interface{}) interface{} {
 		}
 		return result
 	default:
-		// For structs and other types, marshal to JSON then unmarshal to map
-		// This handles types with custom MarshalJSON that may contain unsorted maps
+		// Intentional round-trip: converts structs with custom MarshalJSON into plain
+		// maps so sonic.ConfigStd can sort all keys. Cannot use sjson since input is a Go struct.
 		rv := reflect.ValueOf(v)
 		if rv.Kind() == reflect.Ptr {
 			if rv.IsNil() {

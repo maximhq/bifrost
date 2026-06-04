@@ -19,7 +19,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/plugins/litellmcompat"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -44,10 +44,10 @@ var securityHeaders = []string{
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
-	ReloadPricingManager(ctx context.Context) error
+	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
@@ -75,6 +75,7 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
+	r.POST("/api/config/metadata", lib.ChainMiddlewares(h.updateMetadata, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
@@ -88,7 +89,7 @@ func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
 
 // getConfig handles GET /config - Get the current configuration
 func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
-	var mapConfig = make(map[string]any)
+	mapConfig := make(map[string]any)
 
 	if query := string(ctx.QueryArgs().Peek("from_db")); query == "true" {
 		if h.store.ConfigStore == nil {
@@ -102,7 +103,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if cc != nil {
-			mapConfig["client_config"] = *cc
+			mapConfig["client_config"] = cc.Redacted()
 		}
 		// Fetching framework config
 		fc, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
@@ -113,7 +114,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(fc, nil)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
-		mapConfig["client_config"] = h.store.ClientConfig
+		mapConfig["client_config"] = h.store.ClientConfig.Redacted()
 		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
@@ -157,7 +158,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 				"is_enabled":                false,
-				"disable_auth_on_inference": false,
+				"disable_auth_on_inference": true,
 			}
 		}
 	} else {
@@ -165,7 +166,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
 			"is_enabled":                false,
-			"disable_auth_on_inference": false,
+			"disable_auth_on_inference": true,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
@@ -190,8 +191,46 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else if restartConfig != nil {
 			mapConfig["restart_required"] = restartConfig
 		}
+		// Fetching UI/admin metadata blob (onboarding_dismissed, etc.).
+		// This is a free-form key/value store that bypasses config.json sync.
+		if metadata, err := h.store.ConfigStore.GetClientMetadata(ctx); err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				logger.Warn("failed to get client metadata from store: %v", err)
+			}
+		} else if len(metadata) > 0 {
+			mapConfig["metadata"] = metadata
+		}
 	}
 	SendJSON(ctx, mapConfig)
+}
+
+// updateMetadata handles POST /api/config/metadata - merges a JSON object of
+// key/value pairs into the ClientConfig metadata blob. Keys with a nil value
+// are removed. Intended for UI/admin preferences (onboarding state, dismissed
+// tooltips, etc.) and is auth-gated by the same middleware as the rest of /api/config.
+func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(ctx.PostBody(), &patch); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	if len(patch) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
+		return
+	}
+	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"success": true})
 }
 
 // updateConfig updates the core configuration settings.
@@ -214,6 +253,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Validate MCP external URL overrides up front — the rest of this handler
+	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
+	// plugin reload, in-memory MCP config) before persisting, so a late
+	// rejection would leave the process in a partially-updated state.
+	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
+		return
+	}
+
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		// Checking the accessibility of the pricing URL
@@ -227,6 +275,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if resp.StatusCode != http.StatusOK {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			return
+		}
+	}
+	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
+		if err != nil {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
 			return
 		}
 	}
@@ -276,13 +339,35 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		shouldReloadMCPToolManagerConfig = true
 	}
 
-	// Only reload MCP tool manager config if MCP is configured
+	if payload.ClientConfig.MCPDisableAutoToolInject != currentConfig.MCPDisableAutoToolInject {
+		updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
+		shouldReloadMCPToolManagerConfig = true
+	}
+	// MCPToolSyncInterval supports 0 (disabled), so compare against current value
+	// instead of a > 0 guard used by other numeric fields.
+	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
+		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	}
+	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
+
+	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
-		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel); err != nil {
+		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject); err != nil {
 			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
 			return
 		}
+	}
+	// Keep in-memory MCP config aligned with client-config-backed MCP settings.
+	if h.store.MCPConfig != nil {
+		if h.store.MCPConfig.ToolManagerConfig == nil {
+			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
+		}
+		h.store.MCPConfig.ToolSyncInterval = time.Duration(updatedConfig.MCPToolSyncInterval) * time.Second
+		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
+		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
+		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
+		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
 	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
@@ -308,17 +393,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.InitialPoolSize = payload.ClientConfig.InitialPoolSize
 	}
 
-	if payload.ClientConfig.EnableLogging != currentConfig.EnableLogging {
-		restartReasons = append(restartReasons, "Logging enabled")
+	if payload.ClientConfig.EnableLogging != nil {
+		payloadLogging := *payload.ClientConfig.EnableLogging
+		currentLogging := currentConfig.EnableLogging == nil || *currentConfig.EnableLogging
+		if payloadLogging != currentLogging {
+			restartReasons = append(restartReasons, "Logging changed")
+		}
+		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
-	updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 
-	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
-		restartReasons = append(restartReasons, "Content logging")
-	}
+	// No restart needed - logging plugin holds a live pointer to ClientConfig.DisableContentLogging,
+	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
-	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
@@ -333,28 +420,43 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 	}
 
-	// Handle LiteLLM compat plugin toggle
-	if payload.ClientConfig.EnableLiteLLMFallbacks != currentConfig.EnableLiteLLMFallbacks {
-		if payload.ClientConfig.EnableLiteLLMFallbacks {
-			// Load and register the litellmcompat plugin
-			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}, nil, nil); err != nil {
-				logger.Warn(fmt.Sprintf("failed to load litellmcompat plugin: %v", err))
+	// Handle compat plugin toggle
+	newCompat := payload.ClientConfig.Compat
+	oldCompat := currentConfig.Compat
+	if newCompat != oldCompat {
+		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams
+		if newEnabled {
+			compatCfg := &compat.Config{
+				ConvertTextToChat:      newCompat.ConvertTextToChat,
+				ConvertChatToResponses: newCompat.ConvertChatToResponses,
+				ShouldDropParams:       newCompat.ShouldDropParams,
+				ShouldConvertParams:    newCompat.ShouldConvertParams,
+			}
+			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
+				logger.Warn("failed to load compat plugin: %v", err)
+				SendError(ctx, 400, "Failed to load compat plugin")
+				return
 			}
 		} else {
-			// Remove the litellmcompat plugin
 			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
-			if err := h.configManager.RemovePlugin(disabledCtx, "litellmcompat"); err != nil {
-				logger.Warn("failed to remove litellmcompat plugin: %v", err)
+			if err := h.configManager.RemovePlugin(disabledCtx, compat.PluginName); err != nil {
+				logger.Warn("failed to remove compat plugin: %v", err)
+				SendError(ctx, 400, "Failed to remove compat plugin")
+				return
 			}
 		}
 	}
-	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
+	updatedConfig.Compat = newCompat
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
 		updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
 	}
 	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
 		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
+	}
+	// 0 is a valid value (disabled), so persist it when changed.
+	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
+		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
 	// Only update MCPCodeModeBindingLevel if payload is non-empty to avoid clearing stored value
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
@@ -372,8 +474,29 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Handle LoggingHeaders changes (no restart needed - logging plugin reads via pointer)
 	updatedConfig.LoggingHeaders = payload.ClientConfig.LoggingHeaders
 
+	// Handle WhitelistedRoutes changes (updated dynamically via AuthMiddleware)
+	updatedConfig.WhitelistedRoutes = payload.ClientConfig.WhitelistedRoutes
+
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
+
+	// Toggle allowing per-request override for content storage and raw request/response storage
+	updatedConfig.AllowPerRequestContentStorageOverride = payload.ClientConfig.AllowPerRequestContentStorageOverride
+
+	// Toggle allowing per-request override for raw request/response exposure
+	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
+
+	// Toggle allowing direct key bypass via x-bf-direct-key header
+	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
+	// No restart needed - routing engine reads via pointer, change is effective immediately.
+	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
+		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
+	}
+
+	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
+	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
@@ -402,7 +525,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig
 
-	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
+	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
@@ -425,7 +548,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		frameworkConfig = &configstoreTables.TableFrameworkConfig{
 			ID:                  0,
 			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
+			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			ModelParametersURL:  bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
 		}
 	}
 	// Handling individual nil cases
@@ -433,7 +557,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		frameworkConfig.PricingURL = bifrost.Ptr(modelcatalog.DefaultPricingURL)
 	}
 	if frameworkConfig.PricingSyncInterval == nil {
-		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds()))
+		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
+	}
+	if frameworkConfig.ModelParametersURL == nil {
+		frameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -461,18 +588,44 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.ModelParametersURL != nil {
+		effectiveModelParamsURL := *payload.FrameworkConfig.ModelParametersURL
+		if effectiveModelParamsURL == "" {
+			effectiveModelParamsURL = modelcatalog.DefaultModelParametersURL
+		}
+		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
+			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
+				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
+				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
+				if err != nil {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
+					return
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+					return
+				}
+			}
+			frameworkConfig.ModelParametersURL = &effectiveModelParamsURL
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
-		var syncDuration time.Duration
+		var syncSeconds int64
 		if frameworkConfig.PricingSyncInterval != nil {
-			syncDuration = time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
+			syncSeconds = *frameworkConfig.PricingSyncInterval
 		} else {
-			syncDuration = modelcatalog.DefaultPricingSyncInterval
+			syncSeconds = int64(modelcatalog.DefaultSyncInterval.Seconds())
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL:          frameworkConfig.PricingURL,
-				PricingSyncInterval: &syncDuration,
+				PricingSyncInterval: &syncSeconds,
+				ModelParametersURL:  frameworkConfig.ModelParametersURL,
 			},
 		}
 		// Saving framework config
@@ -482,7 +635,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Reloading pricing manager
-		h.configManager.ReloadPricingManager(ctx)
+		h.configManager.UpdateSyncConfig(ctx)
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
@@ -790,9 +943,11 @@ func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) b
 	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Denylist, b.Denylist)
 }
 
-// validateHeaderFilterConfig validates that no security headers are in the allowlist or denylist
+// validateHeaderFilterConfig validates that no exact security header names are in the allowlist or denylist
 // and that wildcard patterns use valid syntax (only trailing * is supported).
-// Returns an error if any security headers are found or patterns are invalid.
+// Wildcard patterns that would match security headers are allowed because security headers
+// are unconditionally stripped at runtime regardless of configuration.
+// Returns an error if any exact security headers are found or patterns are invalid.
 func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConfig) error {
 	if config == nil {
 		return nil
@@ -826,15 +981,12 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 
 	var foundSecurityHeaders []string
 
-	// Check allowlist for security headers (including wildcard patterns)
+	// Check allowlist for exact security header names.
+	// Wildcard patterns are allowed — security headers are always stripped at runtime
+	// unconditionally in ctx.go, regardless of allowlist/denylist configuration.
 	for _, header := range config.Allowlist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
 		if strings.Contains(headerLower, "*") {
-			for _, secHeader := range securityHeaders {
-				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
-					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
-				}
-			}
 			continue
 		}
 		if slices.Contains(securityHeaders, headerLower) {
@@ -842,15 +994,10 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		}
 	}
 
-	// Check denylist for security headers (including wildcard patterns)
+	// Check denylist for exact security header names.
 	for _, header := range config.Denylist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
 		if strings.Contains(headerLower, "*") {
-			for _, secHeader := range securityHeaders {
-				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
-					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
-				}
-			}
 			continue
 		}
 		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {

@@ -1,12 +1,16 @@
-"use client"
+import { createFileRoute } from "@tanstack/react-router";
+import { NoPermissionView } from "@/components/noPermissionView";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import PluginsPage from "./page";
 
-import { NoPermissionView } from "@/components/noPermissionView"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-
-export default function PluginsLayout({ children }: { children: React.ReactNode }) {
-  const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View)
-  if (!hasPluginsAccess) {
-    return <NoPermissionView entity="plugins" />
-  }
-  return <div>{children}</div>
+function RouteComponent() {
+	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
+	if (!hasPluginsAccess) {
+		return <NoPermissionView entity="plugins" />;
+	}
+	return <PluginsPage />;
 }
+
+export const Route = createFileRoute("/workspace/plugins")({
+	component: RouteComponent,
+});

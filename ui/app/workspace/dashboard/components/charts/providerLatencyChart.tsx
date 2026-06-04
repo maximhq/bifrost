@@ -1,9 +1,7 @@
-"use client";
-
 import type { ProviderLatencyHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS } from "../../utils/chartUtils";
+import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS, pickTopSeries } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -15,7 +13,7 @@ interface ProviderLatencyChartProps {
 	selectedProvider: string;
 }
 
-function AllProvidersTooltip({ active, payload, providers }: any) {
+function AllProvidersTooltip({ active, payload, displayProviders: providers }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -43,7 +41,7 @@ function AllProvidersTooltip({ active, payload, providers }: any) {
 	);
 }
 
-function SingleProviderTooltip({ active, payload, provider }: any) {
+function SingleProviderTooltip({ active, payload }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -90,14 +88,18 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 	);
 }
 
-export function ProviderLatencyChart({ data, chartType, startTime, endTime, selectedProvider }: ProviderLatencyChartProps) {
+function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selectedProvider }: ProviderLatencyChartProps) {
 	const { chartData, mode, displayProviders } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], mode: "all" as const, displayProviders: [] };
 		}
 
 		const isSingleProvider = selectedProvider !== "all";
-		const providers = isSingleProvider ? [selectedProvider] : data.providers;
+		// Rank by total_requests so we keep the highest-volume providers visible.
+		// No "Other" bucket — averaging latencies across the long tail would mislead.
+		const providers = isSingleProvider
+			? [selectedProvider]
+			: pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -197,7 +199,10 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<AllProvidersTooltip displayProviders={displayProviders} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										key={provider}
@@ -272,7 +277,7 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} />
+								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} />
 								{displayProviders.map((provider, idx) => (
 									<Area
 										key={provider}
@@ -292,3 +297,5 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 		</ChartErrorBoundary>
 	);
 }
+
+export const ProviderLatencyChart = memo(ProviderLatencyChartImpl);

@@ -2,12 +2,14 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
-    - headers: Header-based authentication (API keys, custom headers, etc.)
-    - oauth: OAuth 2.0 authentication
+    - headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)
+    - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
+    - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
+    - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
 
 MCPConnectionType:
   type: string
@@ -16,8 +18,14 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error]
-  description: Connection state of an MCP client
+  enum: [connected, disconnected, error, pending_tools, disabled]
+  description: |
+    Connection state of an MCP client:
+    - connected: Client is connected and ready to use
+    - disconnected: Client is not connected (will be auto-recovered by health monitor)
+    - error: Client is in an unrecoverable error state
+    - pending_tools: Connected but tools not yet populated (per-user OAuth clients)
+    - disabled: Client has been intentionally disabled; no connection or workers are active
 
 MCPStdioConfig:
   type: object
@@ -60,6 +68,25 @@ MCPClientCreateRequestBase:
   required:
     - name
     - connection_type
+  allOf:
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: per_user_headers
+      then:
+        required: [per_user_header_keys]
+        properties:
+          per_user_header_keys:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+        description: |
+          When `auth_type` is `per_user_headers`, `per_user_header_keys` must
+          declare at least one header name — the submission flow has nothing
+          to ask the end-user for otherwise.
   properties:
     client_id:
       type: string
@@ -120,6 +147,49 @@ MCPClientCreateRequestBase:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are available to all virtual keys by default,
+        without requiring an explicit virtual key assignment.
+        An explicit virtual key config always overrides this setting for that key.
+    tls_config:
+      type: object
+      description: |
+        TLS configuration for HTTP and SSE connections.
+        Not applicable to stdio or inprocess connection types.
+      properties:
+        insecure_skip_verify:
+          type: boolean
+          description: |
+            Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.
+            Use only in development or trusted isolated environments. Not recommended for production.
+        ca_cert_pem:
+          type: string
+          description: |
+            PEM-encoded CA certificate to trust for MCP server connections.
+            Use when the MCP server uses a self-signed or private CA certificate.
+            Supports env.VAR_NAME syntax to read the certificate from an environment variable.
+    per_user_header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        Required when `auth_type` is `per_user_headers`. List of header names each
+        end-user must supply the first time they hit this MCP server. Values are
+        submitted per user via the inline-401 flow — never persisted on the MCP
+        client config.
+    user_headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: |
+        Used only at create time when `auth_type` is `per_user_headers`. A sample
+        set of header values the admin supplies so Bifrost can run a one-time
+        upstream verify and discover the tool list. Discarded after the create
+        call — not persisted. Mirrors how the admin's temp OAuth token is used
+        for `per_user_oauth` setup.
 
 MCPClientCreateRequestHTTP:
   allOf:
@@ -166,6 +236,21 @@ MCPClientCreateRequestSTDIO:
 MCPClientUpdateRequest:
   type: object
   description: MCP client configuration for updating an existing client (includes tool_pricing)
+  allOf:
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: per_user_headers
+      then:
+        required: [per_user_header_keys]
+        properties:
+          per_user_header_keys:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
   properties:
     client_id:
       type: string
@@ -228,6 +313,73 @@ MCPClientUpdateRequest:
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
         Note: Only available when updating an existing client after tools have been fetched.
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    per_user_header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        For `per_user_headers` clients only. Updating this list flips every existing
+        active per-user credential row to `needs_update`; callers will be sent back to
+        the submission form on their next tool call to satisfy the new schema.
+    disabled:
+      type: boolean
+      default: false
+      description: |
+        When true, the client's connection, health monitor, and tool syncer are shut down.
+        The client entry is preserved so it can be re-enabled later by sending disabled: false.
+        Disabled clients do not expose tools to inference requests.
+    tls_config:
+      type: object
+      description: |
+        TLS configuration for HTTP and SSE connections.
+        Not applicable to stdio or inprocess connection types.
+      properties:
+        insecure_skip_verify:
+          type: boolean
+          description: |
+            Disable TLS certificate verification. Takes priority over ca_cert_pem when both are set.
+            Use only in development or trusted isolated environments. Not recommended for production.
+        ca_cert_pem:
+          type: string
+          description: |
+            PEM-encoded CA certificate to trust for MCP server connections.
+            Use when the MCP server uses a self-signed or private CA certificate.
+            Supports env.VAR_NAME syntax to read the certificate from an environment variable.
+    vk_configs:
+      type: array
+      items:
+        $ref: '#/MCPVKConfig'
+      description: |
+        When provided, replaces all virtual key assignments for this MCP client.
+        Each entry specifies a virtual key and the tools it is allowed to call.
+        To remove all VK access, provide an empty array [].
+        Omit this field to leave existing VK assignments unchanged.
+
+MCPVKConfig:
+  type: object
+  description: Per-virtual-key tool access configuration for an MCP client
+  required:
+    - virtual_key_id
+    - tools_to_execute
+  properties:
+    virtual_key_id:
+      type: string
+      description: ID of the virtual key
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Tools this virtual key is allowed to call on this MCP server.
+        ["*"] => all tools allowed
+        ["tool1", "tool2"] => only the specified tools
 
 MCPClientConfig:
   type: object
@@ -249,6 +401,18 @@ MCPClientConfig:
       description: HTTP or SSE URL (required for HTTP or SSE connections)
     stdio_config:
       $ref: '#/MCPStdioConfig'
+    tls_config:
+      type: object
+      description: TLS configuration for HTTP and SSE connections.
+      properties:
+        insecure_skip_verify:
+          type: boolean
+          description: Disable TLS certificate verification. Development/testing only.
+        ca_cert_pem:
+          type: string
+          description: |
+            PEM-encoded CA certificate. Supports env.VAR_NAME syntax for input.
+            Responses return a redacted placeholder rather than the raw PEM value.
     auth_type:
       $ref: '#/MCPAuthType'
       description: Authentication type for the MCP connection
@@ -293,6 +457,27 @@ MCPClientConfig:
         Per-tool cost in USD for execution.
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    per_user_header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        For `per_user_headers` clients only. The list of header names each end-user
+        must supply via the inline-401 flow. Header values themselves are stored
+        per-user in a separate table (surfaced on `/api/mcp/sessions`).
+    disabled:
+      type: boolean
+      default: false
+      description: |
+        Whether the client is intentionally disabled.
+        When true, the client has no active connection or workers and its tools are not available for inference.
 
 ChatToolFunction:
   type: object
@@ -308,6 +493,25 @@ ChatToolFunction:
     strict:
       type: boolean
 
+MCPVKConfigResponse:
+  type: object
+  description: Per-virtual-key tool access configuration as returned in list/get responses
+  properties:
+    virtual_key_id:
+      type: string
+      description: ID of the virtual key
+    virtual_key_name:
+      type: string
+      description: Display name of the virtual key
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Tools this virtual key is allowed to call on this MCP client.
+        ["*"] => all tools allowed
+        ["tool1", "tool2"] => only the specified tools
+
 MCPClient:
   type: object
   description: Connected MCP client with its tools
@@ -320,6 +524,11 @@ MCPClient:
         $ref: '#/ChatToolFunction'
     state:
       $ref: '#/MCPConnectionState'
+    vk_configs:
+      type: array
+      items:
+        $ref: '#/MCPVKConfigResponse'
+      description: Virtual key assignments for this MCP client
 
 ExecuteToolRequest:
   oneOf:
@@ -371,3 +580,262 @@ ResponsesToolMessage:
     error:
       type: string
       description: Error message if tool execution failed
+
+# ─── MCP Sessions (per-user credentials + pending flows) ────────────────────
+
+MCPClientSummary:
+  type: object
+  description: Minimal MCP client view embedded in session rows.
+  properties:
+    client_id:
+      type: string
+    name:
+      type: string
+
+MCPVirtualKeySummary:
+  type: object
+  description: Minimal virtual-key view embedded in session rows.
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+MCPUserSummary:
+  type: object
+  description: Minimal user view embedded on user-keyed session rows.
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+MCPSessionRow:
+  type: object
+  description: |
+    One row on the MCP Sessions list. Covers OAuth tokens, header credentials,
+    and pending flows (of either kind). Always-set fields are at the top;
+    per-kind-only fields use omitempty.
+  required:
+    - id
+    - kind
+    - auth_kind
+    - auth_mode
+    - status
+    - created_at
+    - can_reauth
+  properties:
+    id:
+      type: string
+      description: Row primary key — token UUID, header credential UUID, or flow UUID
+    kind:
+      type: string
+      enum: [token, header, flow]
+      description: |
+        Row type:
+        - token: completed per-user OAuth credential
+        - header: completed per-user-headers credential
+        - flow: pending submission / consent flow (use auth_kind to disambiguate OAuth vs Headers)
+    auth_kind:
+      type: string
+      enum: [oauth, headers]
+      description: |
+        Disambiguates flow rows by which auth surface they belong to. For
+        `kind=token` this is always `oauth`; for `kind=header` always `headers`.
+    auth_mode:
+      type: string
+      enum: [user, vk, session]
+      description: Identity dimension this credential is keyed against
+    user_id:
+      type: string
+      nullable: true
+      description: Populated on user-keyed rows; refers to the SCIM user table
+    user:
+      $ref: '#/MCPUserSummary'
+      nullable: true
+      description: Preloaded user summary; nil when the user table is not available
+    virtual_key:
+      $ref: '#/MCPVirtualKeySummary'
+      nullable: true
+    mcp_client:
+      $ref: '#/MCPClientSummary'
+      nullable: true
+    session_id:
+      type: string
+      nullable: true
+      description: Populated only on session-keyed rows
+    status:
+      type: string
+      enum: [active, orphaned, pending, needs_reauth, needs_update]
+      description: |
+        OAuth tokens use: active | orphaned | needs_reauth.
+        Header credentials use: active | orphaned | needs_update.
+        Flow rows use: pending.
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: When the OAuth access token expires; nil for header rows
+    created_at:
+      type: string
+      format: date-time
+    last_refreshed_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: OAuth token rows only — last successful refresh
+    updated_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: Header credential rows only — last submission / edit
+    oauth_config_id:
+      type: string
+      nullable: true
+      description: OAuth rows only
+    can_reauth:
+      type: boolean
+      description: |
+        Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.
+        Always true for vk- and session-mode rows. For user-mode rows, true only
+        when the calling user matches the row's bound user — admin DAC scope is
+        enough to see the row, but reauthing mints credentials under whoever clicks
+        the URL, so the server returns 403 to non-bound callers. The UI hides the
+        Re-authenticate / Edit values action when this is false.
+
+MCPSessionsListResponse:
+  type: object
+  required: [sessions]
+  properties:
+    sessions:
+      type: array
+      items:
+        $ref: '#/MCPSessionRow'
+
+MCPSessionReauthResponse:
+  type: object
+  description: |
+    Response for POST /api/mcp/sessions/{id}/reauth. Returns the URL the caller
+    must visit to complete the fresh authentication / resubmission.
+  required: [authorize_url, session_id]
+  properties:
+    authorize_url:
+      type: string
+      description: |
+        Where the caller must go. For OAuth rows this is the upstream provider's
+        authorize page (via a Bifrost intermediate). For header credential rows
+        it's the Bifrost submission form for the new flow.
+    submit_url:
+      type: string
+      description: |
+        Set only on header re-auth and identical to authorize_url. Kept for
+        callers that want to be explicit about the underlying surface.
+    session_id:
+      type: string
+      description: ID of the freshly-minted flow row
+    kind:
+      type: string
+      enum: [oauth, headers]
+      description: Set only on header re-auth
+
+# ─── Per-User Headers submission flow ───────────────────────────────────────
+
+MCPHeadersFlowDetail:
+  type: object
+  description: |
+    Response for GET /api/mcp/per-user-headers/flows/{id}. Carries the schema
+    the end-user needs to fill in plus identity binding info for display.
+  required:
+    - id
+    - flow_mode
+    - status
+    - expires_at
+    - created_at
+    - required_header_keys
+    - has_active_credential
+  properties:
+    id:
+      type: string
+    flow_mode:
+      type: string
+      enum: [user, vk, session]
+    status:
+      type: string
+      enum: [pending, completed, expired]
+    mcp_client:
+      $ref: '#/MCPClientSummary'
+      nullable: true
+    user_id:
+      type: string
+      nullable: true
+    user:
+      $ref: '#/MCPUserSummary'
+      nullable: true
+    virtual_key:
+      $ref: '#/MCPVirtualKeySummary'
+      nullable: true
+    session_id:
+      type: string
+      nullable: true
+    expires_at:
+      type: string
+      format: date-time
+    created_at:
+      type: string
+      format: date-time
+    required_header_keys:
+      type: array
+      items:
+        type: string
+      description: Header names the end-user must supply on this submission
+    admin_header_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        Names (not values) of static admin headers attached to every per-user
+        request. Surfaced so the user understands what context will accompany
+        their values.
+    submitted_keys:
+      type: array
+      items:
+        type: string
+      description: |
+        Names of header keys already on the caller's existing credential.
+        Populated whenever a credential exists for the binding (both `active`
+        and `needs_update` states — `orphaned` credentials are filtered
+        server-side). Values are never returned. `has_active_credential` only
+        flips to true when the credential is in `active` state.
+    has_active_credential:
+      type: boolean
+      description: |
+        True when a credential already exists for the flow's (mode, identity,
+        mcp_client) triple. The submission UI uses this to render an "edit"
+        affordance instead of a fresh form.
+
+MCPHeadersSubmitRequest:
+  type: object
+  description: |
+    Request body for PUT /api/mcp/per-user-headers/flows/{id}. The flow row
+    identifies the (mode, identity, mcp_client) triple, so the caller carries
+    only the values. Extra keys not in the live `per_user_header_keys` schema
+    are dropped server-side.
+  required: [headers]
+  properties:
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+
+MCPHeadersSubmitResponse:
+  type: object
+  required: [status, credential_id, updated_at]
+  properties:
+    status:
+      type: string
+      enum: [success]
+    credential_id:
+      type: string
+    updated_at:
+      type: string
+      format: date-time

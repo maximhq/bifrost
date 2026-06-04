@@ -1,5 +1,49 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
+
+// Global error map - turns Zod's default messages into readable, human-friendly ones.
+// Individual schemas can still override by passing their own message.
+z.config({
+	customError: (issue) => {
+		if (issue.code === "invalid_type") {
+			// Field is missing / undefined
+			if (issue.input === undefined || issue.input === null) {
+				return "This field is required";
+			}
+			const expected = issue.expected;
+			const received = typeof issue.input;
+			if (expected === "number") return "Must be a valid number";
+			if (expected === "string") return "Must be a valid text value";
+			if (expected === "boolean") return "Must be true or false";
+			return `Expected ${expected}, received ${received}`;
+		}
+		if (issue.code === "too_small") {
+			if (issue.origin === "string" && issue.minimum === 1) {
+				return "This field is required";
+			}
+			if (issue.origin === "number") {
+				return `Must be at least ${issue.minimum}`;
+			}
+			if (issue.origin === "array" && issue.minimum === 1) {
+				return "At least one item is required";
+			}
+		}
+		if (issue.code === "too_big") {
+			if (issue.origin === "number") {
+				return `Must be at most ${issue.maximum}`;
+			}
+			if (issue.origin === "string") {
+				return `Must be at most ${issue.maximum} characters`;
+			}
+		}
+		if (issue.code === "invalid_format") {
+			if (issue.format === "url") return "Must be a valid URL";
+			if (issue.format === "email") return "Must be a valid email";
+		}
+		return undefined; // fall back to Zod default
+	},
+});
 
 // Base Zod schemas matching the TypeScript types
 
@@ -13,87 +57,85 @@ export const customProviderNameSchema = z.string().min(1, "Custom provider name 
 export const modelProviderNameSchema = z.union([knownProviderSchema, customProviderNameSchema]);
 
 // EnvVar schema - matches the Go EnvVar type from schemas/env.go
-export const envVarSchema = z.object({
+export const _envVarBase = z.object({
 	value: z.string().optional(),
 	env_var: z.string().optional(),
 	from_env: z.boolean().optional(),
 });
 
+// Extending the base schema
+export const envVarSchema = Object.assign(_envVarBase, {
+	required: (message: string) => _envVarBase.refine((v) => !!v?.value?.trim() || !!v?.env_var?.trim(), message),
+});
+
+// Helper to check if an envVar field has a value or env reference
+function isEnvVarSet(v: { value?: string; env_var?: string } | undefined): boolean {
+	if (!v) return false;
+	return !!v.value?.trim() || !!v.env_var?.trim();
+}
+
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
-		endpoint: envVarSchema,
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
-		api_version: envVarSchema.optional(),
+		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
+		endpoint: envVarSchema.optional(),
 		client_id: envVarSchema.optional(),
 		client_secret: envVarSchema.optional(),
 		tenant_id: envVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
 	})
+	.refine((data) => isEnvVarSet(data.endpoint), {
+		message: "Endpoint is required",
+		path: ["endpoint"],
+	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
+			// When using Entra ID, all three fields are required
+			if (data._auth_type === "entra_id") {
+				return isEnvVarSet(data.client_id) && isEnvVarSet(data.client_secret) && isEnvVarSet(data.tenant_id);
 			}
-			return false;
+			// Otherwise, if any Entra ID field is set, all three must be set
+			const hasClientId = isEnvVarSet(data.client_id);
+			const hasClientSecret = isEnvVarSet(data.client_secret);
+			const hasTenantId = isEnvVarSet(data.tenant_id);
+			const anyEntraField = hasClientId || hasClientSecret || hasTenantId;
+			if (!anyEntraField) return true;
+			return hasClientId && hasClientSecret && hasTenantId;
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Client ID, Client Secret, and Tenant ID are all required for Entra ID authentication",
+			path: ["client_id"],
 		},
 	);
 
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
-		project_id: envVarSchema,
+		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
+		project_id: envVarSchema.optional(),
 		project_number: envVarSchema.optional(),
-		region: envVarSchema,
+		region: envVarSchema.optional(),
 		auth_credentials: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	})
+	.refine((data) => isEnvVarSet(data.project_id), {
+		message: "Project ID is required",
+		path: ["project_id"],
+	})
+	.refine((data) => isEnvVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
 	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
+			// When using service_account_json auth, auth_credentials is required
+			if (data._auth_type === "service_account_json") {
+				return isEnvVarSet(data.auth_credentials);
 			}
-			return false;
+			return true;
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Auth Credentials is required for service account JSON authentication",
+			path: ["auth_credentials"],
 		},
 	);
 
@@ -111,6 +153,7 @@ export const batchS3ConfigSchema = z.object({
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
 		access_key: envVarSchema.optional(),
 		secret_key: envVarSchema.optional(),
 		session_token: envVarSchema.optional(),
@@ -119,50 +162,70 @@ export const bedrockKeyConfigSchema = z
 		external_id: envVarSchema.optional(),
 		session_name: envVarSchema.optional(),
 		arn: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
-			}
-			return false;
+			// Region is required for Bedrock
+			return isEnvVarSet(data.region);
 		},
 		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
+			message: "Region is required",
+			path: ["region"],
+		},
+	)
+	.refine(
+		(data) => {
+			// When using explicit credentials, both access_key and secret_key are required
+			if (data._auth_type === "explicit") {
+				return isEnvVarSet(data.access_key) && isEnvVarSet(data.secret_key);
+			}
+			// Otherwise, if either is set both must be set
+			const hasAccessKey = isEnvVarSet(data.access_key);
+			const hasSecretKey = isEnvVarSet(data.secret_key);
+			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
 		},
 	);
 
-// Replicate key config schema
+// VLLM key config schema
+export const vllmKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+		model_name: z.string().trim().min(1, "Model name is required"),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
+		message: "Server URL is required",
+		path: ["url"],
+	});
+
 export const replicateKeyConfigSchema = z.object({
-	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	use_deployments_endpoint: z.boolean(),
 });
 
-// VLLM key config schema
-export const vllmKeyConfigSchema = z.object({
-	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+// Ollama key config schema
+export const ollamaKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
 		message: "Server URL is required",
-	}),
-	model_name: z.string().trim().min(1, "Model name is required"),
-});
+		path: ["url"],
+	});
+
+// SGL key config schema
+export const sglKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
+		message: "Server URL is required",
+		path: ["url"],
+	});
 
 // Model provider key schema
 export const modelProviderKeySchema = z
@@ -170,45 +233,69 @@ export const modelProviderKeySchema = z
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
-		models: z.array(z.string()).default([]).optional(),
-		weight: z.union([
-			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
-			z
-				.string()
-				.transform((val) => {
-					if (val === "") return 1.0;
-					const num = parseFloat(val);
-					if (isNaN(num)) {
-						throw new z.ZodError([
-							{
-								code: "custom",
-								message: "Weight must be a valid number",
-								path: ["weight"],
-							},
-						]);
-					}
-					return num;
-				})
-				.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		]),
+		models: z.array(z.string()).optional().default(["*"]),
+		blacklisted_models: z.array(z.string()).default([]).optional(),
+		weight: z
+			.union([z.number(), z.string()])
+			.transform((val, ctx) => {
+				if (typeof val === "number") return val;
+				if (val.trim() === "") return 1.0;
+				// Use Number() rather than parseFloat() so that strings like "0.5abc"
+				// are rejected outright instead of silently parsing to 0.5.
+				const num = Number(val);
+				if (!Number.isFinite(num)) {
+					ctx.addIssue({
+						code: "custom",
+						message: "Weight must be a valid number between 0 and 1",
+					});
+					return z.NEVER;
+				}
+				return num;
+			})
+			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
+		aliases: z.record(z.string(), z.string()).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
-		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		replicate_key_config: replicateKeyConfigSchema.optional(),
+		ollama_key_config: ollamaKeyConfigSchema.optional(),
+		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+			// Providers with dedicated config that never need a top-level API key
+			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Azure requires API key only when using api_key auth
+			if (data.azure_key_config) {
+				if (data.azure_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Bedrock only requires API key when using api_key auth
+			if (data.bedrock_key_config) {
+				if (data.bedrock_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Vertex requires API key only when using api_key auth
+			if (data.vertex_key_config) {
+				if (data.vertex_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
 				return true;
 			}
 			// Otherwise, value is required
-			return data.value?.value && data.value?.value?.length > 0;
+			return isEnvVarSet(data.value);
 		},
 		{
-			message: "Value is required",
+			message: "API Key is required",
 			path: ["value"],
 		},
 	);
@@ -224,15 +311,22 @@ export const networkConfigSchema = z
 			.max(3600, "Timeout must be less than 3600 seconds"),
 		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.number().min(100),
-		retry_backoff_max: z.number().min(1000),
+		retry_backoff_max: z.number().min(100),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: z.string().optional(),
+		ca_cert_pem: envVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z
 			.number()
 			.int("Stream idle timeout must be a whole number of seconds")
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		max_conns_per_host: z
+			.number()
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -271,13 +365,20 @@ export const networkFormConfigSchema = z
 			.min(100, "Retry backoff max must be at least 100ms")
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: z.string().optional(),
+		ca_cert_pem: envVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z.coerce
 			.number("Stream idle timeout must be a number")
 			.int("Stream idle timeout must be a whole number of seconds")
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		max_conns_per_host: z.coerce
+			.number("Max connections must be a number")
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
@@ -286,8 +387,8 @@ export const networkFormConfigSchema = z
 
 // Concurrency and buffer size schema
 export const concurrencyAndBufferSizeSchema = z.object({
-	concurrency: z.number().min(1, "Concurrency must be greater than 0").max(100, "Concurrency must be less than 100"),
-	buffer_size: z.number().min(1, "Buffer size must be greater than 0").max(1000, "Buffer size must be less than 1000"),
+	concurrency: z.number().min(1, "Concurrency must be greater than 0").max(100, "Concurrency must be less than or equal to 100"),
+	buffer_size: z.number().min(1, "Buffer size must be greater than 0").max(1000, "Buffer size must be less than or equal to 1000"),
 });
 
 // Proxy type schema
@@ -297,51 +398,16 @@ export const proxyTypeSchema = z.enum(["none", "http", "socks5", "environment"])
 export const proxyConfigSchema = z
 	.object({
 		type: proxyTypeSchema,
-		url: z.url("Must be a valid URL"),
-		username: z.string().optional(),
-		password: z.string().optional(),
-		ca_cert_pem: z.string().optional(),
-	})
-	.refine((data) => !(data.type === "http" || data.type === "socks5") || (data.url && data.url.trim().length > 0), {
-		message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
-		path: ["url"],
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
 	})
 	.refine(
-		(data) => {
-			if ((data.type === "http" || data.type === "socks5") && data.url?.trim()) {
-				try {
-					new URL(data.url);
-					return true;
-				} catch {
-					return false;
-				}
-			}
-			return true;
-		},
-		{ message: "Must be a valid URL (e.g., http://proxy.example.com:8080)", path: ["url"] },
-	);
-
-// Proxy form schema - more lenient for form inputs with conditional validation
-export const proxyFormConfigSchema = z
-	.object({
-		type: proxyTypeSchema,
-		url: z.string().optional(),
-		username: z.string().optional(),
-		password: z.string().optional(),
-		ca_cert_pem: z.string().optional(),
-	})
-	.refine(
-		(data) => {
-			if (data.type === "none") {
-				return true;
-			}
-			// URL is required when proxy type is http or socks5
-			if (data.type === "http" || data.type === "socks5") {
-				// Check for URL existence, non-empty, and valid format
-				if (!data.url || data.url.trim().length === 0) return false;
-			}
-			return true;
-		},
+		(data) =>
+			!(data.type === "http" || data.type === "socks5") ||
+			data.url?.from_env === true ||
+			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
 			path: ["url"],
@@ -349,10 +415,12 @@ export const proxyFormConfigSchema = z
 	)
 	.refine(
 		(data) => {
-			// URL must be valid format when provided and proxy type requires it
-			if ((data.type === "http" || data.type === "socks5") && data.url && data.url.trim().length > 0) {
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value?.trim()) {
+				if (isRedacted(data.url.value)) {
+					return true;
+				}
 				try {
-					new URL(data.url);
+					new URL(data.url.value);
 					return true;
 				} catch {
 					return false;
@@ -365,6 +433,63 @@ export const proxyFormConfigSchema = z
 			path: ["url"],
 		},
 	);
+
+// Proxy form schema - more lenient for form inputs with conditional validation
+export const proxyFormConfigSchema = z
+	.object({
+		type: proxyTypeSchema,
+		url: envVarSchema.optional(),
+		username: envVarSchema.optional(),
+		password: envVarSchema.optional(),
+		ca_cert_pem: envVarSchema.optional(),
+	})
+	.refine(
+		(data) => {
+			if (data.type === "none") {
+				return true;
+			}
+			// URL is required when proxy type is http or socks5
+			if (data.type === "http" || data.type === "socks5") {
+				// Env-backed URLs may have empty resolved value before env resolution.
+				if (data.url?.from_env || data.url?.env_var?.startsWith("env.")) return true;
+				// Literal URLs must be non-empty.
+				if (!data.url?.value || data.url.value.trim().length === 0) return false;
+			}
+			return true;
+		},
+		{
+			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
+			path: ["url"],
+		},
+	)
+	.refine(
+		(data) => {
+			// URL must be valid format when provided and proxy type requires it
+			if ((data.type === "http" || data.type === "socks5") && data.url?.value && data.url.value.trim().length > 0) {
+				if (isRedacted(data.url.value)) {
+					return true;
+				}
+				try {
+					new URL(data.url.value);
+					return true;
+				} catch {
+					return false;
+				}
+			}
+			return true;
+		},
+		{
+			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			path: ["url"],
+		},
+	);
+
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
@@ -384,6 +509,8 @@ export const allowedRequestsSchema = z.object({
 	image_edit: z.boolean(),
 	image_edit_stream: z.boolean(),
 	image_variation: z.boolean(),
+	ocr: z.boolean().optional(),
+	ocr_stream: z.boolean().optional(),
 	rerank: z.boolean(),
 	video_generation: z.boolean(),
 	video_retrieve: z.boolean(),
@@ -439,85 +566,6 @@ export const formCustomProviderConfigSchema = z
 		},
 	);
 
-export const providerPricingOverrideMatchTypeSchema = z.enum(["exact", "wildcard", "regex"]);
-
-export const providerPricingOverrideRequestTypeSchema = z.enum([
-	"text_completion",
-	"text_completion_stream",
-	"chat_completion",
-	"chat_completion_stream",
-	"responses",
-	"responses_stream",
-	"embedding",
-	"rerank",
-	"speech",
-	"speech_stream",
-	"transcription",
-	"transcription_stream",
-	"image_generation",
-	"image_generation_stream",
-]);
-
-export const providerPricingOverrideSchema = z
-	.object({
-		model_pattern: z.string().min(1, "Model pattern is required"),
-		match_type: providerPricingOverrideMatchTypeSchema,
-		request_types: z.array(providerPricingOverrideRequestTypeSchema).optional(),
-		input_cost_per_token: z.number().min(0).optional(),
-		output_cost_per_token: z.number().min(0).optional(),
-		input_cost_per_video_per_second: z.number().min(0).optional(),
-		input_cost_per_audio_per_second: z.number().min(0).optional(),
-		input_cost_per_character: z.number().min(0).optional(),
-		output_cost_per_character: z.number().min(0).optional(),
-		input_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_image_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_video_per_second_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_audio_per_second_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		cache_creation_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost: z.number().min(0).optional(),
-		cache_creation_input_token_cost: z.number().min(0).optional(),
-		input_cost_per_token_batches: z.number().min(0).optional(),
-		output_cost_per_token_batches: z.number().min(0).optional(),
-		input_cost_per_image_token: z.number().min(0).optional(),
-		output_cost_per_image_token: z.number().min(0).optional(),
-		input_cost_per_image: z.number().min(0).optional(),
-		output_cost_per_image: z.number().min(0).optional(),
-		cache_read_input_image_token_cost: z.number().min(0).optional(),
-	})
-	.superRefine((data, ctx) => {
-		if (data.match_type === "exact" && data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Exact match patterns cannot include '*'",
-			});
-		}
-		if (data.match_type === "wildcard" && !data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Wildcard patterns must include '*'",
-			});
-		}
-		if (data.match_type === "regex") {
-			try {
-				new RegExp(data.model_pattern);
-			} catch {
-				ctx.addIssue({
-					code: "custom",
-					path: ["model_pattern"],
-					message: "Invalid regex pattern",
-				});
-			}
-		}
-	});
-
 // Full model provider config schema
 export const modelProviderConfigSchema = z.object({
 	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
@@ -528,7 +576,6 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Model provider schema
@@ -546,7 +593,6 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Flexible model provider schema for form data - allows any string for name
@@ -565,7 +611,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -578,23 +624,40 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Cache config schema
-export const cacheConfigSchema = z.object({
-	provider: modelProviderNameSchema,
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
-	embedding_model: z.string().min(1, "Embedding model is required"),
-	ttl_seconds: z.number().min(1).default(3600),
+const baseCacheConfigSchema = z.object({
+	ttl: z.number().int().min(1).default(3600),
 	threshold: z.number().min(0).max(1).default(0.8),
-	conversation_history_threshold: z.number().min(0).max(1).optional(),
+	conversation_history_threshold: z.number().int().min(0).optional(),
 	exclude_system_prompt: z.boolean().optional(),
 	cache_by_model: z.boolean().default(false),
 	cache_by_provider: z.boolean().default(false),
+	vector_store_namespace: z.string().min(1).optional(),
+	default_cache_key: z.string().min(1).optional(),
 	created_at: z.string().optional(),
 	updated_at: z.string().optional(),
 });
+
+const directCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		dimension: z.literal(1),
+		keys: z.array(modelProviderKeySchema).optional(),
+	})
+	.strict();
+
+const providerBackedCacheConfigSchema = baseCacheConfigSchema
+	.extend({
+		provider: modelProviderNameSchema,
+		keys: z.array(modelProviderKeySchema).optional(),
+		embedding_model: z.string().min(1, "Embedding model is required"),
+		dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
+	})
+	.strict();
+
+export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
 // Core config schema
 export const coreConfigSchema = z.object({
@@ -604,13 +667,14 @@ export const coreConfigSchema = z.object({
 	enable_logging: z.boolean().default(true),
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
-	allow_direct_keys: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
+	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 
 // Bifrost config schema
@@ -665,17 +729,24 @@ export const debuggingFormSchema = z.object({
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
 
+// Beta Headers tab
+export const betaHeadersFormSchema = z.object({
+	beta_header_overrides: z.record(z.string(), z.boolean()).optional(),
+});
+
+export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
+
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({
 		service_name: z.string().optional(),
-		collector_url: z.string().default(""),
+		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
 		trace_type: z
-			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+			.enum(["genai_extension", "vercel", "open_inference"], {
 				message: "Please select a trace type",
 			})
-			.default("otel"),
-		headers: z.record(z.string(), z.string()).optional(),
+			.default("genai_extension"),
+		headers: z.record(z.string(), envVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -686,7 +757,7 @@ export const otelConfigSchema = z
 		insecure: z.boolean().default(true),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
-		metrics_endpoint: z.string().optional(),
+		metrics_endpoint: envVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 	})
 	.superRefine((data, ctx) => {
@@ -739,26 +810,26 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Validate collector_url format (emptiness check is at form level, gated by enabled)
-		const collectorUrl = (data.collector_url || "").trim();
-		if (collectorUrl && protocol === "http") {
+		// Validate collector_url format — skip format check for env var references
+		const collectorUrl = (data.collector_url?.value || "").trim();
+		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && protocol === "grpc") {
+		} else if (collectorUrl && !data.collector_url?.from_env && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
 		if (data.metrics_enabled) {
-			const metricsEndpoint = (data.metrics_endpoint || "").trim();
-			if (!metricsEndpoint) {
+			const metricsEndpoint = (data.metrics_endpoint?.value || "").trim();
+			if (!isEnvVarSet(data.metrics_endpoint)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["metrics_endpoint"],
 					message: "Metrics endpoint is required when metrics push is enabled",
 				});
-			} else if (protocol === "http") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
-			} else if (protocol === "grpc") {
+			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
@@ -772,8 +843,7 @@ export const otelFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.enabled) {
-			const collectorUrl = (data.otel_config.collector_url || "").trim();
-			if (!collectorUrl) {
+			if (!isEnvVarSet(data.otel_config.collector_url)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["otel_config", "collector_url"],
@@ -817,17 +887,17 @@ export const maximFormSchema = z
 // Prometheus Push Gateway Configuration Schema
 export const prometheusConfigSchema = z
 	.object({
-		push_gateway_url: z.string().optional(),
+		push_gateway_url: envVarSchema.optional(),
 		job_name: z.string().default("bifrost"),
 		instance_id: z.string().optional(),
 		push_interval: z.number().min(1).max(300).default(15),
-		basic_auth_username: z.string().optional(),
-		basic_auth_password: z.string().optional(),
+		basic_auth_username: envVarSchema.optional(),
+		basic_auth_password: envVarSchema.optional(),
 	})
 	.superRefine((data, ctx) => {
-		// Validate push_gateway_url format
-		const url = (data.push_gateway_url || "").trim();
-		if (url) {
+		// Validate push_gateway_url format — skip for env var references
+		const url = (data.push_gateway_url?.value || "").trim();
+		if (url && !data.push_gateway_url?.from_env) {
 			try {
 				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {
@@ -847,8 +917,8 @@ export const prometheusConfigSchema = z
 		}
 
 		// Validate basic auth: if one credential is provided, both must be provided
-		const hasUsername = !!data.basic_auth_username?.trim();
-		const hasPassword = !!data.basic_auth_password?.trim();
+		const hasUsername = isEnvVarSet(data.basic_auth_username);
+		const hasPassword = isEnvVarSet(data.basic_auth_password);
 		if (hasUsername && !hasPassword) {
 			ctx.addIssue({
 				code: "custom",
@@ -865,21 +935,21 @@ export const prometheusConfigSchema = z
 		}
 	});
 
-// Prometheus form schema for the PrometheusFormFragment
+// Prometheus form schema for the PrometheusFormFragment.
 export const prometheusFormSchema = z
 	.object({
-		enabled: z.boolean().default(true),
+		metrics_enabled: z.boolean().default(true),
+		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})
 	.superRefine((data, ctx) => {
-		// When enabled, push_gateway_url is required
-		if (data.enabled) {
-			const url = (data.prometheus_config.push_gateway_url || "").trim();
-			if (!url) {
+		if (data.push_gateway_enabled) {
+			const urlIsSet = isEnvVarSet(data.prometheus_config.push_gateway_url);
+			if (!urlIsSet) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["prometheus_config", "push_gateway_url"],
-					message: "Push Gateway URL is required when enabled",
+					message: "Push Gateway URL is required when the push gateway is enabled",
 				});
 			}
 		}
@@ -889,13 +959,32 @@ export const prometheusFormSchema = z
 export const mcpClientUpdateSchema = z.object({
 	is_code_mode_client: z.boolean().optional(),
 	is_ping_available: z.boolean().optional(),
+	allow_on_all_virtual_keys: z.boolean().optional(),
+	disabled: z.boolean().optional(),
 	name: z
 		.string()
 		.min(1, "Name is required")
-		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
-		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
-		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
+		.refine((val) => !val.includes("-"), {
+			message: "Client name cannot contain hyphens",
+		})
+		.refine((val) => !val.includes(" "), {
+			message: "Client name cannot contain spaces",
+		})
+		.refine((val) => !/^[0-9]/.test(val), {
+			message: "Client name cannot start with a number",
+		}),
 	headers: z.record(z.string(), envVarSchema).optional().nullable(),
+	per_user_header_keys: z
+		.array(z.string().trim().min(1, "Header name cannot be empty"))
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers) return true;
+				const normalized = headers.map((h) => h.trim().toLowerCase());
+				return normalized.length === new Set(normalized).size;
+			},
+			{ message: "Duplicate header names are not allowed" },
+		),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -934,6 +1023,29 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	allowed_extra_headers: z
+		.array(z.string())
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers || headers.length === 0) return true;
+				const hasWildcard = headers.includes("*");
+				return !hasWildcard || headers.length === 1;
+			},
+			{ message: "Wildcard '*' cannot be combined with specific header names" },
+		),
+	oauth_config: z
+		.object({
+			client_id: envVarSchema.optional(),
+			client_secret: envVarSchema.optional(),
+		})
+		.optional(),
+	tls_config: z
+		.object({
+			insecure_skip_verify: z.boolean().optional(),
+			ca_cert_pem: envVarSchema.optional(),
+		})
+		.optional(),
 });
 
 // Global proxy type schema
@@ -1017,6 +1129,7 @@ export const routingRuleSchema = z
 		scope_id: z.string().optional(),
 		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
 		enabled: z.boolean().default(true),
+		chain_rule: z.boolean().default(false),
 	})
 	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
 		message: "Scope ID is required when scope is not global",

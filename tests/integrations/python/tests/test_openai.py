@@ -71,6 +71,11 @@ Tests all core scenarios using OpenAI SDK directly:
 55. Image Generation - different sizes
 60. WebSocket Responses API - base path
 61. WebSocket Responses API - integration paths
+62. Realtime WebSocket API - base path
+63. Realtime WebSocket API - integration paths
+64. Realtime client secret HTTP API - raw routes
+65. Realtime client secret HTTP API - OpenAI constructor base_url compatibility
+66. Realtime client secret HTTP API - unsupported provider
 
 Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
@@ -79,6 +84,7 @@ import json
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from openai import OpenAI
@@ -170,7 +176,11 @@ from .utils.common import (
     assert_valid_openai_annotation,
     # WebSocket utilities
     WS_RESPONSES_SIMPLE_INPUT,
+    get_realtime_test_model,
     get_ws_base_url,
+    run_openai_base_url_client_secret_request,
+    run_realtime_client_secret_request,
+    run_ws_realtime_test,
     run_ws_responses_test,
 )
 from .utils.config_loader import get_config, get_model
@@ -4287,3 +4297,252 @@ class TestOpenAIIntegration:
                 f"Unexpected non-success terminal event at {path}. Events: {event_types}"
             )
             assert len(result["content"]) > 0, f"Should receive non-empty content at {path}"
+
+    @pytest.mark.parametrize(
+        "provider,_model,vk_enabled",
+        get_cross_provider_params_with_vk_for_scenario(
+            "simple_chat", include_providers=["openai"]
+        ),
+    )
+    def test_62_ws_realtime_base_path(self, test_config, provider, _model, vk_enabled):
+        """Test Case 62: Realtime WebSocket API via base path /v1/realtime."""
+        if provider == "_no_providers_":
+            pytest.skip("OpenAI provider is not configured for integration tests")
+        _ = test_config
+
+        realtime_model = get_realtime_test_model(provider)
+        if not realtime_model:
+            pytest.skip("Realtime model is not configured for provider")
+
+        ws_base = get_ws_base_url()
+        full_model = format_provider_model(provider, realtime_model)
+        ws_url = f"{ws_base}/v1/realtime?model={quote(full_model, safe='')}"
+        api_key = get_api_key(provider)
+
+        extra_headers = {}
+        if vk_enabled:
+            config = get_config()
+            vk = config.get_virtual_key()
+            if vk:
+                extra_headers["x-bf-vk"] = vk
+
+        result = run_ws_realtime_test(
+            ws_url=ws_url,
+            api_key=api_key,
+            timeout=45,
+            extra_headers=extra_headers if extra_headers else None,
+        )
+
+        assert result["error"] is None, f"Realtime websocket returned error: {result['error']}"
+        assert result["got_session_created"], "Expected session.created event"
+        assert result["got_session_updated"], "Expected session.updated event"
+        assert result["got_text_delta"], (
+            f"Expected at least one response.output_text.delta event. "
+            f"Got {[e.get('type') for e in result['events']]}"
+        )
+        assert result["got_response_done"], (
+            f"Expected response.done event. Got {[e.get('type') for e in result['events']]}"
+        )
+
+    @pytest.mark.parametrize(
+        "provider,_model,vk_enabled",
+        get_cross_provider_params_with_vk_for_scenario(
+            "simple_chat", include_providers=["openai"]
+        ),
+    )
+    def test_63_ws_realtime_integration_paths(
+        self, test_config, provider, _model, vk_enabled
+    ):
+        """Test Case 63: Realtime WebSocket API via OpenAI integration paths."""
+        if provider == "_no_providers_":
+            pytest.skip("OpenAI provider is not configured for integration tests")
+        _ = test_config
+
+        realtime_model = get_realtime_test_model(provider)
+        if not realtime_model:
+            pytest.skip("Realtime model is not configured for provider")
+
+        ws_base = get_ws_base_url()
+        api_key = get_api_key(provider)
+
+        extra_headers = {}
+        if vk_enabled:
+            config = get_config()
+            vk = config.get_virtual_key()
+            if vk:
+                extra_headers["x-bf-vk"] = vk
+
+        integration_urls = [
+            f"{ws_base}/openai/v1/realtime?model={quote(realtime_model, safe='')}",
+            f"{ws_base}/openai/realtime?deployment={quote(realtime_model, safe='')}",
+            f"{ws_base}/openai/openai/realtime?deployment={quote(realtime_model, safe='')}",
+        ]
+
+        for ws_url in integration_urls:
+            result = run_ws_realtime_test(
+                ws_url=ws_url,
+                api_key=api_key,
+                timeout=45,
+                extra_headers=extra_headers if extra_headers else None,
+            )
+
+            assert result["error"] is None, f"Realtime websocket returned error at {ws_url}: {result['error']}"
+            assert result["got_session_created"], f"Expected session.created at {ws_url}"
+            assert result["got_session_updated"], f"Expected session.updated at {ws_url}"
+            assert result["got_text_delta"], f"Expected response.output_text.delta at {ws_url}"
+            assert result["got_response_done"], f"Expected response.done at {ws_url}"
+
+    @pytest.mark.parametrize(
+        "provider,_model,vk_enabled",
+        get_cross_provider_params_with_vk_for_scenario(
+            "simple_chat", include_providers=["openai"]
+        ),
+    )
+    def test_64_realtime_client_secret_routes(self, test_config, provider, _model, vk_enabled):
+        """Test Case 64: Realtime client secret creation via raw HTTP routes."""
+        if provider == "_no_providers_":
+            pytest.skip("OpenAI provider is not configured for integration tests")
+        _ = test_config
+
+        realtime_model = get_realtime_test_model(provider)
+        if not realtime_model:
+            pytest.skip("Realtime model is not configured for provider")
+
+        config = get_config()
+        base_url = config._config["bifrost"]["base_url"].rstrip("/")
+        api_key = get_api_key(provider)
+
+        extra_headers = {}
+        if vk_enabled:
+            vk = config.get_virtual_key()
+            if vk:
+                extra_headers["x-bf-vk"] = vk
+
+        test_cases = [
+            (
+                f"{base_url}/v1/realtime/client_secrets",
+                {"session": {"model": format_provider_model(provider, realtime_model)}},
+                "client_secrets",
+            ),
+            (
+                f"{base_url}/v1/realtime/sessions",
+                {"model": format_provider_model(provider, realtime_model)},
+                "sessions",
+            ),
+            (
+                f"{base_url}/openai/v1/realtime/client_secrets",
+                {"session": {"model": realtime_model}},
+                "client_secrets",
+            ),
+            (
+                f"{base_url}/openai/v1/realtime/sessions",
+                {"model": realtime_model},
+                "sessions",
+            ),
+        ]
+
+        for url, payload, response_shape in test_cases:
+            result = run_realtime_client_secret_request(
+                url=url,
+                api_key=api_key,
+                request_body=payload,
+                extra_headers=extra_headers if extra_headers else None,
+                timeout=45,
+            )
+
+            assert result["status_code"] == 200, (
+                f"Expected 200 from {url}, got {result['status_code']}: {result['body']}"
+            )
+            assert "session" in result["body"], f"Missing session object in response from {url}"
+            if response_shape == "sessions":
+                assert "client_secret" in result["body"], f"Missing client_secret in response from {url}"
+                assert result["body"]["client_secret"].get("value"), f"Missing client_secret.value from {url}"
+                assert result["body"]["client_secret"].get("expires_at"), f"Missing client_secret.expires_at from {url}"
+            else:
+                assert result["body"].get("value"), f"Missing top-level value from {url}"
+                assert result["body"].get("expires_at"), f"Missing top-level expires_at from {url}"
+
+    @pytest.mark.parametrize(
+        "provider,_model,vk_enabled",
+        get_cross_provider_params_with_vk_for_scenario(
+            "simple_chat", include_providers=["openai"]
+        ),
+    )
+    def test_65_realtime_client_secret_openai_base_url_compatibility(
+        self, test_config, provider, _model, vk_enabled
+    ):
+        """Test Case 65: Realtime client secret creation works through OpenAI constructor base_url overrides."""
+        if provider == "_no_providers_":
+            pytest.skip("OpenAI provider is not configured for integration tests")
+        _ = test_config
+
+        realtime_model = get_realtime_test_model(provider)
+        if not realtime_model:
+            pytest.skip("Realtime model is not configured for provider")
+
+        config = get_config()
+        api_key = get_api_key(provider)
+        root_base_url = config._config["bifrost"]["base_url"].rstrip("/")
+        openai_base_url = config.get_integration_url("openai")
+
+        default_headers = {}
+        if vk_enabled:
+            vk = config.get_virtual_key()
+            if vk:
+                default_headers["x-bf-vk"] = vk
+
+        test_cases = [
+            (
+                root_base_url,
+                {"session": {"model": format_provider_model(provider, realtime_model)}},
+            ),
+            (
+                openai_base_url,
+                {"session": {"model": realtime_model}},
+            ),
+        ]
+
+        for base_url, payload in test_cases:
+            result = run_openai_base_url_client_secret_request(
+                base_url=base_url,
+                api_key=api_key,
+                request_body=payload,
+                timeout=45,
+                default_headers=default_headers if default_headers else None,
+            )
+
+            assert result["status_code"] == 200, (
+                f"Expected 200 from OpenAI client using base_url={base_url}, "
+                f"got {result['status_code']}: {result['body']}"
+            )
+            assert result["body"].get("value"), (
+                f"Missing top-level value for base_url={base_url}"
+            )
+            assert result["body"].get("expires_at"), (
+                f"Missing top-level expires_at for base_url={base_url}"
+            )
+
+    def test_66_realtime_client_secret_unsupported_provider(self, test_config):
+        """Test Case 66: Base realtime client secret route rejects unsupported providers."""
+        _ = test_config
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            pytest.skip("OPENAI_API_KEY not configured")
+
+        config = get_config()
+        base_url = config._config["bifrost"]["base_url"].rstrip("/")
+        api_key = get_api_key("openai")
+
+        result = run_realtime_client_secret_request(
+            url=f"{base_url}/v1/realtime/client_secrets",
+            api_key=api_key,
+            request_body={"session": {"model": "anthropic/claude-sonnet-4-20250514"}},
+            timeout=30,
+        )
+
+        assert result["status_code"] == 400, (
+            f"Expected 400 for unsupported provider, got {result['status_code']}: {result['body']}"
+        )
+        body = result["body"]
+        assert "error" in body, f"Expected error object in response, got {body}"
+        assert "not support" in body["error"]["message"].lower() or "provider" in body["error"]["message"].lower()

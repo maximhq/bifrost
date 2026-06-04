@@ -119,9 +119,6 @@ func TestCodeMode_Agent_AutoExecuteSingleTool(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -225,9 +222,6 @@ func TestCodeMode_Agent_NonAutoToolInCode(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions

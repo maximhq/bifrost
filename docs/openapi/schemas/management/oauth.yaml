@@ -2,12 +2,14 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
-    - headers: Header-based authentication (API keys, custom headers, etc.)
-    - oauth: OAuth 2.0 authentication
+    - headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)
+    - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
+    - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
+    - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
 
 OAuthConfigRequest:
   type: object
@@ -130,3 +132,60 @@ OAuthToken:
       type: string
       format: date-time
       description: When the token was last refreshed
+
+
+# ─── MCP Per-User OAuth flow ────────────────────────────────────────────────
+
+MCPOauthFlowDetail:
+  type: object
+  description: |
+    Response for GET /api/oauth/per-user/flows/{id}. Mirrors the headers-side
+    `MCPHeadersFlowDetail` — identity binding for display plus the bits the
+    consent UI needs to decide its copy.
+  required:
+    - id
+    - flow_mode
+    - status
+    - mcp_client
+    - oauth_config_id
+    - expires_at
+    - created_at
+    - has_active_token
+  properties:
+    id:
+      type: string
+    flow_mode:
+      type: string
+      enum: [user, vk, session]
+    status:
+      type: string
+      enum: [pending, authorized, failed, expired]
+    mcp_client:
+      $ref: '../../schemas/management/mcp.yaml#/MCPClientSummary'
+    oauth_config_id:
+      type: string
+    user_id:
+      type: string
+      nullable: true
+    user:
+      $ref: '../../schemas/management/mcp.yaml#/MCPUserSummary'
+      nullable: true
+    virtual_key:
+      $ref: '../../schemas/management/mcp.yaml#/MCPVirtualKeySummary'
+      nullable: true
+    session_id:
+      type: string
+      nullable: true
+    expires_at:
+      type: string
+      format: date-time
+    created_at:
+      type: string
+      format: date-time
+    has_active_token:
+      type: boolean
+      description: |
+        True when an active token already exists for the flow's binding. A
+        pending flow with this set means OAuth was re-initiated unnecessarily;
+        the consent page can render this as "already authenticated" instead
+        of prompting again.

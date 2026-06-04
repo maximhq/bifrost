@@ -37,7 +37,7 @@ export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageC
 			)}
 			<button
 				onClick={onRemove}
-				className="text-muted-foreground hover:bg-card hover:text-destructive ml-0.5 rounded-full p-0.5 cursor-pointer"
+				className="text-muted-foreground hover:bg-card hover:text-destructive ml-0.5 cursor-pointer rounded-full p-0.5"
 				type="button"
 			>
 				<XIcon className="size-3" />
@@ -78,12 +78,16 @@ export function AttachmentDisplay({
 				if (att.type === "image_url" && att.image_url?.url) {
 					return (
 						<div key={i} className="group/att relative max-w-full">
-							{/* eslint-disable-next-line @next/next/no-img-element */}
-							<img src={att.image_url.url} alt="attached image" className="max-h-48 max-w-full rounded-sm border object-contain sm:max-w-xs" />
+							{/* eslint-disable-next-line jsx-a11y/alt-text */}
+							<img
+								src={att.image_url.url}
+								alt="attached image"
+								className="max-h-48 max-w-full rounded-sm border object-contain sm:max-w-xs"
+							/>
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100 cursor-pointer"
+									className="bg-background/80 text-muted-foreground hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 cursor-pointer rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
 								>
 									<XIcon className="size-3" />
 								</button>
@@ -103,7 +107,7 @@ export function AttachmentDisplay({
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground cursor-pointer hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
+									className="bg-background/80 text-muted-foreground hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 cursor-pointer rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
 								>
 									<XIcon className="size-3" />
 								</button>

@@ -9,10 +9,11 @@ import (
 
 // TestResponsesAPIBasicFunctionality tests the core caching functionality with Responses API
 func TestResponsesAPIBasicFunctionality(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-responses-basic")
+	ctx := CreateContextWithCacheKey(t, "test-responses-basic")
 
 	// Create test request
 	testRequest := CreateBasicResponsesRequest(
@@ -29,7 +30,7 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil || len(response1.Output) == 0 {
@@ -94,10 +95,11 @@ func TestResponsesAPIBasicFunctionality(t *testing.T) {
 
 // TestResponsesAPIDifferentParameters tests that different parameters produce different cache entries
 func TestResponsesAPIDifferentParameters(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-responses-params")
+	ctx := CreateContextWithCacheKey(t, "test-responses-params")
 	basePrompt := "Explain quantum computing"
 
 	tests := []struct {
@@ -140,7 +142,7 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 			// Make first request
 			_, err1 := setup.Client.ResponsesRequest(ctx, tt.request1)
 			if err1 != nil {
-				return // Test will be skipped by retry function
+				t.Skipf("upstream request error, skipping test: %v", err1)
 			}
 
 			WaitForCache(setup.Plugin)
@@ -168,17 +170,18 @@ func TestResponsesAPIDifferentParameters(t *testing.T) {
 
 // TestResponsesAPISemanticMatching tests semantic similarity matching with Responses API
 func TestResponsesAPISemanticMatching(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKeyAndType("test-responses-semantic", CacheTypeSemantic)
+	ctx := CreateContextWithCacheKeyAndType(t, "test-responses-semantic", CacheTypeSemantic)
 
 	// First request
 	originalRequest := CreateBasicResponsesRequest("What is machine learning?", 0.5, 500)
 	t.Log("Making first Responses request with original text...")
 	response1, err1 := setup.Client.ResponsesRequest(ctx, originalRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
@@ -203,10 +206,11 @@ func TestResponsesAPISemanticMatching(t *testing.T) {
 
 // TestResponsesAPIWithInstructions tests caching with system instructions
 func TestResponsesAPIWithInstructions(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-responses-instructions")
+	ctx := CreateContextWithCacheKey(t, "test-responses-instructions")
 
 	// Create request with instructions
 	request1 := CreateResponsesRequestWithInstructions(
@@ -219,7 +223,7 @@ func TestResponsesAPIWithInstructions(t *testing.T) {
 	t.Log("Making first Responses request with instructions...")
 	response1, err1 := setup.Client.ResponsesRequest(ctx, request1)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
@@ -250,19 +254,20 @@ func TestResponsesAPIWithInstructions(t *testing.T) {
 
 // TestResponsesAPICacheExpiration tests TTL functionality for Responses API requests
 func TestResponsesAPICacheExpiration(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Set very short TTL for testing
 	shortTTL := 5 * time.Second
-	ctx := CreateContextWithCacheKeyAndTTL("test-responses-ttl", shortTTL)
+	ctx := CreateContextWithCacheKeyAndTTL(t, "test-responses-ttl", shortTTL)
 
 	responsesRequest := CreateBasicResponsesRequest("TTL test for Responses API", 0.5, 500)
 
 	t.Log("Making first Responses request with short TTL...")
 	response1, err1 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
@@ -285,7 +290,7 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 	t.Log("Making third Responses request after TTL expiration...")
 	response3, err3 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err3 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err3)
 	}
 	// Should not be a cache hit since TTL expired
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response3})
@@ -295,39 +300,52 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 
 // TestResponsesAPIWithoutCacheKey tests that Responses requests without cache key are not cached
 func TestResponsesAPIWithoutCacheKey(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// Don't set cache key in context
-	ctx := CreateContextWithCacheKey("")
+	// Don't set cache key in context. CreateContextWithCacheKey(t, "") would
+	// still populate CacheKey from t.Name(); using a base context keeps it
+	// unset so we exercise the cache-disabled path.
+	ctx := newBaseTestContext()
 
 	responsesRequest := CreateBasicResponsesRequest("Test Responses without cache key", 0.5, 500)
 
-	t.Log("Making Responses request without cache key...")
-
-	response, err := setup.Client.ResponsesRequest(ctx, responsesRequest)
+	t.Log("Making first Responses request without cache key...")
+	response1, err := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err)
 	}
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
-	// Should not be cached
-	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response})
+	WaitForCache(setup.Plugin)
+
+	// A second identical request must also miss — proves the first one
+	// was not silently cached against some default key.
+	t.Log("Making second identical request — must also miss because nothing was cached...")
+	ctx2 := newBaseTestContext()
+	response2, err := setup.Client.ResponsesRequest(ctx2, responsesRequest)
+	if err != nil {
+		t.Skipf("upstream request error, skipping test: %v", err)
+	}
+	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2})
 
 	t.Log("✅ Responses requests without cache key are properly not cached")
 }
 
 // TestResponsesAPINoStoreFlag tests that Responses requests with no-store flag are not cached
 func TestResponsesAPINoStoreFlag(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	responsesRequest := CreateBasicResponsesRequest("Test no-store with Responses API", 0.7, 500)
-	ctx := CreateContextWithCacheKeyAndNoStore("test-no-store-responses", true)
+	ctx := CreateContextWithCacheKeyAndNoStore(t, "test-no-store-responses", true)
 
 	t.Log("Testing no-store with Responses API...")
 	response1, err1 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
 
@@ -336,92 +354,100 @@ func TestResponsesAPINoStoreFlag(t *testing.T) {
 	// Verify not cached
 	response2, err2 := setup.Client.ResponsesRequest(ctx, responsesRequest)
 	if err2 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err2)
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response2}) // Should not be cached
 
 	t.Log("✅ Responses API no-store flag working correctly")
 }
 
-// TestResponsesAPIStreaming tests streaming Responses API requests
+// TestResponsesAPIStreaming tests streaming Responses API caching by warming
+// the cache with a streaming request and replaying it with a second identical
+// streaming request that must be served from cache.
 func TestResponsesAPIStreaming(t *testing.T) {
-	t.Log("Responses streaming not supported yet")
-
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-responses-streaming")
+	ctx := CreateContextWithCacheKey(t, "test-responses-streaming")
 	prompt := "Explain the basics of quantum computing in simple terms"
 
-	// Make non-streaming request first
-	t.Log("Making non-streaming Responses request...")
-	nonStreamRequest := CreateBasicResponsesRequest(prompt, 0.5, 500)
-	_, err1 := setup.Client.ResponsesRequest(ctx, nonStreamRequest)
+	// Warm the cache with a streaming request — the plugin accumulates the
+	// chunks and stores them on the final chunk.
+	t.Log("Warming cache with first streaming Responses request...")
+	streamRequest := CreateStreamingResponsesRequest(prompt, 0.5, 500)
+	stream1, err1 := setup.Client.ResponsesStreamRequest(ctx, streamRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
+	}
+	chunkCount1 := 0
+	for streamMsg := range stream1 {
+		if streamMsg.BifrostError != nil {
+			t.Fatalf("Error in first stream: %v", streamMsg.BifrostError)
+		}
+		if streamMsg.BifrostResponsesStreamResponse != nil {
+			chunkCount1++
+		}
+	}
+	if chunkCount1 == 0 {
+		t.Fatal("first streaming request produced no chunks")
 	}
 
 	WaitForCache(setup.Plugin)
 
-	// Make streaming request with same prompt and parameters
-	t.Log("Making streaming Responses request with same prompt...")
-	streamRequest := CreateStreamingResponsesRequest(prompt, 0.5, 500)
-	stream, err2 := setup.Client.ResponsesStreamRequest(ctx, streamRequest)
+	// Second identical streaming request — must be served from cache. We
+	// require AT LEAST ONE chunk with CacheHit=true (the final chunk gets
+	// the cache_debug stamp during replay).
+	t.Log("Replaying — second identical streaming request must serve from cache...")
+	ctx2 := CreateContextWithCacheKey(t, "test-responses-streaming")
+	stream2, err2 := setup.Client.ResponsesStreamRequest(ctx2, streamRequest)
 	if err2 != nil {
-		t.Fatalf("Streaming Responses request failed: %v", err2)
+		t.Fatalf("Second streaming Responses request failed: %v", err2)
 	}
 
-	var streamResponses []schemas.BifrostResponsesStreamResponse
-	for streamMsg := range stream {
+	cacheHitFound := false
+	chunkCount2 := 0
+	for streamMsg := range stream2 {
 		if streamMsg.BifrostError != nil {
-			t.Fatalf("Error in Responses stream: %v", streamMsg.BifrostError)
+			t.Fatalf("Error in second stream: %v", streamMsg.BifrostError)
 		}
 		if streamMsg.BifrostResponsesStreamResponse != nil {
-			streamResponses = append(streamResponses, *streamMsg.BifrostResponsesStreamResponse)
+			chunkCount2++
+			if cd := streamMsg.BifrostResponsesStreamResponse.ExtraFields.CacheDebug; cd != nil && cd.CacheHit {
+				cacheHitFound = true
+			}
 		}
 	}
-
-	if len(streamResponses) == 0 {
-		t.Fatal("No streaming responses received")
+	if chunkCount2 == 0 {
+		t.Fatal("replay produced no chunks")
 	}
-
-	// Check if any of the streaming responses was served from cache
-	cacheHitFound := false
-	for _, resp := range streamResponses {
-		if resp.ExtraFields.CacheDebug != nil && resp.ExtraFields.CacheDebug.CacheHit {
-			cacheHitFound = true
-			break
-		}
-	}
-
 	if !cacheHitFound {
-		t.Log("⚠️  No cache hit detected in streaming responses - this could be expected behavior")
-	} else {
-		t.Log("✓ Cache hit detected in streaming Responses API")
+		t.Fatal("expected at least one chunk with CacheDebug.CacheHit=true on streaming replay")
 	}
-
-	t.Log("✅ Streaming Responses API test completed")
+	t.Log("✅ Streaming Responses API replay served from cache")
 }
 
 // TestResponsesAPIComplexParameters tests complex parameter handling
 func TestResponsesAPIComplexParameters(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-responses-complex-params")
+	ctx := CreateContextWithCacheKey(t, "test-responses-complex-params")
 
 	// Create request with various complex parameters
+	serviceTier := schemas.BifrostServiceTierDefault
 	request := CreateBasicResponsesRequest("Test complex parameters", 0.8, 500)
 	request.Params.TopP = PtrFloat64(0.9)
 	request.Params.Background = &[]bool{true}[0]
 	request.Params.ParallelToolCalls = &[]bool{false}[0]
-	request.Params.ServiceTier = &[]string{"default"}[0]
+	request.Params.ServiceTier = &serviceTier
 	request.Params.Store = &[]bool{true}[0]
 
 	t.Log("Making first Responses request with complex parameters...")
 	response1, err1 := setup.Client.ResponsesRequest(ctx, request)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ResponsesResponse: response1})
@@ -432,7 +458,7 @@ func TestResponsesAPIComplexParameters(t *testing.T) {
 	request2.Params.TopP = PtrFloat64(0.9)
 	request2.Params.Background = &[]bool{true}[0]
 	request2.Params.ParallelToolCalls = &[]bool{false}[0]
-	request2.Params.ServiceTier = &[]string{"default"}[0]
+	request2.Params.ServiceTier = &serviceTier
 	request2.Params.Store = &[]bool{true}[0]
 
 	t.Log("Making second identical Responses request with complex parameters...")

@@ -32,6 +32,17 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
+func EnvVarAsString(e *EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar
+	}
+	return e.GetValue()
+}
+
 // knownProvidersMu protects concurrent access to knownProviders.
 var knownProvidersMu sync.RWMutex
 
@@ -834,48 +845,37 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		}
 
 		if original.Function.Parameters != nil {
-			copyParams := &ToolFunctionParameters{
-				Type:     original.Function.Parameters.Type,
-				keyOrder: original.Function.Parameters.keyOrder,
-			}
-
-			if original.Function.Parameters.Description != nil {
-				copyParamDesc := *original.Function.Parameters.Description
-				copyParams.Description = &copyParamDesc
-			}
-
-			if original.Function.Parameters.Required != nil {
-				copyParams.Required = make([]string, len(original.Function.Parameters.Required))
-				copy(copyParams.Required, original.Function.Parameters.Required)
-			}
-
-			if original.Function.Parameters.Properties != nil {
-				// Deep copy preserving insertion order
-				copyProps := NewOrderedMapWithCapacity(original.Function.Parameters.Properties.Len())
-				original.Function.Parameters.Properties.Range(func(k string, v interface{}) bool {
-					copyProps.Set(k, DeepCopy(v))
-					return true
-				})
-				copyParams.Properties = copyProps
-			}
-
-			if original.Function.Parameters.Enum != nil {
-				copyParams.Enum = make([]string, len(original.Function.Parameters.Enum))
-				copy(copyParams.Enum, original.Function.Parameters.Enum)
-			}
-
-			if original.Function.Parameters.AdditionalProperties != nil {
-				copyAdditionalProps := *original.Function.Parameters.AdditionalProperties
-				copyParams.AdditionalProperties = &copyAdditionalProps
-			}
-
-			copyTool.Function.Parameters = copyParams
+			copyTool.Function.Parameters = DeepCopyToolFunctionParameters(original.Function.Parameters)
 		}
 
 		if original.Function.Strict != nil {
 			copyStrict := *original.Function.Strict
 			copyTool.Function.Strict = &copyStrict
 		}
+	}
+
+	// Deep copy Annotations if present
+	if original.Annotations != nil {
+		copyAnnotations := &MCPToolAnnotations{
+			Title: original.Annotations.Title,
+		}
+		if original.Annotations.ReadOnlyHint != nil {
+			v := *original.Annotations.ReadOnlyHint
+			copyAnnotations.ReadOnlyHint = &v
+		}
+		if original.Annotations.DestructiveHint != nil {
+			v := *original.Annotations.DestructiveHint
+			copyAnnotations.DestructiveHint = &v
+		}
+		if original.Annotations.IdempotentHint != nil {
+			v := *original.Annotations.IdempotentHint
+			copyAnnotations.IdempotentHint = &v
+		}
+		if original.Annotations.OpenWorldHint != nil {
+			v := *original.Annotations.OpenWorldHint
+			copyAnnotations.OpenWorldHint = &v
+		}
+		copyTool.Annotations = copyAnnotations
 	}
 
 	// Deep copy Custom if present
@@ -914,6 +914,153 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 	}
 
 	return copyTool
+}
+
+// DeepCopyToolFunctionParameters creates a deep copy of ToolFunctionParameters,
+// preserving all JSON Schema fields so references and validation metadata are
+// not dropped during tool cloning.
+func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunctionParameters {
+	if original == nil {
+		return nil
+	}
+
+	copyParams := &ToolFunctionParameters{
+		Type:                original.Type,
+		keyOrder:            JSONKeyOrder{keys: append([]string(nil), original.keyOrder.keys...)},
+		explicitEmptyObject: original.explicitEmptyObject,
+	}
+
+	if original.Description != nil {
+		copyParamDesc := *original.Description
+		copyParams.Description = &copyParamDesc
+	}
+	if original.Required != nil {
+		copyParams.Required = append([]string(nil), original.Required...)
+	}
+	if original.Properties != nil {
+		copyParams.Properties = deepCopyOrderedMap(original.Properties)
+	}
+	if original.AdditionalProperties != nil {
+		copyAdditionalProps := AdditionalPropertiesStruct{}
+		if original.AdditionalProperties.AdditionalPropertiesBool != nil {
+			b := *original.AdditionalProperties.AdditionalPropertiesBool
+			copyAdditionalProps.AdditionalPropertiesBool = &b
+		}
+		if original.AdditionalProperties.AdditionalPropertiesMap != nil {
+			copyAdditionalProps.AdditionalPropertiesMap = deepCopyOrderedMap(original.AdditionalProperties.AdditionalPropertiesMap)
+		}
+		copyParams.AdditionalProperties = &copyAdditionalProps
+	}
+	if original.Enum != nil {
+		copyParams.Enum = append([]string(nil), original.Enum...)
+	}
+	if original.Defs != nil {
+		copyParams.Defs = deepCopyOrderedMap(original.Defs)
+	}
+	if original.Definitions != nil {
+		copyParams.Definitions = deepCopyOrderedMap(original.Definitions)
+	}
+	if original.Ref != nil {
+		ref := *original.Ref
+		copyParams.Ref = &ref
+	}
+	if original.Items != nil {
+		copyParams.Items = deepCopyOrderedMap(original.Items)
+	}
+	if original.MinItems != nil {
+		minItems := *original.MinItems
+		copyParams.MinItems = &minItems
+	}
+	if original.MaxItems != nil {
+		maxItems := *original.MaxItems
+		copyParams.MaxItems = &maxItems
+	}
+	copyParams.AnyOf = deepCopyOrderedMapSlice(original.AnyOf)
+	copyParams.OneOf = deepCopyOrderedMapSlice(original.OneOf)
+	copyParams.AllOf = deepCopyOrderedMapSlice(original.AllOf)
+	if original.Format != nil {
+		format := *original.Format
+		copyParams.Format = &format
+	}
+	if original.Pattern != nil {
+		pattern := *original.Pattern
+		copyParams.Pattern = &pattern
+	}
+	if original.MinLength != nil {
+		minLength := *original.MinLength
+		copyParams.MinLength = &minLength
+	}
+	if original.MaxLength != nil {
+		maxLength := *original.MaxLength
+		copyParams.MaxLength = &maxLength
+	}
+	if original.Minimum != nil {
+		minimum := *original.Minimum
+		copyParams.Minimum = &minimum
+	}
+	if original.Maximum != nil {
+		maximum := *original.Maximum
+		copyParams.Maximum = &maximum
+	}
+	if original.Title != nil {
+		title := *original.Title
+		copyParams.Title = &title
+	}
+	copyParams.Default = DeepCopy(original.Default)
+	if original.Nullable != nil {
+		nullable := *original.Nullable
+		copyParams.Nullable = &nullable
+	}
+
+	return copyParams
+}
+
+func deepCopyOrderedMap(original *OrderedMap) *OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copyMap := NewOrderedMapWithCapacity(original.Len())
+	original.Range(func(k string, v interface{}) bool {
+		copyMap.Set(k, deepCopySchemaValue(v))
+		return true
+	})
+	return copyMap
+}
+
+func deepCopyOrderedMapSlice(original []OrderedMap) []OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copied := make([]OrderedMap, len(original))
+	for i := range original {
+		if copyMap := deepCopyOrderedMap(&original[i]); copyMap != nil {
+			copied[i] = *copyMap
+		}
+	}
+	return copied
+}
+
+func deepCopySchemaValue(original interface{}) interface{} {
+	switch v := original.(type) {
+	case *OrderedMap:
+		return deepCopyOrderedMap(v)
+	case OrderedMap:
+		return deepCopyOrderedMap(&v)
+	case map[string]interface{}:
+		copied := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			copied[key] = deepCopySchemaValue(value)
+		}
+		return copied
+	case []interface{}:
+		copied := make([]interface{}, len(v))
+		for i, value := range v {
+			copied[i] = deepCopySchemaValue(value)
+		}
+		return copied
+	default:
+		return DeepCopy(v)
+	}
 }
 
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
@@ -1238,14 +1385,35 @@ func IsNovaModel(model string) bool {
 	return strings.Contains(model, "nova")
 }
 
+func IsNova2Model(model string) bool {
+	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// BedrockModelSupportsCachePoints reports whether the Bedrock model supports
+// explicit prompt-caching cache points in the Converse API request.
+func BedrockModelSupportsCachePoints(model string) bool {
+	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsLlamaModel checks if the model is a Meta Llama model.
+//
+// Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
+// rejects toolConfig.toolChoice.tool on Meta Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field"). See
+// AWS docs for the per-model tool_choice support matrix:
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+func IsLlamaModel(model string) bool {
+	return strings.Contains(model, "llama")
 }
 
 func IsGeminiModel(model string) bool {
@@ -1254,6 +1422,10 @@ func IsGeminiModel(model string) bool {
 
 func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
+}
+
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
 }
 
 // IsImagenModel checks if the model is an Imagen model.

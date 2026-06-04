@@ -1,0 +1,200 @@
+---
+title: "Bifrost Enterprise Gateway"
+description: "Production-grade AI gateway for organizations running mission-critical AI workloads. Built on top of open-source Bifrost with high-availability clustering, fine-grained governance, audit-grade compliance, and managed deployment options."
+icon: "building"
+---
+
+Bifrost Enterprise builds on the open-source [Bifrost AI Gateway](/overview) with the reliability, security, and governance capabilities required to run AI in production at organizational scale. Every OSS feature ships in Enterprise - plus high-availability clustering, predictive load balancing, identity federation, role-based access control, audit-grade compliance logging, and private-network deployment options.
+
+<Frame>
+<img src="/media/architecture.png" alt="Bifrost Enterprise architecture" width="100%" />
+</Frame>
+
+<CardGroup cols={2}>
+  <Card title="Try Enterprise free" icon="rocket" href="https://www.getmaxim.ai/bifrost/enterprise">
+    Start a 14-day free trial. No credit card required.
+  </Card>
+  <Card title="Book a demo" icon="calendar" href="https://www.getmaxim.ai/bifrost/book-a-demo">
+    Walk through Enterprise capabilities with a Bifrost engineer.
+  </Card>
+</CardGroup>
+
+## Built on open source
+
+Bifrost Enterprise is a strict superset of the [open-source gateway](/overview). Every provider, integration, plugin, and SDK supported in OSS works identically in Enterprise - no migration, no re-integration, same `config.json` schema. Enterprise adds the capabilities organizations need at scale.
+
+---
+
+## 1. Observe & audit
+
+Before anything else, make sure you can see traffic, exports, and incident-grade audit trails. Production trust starts with visibility.
+
+<CardGroup cols={2}>
+  <Card title="Audit Logs" icon="scroll" href="/enterprise/audit-logs">
+    Immutable, timestamped audit trails for every configuration change. SOC 2, GDPR, HIPAA, ISO 27001 friendly.
+  </Card>
+  <Card title="Log Exports" icon="download" href="/enterprise/log-exports">
+    Automated export of request logs and telemetry to S3, GCS, BigQuery, and other data lakes.
+  </Card>
+  <Card title="Datadog Connector" icon="dog" href="/enterprise/datadog-connector">
+    Native Datadog APM, LLM Observability, and metrics integration with full request tracing.
+  </Card>
+</CardGroup>
+
+---
+
+## 2. Identity
+
+Federate user identity through your existing IdP so accounts, groups, and lifecycle state stay in sync.
+
+<Card title="User Provisioning (OIDC)" icon="users" href="/enterprise/user-provisioning">
+  OIDC login with directory-based user and group sync for lifecycle management.
+</Card>
+
+### Connect your identity provider
+
+<CardGroup cols={3}>
+  <Card title="Okta" icon="key" href="/enterprise/setting-up-okta">
+    OIDC login with Okta plus 24-hour background user sync.
+  </Card>
+  <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
+    Azure AD / Entra ID with GCC High and DoD cloud support.
+  </Card>
+  <Card title="Keycloak" icon="lock" href="/enterprise/setting-up-keycloak">
+    Self-hosted identity with OIDC login and Admin REST API backed sync.
+  </Card>
+  <Card title="Zitadel" icon="z" href="/enterprise/setting-up-zitadel">
+    Cloud-native identity with first-class user grants and project mapping.
+  </Card>
+  <Card title="Google Workspace" icon="google" href="/enterprise/setting-up-google-workspace">
+    Workspace directory federation with Application Default Credentials inheritance.
+  </Card>
+</CardGroup>
+
+---
+
+## 3. Safety
+
+Apply content guardrails so unsafe input and output are caught before they reach your models or your users.
+
+<Card title="Guardrails" icon="road-barrier" href="/enterprise/guardrails">
+  Content safety with AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, and Patronus AI.
+</Card>
+
+Out-of-the-box building blocks:
+
+<CardGroup cols={2}>
+  <Card title="Secrets detection" icon="key" href="/enterprise/guardrails/secrets-detection">
+    Catch API keys, credentials, and tokens in prompts and completions before they leave your perimeter.
+  </Card>
+  <Card title="Custom regex" icon="code" href="/enterprise/guardrails/custom-regex">
+    Define organization-specific patterns for redaction or rejection.
+  </Card>
+</CardGroup>
+
+---
+
+## 4. Policy
+
+Decide what each user is allowed to do with the gateway: which providers, which models, what budgets, which MCP tools.
+
+<CardGroup cols={2}>
+  <Card title="Access Profiles" icon="id-card" href="/enterprise/access-profiles">
+    Reusable provider, model, budget, and rate-limit policies. Auto-allocate virtual keys to users at scale.
+  </Card>
+  <Card title="MCP Tool Groups" icon="layer-group" href="/enterprise/mcp-tool-groups">
+    Curated bundles of MCP tools attachable to virtual keys, teams, customers, users, providers, or API keys.
+  </Card>
+</CardGroup>
+
+---
+
+## 5. Access
+
+Define who can configure the gateway, and limit which rows each operator can see in the dashboard.
+
+<CardGroup cols={2}>
+  <Card title="Advanced Governance" icon="shield-check" href="/enterprise/advanced-governance">
+    Hierarchical governance across teams, customers, and business units, layered on top of OSS governance.
+  </Card>
+  <Card title="Role-Based Access Control" icon="user-shield" href="/enterprise/rbac">
+    Custom roles with fine-grained permissions across every Bifrost resource.
+  </Card>
+  <Card title="Data Access Control" icon="user-shield" href="/enterprise/data-access-control">
+    Row-level scope (own / team / all) so different operators see only what their role entitles them to.
+  </Card>
+</CardGroup>
+
+---
+
+## 6. Deploy at scale
+
+Once policy and access are wired up, move from a single-node install to a clustered, geo-redundant production deployment.
+
+<CardGroup cols={2}>
+  <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
+    High-availability clustering with automatic service discovery, gossip-based state sync, and zero-downtime rolling deployments.
+  </Card>
+  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
+    Predictive scaling with real-time provider health monitoring; traffic shifts automatically to the fastest available upstream.
+  </Card>
+  <Card title="In-VPC Deployments" icon="cloud" href="/enterprise/invpc-deployments">
+    Deploy entirely within your private cloud with no traffic crossing public network boundaries.
+  </Card>
+</CardGroup>
+
+### Cloud-specific deployment guides
+
+<CardGroup cols={2}>
+  <Card title="AWS" icon="aws" href="/deployment-guides/enterprise/aws">
+    Deploy on EKS or ECS with IRSA / IAM Task Roles for cloud-native authentication.
+  </Card>
+  <Card title="GCP" icon="google" href="/deployment-guides/enterprise/gcp">
+    Deploy on GKE with Workload Identity for keyless service account access.
+  </Card>
+  <Card title="Azure" icon="microsoft" href="/deployment-guides/enterprise/azure">
+    Deploy on AKS with Azure Workload Identity Federation.
+  </Card>
+  <Card title="On-Premise" icon="server" href="/deployment-guides/enterprise/on-premise">
+    Air-gapped or self-hosted deployments with Docker credentials.
+  </Card>
+</CardGroup>
+
+---
+
+## 7. Extend
+
+For workflows the built-in features don't cover, write a custom plugin.
+
+<Card title="Writing Go Plugins" icon="puzzle-piece" href="/plugins/writing-go-plugin">
+  Build native plugins for organization-specific workflows and business logic.
+</Card>
+
+---
+
+## Security & compliance
+
+<Card title="Security Posture" icon="shield" href="/security">
+  Encryption at rest and in transit, vulnerability scanning, dependency management, and secure defaults.
+</Card>
+
+---
+
+## Stay current
+
+<CardGroup cols={2}>
+  <Card title="Release cadence" icon="calendar" href="/enterprise/release-cadence">
+    How Enterprise releases are versioned and shipped.
+  </Card>
+  <Card title="Migration guides" icon="arrow-up-right-dots" href="/enterprise/migration-guides/v1.4.0">
+    Step-by-step upgrade instructions for major versions.
+  </Card>
+</CardGroup>
+
+---
+
+## Next steps
+
+- New to Bifrost entirely? Start with the [open-source quickstart](/quickstart/gateway/setting-up) to get the gateway running locally before layering Enterprise on top.
+- Already running OSS in production? Skip to [Audit Logs](/enterprise/audit-logs) and [User Provisioning](/enterprise/user-provisioning) to begin the upgrade path.
+- Evaluating? Read the [Security Posture](/security), then [book a demo](https://www.getmaxim.ai/bifrost/book-a-demo).

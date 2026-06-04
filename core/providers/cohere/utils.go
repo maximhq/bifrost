@@ -282,7 +282,7 @@ func convertCohereResponseFormatToBifrost(cohereFormat *CohereResponseFormat) *i
 	data := []byte(`{}`)
 	if cohereFormat.JSONSchema != nil {
 		data, _ = sjson.SetBytes(data, "type", "json_schema")
-		schemaBytes, _ := schemas.Marshal(cohereFormat.JSONSchema)
+		schemaBytes, _ := schemas.MarshalSorted(cohereFormat.JSONSchema)
 		data, _ = sjson.SetRawBytes(data, "json_schema", schemaBytes)
 	} else {
 		data, _ = sjson.SetBytes(data, "type", string(cohereFormat.Type))

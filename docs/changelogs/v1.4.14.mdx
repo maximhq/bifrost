@@ -19,15 +19,15 @@ description: "v1.4.14 changelog - 2026-03-18"
 <Update label="Bifrost(HTTP)" description="1.4.14">
 ## 🐞 Fixed
 
-- **GIN Index Migration** — Rewrote metadata GIN index migration to run non-transactionally with CREATE INDEX CONCURRENTLY in a background goroutine, preventing pod startup deadlocks during rolling upgrades on large tables
-- **Advisory Lock Refactor** — Generalized advisory lock into reusable `acquireAdvisoryLock` with dedicated GIN index lock key to serialize index builds across cluster nodes
-- **Metadata Pointer Safety** — Changed `Log.Metadata` from `string` to `*string` to properly represent nullable metadata and prevent serialization errors from aborting log writes
-- **Distributed Lock Nil Safety** — Added nil-store guards to `DistributedLock` methods to prevent panics when config store is unavailable
-- **PostgreSQL 16 Requirement** — Added minimum PostgreSQL 16 version check at logstore startup, leveraging `IS NOT JSON OBJECT` for server-side metadata validation
+- **GIN Index Migration** - Rewrote metadata GIN index migration to run non-transactionally with CREATE INDEX CONCURRENTLY in a background goroutine, preventing pod startup deadlocks during rolling upgrades on large tables
+- **Advisory Lock Refactor** - Generalized advisory lock into reusable `acquireAdvisoryLock` with dedicated GIN index lock key to serialize index builds across cluster nodes
+- **Metadata Pointer Safety** - Changed `Log.Metadata` from `string` to `*string` to properly represent nullable metadata and prevent serialization errors from aborting log writes
+- **Distributed Lock Nil Safety** - Added nil-store guards to `DistributedLock` methods to prevent panics when config store is unavailable
+- **PostgreSQL 16 Requirement** - Added minimum PostgreSQL 16 version check at logstore startup, leveraging `IS NOT JSON OBJECT` for server-side metadata validation
 
 </Update>
 <Update label="Core" description="1.4.11">
-- fix: deterministic JSON serialization across all providers — replaced map[string]interface{} round-trips with json.RawMessage and sjson/gjson to preserve original key ordering for prompt caching
+- fix: deterministic JSON serialization across all providers - replaced map[string]interface{} round-trips with json.RawMessage and sjson/gjson to preserve original key ordering for prompt caching
 - fix: ResponsesTool MarshalJSON rewritten to use sjson for incremental byte-level JSON construction, ensuring stable key order critical for OpenAI prompt caching
 - fix: Anthropic tool call arguments preserved as json.RawMessage instead of parsing into map, preventing key reordering on re-serialization
 - fix: Bedrock tool use input and extra params preserved as json.RawMessage for consistent prompt caching behavior

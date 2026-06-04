@@ -118,6 +118,10 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
 		RunCompactionTest,
+		RunInterleavedThinkingTest,
+		RunFastModeTest,
+		RunEagerInputStreamingTest,
+		RunServerToolsViaOpenAIEndpointTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -127,7 +131,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 
 	// Execute all test scenarios WITH raw request/response enabled
 	t.Run("WithRawRequestResponse", func(t *testing.T) {
-		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawRequest, true)
 		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
 		rawConfig := testConfig
 		rawConfig.ExpectRawRequestResponse = true
@@ -235,6 +240,10 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
 		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
 		{"Compaction", testConfig.Scenarios.Compaction},
+		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
+		{"FastMode", testConfig.Scenarios.FastMode},
+		{"EagerInputStreaming", testConfig.Scenarios.EagerInputStreaming},
+		{"ServerToolsViaOpenAIEndpoint", testConfig.Scenarios.ServerToolsViaOpenAIEndpoint},
 	}
 
 	supported := 0

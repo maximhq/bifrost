@@ -5,7 +5,7 @@ speech:
     description: |
       Generates audio from the input text. Returns audio data or streams via SSE.
     tags:
-      - Audio
+    - Audio
     requestBody:
       required: true
       content:
@@ -31,6 +31,11 @@ speech:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 transcriptions:
   post:
     operationId: createTranscription
@@ -38,7 +43,7 @@ transcriptions:
     description: |
       Transcribes audio into text in the input language.
     tags:
-      - Audio
+    - Audio
     requestBody:
       required: true
       content:
@@ -59,3 +64,8 @@ transcriptions:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

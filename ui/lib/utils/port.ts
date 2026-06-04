@@ -23,8 +23,8 @@ function getPortConfig(): PortConfig {
 	const isDevelopment = process.env.NODE_ENV === "development";
 
 	if (isDevelopment) {
-		// Development mode: Next.js dev server runs on different port than Go server
-		const port = process.env.NEXT_PUBLIC_BIFROST_PORT || "8080";
+		// Development mode: Vite dev server runs on different port than Go server
+		const port = process.env.BIFROST_PORT || "8080";
 		return {
 			port,
 			isDevelopment: true,

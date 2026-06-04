@@ -2,18 +2,21 @@ package handlers
 
 import (
 	"bytes"
-	"compress/zlib"
 	"compress/gzip"
+	"compress/zlib"
+	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -35,7 +38,7 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -71,7 +74,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -93,7 +96,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 	allowedOrigin := "https://example.com"
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{allowedOrigin},
 		},
 	}
@@ -124,7 +127,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 // TestCorsMiddleware_NonAllowedOrigins tests that non-allowed origins don't get CORS headers
 func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -155,7 +158,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 // TestCorsMiddleware_PreflightAllowedOrigin tests OPTIONS preflight requests for allowed origins
 func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 		},
 	}
@@ -192,7 +195,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightNonAllowedOrigin tests OPTIONS preflight requests for non-allowed origins
 func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -229,7 +232,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightLocalhost tests OPTIONS preflight requests for localhost
 func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -266,7 +269,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 // TestCorsMiddleware_NoOriginHeader tests behavior when no Origin header is present
 func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -408,6 +411,69 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 
 	chained := lib.ChainMiddlewares(handler, middleware)
 	chained(ctx)
+}
+
+func TestIsInferenceWSEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/responses",
+		"/v1/realtime",
+		"/responses",
+		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
+		"/openai/v1/realtime",
+		"/openai/realtime",
+		"/openai/openai/realtime",
+	}
+
+	for _, path := range paths {
+		if !isInferenceWSEndpoint(path) {
+			t.Fatalf("expected inference websocket path %s to be recognized", path)
+		}
+	}
+
+	if isInferenceWSEndpoint("/api/ws") {
+		t.Fatal("dashboard websocket path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/openai/chat/completions") {
+		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+}
+
+func TestIsRealtimeTransportEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+		"/openai/v1/realtime",
+		"/openai/openai/realtime",
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+		"/openai/v1/realtime/calls",
+		"/openai/openai/realtime/calls",
+	}
+
+	for _, path := range paths {
+		if !isRealtimeTransportEndpoint(path) {
+			t.Fatalf("expected realtime transport path %s to be recognized", path)
+		}
+	}
+
+	nonTransportPaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+		"/v1/chat/completions",
+	}
+
+	for _, path := range nonTransportPaths {
+		if isRealtimeTransportEndpoint(path) {
+			t.Fatalf("did not expect non-transport path %s to be recognized", path)
+		}
+	}
 }
 
 // Testlib.ChainMiddlewares_ShortCircuit tests that when a middleware writes a response
@@ -663,6 +729,83 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime",
+		"/openai/v1/realtime",
+		"/v1/realtime/calls?model=gpt-realtime",
+		"/openai/v1/realtime/calls?model=gpt-realtime",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected realtime transport route %s to bypass auth", route)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if nextCalled {
+				t.Fatalf("expected realtime minting route %s to still require auth", route)
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("expected %d for route %s, got %d", fasthttp.StatusUnauthorized, route, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_NilToEnabled tests updating auth config from nil to enabled
 func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -845,7 +988,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{}, // No custom headers
 		},
@@ -864,10 +1007,125 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialed tests that wildcard allowed headers
+// sets Access-Control-Allow-Headers to * for non-credentialed requests (wildcard origins).
+func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Non-credentialed: wildcard is valid per spec
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "*" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedPreflight tests that wildcard allowed headers
+// reflects Access-Control-Request-Headers for credentialed preflight requests instead of sending
+// the literal *, which browsers don't treat as a wildcard when credentials are present.
+func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("OPTIONS")
+	ctx.Request.Header.Set("Origin", "https://example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "Authorization, X-Custom-Header")
+
+	next := func(ctx *fasthttp.RequestCtx) {
+		t.Error("Next handler should not be called for preflight")
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed preflight: should reflect requested headers, not *
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "Authorization, X-Custom-Header" {
+		t.Errorf("Expected Access-Control-Allow-Headers to reflect requested headers, got %s", actualHeaders)
+	}
+
+	// Should also have credentials
+	creds := string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials"))
+	if creds != "true" {
+		t.Errorf("Expected Access-Control-Allow-Credentials to be true, got %s", creds)
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight tests that wildcard allowed headers
+// uses defaults for credentialed non-preflight requests (no Access-Control-Request-Headers).
+func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed non-preflight: should use defaults (not *)
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	defaultHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+	for _, header := range defaultHeaders {
+		if !containsHeader(actualHeaders, header) {
+			t.Errorf("Expected Access-Control-Allow-Headers to contain %s, got %s", header, actualHeaders)
+		}
+	}
+	if actualHeaders == "*" {
+		t.Error("Expected Access-Control-Allow-Headers to NOT be * for credentialed requests")
 	}
 
 	if !nextCalled {
@@ -880,7 +1138,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"X-Custom-Header", "X-Another-Header"},
 		},
@@ -925,7 +1183,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			// Include a header that's already in defaults
 			AllowedHeaders: []string{"Content-Type", "X-Custom-Header"},
@@ -968,7 +1226,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 			AllowedHeaders: []string{"X-Development-Header"},
 		},
@@ -1002,7 +1260,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 			AllowedHeaders: []string{"X-Custom-Header"},
 		},
@@ -1153,7 +1411,7 @@ func TestFasthttpToHTTPRequest_PathParams(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1209,7 +1467,7 @@ func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1245,7 +1503,7 @@ func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1281,7 +1539,7 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1323,7 +1581,7 @@ func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1358,7 +1616,7 @@ func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.
 
 func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1388,7 +1646,7 @@ func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1465,7 +1723,7 @@ func TestShouldStreamDecompress(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1506,7 +1764,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1560,7 +1818,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T)
 
 func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1589,7 +1847,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1617,7 +1875,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *tes
 
 func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1657,7 +1915,7 @@ func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1764,4 +2022,104 @@ func zstdCompress(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
+// span timestamps from a flushed trace. Timestamps are copied synchronously inside
+// Inject because the tracer releases the pooled trace once Inject returns.
+type captureTracePlugin struct {
+	done      chan struct{}
+	rootStart time.Time
+	rootEnd   time.Time
+	llmEnd    time.Time
+	foundLLM  bool
+}
+
+func (p *captureTracePlugin) GetName() string { return "capture-trace" }
+func (p *captureTracePlugin) Cleanup() error  { return nil }
+func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace == nil || trace.RootSpan == nil {
+		return nil
+	}
+	p.rootStart = trace.RootSpan.StartTime
+	p.rootEnd = trace.RootSpan.EndTime
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindLLMCall {
+			p.llmEnd = span.EndTime
+			p.foundLLM = true
+		}
+	}
+	return nil
+}
+
+// TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan asserts that for a deferred
+// (streaming) request the root HTTP span is ended by the trace completer — after the
+// stream drains — rather than at handler return. Before the fix the middleware ended
+// the root span in its defer, so the root closed before the deferred llm.call span,
+// making the child appear longer than its parent in trace viewers.
+func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	tm := NewTracingMiddleware(tracer)
+
+	var traceID, rootSpanID string
+	var completer func([]schemas.PluginLogEntry)
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ = ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		rootSpanID, _ = ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+		completer, _ = ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+		// Mark this as a deferred (streaming) request so the middleware leaves the
+		// root span open for the completer to end.
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	// Runs setup, next, and the middleware defer (which must NOT end the root span
+	// because the request is deferred).
+	tm.Middleware()(next)(ctx)
+
+	if traceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if completer == nil {
+		t.Fatal("middleware did not set a trace completer")
+	}
+
+	// Simulate the provider goroutine: the deferred llm.call span ends mid-stream...
+	goCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	goCtx = context.WithValue(goCtx, schemas.BifrostContextKeySpanID, rootSpanID)
+	_, llmHandle := tracer.StartSpan(goCtx, "chat test-model", schemas.SpanKindLLMCall)
+	time.Sleep(10 * time.Millisecond)
+	tracer.EndSpan(llmHandle, schemas.SpanStatusOk, "")
+
+	// ...and the trace completer fires after the stream fully drains.
+	completer(nil)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	if !plugin.foundLLM {
+		t.Fatal("llm.call span not found in flushed trace")
+	}
+	if plugin.rootEnd.IsZero() {
+		t.Fatal("root span EndTime is zero — it was never ended")
+	}
+	if plugin.rootEnd.Before(plugin.llmEnd) {
+		t.Fatalf("root span ended before llm.call span: root.EndTime=%v, llm.EndTime=%v", plugin.rootEnd, plugin.llmEnd)
+	}
+	if !plugin.rootEnd.After(plugin.rootStart) {
+		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
+	}
 }

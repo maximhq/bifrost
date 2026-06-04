@@ -8,6 +8,10 @@ icon: "arrow-pointer"
 
 ![Setting up Bifrost for Cursor](/media/ides/cursor-add-custom-model-1.png)
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Cursor, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 1. **Open Cursor Settings**
@@ -22,9 +26,9 @@ icon: "arrow-pointer"
 
    Toggle **Override OpenAI Base URL** to ON and enter your Bifrost endpoint:
 
-   ```
-   http://localhost:8080/cursor
-   ```
+   <Note>
+      For cursor you need publicly accessible link for Bifrost.
+   </Note>
 
    For deployed instances, use your Bifrost deployment URL (e.g., `https://bifrost.example.com/cursor`).
 
@@ -51,7 +55,7 @@ Bifrost [Virtual Keys](/features/governance/virtual-keys) can be used as the Ope
 
 ## Model Selection
 
-Cursor assigns models to different features — **Chat**, **Agent**, **Inline Edit**, and **Tab Completion**. After configuring Bifrost, you can assign any `provider/model-name` to each feature for optimal cost and performance:
+Cursor assigns models to different features - **Chat**, **Agent**, **Inline Edit**, and **Tab Completion**. After configuring Bifrost, you can assign any `provider/model-name` to each feature for optimal cost and performance:
 
 - Use a powerful model like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for Agent mode
 - Use a fast model like `groq/llama-3.3-70b-versatile` for Tab completion
@@ -83,4 +87,4 @@ Cursor's "Override OpenAI Base URL" is a global setting that applies to all Open
 
 ## Observability
 
-All Cursor requests through Bifrost are logged. Monitor them at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content.
+All Cursor requests through Bifrost are logged. Monitor them at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content.

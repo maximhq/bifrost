@@ -7,11 +7,36 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
+// start/end time pointers computed from the current server time. Returns nil, nil for
+// unrecognised values. When used in filter parsing, period takes precedence over any explicit
+// start_time/end_time query parameters so every poll always covers the intended window.
+func ResolvePeriod(period string) (start, end *time.Time) {
+	now := time.Now().UTC()
+	var from time.Time
+	switch period {
+	case "1h":
+		from = now.Add(-time.Hour)
+	case "6h":
+		from = now.Add(-6 * time.Hour)
+	case "24h":
+		from = now.Add(-24 * time.Hour)
+	case "7d":
+		from = now.AddDate(0, 0, -7)
+	case "30d":
+		from = now.AddDate(0, 0, -30)
+	default:
+		return nil, nil
+	}
+	return &from, &now
+}
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
 // rather than removed. Using a named type instead of a raw string follows Go best practices.
@@ -19,6 +44,39 @@ type pluginDisabledKey struct{}
 
 // PluginDisabledKey is the context key used to indicate a plugin is being disabled.
 var PluginDisabledKey pluginDisabledKey
+
+// badRequestError wraps a client input validation error so that outer handlers
+// can distinguish it from internal server errors and return HTTP 400.
+type badRequestError struct{ err error }
+
+func (e *badRequestError) Error() string { return e.err.Error() }
+func (e *badRequestError) Unwrap() error { return e.err }
+
+// IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
+func IsUniqueConstraintError(err error, identifiers ...string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	hasUniqueSignal := strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index") ||
+		strings.Contains(msg, "unique_violation") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "duplicated key")
+	if !hasUniqueSignal {
+		return false
+	}
+	if len(identifiers) == 0 {
+		return true
+	}
+	for _, identifier := range identifiers {
+		if strings.Contains(msg, strings.ToLower(identifier)) {
+			return true
+		}
+	}
+	return false
+}
 
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
@@ -115,7 +173,7 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 			return true
 		}
 
-		if allowedOrigin == "*" {			
+		if allowedOrigin == "*" {
 			return true
 		}
 

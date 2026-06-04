@@ -245,6 +245,266 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 	t.Log("Per-request test completed - check logs for JSON parsing behavior")
 }
 
+// newResponsesStreamResponse builds a BifrostResponse for a responses stream delta event.
+func newResponsesStreamResponse(responseID, delta string) *schemas.BifrostResponse {
+	d := delta
+	id := responseID
+	return &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			Delta: &d,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: &id,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesStreamRequest,
+			},
+		},
+	}
+}
+
+// newResponsesStreamNonDeltaResponse builds a BifrostResponse for a non-delta responses stream event.
+func newResponsesStreamNonDeltaResponse(responseID string, eventType schemas.ResponsesStreamResponseType) *schemas.BifrostResponse {
+	id := responseID
+	return &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: eventType,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: &id,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesStreamRequest,
+			},
+		},
+	}
+}
+
+// TestPostLLMHookResponsesStreamDelta verifies that output_text.delta events are accumulated
+// and the Delta field is replaced with the repaired partial JSON after each chunk.
+func TestPostLLMHookResponsesStreamDelta(t *testing.T) {
+	plugin, err := Init(PluginConfig{
+		Usage:           AllRequests,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to init plugin: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const reqID = "test-responses-stream-id"
+
+	chunks := []string{`{"name": "Jo`, `hn", "age": 3`, `0}`}
+
+	for i, chunk := range chunks {
+		resp := newResponsesStreamResponse(reqID, chunk)
+		result, bifrostErr, hookErr := plugin.PostLLMHook(ctx, resp, nil)
+		if hookErr != nil {
+			t.Fatalf("chunk %d: unexpected error: %v", i, hookErr)
+		}
+		if bifrostErr != nil {
+			t.Fatalf("chunk %d: unexpected bifrost error: %v", i, bifrostErr)
+		}
+		if result.ResponsesStreamResponse.Delta == nil {
+			t.Fatalf("chunk %d: Delta is nil", i)
+		}
+		if !plugin.isValidJSON(*result.ResponsesStreamResponse.Delta) {
+			t.Errorf("chunk %d: Delta is not valid JSON: %q", i, *result.ResponsesStreamResponse.Delta)
+		}
+		t.Logf("chunk %d: %q", i, *result.ResponsesStreamResponse.Delta)
+	}
+}
+
+// TestPostLLMHookResponsesStreamNonDeltaPassthrough verifies that non-delta events
+// (e.g. response.created) are passed through without modification.
+func TestPostLLMHookResponsesStreamNonDeltaPassthrough(t *testing.T) {
+	plugin, err := Init(PluginConfig{
+		Usage:           AllRequests,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to init plugin: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	nonDeltaTypes := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+	}
+
+	for _, eventType := range nonDeltaTypes {
+		resp := newResponsesStreamNonDeltaResponse("req-passthrough", eventType)
+		result, bifrostErr, hookErr := plugin.PostLLMHook(ctx, resp, nil)
+		if hookErr != nil {
+			t.Fatalf("event %q: unexpected error: %v", eventType, hookErr)
+		}
+		if bifrostErr != nil {
+			t.Fatalf("event %q: unexpected bifrost error: %v", eventType, bifrostErr)
+		}
+		if result.ResponsesStreamResponse.Delta != nil {
+			t.Errorf("event %q: expected nil Delta but got %q", eventType, *result.ResponsesStreamResponse.Delta)
+		}
+	}
+}
+
+// TestPostLLMHookResponsesStreamDoesNotMutateOriginal verifies that the original response
+// pointer is not modified when the plugin rewrites Delta.
+func TestPostLLMHookResponsesStreamDoesNotMutateOriginal(t *testing.T) {
+	plugin, err := Init(PluginConfig{
+		Usage:           AllRequests,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to init plugin: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	original := newResponsesStreamResponse("req-mutate", `{"name": "Jo`)
+	originalDelta := *original.ResponsesStreamResponse.Delta
+
+	result, bifrostErr, hookErr := plugin.PostLLMHook(ctx, original, nil)
+	if hookErr != nil {
+		t.Fatalf("unexpected error: %v", hookErr)
+	}
+	if bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error: %v", bifrostErr)
+	}
+
+	if *original.ResponsesStreamResponse.Delta != originalDelta {
+		t.Errorf("original Delta was mutated: got %q, want %q",
+			*original.ResponsesStreamResponse.Delta, originalDelta)
+	}
+	if result == original {
+		t.Error("PostLLMHook returned the original pointer, expected a copy")
+	}
+}
+
+// TestPostLLMHookResponsesStreamPerRequest verifies that with PerRequest usage the plugin
+// only runs when EnableStreamingJSONParser is set in the context.
+func TestPostLLMHookResponsesStreamPerRequest(t *testing.T) {
+	plugin, err := Init(PluginConfig{
+		Usage:           PerRequest,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to init plugin: %v", err)
+	}
+
+	resp := newResponsesStreamResponse("req-per", `{"name": "Jo`)
+	originalDelta := *resp.ResponsesStreamResponse.Delta
+
+	// Without the context key the plugin should be a no-op.
+	ctxOff := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, bifrostErr, hookErr := plugin.PostLLMHook(ctxOff, resp, nil)
+	if hookErr != nil {
+		t.Fatalf("unexpected error (no-op path): %v", hookErr)
+	}
+	if bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error (no-op path): %v", bifrostErr)
+	}
+	if *result.ResponsesStreamResponse.Delta != originalDelta {
+		t.Errorf("expected no-op but Delta changed to %q", *result.ResponsesStreamResponse.Delta)
+	}
+
+	// With the context key the plugin should process the chunk.
+	ctxOn := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).
+		WithValue(EnableStreamingJSONParser, true)
+	result, bifrostErr, hookErr = plugin.PostLLMHook(ctxOn, resp, nil)
+	if hookErr != nil {
+		t.Fatalf("unexpected error (enabled path): %v", hookErr)
+	}
+	if bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error (enabled path): %v", bifrostErr)
+	}
+	if !plugin.isValidJSON(*result.ResponsesStreamResponse.Delta) {
+		t.Errorf("expected valid JSON but got %q", *result.ResponsesStreamResponse.Delta)
+	}
+}
+
+// TestJsonParserPluginResponsesStreamEndToEnd tests the full integration against OpenAI's
+// responses stream API. Skipped when OPENAI_API_KEY is not set.
+func TestJsonParserPluginResponsesStreamEndToEnd(t *testing.T) {
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("OPENAI_API_KEY is not set, skipping end-to-end test")
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	plugin, err := Init(PluginConfig{
+		Usage:           AllRequests,
+		CleanupInterval: 5 * time.Minute,
+		MaxAge:          30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to init plugin: %v", err)
+	}
+
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account:    &BaseAccount{},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	})
+	if err != nil {
+		t.Fatalf("failed to init bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	userContent := schemas.ResponsesMessageContent{
+		ContentStr: bifrost.Ptr(`Return a JSON object with name, age, and city fields. Example: {"name": "John", "age": 30, "city": "New York"}`),
+	}
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &userContent,
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			},
+		},
+	}
+
+	responseChan, bifrostErr := client.ResponsesStreamRequest(ctx, request)
+	if bifrostErr != nil {
+		t.Fatalf("request error: %v", bifrostErr)
+	}
+
+	chunkCount := 0
+	for streamChunk := range responseChan {
+		if streamChunk.BifrostError != nil {
+			t.Logf("stream error: %v", streamChunk.BifrostError)
+			continue
+		}
+		if streamChunk.BifrostResponsesStreamResponse != nil {
+			resp := streamChunk.BifrostResponsesStreamResponse
+			if resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && resp.Delta != nil && *resp.Delta != "" {
+				chunkCount++
+				if !plugin.isValidJSON(*resp.Delta) {
+					t.Errorf("chunk %d not valid JSON: %q", chunkCount, *resp.Delta)
+				}
+				t.Logf("chunk %d: %s", chunkCount, *resp.Delta)
+			}
+		}
+	}
+
+	t.Logf("stream completed after %d delta chunks", chunkCount)
+	if chunkCount == 0 {
+		t.Error("no output_text.delta chunks received; JSON-repair behavior was not exercised")
+	}
+}
+
 func TestParsePartialJSON(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,

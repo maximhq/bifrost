@@ -46,6 +46,13 @@ func (s *RDBConfigStore) EncryptPlaintextRows(ctx context.Context) error {
 	}
 	totalEncrypted += count
 
+	// temp_tokens
+	count, err = s.encryptPlaintextTempTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt temp_tokens: %w", err)
+	}
+	totalEncrypted += count
+
 	// oauth_tokens
 	count, err = s.encryptPlaintextOAuthTokens(ctx)
 	if err != nil {
@@ -101,7 +108,7 @@ func (s *RDBConfigStore) encryptPlaintextKeys(ctx context.Context) (int, error) 
 	var count int
 	for {
 		var keys []tables.TableKey
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&keys).Error; err != nil {
@@ -110,7 +117,7 @@ func (s *RDBConfigStore) encryptPlaintextKeys(ctx context.Context) (int, error) 
 		if len(keys) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range keys {
 				if err := tx.Save(&keys[i]).Error; err != nil {
 					return err
@@ -131,7 +138,7 @@ func (s *RDBConfigStore) encryptPlaintextVirtualKeys(ctx context.Context) (int, 
 	var count int
 	for {
 		var vks []tables.TableVirtualKey
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND value != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&vks).Error; err != nil {
@@ -140,7 +147,7 @@ func (s *RDBConfigStore) encryptPlaintextVirtualKeys(ctx context.Context) (int, 
 		if len(vks) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range vks {
 				if err := tx.Save(&vks[i]).Error; err != nil {
 					return err
@@ -161,7 +168,7 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 	var count int
 	for {
 		var sessions []tables.SessionsTable
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&sessions).Error; err != nil {
@@ -170,7 +177,7 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 		if len(sessions) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range sessions {
 				if err := tx.Save(&sessions[i]).Error; err != nil {
 					return err
@@ -185,13 +192,43 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 	return count, nil
 }
 
+// encryptPlaintextTempTokens finds all temp_tokens rows with plaintext encryption status
+// and re-saves them in batches. The TempToken.BeforeSave hook handles encryption.
+func (s *RDBConfigStore) encryptPlaintextTempTokens(ctx context.Context) (int, error) {
+	var count int
+	for {
+		var tokens []tables.TempToken
+		if err := s.DB().WithContext(ctx).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != ''", encryptionStatusPlainText).
+			Limit(encryptionBatchSize).
+			Find(&tokens).Error; err != nil {
+			return count, err
+		}
+		if len(tokens) == 0 {
+			break
+		}
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for i := range tokens {
+				if err := tx.Save(&tokens[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return count, err
+		}
+		count += len(tokens)
+	}
+	return count, nil
+}
+
 // encryptPlaintextOAuthTokens finds all oauth_tokens rows with plaintext encryption status
 // and re-saves them in batches. The TableOauthToken.BeforeSave hook handles encryption.
 func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, error) {
 	var count int
 	for {
 		var tokens []tables.TableOauthToken
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&tokens).Error; err != nil {
@@ -200,7 +237,7 @@ func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, 
 		if len(tokens) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range tokens {
 				if err := tx.Save(&tokens[i]).Error; err != nil {
 					return err
@@ -221,7 +258,7 @@ func (s *RDBConfigStore) encryptPlaintextOAuthConfigs(ctx context.Context) (int,
 	var count int
 	for {
 		var configs []tables.TableOauthConfig
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND (client_secret != '' OR code_verifier != '')", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&configs).Error; err != nil {
@@ -230,7 +267,7 @@ func (s *RDBConfigStore) encryptPlaintextOAuthConfigs(ctx context.Context) (int,
 		if len(configs) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range configs {
 				if err := tx.Save(&configs[i]).Error; err != nil {
 					return err
@@ -251,7 +288,7 @@ func (s *RDBConfigStore) encryptPlaintextMCPClients(ctx context.Context) (int, e
 	var count int
 	for {
 		var clients []tables.TableMCPClient
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&clients).Error; err != nil {
@@ -260,7 +297,7 @@ func (s *RDBConfigStore) encryptPlaintextMCPClients(ctx context.Context) (int, e
 		if len(clients) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range clients {
 				if err := tx.Save(&clients[i]).Error; err != nil {
 					return err
@@ -282,7 +319,7 @@ func (s *RDBConfigStore) encryptPlaintextProviderProxies(ctx context.Context) (i
 	var count int
 	for {
 		var providers []tables.TableProvider
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND proxy_config_json != '' AND proxy_config_json IS NOT NULL", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&providers).Error; err != nil {
@@ -291,7 +328,7 @@ func (s *RDBConfigStore) encryptPlaintextProviderProxies(ctx context.Context) (i
 		if len(providers) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range providers {
 				if err := tx.Save(&providers[i]).Error; err != nil {
 					return err
@@ -313,7 +350,7 @@ func (s *RDBConfigStore) encryptPlaintextVectorStoreConfigs(ctx context.Context)
 	var count int
 	for {
 		var configs []tables.TableVectorStoreConfig
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND config IS NOT NULL AND config != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&configs).Error; err != nil {
@@ -322,7 +359,7 @@ func (s *RDBConfigStore) encryptPlaintextVectorStoreConfigs(ctx context.Context)
 		if len(configs) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range configs {
 				if err := tx.Save(&configs[i]).Error; err != nil {
 					return err
@@ -344,7 +381,7 @@ func (s *RDBConfigStore) encryptPlaintextPlugins(ctx context.Context) (int, erro
 	var count int
 	for {
 		var plugins []tables.TablePlugin
-		if err := s.db.WithContext(ctx).
+		if err := s.DB().WithContext(ctx).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND config_json != '' AND config_json != '{}'", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&plugins).Error; err != nil {
@@ -353,7 +390,7 @@ func (s *RDBConfigStore) encryptPlaintextPlugins(ctx context.Context) (int, erro
 		if len(plugins) == 0 {
 			break
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for i := range plugins {
 				if err := tx.Save(&plugins[i]).Error; err != nil {
 					return err

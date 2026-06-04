@@ -4,13 +4,14 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"html"
+	"net/url"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -39,7 +40,23 @@ func (h *OAuthHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.DELETE("/api/oauth/config/{id}", lib.ChainMiddlewares(h.revokeOAuthConfig, middlewares...))
 }
 
-// handleOAuthCallback handles the OAuth provider callback
+// handleOAuthCallback handles the upstream OAuth provider callback. Performs
+// the token exchange server-side (needs client_secret) and then redirects the
+// browser into the dashboard, which shows the user-facing success/error UX.
+//
+// Two flow types share this redirect_uri, distinguished by which state table
+// the state token belongs to:
+//   - Per-user runtime flow (Bifrost-as-client to upstream for an MCP server's
+//     per-user OAuth). On success → /workspace/mcp-sessions.
+//   - Server-level admin-test flow (mcpClientSheet OAuth2Authorizer popup
+//     validating an OAuth config template). On success → /workspace/mcp-registry/oauth-callback
+//     which posts a message to the opener window and closes itself.
+//
+// Error details from internal completion failures are logged server-side and
+// never piped into the redirect URL — the URL ends up in browser history,
+// access logs, and the Referer header, so anything that ships there is
+// effectively public.
+//
 // GET /api/oauth/callback?state=xxx&code=yyy&error=zzz
 func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	state := string(ctx.QueryArgs().Peek("state"))
@@ -47,100 +64,101 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	errorParam := string(ctx.QueryArgs().Peek("error"))
 	errorDescription := string(ctx.QueryArgs().Peek("error_description"))
 
-	// Handle authorization denial
 	if errorParam != "" {
 		h.handleCallbackError(ctx, state, errorParam, errorDescription)
 		return
 	}
 
-	// Validate required parameters
 	if state == "" || code == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Missing required parameters: state and code")
 		return
 	}
 
-	// Complete OAuth flow
-	if err := h.oauthProvider.CompleteOAuthFlow(context.Background(), state, code); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth flow completion failed: %v", err))
+	// Per-user runtime flow (state lives in oauth_user_sessions).
+	_, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(ctx, state, code)
+	if perUserErr != nil && !errors.Is(perUserErr, schemas.ErrOAuth2NotPerUserSession) {
+		// The OAuth state is the CSRF token — never log it raw; it could
+		// be replayed by anyone with log access while the flow is alive.
+		logger.Error("[oauth] per-user callback completion failed: err=%v", perUserErr)
+		const userMsg = "OAuth authentication failed. Please try again."
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
+		return
+	}
+	if perUserErr == nil {
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true), fasthttp.StatusFound)
 		return
 	}
 
-	// Redirect to success page (or close popup)
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetContentType("text/html")
-	ctx.SetBodyString(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>OAuth Success</title>
-			<script>
-				// Close the popup window
-				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
-					window.close();
-				} else {
-					document.getElementById('message').textContent = 'OAuth authorization successful! You can close this window.';
-				}
-			</script>
-		</head>
-		<body>
-			<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
-				<div style="text-align: center;">
-					<h1>✓ Authorization Successful</h1>
-					<p id="message">This window will close automatically...</p>
-				</div>
-			</div>
-		</body>
-		</html>
-	`)
+	// Fall through: server-level admin-test flow.
+	if err := h.oauthProvider.CompleteOAuthFlow(ctx, state, code); err != nil {
+		logger.Error("[oauth] admin-test callback completion failed: err=%v", err)
+		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape("OAuth authentication failed."), fasthttp.StatusFound)
+		return
+	}
+	ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=success", fasthttp.StatusFound)
 }
 
-// handleCallbackError handles OAuth callback errors
+// handleCallbackError handles ?error= responses from upstream providers.
+// Marks the OAuth config row as failed (for admin UI's pending-setup display),
+// then redirects to the route that matches the originating flow:
+//   - admin-test popup flow → /workspace/mcp-registry/oauth-callback (posts a
+//     message to window.opener and closes itself)
+//   - per-user runtime flow → /workspace/mcp-sessions (full-page, no opener)
+//
+// We infer the flow by looking up the state in oauth_configs; if it's there
+// it's the admin-test flow, otherwise we assume per-user. The upstream-supplied
+// error code/description is logged server-side; only a generic message reaches
+// the URL so provider error text doesn't leak into history / Referer.
 func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, errorParam, errorDescription string) {
-	// Update OAuth config status to failed if state is provided
+	isAdminTestFlow := false
 	if state != "" {
-		oauthConfig, err := h.store.ConfigStore.GetOauthConfigByState(context.Background(), state)
-		if err == nil && oauthConfig != nil {
+		oauthConfig, err := h.store.ConfigStore.GetOauthConfigByState(ctx, state)
+		switch {
+		case err != nil:
+			// Lookup failed — we can't reliably classify the flow. Default
+			// to the per-user (full-page) route since that's the common
+			// case; the popup-callback page expects window.opener and would
+			// strand a per-user caller on a "you can close this tab" view.
+			// Log the underlying cause for diagnostics.
+			logger.Error("[oauth] failed to look up oauth config by state for callback error: err=%v", err)
+		case oauthConfig != nil:
+			isAdminTestFlow = true
 			oauthConfig.Status = "failed"
-			h.store.ConfigStore.UpdateOauthConfig(context.Background(), oauthConfig)
+			if updateErr := h.store.ConfigStore.UpdateOauthConfig(ctx, oauthConfig); updateErr != nil {
+				logger.Warn("[oauth] failed to mark oauth config as failed: id=%s err=%v", oauthConfig.ID, updateErr)
+			}
 		}
 	}
-
-	// Show error page
-	ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	ctx.SetContentType("text/html")
-	errorMsg := errorParam
-	if errorDescription != "" {
-		errorMsg = fmt.Sprintf("%s: %s", errorParam, errorDescription)
+	// Don't log state (CSRF token, replayable while flow is alive).
+	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
+	const userMsg = "Authentication was denied or failed. Please try again."
+	if isAdminTestFlow {
+		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
+		return
 	}
-	// JSON-encode for safe embedding in JavaScript context (prevents JS injection)
-	jsEscaped, _ := json.Marshal(errorMsg)
-	// HTML-escape for safe embedding in HTML body (prevents HTML injection)
-	htmlEscaped := html.EscapeString(errorMsg)
-	ctx.SetBodyString(fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>OAuth Failed</title>
-			<script>
-				// Notify parent window
-				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_failed', error: %s }, window.location.origin);
-					window.close();
-				}
-			</script>
-		</head>
-		<body>
-			<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
-				<div style="text-align: center;">
-					<h1>✗ Authorization Failed</h1>
-					<p>%s</p>
-					<p style="color: #666;">You can close this window.</p>
-				</div>
-			</div>
-		</body>
-		</html>
-	`, jsEscaped, htmlEscaped))
+	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, userMsg, false), fasthttp.StatusFound)
+}
+
+// perUserCallbackRedirect picks the post-callback destination for a per-user
+// flow based on whether the visitor has a valid dashboard session. Admins land
+// back on the sessions list (full chrome) with either ?completed=1 (success)
+// or ?error=... (failure). Anonymous temp-token visitors land on the public
+// MinimalShell pages (/auth-success or /auth-failed) which don't require a
+// cookie. This mirrors the model used by the temp-token-aware UI: keep admins
+// in the dashboard, route end users to chrome-less landings.
+func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, userMsg string, success bool) string {
+	cookieToken := string(ctx.Request.Header.Cookie("token"))
+	authenticated := cookieToken != "" && validateSession(ctx, store, cookieToken)
+	if success {
+		if authenticated {
+			return "/workspace/mcp-sessions?completed=1"
+		}
+		return "/workspace/mcp-sessions/auth-success"
+	}
+	if authenticated {
+		return "/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg)
+	}
+	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
 }
 
 // getOAuthConfigStatus returns the current status of an OAuth config
@@ -148,7 +166,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
 
-	oauthConfig, err := h.store.ConfigStore.GetOauthConfigByID(context.Background(), configID)
+	oauthConfig, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get OAuth config: %v", err))
 		return
@@ -170,9 +188,11 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 		response["token_id"] = *oauthConfig.TokenID
 
 		// Get token metadata
-		token, err := h.store.ConfigStore.GetOauthTokenByID(context.Background(), *oauthConfig.TokenID)
+		token, err := h.store.ConfigStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
 		if err == nil && token != nil {
-			response["token_expires_at"] = token.ExpiresAt
+			if token.ExpiresAt != nil {
+				response["token_expires_at"] = token.ExpiresAt
+			}
 			response["token_scopes"] = token.Scopes
 		}
 	}
@@ -185,7 +205,7 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
 
-	if err := h.oauthProvider.RevokeToken(context.Background(), configID); err != nil {
+	if err := h.oauthProvider.RevokeToken(ctx, configID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke OAuth token: %v", err))
 		return
 	}
@@ -197,14 +217,14 @@ func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 
 // OAuthInitiationRequest represents the request to initiate an OAuth flow
 type OAuthInitiationRequest struct {
-	ClientID        string   `json:"client_id"`
-	ClientSecret    string   `json:"client_secret"`
-	AuthorizeURL    string   `json:"authorize_url"`
-	TokenURL        string   `json:"token_url"`
-	RegistrationURL string   `json:"registration_url"`
-	RedirectURI     string   `json:"redirect_uri"`
-	Scopes          []string `json:"scopes"`
-	ServerURL       string   `json:"server_url"` // For OAuth discovery
+	ClientID        *schemas.EnvVar `json:"client_id"`
+	ClientSecret    *schemas.EnvVar `json:"client_secret"`
+	AuthorizeURL    string          `json:"authorize_url"`
+	TokenURL        string          `json:"token_url"`
+	RegistrationURL string          `json:"registration_url"`
+	RedirectURI     string          `json:"redirect_uri"`
+	Scopes          []string        `json:"scopes"`
+	ServerURL       string          `json:"server_url"` // For OAuth discovery
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -215,15 +235,28 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		registrationURL = &req.RegistrationURL
 	}
 
+	clientID := ""
+	if req.ClientID != nil {
+		if v, _ := req.ClientID.Value(); v != nil {
+			clientID, _ = v.(string)
+		}
+	}
+	clientSecret := ""
+	if req.ClientSecret != nil {
+		if v, _ := req.ClientSecret.Value(); v != nil {
+			clientSecret, _ = v.(string)
+		}
+	}
+
 	config := &schemas.OAuth2Config{
-		ClientID:        req.ClientID,
-		ClientSecret:    req.ClientSecret,
+		ClientID:        clientID,
+		ClientSecret:    clientSecret,
 		AuthorizeURL:    req.AuthorizeURL,
 		TokenURL:        req.TokenURL,
 		RegistrationURL: registrationURL,
 		RedirectURI:     req.RedirectURI,
 		Scopes:          req.Scopes,
-		ServerURL:       req.ServerURL, // MCP server URL for OAuth discovery
+		ServerURL:       req.ServerURL,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)
@@ -245,7 +278,19 @@ func (h *OAuthHandler) GetPendingMCPClientByState(state string) (*schemas.MCPCli
 	return h.oauthProvider.GetPendingMCPClientByState(state)
 }
 
-// RemovePendingMCPClient removes a pending MCP client after OAuth completion
+// RemovePendingMCPClient removes a pending MCP client after OAuth completion.
 func (h *OAuthHandler) RemovePendingMCPClient(oauthConfigID string) error {
 	return h.oauthProvider.RemovePendingMCPClient(oauthConfigID)
+}
+
+// GetAccessToken retrieves the access token for a given oauth_config_id.
+// Used during per-user OAuth setup to get the admin's temporary token for verification.
+func (h *OAuthHandler) GetAccessToken(ctx context.Context, oauthConfigID string) (string, error) {
+	return h.oauthProvider.GetAccessToken(ctx, oauthConfigID)
+}
+
+// RevokeToken revokes the OAuth token for a given oauth_config_id.
+// Used during per-user OAuth setup to discard the admin's temporary token after verification.
+func (h *OAuthHandler) RevokeToken(ctx context.Context, oauthConfigID string) error {
+	return h.oauthProvider.RevokeToken(ctx, oauthConfigID)
 }

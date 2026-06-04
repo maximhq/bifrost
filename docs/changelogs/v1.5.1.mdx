@@ -1,0 +1,148 @@
+---
+title: "v1.5.1"
+description: "v1.5.1 changelog - 2026-05-12"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.1
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.1">
+## ✨ Features
+
+- **Azure Entra Auth** - Added `client_id`, `client_secret`, `tenant_id`, `scopes` fields to the Azure transport schema and made `api_version` optional (#3284)
+- **UBI9 Docker Builds** - Added UBI9 amd64/arm64 Docker build and multi-arch manifest jobs to the release pipeline (#3324)
+- **Configurable Matview Refresh** - Added `matviewRefreshInterval` config option and bumped the bifrost chart to 2.1.15 (#3329, #3386)
+- **Per-dimension Matviews** - Split `mv_logs_filterdata` into per-dimension matviews and added filterdata response caching with single-flight (#3288)
+- **Dimension-scoped Filters** - Added `?dimensions=` parameter for filter data endpoints with a time-window hybrid matview gate and scoped dimension fetching for log and MCP filter sidebars (#3327, #3328)
+- **x-bifrost-* Response Headers** - Surface routed identity (provider, model, key alias, etc.) as `x-bifrost-*` response headers (#3280) (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **Normalized Model Names** - `ListModels` response now includes a `normalized_name` parameter (#3372)
+- **Azure Blob Batch Storage** - Added Azure blob storage fields for the batch API (#3318)
+- **WS Tickets Without Storage** - WebSocket tickets are now issued without backing storage (#3361)
+- **MCP Log Detail & Object Storage** - Added MCP log detail endpoint with object-storage payload offload, batch logging for MCP, and detail view in the UI (#3350, #3351, #3352, #3353, #3354)
+- **Retry Count Metric** - Added a number-of-retries metric to OTEL and telemetry plugins (#3392)
+- **Cached Token Details in OTEL** - Added cached token details for the Responses API in OTEL exports (#3293)
+- **Bedrock Region from Model Name** - Region is now extracted from the model name when passing through Bedrock models (#3301)
+- **ListModels Removed From Rate Limit/Quota** - Governance no longer invokes ListModels for rate limit and quota checks (#3304)
+- **JSON Log Detail Rendering** - JSON text content is now rendered as formatted code in the log detail view (#3373)
+- **x-operation-id Approval** - Added approval flow for operation IDs (#3360)
+- **Prometheus Plugin Cleanup** - Removed system metrics from the prometheus plugin and added additional types (#3306)
+
+## 🐞 Fixed
+
+- **PostgreSQL `\u0000` Sanitization** - Sanitize `\u0000` from JSON before PostgreSQL jsonb storage and list queries (#3332)
+- **Lock-safe Matview Maintenance** - Use batched updates, `CONCURRENTLY` indexes, and advisory locks for matview and migration maintenance (#3380)
+- **pg_advisory_lock Retry+Timeout** - Replaced blocking `pg_advisory_lock` with retry+timeout to prevent indefinite startup hangs (#3308)
+- **Empty MCP Config** - Return an empty MCP config instead of `nil` when no clients are found (#3387)
+- **Gemini Image Size Casing** - Removed lowercase normalization on image size in Gemini image requests (#3385)
+- **Bedrock Reasoning Display** - Reasoning display shorthand and set `display=summarized` for Responses on Bedrock (#3379)
+- **Gemini JSON Schema for Vertex** - Normalize JSON Schema union types for Vertex compatibility (#3150)
+- **RDB Deadlock Fixes** - Resolved deadlocks in the rate-limit DB path (#3376)
+- **xhigh Effort Mapping** - Added xhigh effort mapping for GPT 5.4+ (#3369)
+- **Plugin Trace-Attribute Flow** - Updated `context.SetTraceAttribute` flow across all plugins (#3368)
+- **Opus 4.7 Reasoning Default** - Default `display=summarized` for Opus 4.7 reasoning (#3375)
+- **Gemini Video Download** - Fixed video download for the Gemini provider (#3366)
+- **Claude Code Native Converters Fallback** - Fallback to native converters for Claude Code when an output format is set on the Vertex messages API (#3321)
+- **Gemini `tokenCount` Always Included** - Always include `tokenCount` in Gemini modality usage details (#3349) (thanks [@R-droid101](https://github.com/R-droid101)!)
+- **Tool Choice Any in GenAI** - Handle `tool_choice=any` in the GenAI roundtrip (#3315)
+- **OTEL `anyOf` Schema** - OTEL plugin now uses `anyOf` instead of `oneOf` to correctly validate `host:port` format for the gRPC schema (#3297)
+- **scim_config Keycloak Alignment** - Aligned `scim_config` schema with the documented Keycloak provider (#3346) (thanks [@lornest](https://github.com/lornest)!)
+- **Docker Volume Path** - Aligned Docker volume with the configured app directory (#3348) (thanks [@EzgiTastan](https://github.com/EzgiTastan)!)
+- **OAuth Flow Preservation** - Don't clear `oauthFlow` on OAuth error (#3326)
+- **MCP OAuth Window Null** - Fixed MCP OAuth window null issue (#3359)
+- **Governance Video/Passthrough Types** - Updated video and passthrough request types in governance that do not require a model field (#3283)
+- **Custom Provider Sheet Layout** - Custom provider sheet header and footer are now sticky with proper padding and a scrollable content area (#3285)
+- **Empty Filter Section Visibility** - Prevent filter sections from hiding when opened with empty data (#3258)
+- **Config JSON Client Credentials** - Restored client id and secret in the config JSON output (#3284)
+
+</Update>
+<Update label="Core" description="1.5.9">
+- fix: remove lowercase on image size in gemini image requests (#3385)
+- fix: reasoning display short hand and set display summarized in responses bedrock (#3379)
+- fix(gemini): normalize JSON Schema union types for Vertex compatibility (#3150)
+- feat: xhigh effort mapping for GPT 5.4+ (#3369)
+- chore: updates context.SetTraceAttribute flow for all plugins (#3368)
+- fix: default to display summarized in opus 4.7 reasoning (#3375)
+- feat: adds normalized_name parameter to the response of ListModels (#3372)
+- feat: fields for azure blob storage in batch api (#3318)
+- fix: video download for gemini provider (#3366)
+- feat: extracts region from model name while passing bedrock models (#3301)
+- feat: removes ListModels call from rate limit and quota check (#3304)
+- fix: always include tokenCount in Gemini modality usage details (#3349) (thanks [@R-droid101](https://github.com/R-droid101)!)
+- fix: handle tool choice any in genai roundtrip (#3315)
+- feat: adds cached token details in Responses API in OTEL exports (#3293)
+- chore: harness test related changes (#3391)
+
+</Update>
+<Update label="Framework" description="1.3.9">
+- fix: sanitize \u0000 from JSON before PostgreSQL jsonb storage and list queries (#3332)
+- feat: add configurable matview_refresh_interval for PostgreSQL logs store (#3329)
+- feat: add custom filter values and scoped dimension fetching for logs and MCP filter sidebars (#3328)
+- fix: use batched updates, CONCURRENTLY indexes, and advisory locks for lock-safe matview and migration maintenance (#3380)
+- feat: add ?dimensions= param to filter data endpoints and use time-window hybrid matview gate for aggregate counts (#3327)
+- perf: split mv_logs_filterdata into per-dimension matviews and add filterdata response caching with single-flight (#3288)
+- fix: return empty MCP config instead of nil when no clients found (#3387)
+- fix: rdb deadlock fixes (#3376)
+- chore: updates context.SetTraceAttribute flow for all plugins (#3368)
+- feat: ws-tickets without storage (#3361)
+- feat: add batch logging to mcp logs similar to llm logs (#3354)
+- feat: offload MCP logs to object storage (#3353)
+- feat: add MCP log object payload helpers (#3352)
+- feat: adds cached token details in Responses API in OTEL exports (#3293)
+- fix: replace blocking pg_advisory_lock with retry+timeout to prevent indefinite startup hangs (#3308)
+
+</Update>
+<Update label="compat" description="0.1.8">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="governance" description="1.5.9">
+- fix: rdb deadlock fixes (#3376)
+- feat: removes ListModels call from rate limit and quota check (#3304)
+- fix: update video and passthrough request types in governance which do not require model field (#3283)
+
+</Update>
+<Update label="jsonparser" description="1.5.9">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="logging" description="1.5.9">
+- feat: add batch logging to mcp logs similar to llm logs (#3354)
+- feat: add MCP log detail endpoint (#3350)
+
+</Update>
+<Update label="maxim" description="1.6.9">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="mocker" description="1.5.9">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="otel" description="1.2.9">
+- feat: add number of retries as a metric (#3392)
+- feat: adds cached token details in Responses API in OTEL exports (#3293)
+
+</Update>
+<Update label="prompts" description="1.0.9">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="semanticcache" description="1.5.9">
+- chore: upgraded core to v1.5.9 and framework to v1.3.9
+
+</Update>
+<Update label="telemetry" description="1.5.9">
+- feat: add number of retries as a metric (#3392)
+- feat: removes system metrics from prometheus plugin and adds some more needed types (#3306)
+
+</Update>

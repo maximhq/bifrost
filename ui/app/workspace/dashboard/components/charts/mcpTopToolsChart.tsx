@@ -1,8 +1,7 @@
-"use client";
-
 import type { MCPTopToolsResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 
@@ -33,7 +32,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
+function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.tools || data.tools.length === 0) {
 			return [];
@@ -47,9 +46,7 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 	}
 
 	return (
-		<ChartErrorBoundary
-			resetKey={JSON.stringify(chartData.map(({ tool_name, count, cost }) => [tool_name, count, cost]))}
-		>
+		<ChartErrorBoundary resetKey={JSON.stringify(chartData.map(({ tool_name, count, cost }) => [tool_name, count, cost]))}>
 			<ResponsiveContainer width="100%" height="100%">
 				<BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
 					<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -58,7 +55,7 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 						tick={{ fontSize: 11, className: "fill-zinc-500" }}
 						tickLine={false}
 						axisLine={false}
-						tickFormatter={(v) => v.toLocaleString()}
+						tickFormatter={(v) => formatCompactNumber(v)}
 						domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 						allowDataOverflow={false}
 					/>
@@ -69,6 +66,7 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 						tickLine={false}
 						axisLine={false}
 						width={120}
+						interval={0}
 					/>
 					<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 					<Bar isAnimationActive={false} dataKey="count" radius={[0, 2, 2, 0]} barSize={20}>
@@ -81,3 +79,4 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 		</ChartErrorBoundary>
 	);
 }
+export const MCPTopToolsChart = memo(MCPTopToolsChartImpl);

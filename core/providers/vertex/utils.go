@@ -5,202 +5,262 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-	"github.com/maximhq/bifrost/core/schemas"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
-	// Large payload mode: body streams directly from the LP reader — skip all body building
-	// (matches CheckContextAndGetRequestBody guard).
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, nil
+// getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
+// Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
+// into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	jsonBody, buildErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.Vertex,
+		Deployment:                deployment,
+		DeleteModelField:          true,
+		DeleteRegionField:         true,
+		IsStreaming:               isStreaming,
+		IsCountTokens:             isCountTokens,
+		AddAnthropicVersion:       true,
+		AnthropicVersion:          DefaultVertexAnthropicVersion,
+		StripCacheControlScope:    true,
+		RemapToolVersions:         true,
+		InjectBetaHeadersIntoBody: true,
+		BetaHeaderOverrides:       betaHeaderOverrides,
+		ProviderExtraHeaders:      providerExtraHeaders,
+		ValidateTools:             true,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
+	if buildErr != nil {
+		return nil, buildErr
 	}
+	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, deployment)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+	}
+	return stripped, nil
+}
 
-	var jsonBody []byte
-	var err error
+// isVertexMultiRegionEndpoint reports whether the Vertex location uses Google's
+// partner-model multi-region pool endpoint host instead of the single-region host.
+func isVertexMultiRegionEndpoint(region string) bool {
+	return region == "us" || region == "eu"
+}
 
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
+// getVertexAPIHost returns the Vertex API host used for prediction requests.
+// For multi-region pool locations (us/eu), returns the rep.googleapis.com host
+// unconditionally. Use getVertexModelAwareAPIHost when model-level gating is needed.
+func getVertexAPIHost(region string) string {
+	if region == "global" {
+		return "aiplatform.googleapis.com"
+	}
+	if isVertexMultiRegionEndpoint(region) {
+		return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", region)
+	}
+	return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
+}
 
-		if isCountTokens {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", deployment)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-		} else {
-			// Add max_tokens if not present
-			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", anthropic.AnthropicDefaultMaxTokens)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-			// Add stream if streaming
-			if isStreaming {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-			}
-		}
-
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-		}
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-		}
-
-		// Remap unsupported tool versions for Vertex (e.g., web_search_20260209 → web_search_20250305)
-		jsonBody, err = anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(err.Error(), nil, providerName)
-		}
-
-		// Add anthropic_version if not present
-		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-		}
-	} else {
-		// Validate tools are supported by Vertex
-		if request.Params != nil && request.Params.Tools != nil {
-			if toolErr := anthropic.ValidateToolsForProvider(request.Params.Tools, schemas.Vertex); toolErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(toolErr.Error(), nil, providerName)
-			}
-		}
-
-		// Convert request to Anthropic format
-		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
-		}
-		reqBody.Model = deployment
-
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-
-		reqBody.SetStripCacheControlScope(true)
-
-		// Add provider-aware beta headers
-		anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-
-		// Marshal struct to JSON bytes
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-		}
-
-		// Add anthropic_version if not present (using sjson to preserve order)
-		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-		}
-
-		// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-			betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
-			if betaErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, betaErr, providerName)
-			}
-			if len(betaHeaders) > 0 {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-			}
-		}
-
-		if isCountTokens {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-		} else {
-			// Remove model field for Vertex API (it's in URL)
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-			}
-		}
-
-		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+// getVertexModelAwareAPIHost returns the Vertex API host for prediction requests,
+// consulting the model catalog when the region is a standard single-region location.
+//
+// For multi-region pool locations ("us", "eu") the rep.googleapis.com host is
+// always returned because it is the only valid host for those locations.
+//
+// For single-region locations (e.g. "us-central1"), models flagged with
+// vertex_multi_region_only in the datasheet are automatically promoted to
+// the corresponding multi-region pool endpoint — but only for US (us-*) and
+// Europe (europe-*) regions that have multi-region pools. Other regions
+// (asia-*, me-*, etc.) stay on the single-region host.
+func getVertexModelAwareAPIHost(region string, model string) string {
+	if region == "global" {
+		return "aiplatform.googleapis.com"
+	}
+	if isVertexMultiRegionEndpoint(region) {
+		// rep.googleapis.com is the only valid host for "us"/"eu" locations
+		return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", region)
+	}
+	// Single-region: promote to multi-region pool if the model requires it
+	// and the region belongs to a pool that supports multi-region.
+	if providerUtils.IsVertexMultiRegionOnlyModel(model) {
+		if pool, ok := vertexRegionToPool(region); ok {
+			return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", pool)
 		}
 	}
+	return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
+}
 
-	return jsonBody, nil
+// vertexRegionToPool maps a single GCP region to its multi-region pool ("us" or "eu").
+// Returns (pool, true) for regions that belong to a known pool, or ("", false)
+// for regions that have no multi-region pool (asia-*, me-*, etc.).
+func vertexRegionToPool(region string) (string, bool) {
+	if strings.HasPrefix(region, "us-") {
+		return "us", true
+	}
+	if strings.HasPrefix(region, "europe-") {
+		return "eu", true
+	}
+	return "", false
+}
+
+// getVertexModelListingAPIHost returns the Vertex API host used for Model Garden listing.
+// The multi-region prediction hosts reject publishers.models.list, so listing stays on the standard Vertex API host.
+func getVertexModelListingAPIHost(region string) string {
+	if region == "global" || isVertexMultiRegionEndpoint(region) {
+		return "aiplatform.googleapis.com"
+	}
+	return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
+}
+
+func getVertexAPIBaseURL(region string, apiVersion string) string {
+	return fmt.Sprintf("https://%s/%s", getVertexAPIHost(region), apiVersion)
+}
+
+// getVertexModelAwareAPIBaseURL is like getVertexAPIBaseURL but uses model-aware
+// host selection for multi-region endpoints.
+func getVertexModelAwareAPIBaseURL(region string, apiVersion string, model string) string {
+	return fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model), apiVersion)
+}
+
+func getVertexProjectLocationURL(region string, apiVersion string, projectID string) string {
+	return fmt.Sprintf("%s/projects/%s/locations/%s", getVertexAPIBaseURL(region, apiVersion), projectID, region)
+}
+
+func getVertexPublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string) string {
+	return fmt.Sprintf("%s/publishers/%s/models/%s%s", getVertexProjectLocationURL(region, apiVersion, projectID), publisher, model, method)
+}
+
+// getVertexModelAwarePublisherModelURL is like getVertexPublisherModelURL but
+// uses model-aware host selection. Use this for partner model (Anthropic, Mistral)
+// inference endpoints that may need multi-region pool hosts.
+// When a single-region is promoted to multi-region, both the host AND the
+// locations/ path segment are updated to the pool region.
+func getVertexModelAwarePublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string) string {
+	effectiveRegion := getVertexEffectiveRegion(region, model)
+	baseURL := fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model), apiVersion)
+	return fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, publisher, model, method)
+}
+
+// getVertexEffectiveRegion returns the region to use in URL path segments.
+// For multi-region locations it returns the region as-is. For single-region
+// locations it returns the multi-region pool if the model is flagged, otherwise
+// the original region.
+func getVertexEffectiveRegion(region string, model string) string {
+	if isVertexMultiRegionEndpoint(region) || region == "global" {
+		return region
+	}
+	if providerUtils.IsVertexMultiRegionOnlyModel(model) {
+		if pool, ok := vertexRegionToPool(region); ok {
+			return pool
+		}
+	}
+	return region
+}
+
+func getVertexEndpointURL(region string, apiVersion string, projectID string, endpoint string, method string) string {
+	return fmt.Sprintf("%s/endpoints/%s%s", getVertexProjectLocationURL(region, apiVersion, projectID), endpoint, method)
 }
 
 // getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests
 // for custom/fine-tuned models, it uses the projectNumber
 // for gemini models, it uses the projectID
 func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, method string) string {
-	var url string
+	deployment = gemini.NormalizeModelName(deployment)
 	if schemas.IsAllDigitsASCII(deployment) {
 		// Custom/fine-tuned models use projectNumber
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s%s", projectNumber, deployment, method)
-		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s%s", region, projectNumber, region, deployment, method)
-		}
-	} else {
-		// Gemini models use projectID
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s%s", projectID, deployment, method)
-		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s%s", region, projectID, region, deployment, method)
+		return getVertexEndpointURL(region, "v1beta1", projectNumber, deployment, method)
+	}
+
+	// Gemini models use projectID
+	return getVertexPublisherModelURL(region, "v1", projectID, "google", deployment, method)
+}
+
+// vertexPriorityModels lists model name prefixes that support Priority PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/priority-paygo
+var vertexPriorityModels = []string{
+	"gemini-2.5-pro",
+	"gemini-2.5-flash",
+	"gemini-2.5-flash-lite",
+	"gemini-3-flash-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3.1-flash-lite",
+}
+
+// vertexFlexModels lists model name prefixes that support Flex PayGo on Vertex.
+// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/flex-paygo
+var vertexFlexModels = []string{
+	"gemini-3.1-flash-lite",
+	"gemini-3.1-flash-image-preview",
+	"gemini-3.1-pro-preview",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-image-preview",
+}
+
+// isVertexModelSupportedForTier reports whether a model supports the given service tier.
+// Custom/fine-tuned models (all-digits IDs) are passed through without restriction since
+// their base model cannot be determined from the ID alone.
+func isVertexModelSupportedForTier(model string, tier schemas.BifrostServiceTier) bool {
+	if schemas.IsAllDigitsASCII(model) {
+		return true
+	}
+	normalized := gemini.NormalizeModelName(model)
+	var prefixes []string
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		prefixes = vertexPriorityModels
+	case schemas.BifrostServiceTierFlex:
+		prefixes = vertexFlexModels
+	default:
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
 		}
 	}
-	return url
+	return false
+}
+
+// vertexServiceTierHeaderValue returns the value for the X-Vertex-AI-LLM-Shared-Request-Type header,
+// or "" if no header should be set. Requires the global endpoint and a supported model.
+func vertexServiceTierHeaderValue(region string, model string, tier schemas.BifrostServiceTier) string {
+	if region != "global" {
+		return ""
+	}
+	if !isVertexModelSupportedForTier(model, tier) {
+		return ""
+	}
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		return "priority"
+	case schemas.BifrostServiceTierFlex:
+		return "flex"
+	default:
+		return ""
+	}
 }
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels []string) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
+	if blacklistedModels.IsBlockAll() {
+		return response
+	}
+
 	addedModelIDs := make(map[string]bool)
 
-	// Build allowlist set for O(1) lookup
-	allowedSet := make(map[string]bool, len(allowedModels))
-	for _, m := range allowedModels {
-		allowedSet[m] = true
-	}
+	restrictAllowed := allowedModels.IsRestricted()
 
 	// First add models from deployments (filtered by allowedModels when set)
 	for alias, deploymentValue := range deployments {
-		if len(allowedSet) > 0 && !allowedSet[alias] {
+		if restrictAllowed && !allowedModels.Contains(alias) {
+			continue
+		}
+		if blacklistedModels.IsBlocked(alias) {
 			continue
 		}
 		modelID := string(schemas.Vertex) + "/" + alias
@@ -208,25 +268,31 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels []stri
 			continue
 		}
 
-		modelName := formatDeploymentName(alias)
+		modelName := providerUtils.ToDisplayName(alias)
 		modelEntry := schemas.Model{
-			ID:         modelID,
-			Name:       schemas.Ptr(modelName),
-			Deployment: schemas.Ptr(deploymentValue),
+			ID:    modelID,
+			Name:  schemas.Ptr(modelName),
+			Alias: schemas.Ptr(deploymentValue),
 		}
 
 		response.Data = append(response.Data, modelEntry)
 		addedModelIDs[modelID] = true
 	}
 
-	// Then add models from allowedModels that aren't already in deployments
+	// Then add models from allowedModels that aren't already in deployments (only when restricted)
+	if !restrictAllowed {
+		return response
+	}
 	for _, allowedModel := range allowedModels {
 		modelID := string(schemas.Vertex) + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue
 		}
+		if blacklistedModels.IsBlocked(allowedModel) {
+			continue
+		}
 
-		modelName := formatDeploymentName(allowedModel)
+		modelName := providerUtils.ToDisplayName(allowedModel)
 		modelEntry := schemas.Model{
 			ID:   modelID,
 			Name: schemas.Ptr(modelName),

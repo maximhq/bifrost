@@ -1,30 +1,123 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync } from "fs";
+import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
 
+function isTransportVersionFlag(arg) {
+	const eq = arg.indexOf("=");
+	return (eq === -1 ? arg : arg.slice(0, eq)) === "--transport-version";
+}
+
+// Keep in sync with transports/bifrost-http/main.go (flag.StringVar names).
+const BIFROST_HTTP_KNOWN_FLAGS = new Set(["app-dir", "host", "log-level", "log-style", "port"]);
+
+// Go's flag package registers -help / -h (and commonly -version); not declared in main.go.
+const GO_FLAG_PACKAGE_ALIASES = new Set(["help", "h", "version"]);
+
+function bifrostHttpFlagToken(arg) {
+	if (!arg.startsWith("-") || arg === "-") {
+		return null;
+	}
+	const stripped = arg.replace(/^-+/, "");
+	if (!stripped) {
+		return null;
+	}
+	const eq = stripped.indexOf("=");
+	return eq === -1 ? stripped : stripped.slice(0, eq);
+}
+
+function validateRemainingArgsForBifrostHttp(args) {
+	let afterDoubleDash = false;
+	for (const arg of args) {
+		if (arg === "--") {
+			afterDoubleDash = true;
+			continue;
+		}
+		if (afterDoubleDash) {
+			continue;
+		}
+		if (!arg.startsWith("-")) {
+			continue;
+		}
+		const token = bifrostHttpFlagToken(arg);
+		if (!token) {
+			continue;
+		}
+		if (BIFROST_HTTP_KNOWN_FLAGS.has(token)) {
+			continue;
+		}
+		if (GO_FLAG_PACKAGE_ALIASES.has(token)) {
+			continue;
+		}
+		// Some builds link test helpers that register extra flags (e.g. -testify.m).
+		if (token.startsWith("testify.")) {
+			continue;
+		}
+		// Hyphenated names are treated as likely real bifrost-http flags even before this wrapper is updated.
+		if (token.includes("-")) {
+			continue;
+		}
+		// Linked Go test/runtime flags use -name=value; the token is only the name part, so inspect `arg`.
+		if (arg.includes("=")) {
+			continue;
+		}
+		// Numeric-only token avoids mis-parsing odd argv like -123 as a bogus flag name.
+		if (/^\d+$/.test(token)) {
+			continue;
+		}
+		console.error(`❌ Unknown argument: ${arg}`);
+		const knownList = [...BIFROST_HTTP_KNOWN_FLAGS].sort().map((f) => `-${f}`).join(" ");
+		console.error(`Known bifrost-http flags: ${knownList}`);
+		console.error(`Use --help or -h for gateway usage.`);
+		console.error(
+			`Pin a release from this wrapper with: --transport-version <tag> (see https://docs.getbifrost.ai/changelogs).`,
+		);
+		process.exit(1);
+	}
+}
+
 // Parse transport version from command line arguments
 function parseTransportVersion() {
 	const args = process.argv.slice(2);
-	let transportVersion = "latest"; // Default to latest
+	// Some runners invoke the bin as `node bin.js bifrost ...`; strip one prefix so flags parse reliably.
+	if (args.length > 0 && args[0] === "bifrost") {
+		args.shift();
+	}
 
-	// Find --transport-version argument
-	const versionArgIndex = args.findIndex((arg) => arg.startsWith("--transport-version"));
+	let transportVersion = "latest"; // Default to latest
+	const envOverride = process.env.BIFROST_TRANSPORT_VERSION?.trim();
+
+	// Only wrapper-owned flags before "--"; everything after "--" is forwarded to bifrost-http verbatim.
+	const passthroughIdx = args.indexOf("--");
+	const argsForTransportFlag = passthroughIdx === -1 ? args : args.slice(0, passthroughIdx);
+	const versionArgIndex = argsForTransportFlag.findIndex(isTransportVersionFlag);
 
 	if (versionArgIndex !== -1) {
 		const versionArg = args[versionArgIndex];
 
 		if (versionArg.includes("=")) {
 			// Format: --transport-version=v1.2.3
-			transportVersion = versionArg.split("=")[1];
+			transportVersion = versionArg.split("=")[1] ?? "";
+			if (!transportVersion) {
+				console.error("--transport-version requires a value");
+				process.exit(1);
+			}
 		} else if (versionArgIndex + 1 < args.length) {
 			// Format: --transport-version v1.2.3
-			transportVersion = args[versionArgIndex + 1];
+			const next = args[versionArgIndex + 1];
+			if (next.startsWith("-")) {
+				console.error("--transport-version requires a value");
+				process.exit(1);
+			}
+			transportVersion = next;
+		} else {
+			console.error("--transport-version requires a value");
+			process.exit(1);
 		}
 
 		// Remove the transport-version arguments from args array so they don't get passed to the binary
@@ -33,6 +126,9 @@ function parseTransportVersion() {
 		} else {
 			args.splice(versionArgIndex, 2);
 		}
+	} else if (envOverride) {
+		// Fallback when flags are not forwarded to the script (some npx / CI wrappers)
+		transportVersion = envOverride;
 	}
 
 	return { version: validateTransportVersion(transportVersion), remainingArgs: args };
@@ -56,6 +152,7 @@ function validateTransportVersion(version) {
 }
 
 const { version: VERSION, remainingArgs } = parseTransportVersion();
+validateRemainingArgsForBifrostHttp(remainingArgs);
 
 async function getPlatformArchAndBinary() {
 	const platform = process.platform;
@@ -202,7 +299,7 @@ function formatBytes(bytes) {
 		const versionExists = await checkVersionExists(VERSION, platformDir, archDir, binaryName);
 		if (!versionExists) {
 			console.error(`❌ Transport version '${VERSION}' not found.`);
-			console.error(`Please verify the version exists at: ${BASE_URL}/bifrost/`);
+			console.error(`See https://docs.getbifrost.ai/changelogs for release versions you can pass to --transport-version.`);
 			process.exit(1);
 		}
 		namedVersion = VERSION;
@@ -216,12 +313,29 @@ function formatBytes(bytes) {
 	// For future use when we want to add multiple fallback binaries
 	const downloadUrls = [];
 
-	downloadUrls.push(`${BASE_URL}/bifrost/${VERSION}/${platformDir}/${archDir}/${binaryName}`);
+	// Use the same path segment as the on-disk cache dir (resolved tag), not the synthetic "latest"
+	// string. Otherwise the cached file and URL can disagree and version switches look "stuck".
+	const urlVersion = namedVersionFound ? namedVersion : VERSION;
+	downloadUrls.push(`${BASE_URL}/bifrost/${urlVersion}/${platformDir}/${archDir}/${binaryName}`);
 
 	let lastError = null;
 	let binaryWorking = false;
 
-	const bifrostBinDir = namedVersionFound ? join(cacheDir(), "bifrost", namedVersion, "bin") : tmpdir();
+	const bifrostBinDir = namedVersionFound
+		? join(cacheDir(), "bifrost", namedVersion, "bin")
+		: mkdtempSync(join(tmpdir(), "bifrost-npx-"));
+
+	if (!namedVersionFound) {
+		process.once("exit", () => {
+			try {
+				if (existsSync(bifrostBinDir)) {
+					rmSync(bifrostBinDir, { recursive: true, force: true });
+				}
+			} catch {
+				// best-effort cleanup of ephemeral download dir
+			}
+		});
+	}
 
 	// if the binary directory doesn't exist, create it
 	try {

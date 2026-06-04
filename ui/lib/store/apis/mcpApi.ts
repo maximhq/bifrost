@@ -1,7 +1,15 @@
-import { CreateMCPClientRequest, GetMCPClientsParams, GetMCPClientsResponse, MCPClient, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import {
+	CreateMCPClientRequest,
+	GetMCPClientsParams,
+	GetMCPClientsResponse,
+	OAuthFlowResponse,
+	OAuthStatusResponse,
+	UpdateMCPClientRequest,
+} from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
+type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -41,7 +49,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing MCP client
-		updateMCPClient: builder.mutation<any, { id: string; data: UpdateMCPClientRequest }>({
+		updateMCPClient: builder.mutation<UpdateMCPClientResponse, { id: string; data: UpdateMCPClientRequest }>({
 			query: ({ id, data }) => ({
 				url: `/mcp/client/${id}`,
 				method: "PUT",
@@ -49,7 +57,11 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
-					await queryFulfilled;
+					const { data: response } = await queryFulfilled;
+					if (response.status === "pending_oauth") {
+						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
+						return;
+					}
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -62,11 +74,19 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.name !== undefined) draft.clients[index].config.name = data.name;
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
+									if (data.per_user_header_keys !== undefined) draft.clients[index].config.per_user_header_keys = data.per_user_header_keys;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
-									if (data.tools_to_auto_execute !== undefined) draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
+									if (data.tools_to_auto_execute !== undefined)
+										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
 									if (data.tool_sync_interval !== undefined) draft.clients[index].config.tool_sync_interval = data.tool_sync_interval;
+									if (data.disabled !== undefined) {
+										draft.clients[index].config.disabled = data.disabled;
+										if (data.disabled) {
+											draft.clients[index].state = "disabled";
+										}
+									}
 								}
 							}),
 						);

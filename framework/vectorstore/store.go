@@ -76,6 +76,8 @@ const (
 	VectorStorePropertyTypeStringArray VectorStorePropertyType = "string[]"
 )
 
+type disableScanFallbackContextKey struct{}
+
 // VectorStore represents the interface for the vector store.
 type VectorStore interface {
 	// Health check
@@ -104,6 +106,25 @@ type VectorStore interface {
 	DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error)
 	// Close closes the vector store.
 	Close(ctx context.Context, namespace string) error
+}
+
+// WithDisableScanFallback returns a derived context that tells vector stores not
+// to fall back to full scans when indexed search fails.
+func WithDisableScanFallback(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, disableScanFallbackContextKey{}, true)
+}
+
+// IsScanFallbackDisabled reports whether scan fallback has been disabled for
+// the current vector store operation.
+func IsScanFallbackDisabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(disableScanFallbackContextKey{}).(bool)
+	return disabled
 }
 
 // Config represents the configuration for the vector store.

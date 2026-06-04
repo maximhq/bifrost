@@ -5,7 +5,7 @@ rerank:
     description: |
       Reorders input documents by relevance to a query.
     tags:
-      - Rerank
+    - Rerank
     requestBody:
       required: true
       content:
@@ -23,3 +23,8 @@ rerank:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

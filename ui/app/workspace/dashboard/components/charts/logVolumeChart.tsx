@@ -1,8 +1,7 @@
-"use client";
-
 import type { LogsHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -14,7 +13,21 @@ interface LogVolumeChartProps {
 	endTime: number;
 }
 
-function CustomTooltip({ active, payload }: any) {
+type LogVolumeDataPoint = {
+	timestamp: string;
+	count: number;
+	success: number;
+	error: number;
+	index: number;
+	formattedTime: string;
+};
+
+interface CustomTooltipProps {
+	active?: boolean;
+	payload?: Array<{ payload?: LogVolumeDataPoint }>;
+}
+
+function CustomTooltip({ active, payload }: CustomTooltipProps) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -43,7 +56,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolumeChartProps) {
+function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -85,14 +98,30 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={56}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-						<Bar isAnimationActive={false} dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="success"
+							stackId="requests"
+							fill={CHART_COLORS.success}
+							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="error"
+							stackId="requests"
+							fill={CHART_COLORS.error}
+							fillOpacity={0.9}
+							radius={[2, 2, 0, 0]}
+							barSize={30}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -111,8 +140,8 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={56}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -125,10 +154,20 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							fill={CHART_COLORS.success}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="error"
+							stackId="1"
+							stroke={CHART_COLORS.error}
+							fill={CHART_COLORS.error}
+							fillOpacity={0.7}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
 		</ChartErrorBoundary>
 	);
 }
+
+export const LogVolumeChart = memo(LogVolumeChartImpl);

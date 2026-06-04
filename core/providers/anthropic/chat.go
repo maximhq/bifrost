@@ -11,10 +11,220 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// contentBlockMeta stores type and length of a content block for multi-turn reconstruction.
-type contentBlockMeta struct {
-	T string `json:"t"` // "thinking" or "text"
-	L int    `json:"l"` // length in UTF-8 bytes
+// convertFunctionToolToAnthropic turns an OpenAI-style function tool
+// (schemas.ChatTool with non-nil Function) into an AnthropicTool.
+// Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
+// cleanly between function and server-tool shapes.
+func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
+	anthropicTool := AnthropicTool{
+		Name: tool.Function.Name,
+	}
+	if tool.Function.Description != nil {
+		anthropicTool.Description = tool.Function.Description
+	}
+
+	// Convert function parameters to input_schema
+	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
+	}
+
+	if anthropicTool.InputSchema != nil {
+		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+	}
+
+	if tool.CacheControl != nil {
+		anthropicTool.CacheControl = tool.CacheControl
+	}
+	if tool.DeferLoading != nil {
+		anthropicTool.DeferLoading = tool.DeferLoading
+	}
+	if len(tool.AllowedCallers) > 0 {
+		anthropicTool.AllowedCallers = tool.AllowedCallers
+	}
+	if len(tool.InputExamples) > 0 {
+		anthropicTool.InputExamples = make([]AnthropicToolInputExample, len(tool.InputExamples))
+		for i, ex := range tool.InputExamples {
+			anthropicTool.InputExamples[i] = AnthropicToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+	if tool.EagerInputStreaming != nil {
+		anthropicTool.EagerInputStreaming = tool.EagerInputStreaming
+	}
+	// ChatToolFunction.Strict is the canonical neutral slot for Anthropic's strict.
+	if tool.Function.Strict != nil {
+		anthropicTool.Strict = tool.Function.Strict
+	}
+	return anthropicTool
+}
+
+// convertServerToolToAnthropic reconstructs an AnthropicTool from the
+// server-tool shape of a schemas.ChatTool (Function=nil, Name+Type+variant
+// fields populated). Returns (tool, true) when Type looks like a known
+// server-tool; (zero, false) when it doesn't, so the caller can drop it
+// cleanly rather than forward a malformed tool.
+//
+// Supported type prefixes:
+//   - web_search_*    → AnthropicToolWebSearch
+//   - web_fetch_*     → AnthropicToolWebFetch
+//   - computer_*      → AnthropicToolComputerUse
+//   - text_editor_*   → AnthropicToolTextEditor
+//   - mcp_toolset     → AnthropicMCPToolsetTool (via MCPToolset pointer)
+//
+// bash_*, memory_*, code_execution_*, and tool_search_* carry no variant
+// config — their Type + Name alone are enough, handled in the default branch.
+func convertServerToolToAnthropic(tool schemas.ChatTool, model string) (AnthropicTool, bool) {
+	typeStr := string(tool.Type)
+	if typeStr == "" {
+		return AnthropicTool{}, false
+	}
+
+	// mcp_toolset is serialized via a dedicated embedded type (AnthropicMCPToolsetTool)
+	// and carries its identity in MCPServerName, not Name — handle before the
+	// generic Name guard below.
+	if typeStr == "mcp_toolset" {
+		if tool.MCPServerName == "" {
+			return AnthropicTool{}, false
+		}
+		toolset := &AnthropicMCPToolsetTool{
+			Type:          "mcp_toolset",
+			MCPServerName: tool.MCPServerName,
+			DefaultConfig: convertMCPToolsetConfig(tool.DefaultConfig),
+			Configs:       convertMCPToolsetConfigMap(tool.Configs),
+			CacheControl:  tool.CacheControl,
+		}
+		return AnthropicTool{MCPToolset: toolset}, true
+	}
+
+	// Remaining server tools (web_search, web_fetch, computer, text_editor, etc.)
+	// identify themselves via Name.
+	toolName := tool.Name
+	// Normalize computer-use family (computer / text_editor / bash) to the
+	// canonical {type, name} pair for the model's generation. Keeps callers
+	// from having to memorize Anthropic's per-generation tool naming matrix.
+	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
+		generation := ComputerUseGeneration(model)
+		if baseTool == "text_editor" {
+			generation = TextEditorGeneration(model)
+		}
+		if wantType, wantName := NormalizedToolSpec(generation, baseTool); wantType != "" {
+			typeStr = wantType
+			if toolName == "" || toolName != wantName {
+				toolName = wantName
+			}
+		}
+	}
+	if toolName == "" {
+		return AnthropicTool{}, false
+	}
+
+	atype := AnthropicToolType(typeStr)
+	anthropicTool := AnthropicTool{
+		Name:                toolName,
+		Type:                &atype,
+		CacheControl:        tool.CacheControl,
+		DeferLoading:        tool.DeferLoading,
+		AllowedCallers:      tool.AllowedCallers,
+		EagerInputStreaming: tool.EagerInputStreaming,
+	}
+	if len(tool.InputExamples) > 0 {
+		anthropicTool.InputExamples = make([]AnthropicToolInputExample, len(tool.InputExamples))
+		for i, ex := range tool.InputExamples {
+			anthropicTool.InputExamples[i] = AnthropicToolInputExample{
+				Input:       ex.Input,
+				Description: ex.Description,
+			}
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(typeStr, "web_search_"):
+		anthropicTool.AnthropicToolWebSearch = &AnthropicToolWebSearch{
+			MaxUses:        tool.MaxUses,
+			AllowedDomains: tool.AllowedDomains,
+			BlockedDomains: tool.BlockedDomains,
+			UserLocation:   convertUserLocation(tool.UserLocation),
+		}
+	case strings.HasPrefix(typeStr, "web_fetch_"):
+		anthropicTool.AnthropicToolWebFetch = &AnthropicToolWebFetch{
+			MaxUses:          tool.MaxUses,
+			AllowedDomains:   tool.AllowedDomains,
+			BlockedDomains:   tool.BlockedDomains,
+			MaxContentTokens: tool.MaxContentTokens,
+			Citations:        convertCitationsConfig(tool.Citations),
+			UseCache:         tool.UseCache,
+		}
+	case strings.HasPrefix(typeStr, "computer_"):
+		anthropicTool.AnthropicToolComputerUse = &AnthropicToolComputerUse{
+			DisplayWidthPx:  tool.DisplayWidthPx,
+			DisplayHeightPx: tool.DisplayHeightPx,
+			DisplayNumber:   tool.DisplayNumber,
+			EnableZoom:      tool.EnableZoom,
+		}
+	case strings.HasPrefix(typeStr, "text_editor_"):
+		anthropicTool.AnthropicToolTextEditor = &AnthropicToolTextEditor{
+			MaxCharacters: tool.MaxCharacters,
+		}
+	case strings.HasPrefix(typeStr, "bash_"),
+		strings.HasPrefix(typeStr, "memory_"),
+		strings.HasPrefix(typeStr, "code_execution_"),
+		strings.HasPrefix(typeStr, "tool_search_tool_"):
+		// No variant-specific config — Type + Name alone.
+	default:
+		// Unknown type — pass through Type + Name and let Anthropic reject
+		// if it's truly invalid. This keeps forward-compat for new tool
+		// versions that aren't yet known to Bifrost.
+	}
+	return anthropicTool, true
+}
+
+// convertUserLocation mirrors schemas.ChatToolUserLocation onto
+// AnthropicToolWebSearchUserLocation.
+func convertUserLocation(loc *schemas.ChatToolUserLocation) *AnthropicToolWebSearchUserLocation {
+	if loc == nil {
+		return nil
+	}
+	return &AnthropicToolWebSearchUserLocation{
+		Type:     loc.Type,
+		City:     loc.City,
+		Region:   loc.Region,
+		Country:  loc.Country,
+		Timezone: loc.Timezone,
+	}
+}
+
+// convertCitationsConfig mirrors the request-side citations config
+// ({"enabled": true/false}) onto AnthropicCitations' request form.
+func convertCitationsConfig(c *schemas.ChatToolCitationsConfig) *AnthropicCitations {
+	if c == nil {
+		return nil
+	}
+	return &AnthropicCitations{Config: &schemas.Citations{Enabled: c.Enabled}}
+}
+
+// convertMCPToolsetConfig mirrors a single mcp_toolset config.
+func convertMCPToolsetConfig(c *schemas.ChatMCPToolsetConfig) *AnthropicMCPToolsetConfig {
+	if c == nil {
+		return nil
+	}
+	return &AnthropicMCPToolsetConfig{
+		Enabled:      c.Enabled,
+		DeferLoading: c.DeferLoading,
+	}
+}
+
+// convertMCPToolsetConfigMap mirrors the per-tool mcp_toolset configs map.
+func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[string]*AnthropicMCPToolsetConfig {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]*AnthropicMCPToolsetConfig, len(m))
+	for k, v := range m {
+		out[k] = convertMCPToolsetConfig(v)
+	}
+	return out
 }
 
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
@@ -25,9 +235,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	}
 
 	messages := bifrostReq.Input
+	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		trimmed := len(messages)
+		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		messages = messages[:trimmed]
+	}
+
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: AnthropicDefaultMaxTokens,
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// Convert parameters
@@ -37,26 +255,59 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		// Anthropic doesn't allow both temperature and top_p to be specified
-		// If both are present, prefer temperature (more commonly used)
-		if bifrostReq.Params.Temperature != nil {
-			anthropicReq.Temperature = bifrostReq.Params.Temperature
-		} else if bifrostReq.Params.TopP != nil {
-			anthropicReq.TopP = bifrostReq.Params.TopP
+		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
+		if !IsOpus47Plus(bifrostReq.Model) {
+			// Anthropic doesn't allow both temperature and top_p to be specified.
+			// If both are present, prefer temperature (more commonly used).
+			if bifrostReq.Params.Temperature != nil {
+				anthropicReq.Temperature = bifrostReq.Params.Temperature
+			} else if bifrostReq.Params.TopP != nil {
+				anthropicReq.TopP = bifrostReq.Params.TopP
+			}
 		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
-		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
-		if ok {
-			delete(anthropicReq.ExtraParams, "top_k")
-			anthropicReq.TopK = topK
 
+		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
+		// Opus 4.7+ rejects top_k with a 400 error.
+		if bifrostReq.Params.TopK != nil {
+			if !IsOpus47Plus(bifrostReq.Model) {
+				anthropicReq.TopK = bifrostReq.Params.TopK
+			}
+		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
+			delete(anthropicReq.ExtraParams, "top_k")
+			if !IsOpus47Plus(bifrostReq.Model) {
+				anthropicReq.TopK = topK
+			}
 		}
-		// extract inference_geo and context management
-		if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
+
+		// Speed — prefer neutral field, then ExtraParams.
+		if bifrostReq.Params.Speed != nil {
+			anthropicReq.Speed = bifrostReq.Params.Speed
+		} else if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+			delete(anthropicReq.ExtraParams, "speed")
+			anthropicReq.Speed = speed
+		}
+
+		// InferenceGeo — prefer neutral field, then ExtraParams.
+		if bifrostReq.Params.InferenceGeo != nil {
+			anthropicReq.InferenceGeo = bifrostReq.Params.InferenceGeo
+		} else if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
 			delete(anthropicReq.ExtraParams, "inference_geo")
 			anthropicReq.InferenceGeo = inferenceGeo
 		}
-		if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
+
+		// ContextManagement — the neutral type is json.RawMessage; decode to
+		// the Anthropic-shape ContextManagement. Fall back to ExtraParams
+		// (legacy map-valued or typed-pointer paths) if the raw is empty.
+		// Surface decode errors on the typed path so callers get immediate
+		// feedback on malformed config instead of a silent drop.
+		if len(bifrostReq.Params.ContextManagement) > 0 {
+			var cm ContextManagement
+			if err := sonic.Unmarshal(bifrostReq.Params.ContextManagement, &cm); err != nil {
+				return nil, fmt.Errorf("context_management: failed to parse: %w", err)
+			}
+			anthropicReq.ContextManagement = &cm
+		} else if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
 			if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
 				delete(anthropicReq.ExtraParams, "context_management")
 				anthropicReq.ContextManagement = cm
@@ -68,16 +319,81 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 		}
+
+		// Container — map the neutral ChatContainer union onto the Anthropic
+		// AnthropicContainer union. Both follow the string-or-object pattern.
+		if bifrostReq.Params.Container != nil {
+			c := &AnthropicContainer{}
+			if bifrostReq.Params.Container.ContainerStr != nil {
+				c.ContainerStr = bifrostReq.Params.Container.ContainerStr
+			} else if bifrostReq.Params.Container.ContainerObject != nil {
+				obj := &AnthropicContainerObject{
+					ID: bifrostReq.Params.Container.ContainerObject.ID,
+				}
+				if len(bifrostReq.Params.Container.ContainerObject.Skills) > 0 {
+					obj.Skills = make([]AnthropicContainerSkill, len(bifrostReq.Params.Container.ContainerObject.Skills))
+					for i, sk := range bifrostReq.Params.Container.ContainerObject.Skills {
+						obj.Skills[i] = AnthropicContainerSkill{
+							SkillID: sk.SkillID,
+							Type:    sk.Type,
+							Version: sk.Version,
+						}
+					}
+				}
+				c.ContainerObject = obj
+			}
+			anthropicReq.Container = c
+		}
+
+		// Top-level CacheControl on the request.
+		if bifrostReq.Params.CacheControl != nil {
+			anthropicReq.CacheControl = bifrostReq.Params.CacheControl
+		}
+
+		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
+		// already exists (e.g. from structured outputs), attach the budget to
+		// it; otherwise create one.
+		if bifrostReq.Params.TaskBudget != nil {
+			tb := &AnthropicTaskBudget{
+				Type:      bifrostReq.Params.TaskBudget.Type,
+				Total:     bifrostReq.Params.TaskBudget.Total,
+				Remaining: bifrostReq.Params.TaskBudget.Remaining,
+			}
+			if anthropicReq.OutputConfig == nil {
+				anthropicReq.OutputConfig = &AnthropicOutputConfig{}
+			}
+			anthropicReq.OutputConfig.TaskBudget = tb
+		}
+
+		// MCPServers — mirror the neutral ChatMCPServer[] to AnthropicMCPServerV2[].
+		if len(bifrostReq.Params.MCPServers) > 0 {
+			servers := make([]AnthropicMCPServerV2, len(bifrostReq.Params.MCPServers))
+			for i, s := range bifrostReq.Params.MCPServers {
+				servers[i] = AnthropicMCPServerV2{
+					Type:               s.Type,
+					URL:                s.URL,
+					Name:               s.Name,
+					AuthorizationToken: s.AuthorizationToken,
+				}
+			}
+			anthropicReq.MCPServers = servers
+		}
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex doesn't support native structured outputs, so convert to tool
 			if bifrostReq.Provider == schemas.Vertex {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-					// Force the model to use this specific tool
-					anthropicReq.ToolChoice = &AnthropicToolChoice{
-						Type: "tool",
-						Name: responseFormatTool.Name,
+					// Anthropic rejects forced tool_choice when extended thinking is active.
+					// Skip forcing tool_choice in that case; the model may still call the tool.
+					thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+						(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+							(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+					if !thinkingEnabled {
+						anthropicReq.ToolChoice = &AnthropicToolChoice{
+							Type: "tool",
+							Name: responseFormatTool.Name,
+						}
 					}
 				}
 			} else {
@@ -91,65 +407,32 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
-		// Convert tools
+		// Convert tools. Three neutral ChatTool shapes are supported:
+		//   (1) Function tool (tool.Function != nil) — existing path.
+		//   (2) Anthropic server tool (tool.Function == nil, Type is a
+		//       server-tool version string, Name populated at top level) —
+		//       new path handled by convertServerToolToAnthropic.
+		//   (3) Custom tool (tool.Custom != nil) — not currently forwarded
+		//       to Anthropic; skipped.
 		if bifrostReq.Params.Tools != nil {
-			tools := make([]AnthropicTool, 0, len(bifrostReq.Params.Tools))
-			for _, tool := range bifrostReq.Params.Tools {
-				if tool.Function == nil {
+			// Strip server tools the target provider doesn't support per
+			// ProviderFeatures (e.g. web_search on Vertex's non-supporting
+			// model variants, or MCP on Bedrock when this converter is used
+			// by non-Bedrock providers). Function/custom tools are always
+			// kept. The dropped set is discarded — "silent strip + continue"
+			// policy per user direction. See Bedrock's convertToolConfig for
+			// the direct-Bedrock-path equivalent.
+			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, bifrostReq.Provider)
+			tools := make([]AnthropicTool, 0, len(filtered))
+			for _, tool := range filtered {
+				if tool.Function != nil {
+					tools = append(tools, convertFunctionToolToAnthropic(tool))
 					continue
 				}
-				anthropicTool := AnthropicTool{
-					Name: tool.Function.Name,
+				// Non-function tool: attempt server-tool reconstruction.
+				if converted, ok := convertServerToolToAnthropic(tool, bifrostReq.Model); ok {
+					tools = append(tools, converted)
 				}
-				if tool.Function.Description != nil {
-					anthropicTool.Description = tool.Function.Description
-				}
-
-				// Convert function parameters to input_schema
-				if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
-					anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
-						Type:                 tool.Function.Parameters.Type,
-						Description:          tool.Function.Parameters.Description,
-						Properties:           tool.Function.Parameters.Properties,
-						Required:             tool.Function.Parameters.Required,
-						Enum:                 tool.Function.Parameters.Enum,
-						AdditionalProperties: tool.Function.Parameters.AdditionalProperties,
-						// JSON Schema definition fields
-						Defs:        tool.Function.Parameters.Defs,
-						Definitions: tool.Function.Parameters.Definitions,
-						Ref:         tool.Function.Parameters.Ref,
-						// Array schema fields
-						Items:    tool.Function.Parameters.Items,
-						MinItems: tool.Function.Parameters.MinItems,
-						MaxItems: tool.Function.Parameters.MaxItems,
-						// Composition fields
-						AnyOf: tool.Function.Parameters.AnyOf,
-						OneOf: tool.Function.Parameters.OneOf,
-						AllOf: tool.Function.Parameters.AllOf,
-						// String validation fields
-						Format:    tool.Function.Parameters.Format,
-						Pattern:   tool.Function.Parameters.Pattern,
-						MinLength: tool.Function.Parameters.MinLength,
-						MaxLength: tool.Function.Parameters.MaxLength,
-						// Number validation fields
-						Minimum: tool.Function.Parameters.Minimum,
-						Maximum: tool.Function.Parameters.Maximum,
-						// Misc fields
-						Title:    tool.Function.Parameters.Title,
-						Default:  tool.Function.Parameters.Default,
-						Nullable: tool.Function.Parameters.Nullable,
-					}
-				}
-
-				if anthropicTool.InputSchema != nil {
-					anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
-				}
-
-				if tool.CacheControl != nil {
-					anthropicTool.CacheControl = tool.CacheControl
-				}
-
-				tools = append(tools, anthropicTool)
 			}
 			if anthropicReq.Tools == nil {
 				anthropicReq.Tools = tools
@@ -193,23 +476,28 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
-				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
-					// anthropic does not support dynamic reasoning budget like gemini
-					// setting it to default max tokens
-					budgetTokens = MinimumReasoningMaxTokens
-				}
-				if budgetTokens < MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
-				}
-				anthropicReq.Thinking = &AnthropicThinking{
-					Type:         "enabled",
-					BudgetTokens: schemas.Ptr(budgetTokens),
+				if IsOpus47Plus(bifrostReq.Model) {
+					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+				} else {
+					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
+					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+						// anthropic does not support dynamic reasoning budget like gemini
+						// setting it to default max tokens
+						budgetTokens = MinimumReasoningMaxTokens
+					}
+					if budgetTokens < MinimumReasoningMaxTokens {
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+					}
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type:         "enabled",
+						BudgetTokens: schemas.Ptr(budgetTokens),
+					}
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 				if SupportsAdaptiveThinking(bifrostReq.Model) {
-					// Opus 4.6+: adaptive thinking + native effort
+					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
 				} else if SupportsNativeEffort(bifrostReq.Model) {
@@ -239,39 +527,111 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					Type: "disabled",
 				}
 			}
+
+			// thinking.display — map the neutral ChatReasoning.Display onto
+			// AnthropicThinking.Display. Valid for "enabled" and "adaptive"
+			// modes only; Anthropic rejects display on "disabled" ("there is
+			// nothing to display", per the extended-thinking doc). We attach
+			// on non-disabled modes and let the upstream provider enforce
+			// model-level support.
+			// Opus 4.7+ omits reasoning text by default; default to "summarized"
+			// so the text is visible unless the caller explicitly requests "omitted".
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+				if bifrostReq.Params.Reasoning.Display != nil {
+					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+				} else if IsOpus47Plus(bifrostReq.Model) {
+					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
+				}
+			}
 		}
 
 		// Convert service tier
-		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+		if bifrostReq.Params.ServiceTier != nil {
+			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
+			anthropicReq.ServiceTier = &mapped
+		}
 	}
 
 	// Convert messages - group consecutive tool messages into single user messages
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
+	// seenConversation tracks whether any user/assistant message has been processed.
+	// A system message after the first user/assistant turn is a mid-conversation
+	// system message and is emitted as role:"system" in the messages array
+	// (Anthropic API + Opus 4.8+ only).
+	seenConversation := false
+	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, bifrostReq.Model)
 
 	i := 0
 	for i < len(messages) {
 		msg := messages[i]
 
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
-			// Handle system message separately
-			if msg.Content != nil {
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					systemContent = &AnthropicContent{ContentStr: msg.Content.ContentStr}
-				} else if msg.Content.ContentBlocks != nil {
-					blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
-					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							blocks = append(blocks, AnthropicContentBlock{
-								Type:         AnthropicContentBlockTypeText,
-								Text:         block.Text,
-								CacheControl: block.CacheControl,
-							})
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
+			// Anthropic placement rule: a mid-conv system message must end the array
+			// or be immediately followed by an assistant turn. Anything else (e.g.
+			// [user, system, user]) returns a 400, so fall through to top-level system.
+			midConvPlacementOK := i == len(messages)-1 ||
+				messages[i+1].Role == schemas.ChatMessageRoleAssistant
+			if seenConversation && midConvSystemSupported && midConvPlacementOK {
+				// Mid-conversation system message — emit directly as role:"system".
+				var content AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						content = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							content = AnthropicContent{ContentBlocks: blocks}
 						}
 					}
-					if len(blocks) > 0 {
-						systemContent = &AnthropicContent{ContentBlocks: blocks}
+				}
+				if content.ContentStr != nil || len(content.ContentBlocks) > 0 {
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:    AnthropicMessageRoleSystem,
+						Content: content,
+					})
+				}
+			} else {
+				var newContent AnthropicContent
+				if msg.Content != nil {
+					if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+						newContent = AnthropicContent{ContentStr: msg.Content.ContentStr}
+					} else if msg.Content.ContentBlocks != nil {
+						blocks := make([]AnthropicContentBlock, 0, len(msg.Content.ContentBlocks))
+						for _, block := range msg.Content.ContentBlocks {
+							if block.Text != nil && *block.Text != "" {
+								blocks = append(blocks, AnthropicContentBlock{
+									Type:         AnthropicContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								})
+							}
+						}
+						if len(blocks) > 0 {
+							newContent = AnthropicContent{ContentBlocks: blocks}
+						}
+					}
+				}
+				systemContent = appendToSystemContent(systemContent, newContent)
+				// If the entire transcript consists only of system/developer messages
+				if i == len(messages)-1 && len(anthropicMessages) == 0 {
+					if systemContent != nil {
+						content := systemContent
+						systemContent = nil
+						anthropicMessages = append(anthropicMessages, AnthropicMessage{
+							Role:    AnthropicMessageRoleUser,
+							Content: *content,
+						})
 					}
 				}
 			}
@@ -324,6 +684,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					Role:    "user", // Tool results are sent as user messages in Anthropic
 					Content: AnthropicContent{ContentBlocks: toolResults},
 				})
+				seenConversation = true
 			}
 
 		default:
@@ -334,97 +695,20 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 			var content []AnthropicContentBlock
 
-			// Extract block metadata and signatures from reasoning details
-			var blockMeta []contentBlockMeta
-			var signatures []*string // signatures for thinking blocks, in order
+			// First add reasoning details
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ReasoningDetails != nil {
-				for _, rd := range msg.ChatAssistantMessage.ReasoningDetails {
-					if rd.Type == schemas.BifrostReasoningDetailsTypeContentBlocks {
-						// Extract block boundary metadata
-						if rd.Text != nil {
-							sonic.Unmarshal([]byte(*rd.Text), &blockMeta)
-						}
-						continue
-					}
-					if rd.Type == schemas.BifrostReasoningDetailsTypeText {
-						signatures = append(signatures, rd.Signature)
-					}
-					// Add reasoning details as thinking blocks
+				for _, reasoningDetail := range msg.ChatAssistantMessage.ReasoningDetails {
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
-						Signature: rd.Signature,
-						Thinking:  rd.Text,
+						Signature: reasoningDetail.Signature,
+						Thinking:  reasoningDetail.Text,
 					})
 				}
 			}
 
 			if msg.Content != nil {
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" && len(blockMeta) > 1 {
-					// Reconstruct original blocks from combined string using boundaries
-					combined := *msg.Content.ContentStr
-					expectedLen := 0
-					for i, bm := range blockMeta {
-						expectedLen += bm.L
-						if i > 0 {
-							expectedLen += 2 // \n\n separator
-						}
-					}
-
-					valid := expectedLen == len(combined)
-					if valid {
-						pos := 0
-						for i, bm := range blockMeta {
-							if bm.L < 0 || bm.L > len(combined)-pos {
-								valid = false
-								break
-							}
-							nextPos := pos + bm.L
-							if i < len(blockMeta)-1 && (len(combined)-nextPos < 2 || combined[nextPos:nextPos+2] != "\n\n") {
-								valid = false
-								break
-							}
-							if i < len(blockMeta)-1 {
-								pos = nextPos + 2
-							} else {
-								pos = nextPos
-							}
-						}
-					}
-					if valid {
-						// Clear thinking blocks added above — we'll reconstruct from the combined string
-						content = content[:0]
-						sigIdx := 0
-						pos := 0
-						for _, bm := range blockMeta {
-							blockText := combined[pos : pos+bm.L]
-							if bm.T == "thinking" {
-								var sig *string
-								if sigIdx < len(signatures) {
-									sig = signatures[sigIdx]
-									sigIdx++
-								}
-								content = append(content, AnthropicContentBlock{
-									Type:      AnthropicContentBlockTypeThinking,
-									Thinking:  &blockText,
-									Signature: sig,
-								})
-							} else {
-								content = append(content, AnthropicContentBlock{
-									Type: AnthropicContentBlockTypeText,
-									Text: &blockText,
-								})
-							}
-							pos += bm.L + 2
-						}
-					} else {
-						// Boundaries don't match (content was modified), fall back to single text block
-						content = append(content, AnthropicContentBlock{
-							Type: AnthropicContentBlockTypeText,
-							Text: msg.Content.ContentStr,
-						})
-					}
-				} else if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					// No block metadata — single text block
+				// Convert text content
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 					content = append(content, AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeText,
 						Text: msg.Content.ContentStr,
@@ -458,13 +742,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// Preserve original key ordering of tool arguments for prompt caching.
 					// Using json.RawMessage avoids the map[string]interface{} round-trip
 					// that would destroy key order.
-					if toolCall.Function.Arguments != "" {
-						if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
-							toolUse.Input = json.RawMessage(compacted)
-						} else {
-							// Preserve original payload instead of silently dropping args.
-							toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
-						}
+					if toolCall.Function.Arguments == "" {
+						toolUse.Input = json.RawMessage("{}")
+					} else if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
+						toolUse.Input = json.RawMessage(compacted)
+					} else {
+						// Preserve original payload instead of silently dropping args.
+						toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
 					}
 
 					content = append(content, toolUse)
@@ -481,12 +765,32 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 
 			anthropicMessages = append(anthropicMessages, anthropicMsg)
+			seenConversation = true
 			i++
 		}
 	}
 
 	anthropicReq.Messages = anthropicMessages
 	anthropicReq.System = systemContent
+
+	// Trim trailing whitespace from the last assistant message text blocks
+	// ContentStr is converted to a single text ContentBlock during message conversion
+	// so we trim the text of that block instead.
+	lastMsgIndex := len(anthropicReq.Messages) - 1
+	if lastMsgIndex >= 0 && anthropicReq.Messages[lastMsgIndex].Role == AnthropicMessageRoleAssistant {
+		blocks := anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Type == AnthropicContentBlockTypeText && blocks[j].Text != nil {
+				anthropicReq.Messages[lastMsgIndex].Content.ContentBlocks[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
+
+	// Strip request- and tool-level fields the target Anthropic-family
+	// provider does not support. Fail-closed tool validation stays in
+	// ValidateToolsForProvider; this is strip-silently for additive fields.
+	stripUnsupportedAnthropicFields(anthropicReq, bifrostReq.Provider, bifrostReq.Model)
 
 	return anthropicReq, nil
 }
@@ -499,12 +803,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Initialize Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{
-		ID:    response.ID,
-		Model: response.Model,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Anthropic,
-		},
+		ID:      response.ID,
+		Model:   response.Model,
 		Created: int(time.Now().Unix()),
 	}
 
@@ -515,6 +815,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			structuredOutputToolName = toolName
 		}
 	}
+	var usedStructuredOutputTool bool
 
 	// Collect all content and tool calls into a single message
 	var toolCalls []schemas.ChatAssistantMessageToolCall
@@ -550,6 +851,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 							jsonStr = "{}"
 						}
 						contentStr = &jsonStr
+						usedStructuredOutputTool = true
 						continue // Skip adding to toolCalls
 					}
 
@@ -590,64 +892,9 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
-	if len(contentBlocks) > 0 {
-		allText := true
-		for _, block := range contentBlocks {
-			if block.Type != schemas.ChatContentBlockTypeText {
-				allText = false
-				break
-			}
-		}
-		if allText {
-			needsCombine := len(contentBlocks) > 1 || len(reasoningDetails) > 0
-			if !needsCombine {
-				// Single text block, no thinking — simple collapse
-				contentStr = contentBlocks[0].Text
-			} else {
-				// Combine thinking (first) + text blocks into a single string
-				var parts []string
-				var blockMeta []contentBlockMeta
-
-				// Thinking blocks first
-				for _, rd := range reasoningDetails {
-					if rd.Type == schemas.BifrostReasoningDetailsTypeText && rd.Text != nil {
-						parts = append(parts, *rd.Text)
-						blockMeta = append(blockMeta, contentBlockMeta{T: "thinking", L: len(*rd.Text)})
-					}
-				}
-
-				// Then text blocks top to bottom
-				for _, block := range contentBlocks {
-					if block.Text != nil {
-						parts = append(parts, *block.Text)
-						blockMeta = append(blockMeta, contentBlockMeta{T: "text", L: len(*block.Text)})
-					}
-				}
-
-				joined := strings.Join(parts, "\n\n")
-				contentStr = &joined
-
-				// Record boundaries for multi-turn reconstruction
-				if len(blockMeta) > 1 {
-					if metaJSON, err := providerUtils.MarshalSorted(blockMeta); err == nil {
-						metaStr := string(metaJSON)
-						reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-							Index: len(reasoningDetails),
-							Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
-							Text:  &metaStr,
-						})
-					}
-				}
-
-				// Clear thinking text from reasoning_details (keep signature only)
-				for i := range reasoningDetails {
-					if reasoningDetails[i].Type == schemas.BifrostReasoningDetailsTypeText {
-						reasoningDetails[i].Text = nil
-					}
-				}
-			}
-			contentBlocks = nil
-		}
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
 	}
 
 	// Create a single choice with the collected content
@@ -694,6 +941,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		FinishReason: func() *string {
 			if response.StopReason != "" {
 				mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
+				// When the structured output tool was folded back into text content, the
+				// stop reason should be "stop", not "tool_calls".
+				if usedStructuredOutputTool && len(toolCalls) == 0 &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
 				return &mapped
 			}
 			return nil
@@ -704,18 +957,26 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 	// Convert usage information
 	if response.Usage != nil {
+		promptTokensDetails := &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  response.Usage.CacheReadInputTokens,
+			CachedWriteTokens: response.Usage.CacheCreationInputTokens,
+		}
+		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: response.Usage.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens: response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
-			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-				CachedReadTokens:  response.Usage.CacheReadInputTokens,
-				CachedWriteTokens: response.Usage.CacheCreationInputTokens,
-			},
-			CompletionTokens: response.Usage.OutputTokens,
+			PromptTokens:        response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens,
+			PromptTokensDetails: promptTokensDetails,
+			CompletionTokens:    response.Usage.OutputTokens,
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {
-			bifrostResponse.ServiceTier = response.Usage.ServiceTier
+			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
+			bifrostResponse.ServiceTier = &mapped
 		}
 	}
 
@@ -753,9 +1014,16 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.PromptTokensDetails.CachedWriteTokens
 			anthropicResp.Usage.InputTokens = anthropicResp.Usage.InputTokens - bifrostResp.Usage.PromptTokensDetails.CachedWriteTokens
 		}
+		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			anthropicResp.Usage.CacheCreation = AnthropicUsageCacheCreation{
+				Ephemeral5mInputTokens: bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
+				Ephemeral1hInputTokens: bifrostResp.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
+			}
+		}
 		// Forward service tier
 		if bifrostResp.ServiceTier != nil {
-			anthropicResp.Usage.ServiceTier = bifrostResp.ServiceTier
+			mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
+			anthropicResp.Usage.ServiceTier = &mapped
 		}
 	}
 
@@ -860,6 +1128,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
+		if chunk.Message != nil && chunk.Message.Role != "" {
+			role := chunk.Message.Role
+			streamResponse := &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Role: &role,
+							},
+						},
+					},
+				},
+			}
+			return streamResponse, nil, false
+		}
 		return nil, nil, false
 
 	case AnthropicStreamEventTypeMessageStop:
@@ -934,26 +1219,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				}
 
 			case AnthropicStreamDeltaTypeInputJSON:
-				// Handle tool use streaming - accumulate partial JSON
+				// Handle tool use streaming - accumulate partial JSON.
 				if chunk.Delta.PartialJSON != nil {
-					if structuredOutputToolName != "" {
-						// Structured output: stream JSON as content
-						streamResponse := &schemas.BifrostChatResponse{
-							Object: "chat.completion.chunk",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: chunk.Delta.PartialJSON,
-										},
-									},
-								},
-							},
-						}
-						return streamResponse, nil, false
-					}
-
 					// Resolve which tool-call this delta belongs to via the content-block index.
 					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
 

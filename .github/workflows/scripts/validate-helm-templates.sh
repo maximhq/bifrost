@@ -270,7 +270,7 @@ test_template "client: new properties (Gap 1+2)" \
 test_template "otel: headers + tls_ca_cert + insecure (Gap 3)" \
   --set bifrost.plugins.otel.enabled=true \
   --set bifrost.plugins.otel.config.collector_url=otel:4317 \
-  --set bifrost.plugins.otel.config.trace_type=otel \
+  --set bifrost.plugins.otel.config.trace_type=genai_extension \
   --set bifrost.plugins.otel.config.protocol=grpc \
   --set 'bifrost.plugins.otel.config.headers.Authorization=Bearer token' \
   --set bifrost.plugins.otel.config.tls_ca_cert=/certs/ca.pem \
@@ -317,7 +317,7 @@ test_template "combined: all new Gap 1-8 fields" \
   --set bifrost.client.hideDeletedVirtualKeysInFilters=true \
   --set bifrost.plugins.otel.enabled=true \
   --set bifrost.plugins.otel.config.collector_url=otel:4317 \
-  --set bifrost.plugins.otel.config.trace_type=otel \
+  --set bifrost.plugins.otel.config.trace_type=genai_extension \
   --set bifrost.plugins.otel.config.protocol=grpc \
   --set bifrost.plugins.otel.config.insecure=true \
   --set bifrost.plugins.governance.enabled=true \

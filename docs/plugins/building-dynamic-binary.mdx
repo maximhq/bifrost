@@ -98,7 +98,7 @@ Use this for Alpine-based deployments or when you want minimal image size.
 <Accordion title="Complete Dockerfile for Alpine (musl libc)">
 
 ```dockerfile
-# --- UI Build Stage: Build the Next.js frontend ---
+# --- UI Build Stage: Build the React + Vite frontend ---
 FROM node:25-alpine3.23 AS ui-builder
 WORKDIR /app
 
@@ -110,8 +110,7 @@ RUN npm ci
 COPY ui/ ./
 
 # Build UI (skip the copy-build step)
-RUN npx next build
-RUN node scripts/fix-paths.js
+RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.26.1-alpine3.23 AS builder
@@ -172,14 +171,15 @@ ENV APP_PORT=$ARG_APP_PORT \
     LOG_STYLE=$ARG_LOG_STYLE \
     APP_DIR=$ARG_APP_DIR
 
-RUN mkdir -p $APP_DIR/logs && \
+RUN mkdir -p "$APP_DIR/logs" && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
+    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
     chmod +x /app/docker-entrypoint.sh
 USER appuser
 
 # Declare volume for data persistence
-VOLUME ["/app/data"]
+VOLUME ["${APP_DIR}"]
 EXPOSE $APP_PORT
 
 # Health check for container status monitoring
@@ -215,7 +215,7 @@ Use this for Debian/Ubuntu-based deployments or when deploying to glibc-based sy
 <Accordion title="Complete Dockerfile for Debian (glibc)">
 
 ```dockerfile
-# --- UI Build Stage: Build the Next.js frontend ---
+# --- UI Build Stage: Build the React + Vite frontend ---
 FROM node:25-bookworm AS ui-builder
 WORKDIR /app
 
@@ -227,8 +227,7 @@ RUN npm ci
 COPY ui/ ./
 
 # Build UI
-RUN npx next build
-RUN node scripts/fix-paths.js
+RUN npm run build-enterprise
 
 # --- Go Build Stage: Compile the Go binary ---
 FROM golang:1.26.1-bookworm AS builder
@@ -295,14 +294,15 @@ ENV APP_PORT=$ARG_APP_PORT \
     LOG_STYLE=$ARG_LOG_STYLE \
     APP_DIR=$ARG_APP_DIR
 
-RUN mkdir -p $APP_DIR/logs && \
+RUN mkdir -p "$APP_DIR/logs" && \
     useradd -m -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
+    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
     chmod +x /app/docker-entrypoint.sh
 USER appuser
 
 # Declare volume for data persistence
-VOLUME ["/app/data"]
+VOLUME ["${APP_DIR}"]
 EXPOSE $APP_PORT
 
 # Health check for container status monitoring
@@ -704,4 +704,3 @@ Now that you have a dynamically linked Bifrost binary:
 <Note>
 For questions or issues with dynamic builds and plugins, visit our [GitHub Discussions](https://github.com/maximhq/bifrost/discussions) or [Discord community](https://discord.gg/exN5KAydbU).
 </Note>
-

@@ -118,7 +118,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	}
 
 	// Get virtual key
-	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
+	vk, exists := t.store.GetVirtualKey(ctx, update.VirtualKey)
 	if !exists {
 		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
 		return
@@ -304,6 +304,15 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 // Cleanup stops all background workers and flushes pending operations
 func (t *UsageTracker) Cleanup() error {
+	// Final flush of in-memory deltas to DB before shutdown. Without this,
+	// any deltas accumulated since the last `workerInterval` tick are lost.
+	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
+		t.logger.Error("final budget dump on shutdown failed: %v", err)
+	}
+	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
+		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
+	}
+
 	// Stop background workers
 	if t.trackerCancel != nil {
 		t.trackerCancel()

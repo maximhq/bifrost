@@ -68,7 +68,7 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `push_gateway_url` | `string` | ✅ Yes | - | Push Gateway URL (e.g., `http://pushgateway:9091`) |
+| `push_gateway_url` | `string \| EnvVar` | ✅ Yes | - | Push Gateway URL — supports `env.VAR_NAME` |
 | `job_name` | `string` | ❌ No | `bifrost` | Job label for pushed metrics |
 | `instance_id` | `string` | ❌ No | hostname | Instance identifier for metric grouping |
 | `push_interval` | `integer` | ❌ No | `15` | Push interval in seconds (1-300) |
@@ -78,8 +78,9 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `username` | `string` | ✅ Yes | Basic auth username |
-| `password` | `string` | ✅ Yes | Basic auth password |
+| `username` | `string \| EnvVar` | ✅ Yes | Basic auth username — supports `env.VAR_NAME` |
+| `password` | `string \| EnvVar` | ✅ Yes | Basic auth password — supports `env.VAR_NAME` |
+
 
 ---
 
@@ -105,12 +106,15 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 {
   "plugins": [
     {
-      "name": "prometheus",
+      "name": "telemetry",
       "enabled": true,
       "config": {
-        "push_gateway_url": "http://pushgateway:9091",
-        "job_name": "bifrost",
-        "push_interval": 15
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "http://pushgateway:9091",
+          "job_name": "bifrost",
+          "push_interval": 15
+        }
       }
     }
   ]
@@ -123,16 +127,46 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 {
   "plugins": [
     {
-      "name": "prometheus",
+      "name": "telemetry",
       "enabled": true,
       "config": {
-        "push_gateway_url": "http://pushgateway:9091",
-        "job_name": "bifrost",
-        "push_interval": 15,
-        "instance_id": "bifrost-node-1",
-        "basic_auth": {
-          "username": "admin",
-          "password": "secret"
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "http://pushgateway:9091",
+          "job_name": "bifrost",
+          "push_interval": 15,
+          "instance_id": "bifrost-node-1",
+          "basic_auth": {
+            "username": "admin",
+            "password": "secret"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+### With Environment Variables
+
+Use `env.VAR_NAME` to reference environment variables for the Push Gateway URL and credentials:
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "env.PUSHGATEWAY_URL",
+          "job_name": "bifrost",
+          "push_interval": 15,
+          "basic_auth": {
+            "username": "env.PUSHGATEWAY_USER",
+            "password": "env.PUSHGATEWAY_PASS"
+          }
         }
       }
     }
@@ -172,20 +206,70 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `bifrost_cache_hits_total` | Counter | Cache hits by type |
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token (streaming) |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
+| `bifrost_active_requests` | Gauge | LLM requests currently in-flight (labeled by `method` only) |
+| `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
+| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
+| `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 
 ### Default Labels
 
-All Bifrost metrics include these labels:
+Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_rotation_events_total` counter is an exception — see [Key Rotation Events](#key-rotation-events) below for its narrower label set):
 
 - `provider` - LLM provider name
 - `model` - Model identifier
+- `alias` - Alias resolved to this model (empty if none)
 - `method` - Request type (chat, completion, embedding, etc.)
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
-- `selected_key_id` / `selected_key_name` - Actual key used
-- `number_of_retries` - Retry count
+- `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`)
+- `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
+- `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position
-- `team_id` / `team_name` - Team identifiers (if governance enabled)
-- `customer_id` / `customer_name` - Customer identifiers (if governance enabled)
+- `team_id` / `team_name` - Team identifiers (empty when governance is not used)
+- `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
+
+<Note>
+  **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
+</Note>
+
+### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
+
+`bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a per-key failure causes the next retry to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request:
+
+- `429 Too Many Requests` — this key is rate-limited; another may have capacity.
+- `401 Unauthorized` / `403 Forbidden` — bad / revoked key, or key lacks permission.
+- `402 Payment Required` — billing issue on this key's account.
+
+It is **not** incremented for:
+
+- terminal failures (no retry happens, including `max_retries = 0` or every key permanently dead),
+- same-key retries on transient 5xx / network errors,
+- non-retryable request-bound 4xx (400/404/422/...).
+
+Labels are attributed to the key that failed and triggered the rotation:
+
+| Label | Values | Description |
+|-------|--------|-------------|
+| `provider` | e.g. `openai` | LLM provider |
+| `requested_model` | e.g. `gpt-4o` | Model as requested (before any alias resolution) |
+| `key_id` | UUID | The provider API key that failed and was rotated away from |
+| `key_name` | string | Human-readable name of the provider API key |
+| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error` (429), `authentication_error` (401/403), `billing_error` (402), or a provider-supplied error type for non-status-coded rate-limit messages |
+
+To inspect every attempted key on a failed request (including terminal failures that did not rotate), read the `attempt_trail` field on the corresponding log entry instead.
+
+**Example queries:**
+
+```promql
+# Rate of key rotations per provider
+sum by (provider) (
+  rate(bifrost_key_rotation_events_total[5m])
+)
+
+# Which specific keys are hitting rate limits most often
+topk(5, sum by (provider, key_name) (
+  rate(bifrost_key_rotation_events_total[1h])
+))
+```
 
 ---
 

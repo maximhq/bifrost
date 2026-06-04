@@ -82,8 +82,7 @@ interface MultiSelectGroup {
  * Props for MultiSelect component
  */
 interface MultiSelectProps
-	extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "animationConfig">,
-		VariantProps<typeof multiSelectVariants> {
+	extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "animationConfig">, VariantProps<typeof multiSelectVariants> {
 	/**
 	 * An array of option objects or groups to be displayed in the multi-select component.
 	 */

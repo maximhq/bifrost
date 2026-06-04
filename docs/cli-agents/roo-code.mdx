@@ -6,6 +6,10 @@ icon: "code"
 
 [Roo Code](https://roo-code.net/) is an AI-powered VS Code extension that supports OpenAI-compatible APIs. By connecting it to Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys and built-in observability.
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Roo Code, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 ### 1. Install Roo Code
@@ -29,7 +33,7 @@ Install the [Roo Code extension](https://marketplace.visualstudio.com/items?item
 
 ### 3. Verify the Connection
 
-Ask Roo which model it's using — it should respond with the Bifrost model ID you configured (e.g. `anthropic/claude-sonnet-4-5`).
+Ask Roo which model it's using - it should respond with the Bifrost model ID you configured (e.g. `anthropic/claude-sonnet-4-5`).
 
 ![Roo Code model verification](/media/roo-code-model.png)
 
@@ -41,7 +45,7 @@ Roo Code supports multiple API configuration profiles. Create separate profiles 
 
 When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set **API Key** in your Roo Code profile to your virtual key. This lets you enforce usage limits, budgets, and access control per user or team.
 
-For team deployments, create a separate configuration profile for each team — each can use a different virtual key with its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+For team deployments, create a separate configuration profile for each team - each can use a different virtual key with its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
 
 ## Model Selection
 
@@ -73,18 +77,18 @@ Roo Code requires **native tool calling** (OpenAI-compatible function calling). 
 </Warning>
 
 <Note>
-Roo Code connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed.
+Roo Code connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name - no per-provider configuration needed.
 </Note>
 
 ## MCP Server Integration
 
-Roo Code supports MCP (Model Context Protocol). You can connect it to Bifrost's MCP server to access all tools configured in Bifrost. See [MCP Gateway URL](/mcp/gateway-url) for setup instructions.
+Roo Code supports MCP (Model Context Protocol). You can connect it to Bifrost's MCP server to access all tools configured in Bifrost. See [MCP Gateway](/mcp/gateway) for setup instructions.
 
 ## Observability
 
-All Roo Code traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage.
+All Roo Code traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content to track usage.
 
 ## Next Steps
 
-- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
-- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control

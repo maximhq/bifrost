@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -19,6 +18,23 @@ import (
 // BedrockRouter handles AWS Bedrock-compatible API endpoints
 type BedrockRouter struct {
 	*GenericRouter
+}
+
+// bedrockModelGetter extracts the model ID from any Bedrock integration request type.
+// It is called after PreCallback, so req.ModelID is populated from the URL path param.
+func bedrockModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+	switch r := req.(type) {
+	case *bedrock.BedrockConverseRequest:
+		return r.ModelID, nil
+	case *bedrock.BedrockInvokeRequest:
+		return r.ModelID, nil
+	case *bedrock.BedrockCountTokensRequest:
+		if r.Input.Converse != nil {
+			return r.Input.Converse.ModelID, nil
+		}
+		return "", nil
+	}
+	return "", nil
 }
 
 // S3 context keys for storing request parameters
@@ -42,6 +58,7 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.ResponsesRequest
 		},
+		GetRequestModel: bedrockModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest(ctx)
@@ -77,6 +94,7 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &bedrock.BedrockConverseRequest{}
 		},
+		GetRequestModel: bedrockModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				// Mark as streaming request
@@ -121,15 +139,22 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		Path:   pathPrefix + "/model/{modelId}/invoke-with-response-stream",
 		Method: "POST",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return bedrock.DetectInvokeRequestType(ctx.Request.Body())
+			modelID, _ := ctx.UserValue("modelId").(string)
+			return bedrock.DetectInvokeRequestType(ctx.Request.Body(), modelID)
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &bedrock.BedrockInvokeRequest{}
 		},
+		GetRequestModel: bedrockModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
+				requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+				switch requestType {
+				case schemas.EmbeddingRequest, schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
+					return nil, fmt.Errorf("request type %v is not supported on invoke-with-response-stream", requestType)
+				}
 				invokeReq.Stream = true
-				if invokeReq.IsMessagesRequest() {
+				if requestType == schemas.ResponsesRequest {
 					// Messages-based → Responses path (streaming)
 					converseReq := invokeReq.ToBedrockConverseRequest()
 					responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
@@ -156,10 +181,10 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 
 				// Check if we have raw response (which holds the chunk payload)
 				if rawResp, ok := resp.ExtraFields.RawResponse.(string); ok {
-					// Create BedrockStreamEvent with InvokeModelRawChunk
+					// Create BedrockStreamEvent with InvokeModelRawChunks
 					// The payload bytes are the raw JSON string
 					bedrockEvent := &bedrock.BedrockStreamEvent{
-						InvokeModelRawChunk: []byte(rawResp),
+						InvokeModelRawChunks: [][]byte{[]byte(rawResp)},
 					}
 					return "", bedrockEvent, nil
 				}
@@ -176,43 +201,85 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 // createBedrockInvokeRouteConfig creates a route configuration for the Bedrock Invoke API endpoint
 // Handles POST /bedrock/model/{modelId}/invoke
 // Uses BedrockInvokeRequest as a union type that supports all model families.
-// Messages-based requests (Anthropic Messages, Nova, AI21) are routed through the Responses path,
-// while prompt-based requests (Anthropic legacy, Mistral, Llama, Cohere) go through Text Completion.
+// Request type is detected from the body + model ID and dispatched accordingly:
+//   - Embedding (Titan inputText, Cohere texts)
+//   - ImageGeneration (taskType=TEXT_IMAGE, Stability AI and other providers prompt-only)
+//   - ImageEdit (taskType=INPAINTING/OUTPAINTING/BACKGROUND_REMOVAL, Stability AI image+prompt)
+//   - ImageVariation (taskType=IMAGE_VARIATION)
+//   - ResponsesRequest (messages array — Anthropic Messages, Nova, AI21)
+//   - TextCompletionRequest (prompt — Anthropic legacy, Mistral, Llama, Cohere)
 func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
 	return RouteConfig{
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/invoke",
 		Method: "POST",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return bedrock.DetectInvokeRequestType(ctx.Request.Body())
+			modelID, _ := ctx.UserValue("modelId").(string)
+			return bedrock.DetectInvokeRequestType(ctx.Request.Body(), modelID)
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &bedrock.BedrockInvokeRequest{}
 		},
+		GetRequestModel: bedrockModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
-				if invokeReq.IsMessagesRequest() {
-					// Messages-based (Anthropic Messages, Nova, AI21) → Responses path
-					converseReq := invokeReq.ToBedrockConverseRequest()
-					responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
-					if err != nil {
-						return nil, fmt.Errorf("failed to convert invoke messages request: %w", err)
-					}
-					return &schemas.BifrostRequest{ResponsesRequest: responsesReq}, nil
+			invokeReq, ok := req.(*bedrock.BedrockInvokeRequest)
+			if !ok {
+				return nil, errors.New("invalid request type")
+			}
+
+			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+			switch requestType {
+			case schemas.EmbeddingRequest:
+				return &schemas.BifrostRequest{
+					EmbeddingRequest: invokeReq.ToBifrostEmbeddingRequest(ctx),
+				}, nil
+
+			case schemas.ImageGenerationRequest:
+				return &schemas.BifrostRequest{
+					ImageGenerationRequest: invokeReq.ToBifrostImageGenerationRequest(ctx),
+				}, nil
+
+			case schemas.ImageEditRequest:
+				editReq, err := invokeReq.ToBifrostImageEditRequest(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert invoke image edit request: %w", err)
 				}
-				// Prompt-based (Anthropic legacy, Mistral, Llama, Cohere) → Text Completion path
-				// Also handles Cohere Command R (message → prompt conversion)
+				return &schemas.BifrostRequest{ImageEditRequest: editReq}, nil
+
+			case schemas.ImageVariationRequest:
+				varReq, err := invokeReq.ToBifrostImageVariationRequest(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert invoke image variation request: %w", err)
+				}
+				return &schemas.BifrostRequest{ImageVariationRequest: varReq}, nil
+
+			case schemas.ResponsesRequest:
+				// Messages-based (Anthropic Messages, Nova, AI21) -> Responses path
+				converseReq := invokeReq.ToBedrockConverseRequest()
+				responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert invoke messages request: %w", err)
+				}
+				return &schemas.BifrostRequest{ResponsesRequest: responsesReq}, nil
+
+			default:
+				// TextCompletionRequest and any unrecognised type forwarded to text completion path
 				return &schemas.BifrostRequest{
 					TextCompletionRequest: invokeReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
-			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			return bedrock.ToBedrockTextCompletionResponse(resp), nil
 		},
 		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 			return bedrock.ToBedrockInvokeMessagesResponse(ctx, resp)
+		},
+		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			return bedrock.ToBedrockEmbeddingInvokeResponse(resp)
+		},
+		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+			return bedrock.ToBedrockInvokeImagesResponse(ctx, resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
@@ -270,6 +337,7 @@ func createBedrockCountTokensRouteConfig(pathPrefix string, handlerStore lib.Han
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.CountTokensRequest
 		},
+		GetRequestModel: bedrockModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if countTokensReq, ok := req.(*bedrock.BedrockCountTokensRequest); ok {
 				if countTokensReq.Input.Converse == nil {
@@ -550,58 +618,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 	return routes
 }
 
-// bedrockBatchPreCallback returns a pre-callback for Bedrock batch create requests
+// bedrockBatchPreCallback returns a pre-callback for Bedrock batch create requests.
 func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		// Handle direct key authentication if allowed
-		if !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Check for Bedrock API Key (alternative to AWS Credentials)
-		apiKey := string(ctx.Request.Header.Peek("x-bf-bedrock-api-key"))
-
-		// Check for AWS Credentials
-		accessKey := string(ctx.Request.Header.Peek("x-bf-bedrock-access-key"))
-		secretKey := string(ctx.Request.Header.Peek("x-bf-bedrock-secret-key"))
-		region := string(ctx.Request.Header.Peek("x-bf-bedrock-region"))
-		sessionToken := string(ctx.Request.Header.Peek("x-bf-bedrock-session-token"))
-
-		if apiKey != "" {
-			key := schemas.Key{
-				ID:               uuid.New().String(),
-				Value:            *schemas.NewEnvVar(apiKey),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
-			}
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			return nil
-		}
-
-		if accessKey != "" && secretKey != "" {
-			if region == "" {
-				return errors.New("x-bf-bedrock-region header is required when using direct keys")
-			}
-
-			key := schemas.Key{
-				ID: uuid.New().String(),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewEnvVar(accessKey),
-					SecretKey: *schemas.NewEnvVar(secretKey),
-				},
-			}
-
-			key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-
-			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
-			}
-
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
-
 		return nil
 	}
 }
@@ -1160,7 +1179,7 @@ func s3ListObjectsV2PostCallback(ctx *fasthttp.RequestCtx, req interface{}, resp
 }
 
 // bedrockPreCallback returns a pre-callback that extracts model ID and handles direct authentication
-func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+func bedrockPreCallback(_ lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Extract modelId from path parameter
 		modelIDVal := ctx.UserValue("modelId")
@@ -1208,59 +1227,6 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			r.ModelID = fullModelID
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
-		}
-
-		// Handle direct key authentication if allowed
-		if !handlerStore.ShouldAllowDirectKeys() {
-			return nil
-		}
-
-		// Check for Bedrock API Key (alternative to AWS Credentials)
-		apiKey := string(ctx.Request.Header.Peek("x-bf-bedrock-api-key"))
-
-		// Check for AWS Credentials
-		accessKey := string(ctx.Request.Header.Peek("x-bf-bedrock-access-key"))
-		secretKey := string(ctx.Request.Header.Peek("x-bf-bedrock-secret-key"))
-		region := string(ctx.Request.Header.Peek("x-bf-bedrock-region"))
-		sessionToken := string(ctx.Request.Header.Peek("x-bf-bedrock-session-token"))
-
-		if apiKey != "" {
-			// Case 1: API Key Authentication
-			key := schemas.Key{
-				ID:    uuid.New().String(),
-				Value: *schemas.NewEnvVar(apiKey),
-				// BedrockKeyConfig is required by the provider even if using API Key
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
-			}
-
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-			return nil
-		} else if accessKey != "" && secretKey != "" {
-			// Case 2: AWS Credentials Authentication
-			if region == "" {
-				return errors.New("x-bf-bedrock-region header is required when using direct keys")
-			}
-
-			key := schemas.Key{
-				ID: uuid.New().String(),
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewEnvVar(accessKey),
-					SecretKey: *schemas.NewEnvVar(secretKey),
-				},
-			}
-
-			if region != "" {
-				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
-			}
-
-			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
-			}
-
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 
 		return nil

@@ -1,14 +1,14 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { otelFormSchema, type OtelFormSchema } from "@/lib/types/schemas";
+import { otelFormSchema, type EnvVar, type OtelFormSchema } from "@/lib/types/schemas";
+import { toEnvVarFormValue, toEnvVarMapFormValue } from "@/lib/utils/envVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Trash2 } from "lucide-react";
@@ -19,16 +19,16 @@ interface OtelFormFragmentProps {
 	currentConfig?: {
 		enabled?: boolean;
 		service_name?: string;
-		collector_url?: string;
-		headers?: Record<string, string>;
-		trace_type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
+		collector_url?: string | EnvVar;
+		headers?: Record<string, string | EnvVar>;
+		trace_type?: "genai_extension" | "vercel" | "open_inference";
 		protocol?: "http" | "grpc";
 		// TLS configuration
 		tls_ca_cert?: string;
 		insecure?: boolean;
 		// Metrics push configuration
 		metrics_enabled?: boolean;
-		metrics_endpoint?: string;
+		metrics_endpoint?: string | EnvVar;
 		metrics_push_interval?: number;
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
@@ -37,28 +37,36 @@ interface OtelFormFragmentProps {
 	isLoading?: boolean;
 }
 
-export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: OtelFormFragmentProps) {
+const buildDefaults = (initialConfig?: OtelFormFragmentProps["currentConfig"]): OtelFormSchema => ({
+	enabled: initialConfig?.enabled ?? true,
+	otel_config: {
+		service_name: initialConfig?.service_name ?? "bifrost",
+		collector_url: toEnvVarFormValue(initialConfig?.collector_url),
+		headers: toEnvVarMapFormValue(initialConfig?.headers),
+		trace_type: initialConfig?.trace_type ?? "genai_extension",
+		protocol: initialConfig?.protocol ?? "http",
+		tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
+		insecure: initialConfig?.insecure ?? true,
+		metrics_enabled: initialConfig?.metrics_enabled ?? false,
+		metrics_endpoint: toEnvVarFormValue(initialConfig?.metrics_endpoint),
+		metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
+	},
+});
+
+export function OtelFormFragment({
+	currentConfig: initialConfig,
+	onSave,
+	onDelete,
+	isDeleting = false,
+	isLoading = false,
+}: OtelFormFragmentProps) {
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({
 		resolver: zodResolver(otelFormSchema) as Resolver<OtelFormSchema, any, OtelFormSchema>,
 		mode: "onChange",
 		reValidateMode: "onChange",
-		defaultValues: {
-			enabled: initialConfig?.enabled ?? true,
-			otel_config: {
-				service_name: initialConfig?.service_name ?? "bifrost",
-				collector_url: initialConfig?.collector_url ?? "",
-				headers: initialConfig?.headers ?? {},
-				trace_type: initialConfig?.trace_type ?? "otel",
-				protocol: initialConfig?.protocol ?? "http",
-				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
-				insecure: initialConfig?.insecure ?? true,
-				metrics_enabled: initialConfig?.metrics_enabled ?? false,
-				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
-				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
-			},
-		},
+		defaultValues: buildDefaults(initialConfig),
 	});
 
 	const onSubmit = (data: OtelFormSchema) => {
@@ -87,26 +95,13 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 	}, [metricsEnabled, form]);
 
 	useEffect(() => {
-		// Reset form with new initial config when it changes
-		form.reset({
-			enabled: initialConfig?.enabled ?? true,
-			otel_config: {
-				service_name: initialConfig?.service_name ?? "bifrost",
-				collector_url: initialConfig?.collector_url || "",
-				headers: initialConfig?.headers || {},
-				trace_type: initialConfig?.trace_type || "otel",
-				protocol: initialConfig?.protocol || "http",
-				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
-				insecure: initialConfig?.insecure ?? true,
-				metrics_enabled: initialConfig?.metrics_enabled ?? false,
-				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
-				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
-			},
-		});
+		form.reset(buildDefaults(initialConfig));
 	}, [form, initialConfig]);
 
 	const traceTypeOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
-		{ value: "otel", label: "OTEL - GenAI Extension" },
+		{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+		{ value: "vercel", label: "Vercel AI SDK", disabled: true, disabledReason: "Coming soon" },
+		{ value: "open_inference", label: "Arize OpenInference", disabled: true, disabledReason: "Coming soon" },
 	];
 	const protocolOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
 		{ value: "http", label: "HTTP" },
@@ -143,11 +138,11 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 										<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/traces" : "<host>:<port>"}</code>
 									</div>
 									<FormControl>
-										<Input
+										<EnvVarInput
 											placeholder={
 												form.watch("otel_config.protocol") === "http"
-													? "https://otel-collector.example.com:4318/v1/traces"
-													: "otel-collector.example.com:4317"
+													? "https://otel-collector.example.com:4318/v1/traces or env.OTEL_COLLECTOR_URL"
+													: "otel-collector.example.com:4317 or env.OTEL_COLLECTOR_URL"
 											}
 											disabled={!hasOtelAccess}
 											{...field}
@@ -163,7 +158,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 							render={({ field }) => (
 								<FormItem className="w-full">
 									<FormControl>
-										<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} />
+										<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useEnvVarInput />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -324,9 +319,11 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 											<code>{form.watch("otel_config.protocol") === "http" ? "http(s)://<host>:<port>/v1/metrics" : "<host>:<port>"}</code>
 										</div>
 										<FormControl>
-											<Input
+											<EnvVarInput
 												placeholder={
-													form.watch("otel_config.protocol") === "http" ? "https://otel-collector:4318/v1/metrics" : "otel-collector:4317"
+													form.watch("otel_config.protocol") === "http"
+														? "https://otel-collector:4318/v1/metrics or env.OTEL_METRICS_ENDPOINT"
+														: "otel-collector:4317 or env.OTEL_METRICS_ENDPOINT"
 												}
 												disabled={!hasOtelAccess}
 												{...field}
@@ -400,21 +397,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 							type="button"
 							variant="outline"
 							onClick={() => {
-								form.reset({
-									enabled: initialConfig?.enabled ?? true,
-									otel_config: {
-										service_name: initialConfig?.service_name ?? "bifrost",
-										collector_url: initialConfig?.collector_url ?? "",
-										headers: initialConfig?.headers ?? {},
-										trace_type: initialConfig?.trace_type ?? "otel",
-										protocol: initialConfig?.protocol ?? "http",
-										tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
-										insecure: initialConfig?.insecure ?? true,
-										metrics_enabled: initialConfig?.metrics_enabled ?? false,
-										metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
-										metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
-									},
-								});
+								form.reset(buildDefaults(initialConfig));
 							}}
 							disabled={!hasOtelAccess || isLoading || !form.formState.isDirty}
 						>
@@ -423,15 +406,11 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button
-										type="submit"
-										disabled={!hasOtelAccess || !form.formState.isDirty || !form.formState.isValid}
-										isLoading={isSaving}
-									>
+									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>
 										Save OTEL Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty || !form.formState.isValid) && (
+								{!form.formState.isDirty && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid

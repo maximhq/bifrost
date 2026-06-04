@@ -1,0 +1,205 @@
+---
+title: "Cluster"
+description: "Configure enterprise cluster mode in config.json using peers or automatic discovery"
+icon: "circle-nodes"
+---
+
+<Warning>
+`cluster_config` is an enterprise capability. OSS builds ignore this section.
+
+</Warning>
+
+`cluster_config` enables multi-node Bifrost enterprise clustering. The `type` field selects how nodes form a cluster:
+
+- **`mesh`** (default) - peer-to-peer membership over gossip, with optional automatic discovery. Requires nodes to reach each other directly.
+- **`broker`** - every node makes a single outbound connection to a central broker that relays messages between nodes. Use this on platforms without peer-to-peer connectivity (e.g. Google Cloud Run). See [Broker Mode](#broker-mode) below.
+
+In `mesh` mode you can form a cluster in two ways:
+
+- Define static `peers` (`host:port`)
+- Enable `discovery` with one of: `kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`
+
+<Tip>
+In `mesh` mode, at least one of `peers` or `discovery.enabled: true` must be configured when `cluster_config.enabled` is true. In `broker` mode, `broker.address` is required and `peers`/`discovery`/`gossip` are ignored.
+</Tip>
+
+---
+
+## Minimal Runnable Configs
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "mdns",
+      "service_name": "bifrost-cluster"
+    }
+  }
+}
+```
+
+Use this for local testing. At startup, cluster init requires either:
+
+- non-empty `peers`, or
+- `discovery.enabled: true`
+
+If neither is set, cluster initialization fails.
+
+---
+
+## Static Peers
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "region": "us-east-1",    
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    }
+  }
+}
+```
+
+<Note>
+For version 1.4.x - you will need to expose 10102 TCP port and 10101 UDP port for cluster discovery.
+</Note>
+
+---
+
+## Discovery Example (etcd)
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "region": "us-east-1",
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    },
+    "discovery": {
+      "enabled": true,
+      "type": "etcd",
+      "service_name": "bifrost-cluster",
+      "etcd_endpoints": [
+        "http://etcd-1:2379",
+        "http://etcd-2:2379"
+      ],
+      "dial_timeout": "10s"
+    }
+  }
+}
+```
+
+---
+
+## Broker Mode
+
+In `broker` mode, nodes do not connect to each other. Each node opens a single
+outbound stream to a central broker process, which relays every message to all
+other connected nodes and pushes roster updates. Because nodes only need
+outbound connectivity, broker mode works on platforms where peer-to-peer
+networking is unavailable, such as Google Cloud Run.
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "type": "broker",
+    "region": "us-east-1",
+    "broker": {
+      "address": "broker.example.run.app:443",
+      "tls": true,
+      "auth_token": "your-shared-secret"
+    }
+  }
+}
+```
+
+The same Bifrost binary runs as the broker when started with `-mode=broker`
+(or `BIFROST_MODE=broker`). The broker process reads `cluster_config.broker`
+from the same `config.json` and serves on `broker.listen_port` (default
+`50051`); it runs no database, providers, or HTTP gateway.
+
+<Note>
+All nodes must connect to the **same** broker process. Run the broker as a
+single instance (for Cloud Run, a service pinned to one instance with HTTP/2
+enabled). See [Enterprise Clustering &rarr; Broker Mode](/enterprise/clustering#broker-mode)
+for the full deployment guide.
+</Note>
+
+---
+
+## Field Reference
+
+### `cluster_config`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enables cluster mode |
+| `type` | string | `mesh` (default) or `broker` |
+| `region` | string | Region label for this node (defaults to `"unknown"` at runtime when omitted) |
+| `peers` | array of strings | Static peer addresses in `host:port` format (`mesh` mode only) |
+| `gossip` | object | Gossip/memberlist settings (`mesh` mode only) |
+| `discovery` | object | Automatic node discovery settings (`mesh` mode only) |
+| `broker` | object | Broker settings, used when `type` is `broker` |
+
+### `cluster_config.broker`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | string | `host:port` of the broker that nodes dial (required in `broker` mode) |
+| `tls` | boolean | Dial the broker over TLS (set `true` for HTTPS endpoints like Cloud Run) |
+| `auth_token` | string | Optional shared secret sent on connect; the broker rejects nodes without it when set |
+| `listen_port` | integer | Port the broker process serves on, used only by `-mode=broker` (default `50051`) |
+
+### `cluster_config.gossip`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | integer | Gossip port for this node |
+| `config.timeout_seconds` | integer | Liveness timeout |
+| `config.success_threshold` | integer | Success count before healthy |
+| `config.failure_threshold` | integer | Failure count before unhealthy |
+
+### `cluster_config.discovery`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Enables discovery process |
+| `type` | string | `kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns` |
+| `service_name` | string | Service identifier (required for `consul`, `etcd`, `udp`, typically `mdns`; optional for `kubernetes` and `dns`) |
+| `bind_port` | integer | Port appended to discovered hosts if missing |
+| `dial_timeout` | string | Go duration string (`"5s"`, `"30s"`, `"1m"`) |
+| `allowed_address_space` | array of strings | CIDR filters for discovered nodes |
+| `k8s_namespace` | string | Kubernetes namespace for pod discovery |
+| `k8s_label_selector` | string | Kubernetes label selector |
+| `dns_names` | array of strings | DNS names to resolve |
+| `udp_broadcast_port` | integer | UDP broadcast port (required for `udp`) |
+| `consul_address` | string | Consul address |
+| `etcd_endpoints` | array of strings | etcd endpoint URLs |
+| `mdns_service` | string | Optional mDNS service type override (e.g. `"_bifrost-cluster._tcp"`) |
+
+<Note>
+For `discovery.type: "mdns"`, `service_name` is sufficient for most setups. When `mdns_service` is omitted, Bifrost derives the mDNS service type as `"_<service_name>._tcp"`. If you set `mdns_service`, it **overrides** the derived value and is used for both mDNS registration and browsing.
+</Note>
+
+<Warning>
+For `discovery.type: "udp"`, configure both `udp_broadcast_port` and `allowed_address_space`.
+</Warning>
+
+---
+
+For discovery-method deep dives and deployment patterns, see [Enterprise Clustering](/enterprise/clustering).

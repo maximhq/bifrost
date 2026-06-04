@@ -13,24 +13,39 @@ import (
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                     uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID               string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name                   string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	IsCodeModeClient       bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType         string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString       *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON        *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
-	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	HeadersJSON            string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
-	IsPingAvailable        *bool           `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
-	ToolPricingJSON        string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval       int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
+	ID                      uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID                string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name                    string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	IsCodeModeClient        bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
+	ConnectionType          string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
+	ConnectionString        *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON         *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
+	ToolsToExecuteJSON      string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	ToolsToAutoExecuteJSON  string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	HeadersJSON             string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	AllowedExtraHeadersJSON string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	IsPingAvailable         *bool           `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
+	ToolPricingJSON         string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
+	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+
+	// Per-user OAuth: discovered tools persisted so they survive restart
+	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
+
+	// Per-user-headers schema: admin-declared list of header *names* that each
+	// caller must supply. Empty/null for all other auth types. Used by both
+	// the resolver (intersect with persisted user values) and by
+	// utils.StaticConfigHeaders (strip from plugin-visible static headers).
+	PerUserHeaderKeysJSON string `gorm:"type:text" json:"-"` // JSON serialized []string
+
+	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -42,11 +57,16 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig        *schemas.MCPStdioConfig   `gorm:"-" json:"stdio_config,omitempty"`
-	ToolsToExecute     []string                  `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute []string                  `gorm:"-" json:"tools_to_auto_execute"`
-	Headers            map[string]schemas.EnvVar `gorm:"-" json:"headers"`
-	ToolPricing        map[string]float64        `gorm:"-" json:"tool_pricing"`
+	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList          `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
+	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
+	PerUserHeaderKeys         []string                    `gorm:"-" json:"per_user_header_keys"`
 }
 
 // TableName sets the table name for each model
@@ -67,7 +87,21 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.StdioConfigJSON = nil
 	}
 
+	if c.TLSConfig != nil {
+		data, err := c.TLSConfig.MarshalForStorage()
+		if err != nil {
+			return err
+		}
+		config := string(data)
+		c.TLSConfigJSON = &config
+	} else {
+		c.TLSConfigJSON = nil
+	}
+
 	if c.ToolsToExecute != nil {
+		if err := c.ToolsToExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToExecute)
 		if err != nil {
 			return err
@@ -78,6 +112,9 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if c.ToolsToAutoExecute != nil {
+		if err := c.ToolsToAutoExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_auto_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToAutoExecute)
 		if err != nil {
 			return err
@@ -105,6 +142,19 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.HeadersJSON = "{}"
 	}
 
+	if c.AllowedExtraHeaders != nil {
+		if err := c.AllowedExtraHeaders.Validate(); err != nil {
+			return fmt.Errorf("invalid allowed_extra_headers: %w", err)
+		}
+		data, err := json.Marshal(c.AllowedExtraHeaders)
+		if err != nil {
+			return err
+		}
+		c.AllowedExtraHeadersJSON = string(data)
+	} else {
+		c.AllowedExtraHeadersJSON = "[]"
+	}
+
 	if c.ToolPricing != nil {
 		data, err := json.Marshal(c.ToolPricing)
 		if err != nil {
@@ -113,6 +163,32 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolPricingJSON = string(data)
 	} else {
 		c.ToolPricingJSON = "{}"
+	}
+
+	if c.DiscoveredTools != nil {
+		data, err := json.Marshal(c.DiscoveredTools)
+		if err != nil {
+			return err
+		}
+		c.DiscoveredToolsJSON = string(data)
+	}
+
+	if c.DiscoveredToolNameMapping != nil {
+		data, err := json.Marshal(c.DiscoveredToolNameMapping)
+		if err != nil {
+			return err
+		}
+		c.ToolNameMappingJSON = string(data)
+	}
+
+	if c.PerUserHeaderKeys != nil {
+		data, err := json.Marshal(c.PerUserHeaderKeys)
+		if err != nil {
+			return err
+		}
+		c.PerUserHeaderKeysJSON = string(data)
+	} else {
+		c.PerUserHeaderKeysJSON = ""
 	}
 
 	// Encrypt sensitive fields after serialization.
@@ -168,6 +244,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		}
 		c.StdioConfig = &config
 	}
+	if c.TLSConfigJSON != nil {
+		var config schemas.MCPTLSConfig
+		if err := sonic.Unmarshal([]byte(*c.TLSConfigJSON), &config); err != nil {
+			return err
+		}
+		c.TLSConfig = &config
+	}
 	if c.ToolsToExecuteJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {
 			return err
@@ -183,9 +266,28 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
-
+	if c.AllowedExtraHeadersJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.AllowedExtraHeadersJSON), &c.AllowedExtraHeaders); err != nil {
+			return err
+		}
+	}
 	if c.ToolPricingJSON != "" {
 		if err := json.Unmarshal([]byte(c.ToolPricingJSON), &c.ToolPricing); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredToolsJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.DiscoveredToolsJSON), &c.DiscoveredTools); err != nil {
+			return err
+		}
+	}
+	if c.ToolNameMappingJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
+			return err
+		}
+	}
+	if c.PerUserHeaderKeysJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
 			return err
 		}
 	}

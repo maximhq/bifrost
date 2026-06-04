@@ -5,27 +5,16 @@ import (
 	"fmt"
 	"strings"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// contentBlockMeta stores type and length of a content block for multi-turn reconstruction.
-type contentBlockMeta struct {
-	T string `json:"t"` // "thinking" or "text"
-	L int    `json:"l"` // length in UTF-8 bytes
-}
-
-// orderedTextPart tracks original Gemini part ordering for correct flattening.
-type orderedTextPart struct {
-	kind string // "thinking" or "text"
-	text string
-}
-
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *GeminiGenerationRequest {
+func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
-		return nil
+		return nil, nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
@@ -35,15 +24,26 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
-		geminiReq.GenerationConfig = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		var err error
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		if err != nil {
+			return nil, err
+		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			if err != nil {
+				return nil, err
+			}
 
 			// Convert tool choice to tool config
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		if bifrostReq.Params.ServiceTier != nil {
+			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
 
 		// Handle extra parameters
@@ -77,7 +77,7 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 		geminiReq.SystemInstruction = systemInstruction
 	}
 	geminiReq.Contents = contents
-	return geminiReq
+	return geminiReq, nil
 }
 
 // ToBifrostChatResponse converts a GenerateContentResponse to a BifrostChatResponse
@@ -111,7 +111,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var contentBlocks []schemas.ChatContentBlock
 	var reasoningDetails []schemas.ChatReasoningDetails
-	var orderedTextParts []orderedTextPart
 	var contentStr *string
 
 	// Process candidate content to extract text, tool calls, and reasoning
@@ -124,7 +123,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type:  schemas.BifrostReasoningDetailsTypeText,
 					Text:  &part.Text,
 				})
-				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "thinking", text: part.Text})
 				continue
 			}
 			// Handle regular text
@@ -133,7 +131,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type: schemas.ChatContentBlockTypeText,
 					Text: &part.Text,
 				})
-				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: part.Text})
 				// Add thought signature to reasoning details if present with text
 				if len(part.ThoughtSignature) > 0 {
 					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
@@ -203,7 +200,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						Type: schemas.ChatContentBlockTypeText,
 						Text: &output,
 					})
-					orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: output})
 				}
 			}
 
@@ -218,7 +214,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						Type: schemas.ChatContentBlockTypeText,
 						Text: &output,
 					})
-					orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: output})
 				}
 			}
 
@@ -229,7 +224,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type: schemas.ChatContentBlockTypeText,
 					Text: &codeContent,
 				})
-				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: codeContent})
 			}
 
 			// Handle standalone thought signature (not associated with function call or text)
@@ -248,56 +242,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			Role: schemas.ChatMessageRoleAssistant,
 		}
 
-		if len(contentBlocks) > 0 {
-			allText := true
-			for _, block := range contentBlocks {
-				if block.Type != schemas.ChatContentBlockTypeText {
-					allText = false
-					break
-				}
-			}
-			if allText {
-				needsCombine := len(contentBlocks) > 1 || len(reasoningDetails) > 0
-				if !needsCombine {
-					// Single text block, no thinking — simple collapse
-					contentStr = contentBlocks[0].Text
-				} else {
-					// Combine thinking + text blocks into a single string, preserving original Gemini part order
-					var parts []string
-					var blockMeta []contentBlockMeta
-
-					for _, op := range orderedTextParts {
-						parts = append(parts, op.text)
-						blockMeta = append(blockMeta, contentBlockMeta{T: op.kind, L: len(op.text)})
-					}
-
-					joined := strings.Join(parts, "\n\n")
-					contentStr = &joined
-
-					// Record boundaries for multi-turn reconstruction
-					if len(blockMeta) > 1 {
-						if metaJSON, err := providerUtils.MarshalSorted(blockMeta); err == nil {
-							metaStr := string(metaJSON)
-							reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-								Index: len(reasoningDetails),
-								Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
-								Text:  &metaStr,
-							})
-						}
-					}
-
-					// Remove thinking text entries from reasoning_details (text moved into contentStr)
-					filtered := reasoningDetails[:0]
-					for _, rd := range reasoningDetails {
-						if rd.Type != schemas.BifrostReasoningDetailsTypeText {
-							rd.Index = len(filtered)
-							filtered = append(filtered, rd)
-						}
-					}
-					reasoningDetails = filtered
-				}
-				contentBlocks = nil
-			}
+		if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+			contentStr = contentBlocks[0].Text
+			contentBlocks = nil
 		}
 
 		message.Content = &schemas.ChatMessageContent{
@@ -333,6 +280,15 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
+	}
 
 	return bifrostResp
 }
@@ -552,6 +508,12 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			streamResponse.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			streamResponse.ServiceTier = &tier
+		}
 	}
 
 	return streamResponse, nil, isLastChunk
@@ -566,7 +528,13 @@ func isErrorFinishReason(reason FinishReason) bool {
 		reason == FinishReasonProhibitedContent ||
 		reason == FinishReasonSPII ||
 		reason == FinishReasonImageSafety ||
-		reason == FinishReasonUnexpectedToolCall
+		reason == FinishReasonUnexpectedToolCall ||
+		reason == FinishReasonMissingThoughtSignature ||
+		reason == FinishReasonMalformedResponse ||
+		reason == FinishReasonImageProhibitedContent ||
+		reason == FinishReasonImageRecitation ||
+		reason == FinishReasonTooManyToolCalls ||
+		reason == FinishReasonNoImage
 }
 
 // createErrorResponse creates a complete BifrostChatResponse for error cases
