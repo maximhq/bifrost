@@ -37,15 +37,23 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
   "framework": {
     "pricing": {
       "pricing_url": "https://your-host/pricing.json",
+      "model_parameters_url": "https://your-host/model-parameters.json",
       "pricing_sync_interval": 86400
     }
   }
 }
 ```
 
+`file://` URLs are also supported for loading datasheets from the local filesystem:
+
+```json
+"pricing_url": "file:///opt/bifrost/pricing.json"
+```
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet to sync from |
+| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and `file://` |
+| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and `file://` |
 | `pricing_sync_interval` | integer | No | `86400` | Sync interval in seconds. Minimum `3600` (1 hour) |
 
 </Tab>
