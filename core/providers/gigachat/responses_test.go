@@ -57,6 +57,7 @@ func testGigaChatResponses(t *testing.T) {
 	t.Run("ConverterMapsWebSearchSources", testGigaChatResponsesConverterMapsWebSearchSources)
 	t.Run("ConverterMapsReasoningRole", testGigaChatResponsesConverterMapsReasoningRole)
 	t.Run("ConverterMapsToolCall", testGigaChatResponsesConverterMapsToolCall)
+	t.Run("ConverterMapsFunctionResultWithOriginatingCallID", testGigaChatResponsesConverterMapsFunctionResultWithOriginatingCallID)
 	t.Run("ConverterUsesUniqueCallIDsUnderSharedToolsStateID", testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID)
 	t.Run("ConverterUsesToolStateIDAliasAsCallID", testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID)
 	t.Run("ConverterFallsBackToResponseToolsStateID", testGigaChatResponsesConverterFallsBackToResponseToolsStateID)
@@ -1136,7 +1137,62 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	if output.ResponsesToolMessage.Arguments == nil || *output.ResponsesToolMessage.Arguments != `{"city":"Moscow"}` {
 		t.Fatalf("arguments mismatch: %#v", output.ResponsesToolMessage.Arguments)
 	}
-	assertGigaChatResponsesOpaqueCallID(t, output.ResponsesToolMessage, "tools-state-call")
+	assertGigaChatResponsesEncodedCallID(t, output.ResponsesToolMessage, "tools-state-call")
+}
+
+func testGigaChatResponsesConverterMapsFunctionResultWithOriginatingCallID(t *testing.T) {
+	t.Parallel()
+
+	response := &GigaChatResponsesResponse{
+		Model: "GigaChat-2-Max",
+		Messages: []GigaChatResponsesMessage{
+			{
+				Role:         "assistant",
+				MessageID:    schemas.Ptr("call-message"),
+				ToolsStateID: schemas.Ptr("tools-state-call"),
+				Content: []GigaChatResponsesContentPart{{
+					FunctionCall: &GigaChatResponsesFunctionCall{
+						Name:      "get_weather",
+						Arguments: map[string]interface{}{"city": "Moscow"},
+					},
+				}},
+			},
+			{
+				Role:         "tool",
+				MessageID:    schemas.Ptr("result-message"),
+				ToolsStateID: schemas.Ptr("tools-state-call"),
+				Content: []GigaChatResponsesContentPart{{
+					FunctionResult: &GigaChatResponsesFunctionResult{
+						Name:   "get_weather",
+						Result: map[string]interface{}{"temperature": 5},
+					},
+				}},
+			},
+		},
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil || len(converted.Output) != 2 {
+		t.Fatalf("converted output mismatch: %#v", converted)
+	}
+	toolCall := converted.Output[0]
+	toolResult := converted.Output[1]
+	if toolCall.Type == nil || *toolCall.Type != schemas.ResponsesMessageTypeFunctionCall {
+		t.Fatalf("tool call type mismatch: %#v", toolCall.Type)
+	}
+	if toolResult.Type == nil || *toolResult.Type != schemas.ResponsesMessageTypeFunctionCallOutput {
+		t.Fatalf("tool result type mismatch: %#v", toolResult.Type)
+	}
+	if toolCall.ResponsesToolMessage == nil || toolCall.ResponsesToolMessage.CallID == nil {
+		t.Fatalf("tool call id missing: %#v", toolCall.ResponsesToolMessage)
+	}
+	if toolResult.ResponsesToolMessage == nil || toolResult.ResponsesToolMessage.CallID == nil {
+		t.Fatalf("tool result id missing: %#v", toolResult.ResponsesToolMessage)
+	}
+	if *toolResult.ResponsesToolMessage.CallID != *toolCall.ResponsesToolMessage.CallID {
+		t.Fatalf("tool result call_id should match function call: call=%q result=%q", *toolCall.ResponsesToolMessage.CallID, *toolResult.ResponsesToolMessage.CallID)
+	}
+	assertGigaChatResponsesEncodedCallID(t, toolCall.ResponsesToolMessage, "tools-state-call")
 }
 
 func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *testing.T) {
@@ -1176,8 +1232,8 @@ func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *t
 	}
 	firstCall := converted.Output[0].ResponsesToolMessage
 	secondCall := converted.Output[1].ResponsesToolMessage
-	firstCallID := assertGigaChatResponsesOpaqueCallID(t, firstCall, "shared-tools-state")
-	secondCallID := assertGigaChatResponsesOpaqueCallID(t, secondCall, "shared-tools-state")
+	firstCallID := assertGigaChatResponsesEncodedCallID(t, firstCall, "shared-tools-state")
+	secondCallID := assertGigaChatResponsesEncodedCallID(t, secondCall, "shared-tools-state")
 	if firstCallID == secondCallID {
 		t.Fatalf("call ids must be unique: first=%q second=%q", firstCallID, secondCallID)
 	}
@@ -1237,7 +1293,7 @@ func assertGigaChatResponsesToolStateID(t *testing.T, message GigaChatResponsesM
 	}
 }
 
-func assertGigaChatResponsesOpaqueCallID(t *testing.T, toolMessage *schemas.ResponsesToolMessage, toolsStateID string) string {
+func assertGigaChatResponsesEncodedCallID(t *testing.T, toolMessage *schemas.ResponsesToolMessage, toolsStateID string) string {
 	t.Helper()
 
 	if toolMessage == nil || toolMessage.CallID == nil {
@@ -1247,11 +1303,14 @@ func assertGigaChatResponsesOpaqueCallID(t *testing.T, toolMessage *schemas.Resp
 	if callID == "" {
 		t.Fatalf("call id is empty: %#v", toolMessage.CallID)
 	}
-	if callID == toolsStateID || strings.Contains(callID, toolsStateID) {
-		t.Fatalf("call id should be opaque: got %q, tools_state_id %q", callID, toolsStateID)
-	}
 	if !strings.HasPrefix(callID, gigaChatResponsesGeneratedCallIDPrefix) {
 		t.Fatalf("call id should use generated prefix: got %q", callID)
+	}
+	if callID == toolsStateID {
+		t.Fatalf("call id should not be the raw tools_state_id: got %q", callID)
+	}
+	if decoded := toGigaChatResponsesToolsStateIDFromCallID(callID); decoded != toolsStateID {
+		t.Fatalf("decoded tools_state_id mismatch: got %q, want %q", decoded, toolsStateID)
 	}
 	return callID
 }
@@ -1285,7 +1344,7 @@ func testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID(t *testing.T) {
 	if output.Type == nil || *output.Type != schemas.ResponsesMessageTypeFunctionCall {
 		t.Fatalf("output type mismatch: %#v", output.Type)
 	}
-	assertGigaChatResponsesOpaqueCallID(t, output.ResponsesToolMessage, "019e8282-bb13-73fc-bbe8-5f52856d166b")
+	assertGigaChatResponsesEncodedCallID(t, output.ResponsesToolMessage, "019e8282-bb13-73fc-bbe8-5f52856d166b")
 }
 
 func testGigaChatResponsesConverterFallsBackToResponseToolsStateID(t *testing.T) {
@@ -1322,9 +1381,9 @@ func testGigaChatResponsesConverterFallsBackToResponseToolsStateID(t *testing.T)
 		t.Fatalf("converted output mismatch: %#v", converted)
 	}
 	firstCall := converted.Output[0].ResponsesToolMessage
-	assertGigaChatResponsesOpaqueCallID(t, firstCall, "response-tools-state")
+	assertGigaChatResponsesEncodedCallID(t, firstCall, "response-tools-state")
 	secondCall := converted.Output[1].ResponsesToolMessage
-	assertGigaChatResponsesOpaqueCallID(t, secondCall, "message-tools-state")
+	assertGigaChatResponsesEncodedCallID(t, secondCall, "message-tools-state")
 }
 
 func testGigaChatResponsesConverterPreservesOrdinaryMessageToolStateID(t *testing.T) {
