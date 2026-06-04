@@ -4733,10 +4733,22 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		return primaryResult, primaryErr
 	}
 
+	// Core is about to make routing decisions of its own (fallback transitions)
+	// — record it on the request's used-engines list so the audit trail closes
+	// the loop on whatever plugin-level engine selected the primary upstream.
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
+
+	// Tracks the most recent failure so each fallback transition log carries
+	// the error that triggered it (primary error for the first iteration, the
+	// prior fallback's error for subsequent iterations).
+	lastErr := primaryErr
+
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
 
@@ -4752,6 +4764,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -4766,6 +4779,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
@@ -4778,10 +4792,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+
+		lastErr = fallbackErr
 	}
 
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error
 	return nil, primaryErr
 }
@@ -4845,9 +4863,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		return primaryResult, primaryErr
 	}
 
+	// Mirror handleRequest: register core on the engines-used list and post
+	// the primary-failure entry to the routing engine log trail before
+	// iterating fallbacks. See handleRequest for the rationale.
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
+
+	lastErr := primaryErr
+
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
 
@@ -4862,6 +4889,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -4877,6 +4905,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
@@ -4889,10 +4918,14 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+
+		lastErr = fallbackErr
 	}
 
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error
 	return nil, primaryErr
 }
@@ -5454,10 +5487,31 @@ func executeRequestWithRetries[T any](
 	model string,
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
-) (T, *schemas.BifrostError) {
-	var result T
-	var bifrostError *schemas.BifrostError
+) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
+
+	// Emit the terminal routing-engine entry on every return path — including
+	// early returns from key-selection failures and tracer-missing — so the
+	// audit trail isn't truncated when execution exits before reaching the
+	// natural end of the function. Skipped when attempts == 0: the request
+	// never crossed core's retry-orchestration boundary, so there's nothing
+	// to record.
+	defer func() {
+		if attempts <= 0 {
+			return
+		}
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+		switch {
+		case bifrostError == nil:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request to %s/%s succeeded after %d retry attempt(s)", providerKey, model, attempts))
+		case bifrostError.IsBifrostError:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries halted for %s/%s after %d attempt(s): internal Bifrost error (%s)", providerKey, model, attempts, routingErrorSummary(bifrostError)))
+		case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Request to %s/%s cancelled after %d attempt(s)", providerKey, model, attempts))
+		default:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries exhausted for %s/%s after %d attempt(s); last error: %s", providerKey, model, attempts, routingErrorSummary(bifrostError)))
+		}
+	}()
 
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
@@ -5606,6 +5660,25 @@ func executeRequestWithRetries[T any](
 			//   - 429 pool reset that re-picks the same key — no rotation actually happened.
 			//   - keyless providers — currentKey.ID stays empty, so keyChanged is false.
 			keyChanged := keyProvider != nil && currentKey.ID != previousKeyID
+
+			// Emit a routing-engine log entry for this retry transition so the
+			// per-request audit trail records *why* core decided to retry and
+			// whether it rotated the credential. routingErrorSummary() omits
+			// the upstream message so keys/PII don't leak into the log row.
+			// Key.Name is a user-set label (not the secret value) and is safe.
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
+			// Omit the key=... segment for keyless providers, where currentKey is
+			// the zero value and the trailing token would render as "same key=".
+			keyNote := ""
+			if keyProvider != nil {
+				rotationNote := "same key"
+				if keyChanged {
+					rotationNote = "rotated key"
+				}
+				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+
 			if !(lastWasPermanentKeyFailure && keyChanged) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
@@ -5895,6 +5968,10 @@ func executeRequestWithRetries[T any](
 	if attempts > 0 {
 		logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "attempts", false: "attempt"}[attempts > 1])
 	}
+
+	// Terminal routing-engine log entry is emitted by the defer at the top of
+	// the function so it runs on every return path, including the early
+	// returns from key-selection or tracer-missing.
 
 	// On final error, clear selected_key so it only reflects a key that actually served a successful response.
 	// The attempt trail is the authoritative record of which keys were tried.

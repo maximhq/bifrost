@@ -1092,10 +1092,10 @@ export function LogDetailView({
 											{log.routing_engines_used.map((engine) => (
 												<Badge
 													key={engine}
-													className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}
+													className={cn("border-0 py-1 uppercase", RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800")}
 												>
 													<div className="flex items-center gap-2">
-														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.()}
+														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
 														<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
 													</div>
 												</Badge>

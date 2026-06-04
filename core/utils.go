@@ -214,6 +214,32 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 	return false
 }
 
+// routingErrorSummary produces a sanitized, audit-safe one-line summary of a
+// BifrostError for emission to the per-request routing engine log trail.
+// It deliberately omits the upstream provider message — which can echo back
+// API keys, tokens, or user input — and surfaces only the error type and HTTP
+// status code. Used by the core fallback orchestrator so the routing log
+// records *why* a fallback was triggered without leaking secrets into log
+// storage or the UI.
+func routingErrorSummary(e *schemas.BifrostError) string {
+	if e == nil {
+		return "unknown error"
+	}
+	parts := make([]string, 0, 2)
+	if e.Error != nil && e.Error.Type != nil && *e.Error.Type != "" {
+		parts = append(parts, *e.Error.Type)
+	} else if e.Type != nil && *e.Type != "" {
+		parts = append(parts, *e.Type)
+	}
+	if e.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("HTTP %d", *e.StatusCode))
+	}
+	if len(parts) == 0 {
+		return "request failed"
+	}
+	return strings.Join(parts, " ")
+}
+
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error) *schemas.BifrostError {

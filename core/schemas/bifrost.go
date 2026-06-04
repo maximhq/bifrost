@@ -356,6 +356,12 @@ const (
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
 	RoutingEngineModelCatalog  = "model-catalog"
+	// RoutingEngineCore represents the Bifrost core orchestrator's own
+	// routing decisions — primarily fallback transitions. Emitted when the
+	// primary attempt fails and core advances through the fallback chain so
+	// the per-request audit trail closes the loop on what plugin-level
+	// engines (governance, loadbalancing, etc.) selected upstream.
+	RoutingEngineCore = "core"
 )
 
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.

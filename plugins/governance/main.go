@@ -418,9 +418,11 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// assume the prefixed model should be left unchanged.
 		if p.inMemoryStore != nil {
 			if _, ok := p.inMemoryStore.GetConfiguredProviders()[provider]; ok {
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Skipping load balancing for model %s: already prefixed with configured provider %s", modelStr, provider))
 				return nil
 			}
 		} else {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("Skipping load balancing for model %s: provider-prefixed and no in-memory store to validate against", modelStr))
 			return nil
 		}
 	}
@@ -579,6 +581,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 				refined, err := p.modelCatalog.RefineModelForProvider(fbProvider, modelStr)
 				if err != nil {
 					p.logger.Warn("failed to refine model for fallback, skipping fallback in governance plugin: %v", err)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("Fallback provider %s skipped: failed to refine model %s for this provider", fbProvider, modelStr))
 					continue
 				}
 				fbModel = refined
