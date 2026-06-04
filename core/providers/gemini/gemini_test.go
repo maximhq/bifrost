@@ -532,6 +532,79 @@ func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *test
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid schema integer constraint")
 	})
+
+	t.Run("max int64 numeric constraint", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "maxLength": 9223372036854775807}
+						}
+					}
+				}]
+			}]
+		}`), &req))
+
+		query := req.Tools[0].FunctionDeclarations[0].Parameters.Properties["query"]
+		require.NotNil(t, query.MaxLength)
+		assert.Equal(t, int64(9223372036854775807), *query.MaxLength)
+	})
+
+	t.Run("null constraint remains unset", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "minLength": null}
+						}
+					}
+				}]
+			}]
+		}`), &req))
+
+		query := req.Tools[0].FunctionDeclarations[0].Parameters.Properties["query"]
+		assert.Nil(t, query.MinLength)
+	})
+
+	invalidConstraints := []struct {
+		name       string
+		constraint string
+	}{
+		{name: "float", constraint: `1.5`},
+		{name: "bool", constraint: `true`},
+		{name: "object", constraint: `{}`},
+		{name: "array", constraint: `[]`},
+		{name: "overflow string", constraint: `"9223372036854775808"`},
+	}
+
+	for _, tt := range invalidConstraints {
+		t.Run("invalid "+tt.name+" constraint", func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			err := sonic.Unmarshal([]byte(`{
+				"tools": [{
+					"functionDeclarations": [{
+						"name": "exa_web_search_exa",
+						"parameters": {
+							"type": "object",
+							"properties": {
+								"query": {"type": "string", "minLength": `+tt.constraint+`}
+							}
+						}
+					}]
+				}]
+			}`), &req)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		})
+	}
 }
 
 // parseToolParams parses fd.ParametersJSONSchema (raw JSON Schema passthrough) into a
