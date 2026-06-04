@@ -591,6 +591,59 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	assert.False(t, found, "VK should not be found after delete")
 }
 
+// TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer is a regression test
+// for a double-counting bug on new VKs: the create handler keeps mutating the caller's
+// TableVirtualKey after the store call (hydrateVKGovernance reassigns Budgets/RateLimit/RateLimitID
+// from VK-scoped model configs for serialization), so if the store kept that pointer the
+// model-config-owned IDs would leak onto the tracked VK's hierarchy fields and the usage tracker
+// would count each request twice (VK-scoped-model + VK-hierarchy). The stored VK must be a
+// decoupled clone.
+func TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	// A freshly-created VK loaded from DB carries no legacy rate-limit/budget — its
+	// governance lives in a VK-scoped model config, so RateLimitID is nil and Budgets empty.
+	// It does carry a provider config (with no per-provider governance of its own yet).
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	store.CreateVirtualKeyInMemory(context.Background(), vk)
+
+	// Simulate hydrateVKGovernance mutating the caller's pointer after the store call: it
+	// reassigns the top-level fields AND mutates the provider-config element IN PLACE
+	// (pc := &vk.ProviderConfigs[i]; pc.Budgets = ...), injecting the model-config-owned
+	// rate-limit/budget identity. The in-place element write is the case greptile flagged:
+	// a shallow clone shares the ProviderConfigs backing array and would leak it.
+	hydratedRL := buildRateLimit("mc-rl", 6, 6)
+	vk.RateLimit = hydratedRL
+	vk.RateLimitID = &hydratedRL.ID
+	vk.Budgets = []configstoreTables.TableBudget{*buildBudget("mc-b", 200.0, "1h")}
+
+	pcRL := buildRateLimit("mc-pc-rl", 10, 10)
+	vk.ProviderConfigs[0].RateLimit = pcRL
+	vk.ProviderConfigs[0].RateLimitID = &pcRL.ID
+	vk.ProviderConfigs[0].Budgets = []configstoreTables.TableBudget{*buildBudget("mc-pc-b", 50.0, "1h")}
+
+	// The tracked VK must NOT reflect those post-create mutations, otherwise the
+	// VK-hierarchy usage path would double-count alongside the VK-scoped-model path.
+	tracked, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
+	require.True(t, found)
+	require.NotNil(t, tracked)
+	assert.Nil(t, tracked.RateLimit, "tracked VK rate limit must stay decoupled from caller mutation")
+	assert.Nil(t, tracked.RateLimitID, "tracked VK rate limit ID must stay decoupled from caller mutation")
+	assert.Empty(t, tracked.Budgets, "tracked VK budgets must stay decoupled from caller mutation")
+
+	// Per-provider entries must stay decoupled too — this is the ProviderConfigs slice
+	// aliasing greptile flagged (in-place element mutation through the shared backing array).
+	require.Len(t, tracked.ProviderConfigs, 1)
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimit, "tracked provider-config rate limit must stay decoupled")
+	assert.Nil(t, tracked.ProviderConfigs[0].RateLimitID, "tracked provider-config rate limit ID must stay decoupled")
+	assert.Empty(t, tracked.ProviderConfigs[0].Budgets, "tracked provider-config budgets must stay decoupled")
+}
+
 func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 25.0, "1d")
@@ -1207,9 +1260,9 @@ func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
 		LastReset:     time.Now(),
 	}
 	rl := &configstoreTables.TableRateLimit{
-		ID:              rlID,
-		TokenMaxLimit:   ptrInt64(1000),
-		TokenLastReset:  time.Now(),
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(1000),
+		TokenLastReset:   time.Now(),
 		RequestLastReset: time.Now(),
 	}
 	customer := buildCustomer("cust-1", "ACME", budget)
@@ -1273,9 +1326,9 @@ func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
 		LastReset:     time.Now(),
 	}
 	rl := &configstoreTables.TableRateLimit{
-		ID:              rlID,
-		TokenMaxLimit:   ptrInt64(500),
-		TokenLastReset:  time.Now(),
+		ID:               rlID,
+		TokenMaxLimit:    ptrInt64(500),
+		TokenLastReset:   time.Now(),
 		RequestLastReset: time.Now(),
 	}
 	customer := buildCustomer("cust-3", "Initech", budget)
