@@ -722,12 +722,13 @@ func isRealtimeTransportEndpoint(path string) bool {
 
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
-	store             configstore.ConfigStore
-	whitelistedRoutes atomic.Pointer[[]string]
-	authConfig        atomic.Pointer[configstore.AuthConfig]
-	wsTicketStore     *WSTicketStore
-	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
-	tempTokensEnabled atomic.Bool
+	store                    configstore.ConfigStore
+	whitelistedRoutes        atomic.Pointer[[]string]
+	authConfig               atomic.Pointer[configstore.AuthConfig]
+	wsTicketStore            *WSTicketStore
+	tempTokensService        *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled        atomic.Bool
+	enforceAuthOnInference   atomic.Bool
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -755,10 +756,12 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
+		am.enforceAuthOnInference.Store(clientConfig.EnforceAuthOnInference)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
 		am.tempTokensEnabled.Store(false)
+		am.enforceAuthOnInference.Store(false)
 	}
 
 	return am, nil
@@ -776,6 +779,12 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
 func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
 	m.tempTokensEnabled.Store(enabled)
+}
+
+// UpdateEnforceAuthOnInference updates whether auth is enforced on inference endpoints.
+// This mirrors client_config.enforce_auth_on_inference and is the authoritative runtime flag.
+func (m *AuthMiddleware) UpdateEnforceAuthOnInference(enforce bool) {
+	m.enforceAuthOnInference.Store(enforce)
 }
 
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
@@ -807,9 +816,12 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 }
 
 // InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// Auth is skipped when either:
+//   - auth_config.disable_auth_on_inference is true (legacy field, set via API), OR
+//   - client_config.enforce_auth_on_inference is false (new field, persists across restarts from Helm values)
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return authConfig.DisableAuthOnInference
+		return authConfig.DisableAuthOnInference || !m.enforceAuthOnInference.Load()
 	})
 }
 
