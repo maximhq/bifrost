@@ -1423,11 +1423,16 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
 		stream = true
 	}
+	fallbacks, err := parseFallbacks(form.Value["fallbacks"])
+	if err != nil {
+		return nil, false, err
+	}
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
-		Model:    modelName,
-		Provider: schemas.ModelProvider(provider),
-		Input:    transcriptionInput,
-		Params:   transcriptionParams,
+		Model:     modelName,
+		Provider:  schemas.ModelProvider(provider),
+		Input:     transcriptionInput,
+		Params:    transcriptionParams,
+		Fallbacks: fallbacks,
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
