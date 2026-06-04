@@ -1156,7 +1156,7 @@ func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curr
 	return nil
 }
 
-func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
+func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
 	return nil
 }
 
