@@ -2336,6 +2336,72 @@ func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfil
 	assertNoCorruptedFKReferences(t, db)
 }
 
+// After the full migration chain, deleting a model config row must cascade-delete
+// its model_config_id-owned budgets at the DB level (foreign_keys on) — no
+// application code involved. Regression guard for migrationAddModelConfigBudgetsFKConstraint.
+func TestMigrationAddModelConfigBudgetsFKConstraint_CascadesOnDelete(t *testing.T) {
+	ctx := context.Background()
+	n := time.Now().UnixNano() + testDBCounter
+	testDBCounter++
+	// Shared-cache so the pool sees one DB; _foreign_keys=on so the cascade is enforced
+	// (mirrors the production DSN in sqlite.go).
+	dsn := fmt.Sprintf("file:fkcascade_%d?mode=memory&cache=shared&_foreign_keys=on", n)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, triggerMigrations(ctx, db))
+
+	require.True(t, db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets"),
+		"model_config -> budgets FK should exist after the migration chain")
+
+	now := time.Now()
+	mc := tables.TableModelConfig{ID: "mc-cascade", ModelName: "gpt-4", Scope: tables.ModelConfigScopeGlobal, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&mc).Error)
+	b := tables.TableBudget{ID: "b-cascade", MaxLimit: 10, ResetDuration: "1h", LastReset: now, ModelConfigID: &mc.ID, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&b).Error)
+
+	// Delete the model config DIRECTLY, bypassing application-level cleanup.
+	require.NoError(t, db.Exec("DELETE FROM governance_model_configs WHERE id = ?", mc.ID).Error)
+
+	var cnt int64
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-cascade").Count(&cnt).Error)
+	assert.Equal(t, int64(0), cnt, "owned budget should be cascade-deleted with its model config")
+}
+
+// The migration must pre-clean budgets whose model_config_id already references a
+// missing config (existing orphans) — otherwise the FK creation would fail on a DB
+// that already has the leak. Valid budgets must be retained.
+func TestMigrationAddModelConfigBudgetsFKConstraint_PreCleansOrphans(t *testing.T) {
+	ctx := context.Background()
+	n := time.Now().UnixNano() + testDBCounter
+	testDBCounter++
+	// foreign_keys OFF (default) so we can plant an orphan and drop the auto-created FK
+	// to reproduce the production "column present, constraint missing" starting state.
+	dsn := fmt.Sprintf("file:fkpreclean_%d?mode=memory&cache=shared", n)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{}))
+	if db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+		require.NoError(t, db.Migrator().DropConstraint(&tables.TableModelConfig{}, "Budgets"))
+	}
+
+	now := time.Now()
+	live := tables.TableModelConfig{ID: "mc-live", ModelName: "gpt-4", Scope: tables.ModelConfigScopeGlobal, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&live).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-live", MaxLimit: 1, ResetDuration: "1h", LastReset: now, ModelConfigID: &live.ID, CreatedAt: now, UpdatedAt: now}).Error)
+	ghost := "mc-ghost"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-orphan", MaxLimit: 1, ResetDuration: "1h", LastReset: now, ModelConfigID: &ghost, CreatedAt: now, UpdatedAt: now}).Error)
+
+	require.NoError(t, migrationAddModelConfigBudgetsFKConstraint(ctx, db))
+
+	var orphan, liveB int64
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-orphan").Count(&orphan).Error)
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-live").Count(&liveB).Error)
+	assert.Equal(t, int64(0), orphan, "orphaned model-config budget should be pre-cleaned by the migration")
+	assert.Equal(t, int64(1), liveB, "valid model-config budget must be retained")
+	assert.True(t, db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets"),
+		"FK constraint should exist after the migration")
+}
+
 // migration is part of the startup chain so a fresh DB emerges with
 // calendar_aligned on its current owners — the virtual key and the team —
 // and the legacy per-budget / per-rate-limit columns cleaned up.

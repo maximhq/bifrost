@@ -2919,14 +2919,28 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	// Evict any model configs scoped to this virtual key (and their budgets/rate-limits).
 	// Mirrors the DB-side cleanup in DeleteVirtualKey and keeps the in-memory store
 	// consistent even when the VK entry was already removed.
+	gs.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, vkID)
+}
+
+// DeleteModelConfigsForScopeInMemory evicts every cached model config targeting the
+// given scope owner (e.g. scope=virtual_key, scopeID=<vk id>) along with the budgets
+// and rate-limits those configs own. It is the in-memory mirror of
+// RDBConfigStore.DeleteModelConfigsForScope; every owner-eviction path routes through
+// here so the cleanup lives in one place. Exported so out-of-package owner-eviction
+// paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
+// from both the active Budgets slice and the legacy single BudgetID column.
+func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
 			return true
 		}
-		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && *mc.ScopeID == vkID {
+		if mc.Scope == scope && mc.ScopeID != nil && *mc.ScopeID == scopeID {
 			for i := range mc.Budgets {
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
+			}
+			if mc.BudgetID != nil {
+				gs.DeleteBudget(ctx, *mc.BudgetID)
 			}
 			if mc.RateLimitID != nil {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)

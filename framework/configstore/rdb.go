@@ -1164,42 +1164,8 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	}
 
 	// Clean up model configs scoped to this provider (and their owned budgets/rate-limits).
-	// Delete by snapshotted IDs rather than a second WHERE provider=? pass to avoid a race
-	// where a concurrent CreateModelConfig lands between the snapshot and the delete, leaving
-	// its owned budget/rate-limit rows dangling.
-	var providerModelConfigs []tables.TableModelConfig
-	if err := txDB.WithContext(ctx).Preload("Budgets").Where("provider = ?", string(provider)).Find(&providerModelConfigs).Error; err != nil {
+	if err := s.deleteModelConfigsWhere(ctx, txDB, "provider = ?", string(provider)); err != nil {
 		return err
-	}
-	if len(providerModelConfigs) > 0 {
-		var mcIDs []string
-		var budgetIDs []string
-		var rateLimitIDs []string
-		for i := range providerModelConfigs {
-			mcIDs = append(mcIDs, providerModelConfigs[i].ID)
-			for j := range providerModelConfigs[i].Budgets {
-				budgetIDs = append(budgetIDs, providerModelConfigs[i].Budgets[j].ID)
-			}
-			if providerModelConfigs[i].BudgetID != nil {
-				budgetIDs = append(budgetIDs, *providerModelConfigs[i].BudgetID)
-			}
-			if providerModelConfigs[i].RateLimitID != nil {
-				rateLimitIDs = append(rateLimitIDs, *providerModelConfigs[i].RateLimitID)
-			}
-		}
-		if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
-			return err
-		}
-		if len(budgetIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
-				return err
-			}
-		}
-		if len(rateLimitIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil
@@ -3068,38 +3034,8 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		// Delete model configs scoped to this virtual key, along with their owned
 		// budgets/rate-limits. scope_id has no FK constraint, so this cleanup must be
 		// explicit; otherwise per-VK model limits would orphan and leak budget/rate-limit rows.
-		// Model configs are deleted first (matching DeleteModelConfig order) before their
-		// owned budget/rate-limit rows.
-		var scopedModelConfigs []tables.TableModelConfig
-		if err := txDB.WithContext(ctx).
-			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
-			Find(&scopedModelConfigs).Error; err != nil {
+		if err := s.DeleteModelConfigsForScope(ctx, txDB, tables.ModelConfigScopeVirtualKey, id); err != nil {
 			return err
-		}
-		budgetIDs := make([]string, 0, len(scopedModelConfigs))
-		rateLimitIDs := make([]string, 0, len(scopedModelConfigs))
-		for _, mc := range scopedModelConfigs {
-			if mc.BudgetID != nil {
-				budgetIDs = append(budgetIDs, *mc.BudgetID)
-			}
-			if mc.RateLimitID != nil {
-				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
-			}
-		}
-		if err := txDB.WithContext(ctx).
-			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
-			Delete(&tables.TableModelConfig{}).Error; err != nil {
-			return err
-		}
-		if len(budgetIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
-				return err
-			}
-		}
-		if len(rateLimitIDs) > 0 {
-			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
-				return err
-			}
 		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
@@ -4478,16 +4414,138 @@ func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*ta
 	return &modelConfig, nil
 }
 
+// deleteModelConfigsWhere deletes every model config matching the given condition,
+// along with the budgets and rate-limits those configs own. It is the single source
+// of truth for tearing down model configs when their owner (a virtual key, provider,
+// user, …) is removed — every owner-delete path funnels through here so the cleanup,
+// including the easy-to-forget preload of multi-budget rows, lives in exactly one place.
+//
+// Owned budgets are gathered from BOTH the active Budgets slice (owned via
+// ModelConfigID) and the legacy single BudgetID column. Deletion happens by
+// snapshotted ID rather than re-running the WHERE clause, so a concurrent
+// CreateModelConfig that lands between the snapshot and the delete can't leave its
+// owned budget/rate-limit rows dangling. The snapshot is taken FOR UPDATE
+// (mirroring DeleteModelConfig) so a concurrent UpdateModelConfig can't swap
+// BudgetID/RateLimitID after the IDs are collected; rows are locked in stable id
+// order to keep concurrent deleters deadlock-free. Configs are removed before
+// their owned rows, matching DeleteModelConfig's order.
+func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm.DB, query string, args ...any) error {
+	var modelConfigs []tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
+		return err
+	}
+	if len(modelConfigs) == 0 {
+		return nil
+	}
+
+	mcIDs := make([]string, 0, len(modelConfigs))
+	budgetIDs := make([]string, 0, len(modelConfigs))
+	rateLimitIDs := make([]string, 0, len(modelConfigs))
+	for i := range modelConfigs {
+		mcIDs = append(mcIDs, modelConfigs[i].ID)
+		for j := range modelConfigs[i].Budgets {
+			budgetIDs = append(budgetIDs, modelConfigs[i].Budgets[j].ID)
+		}
+		if modelConfigs[i].BudgetID != nil {
+			budgetIDs = append(budgetIDs, *modelConfigs[i].BudgetID)
+		}
+		if modelConfigs[i].RateLimitID != nil {
+			rateLimitIDs = append(rateLimitIDs, *modelConfigs[i].RateLimitID)
+		}
+	}
+
+	if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+		return err
+	}
+	if len(budgetIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+			return err
+		}
+	}
+	if len(rateLimitIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteModelConfigsForScope removes all model configs targeting a given scope owner
+// (e.g. scope=virtual_key, scopeID=<vk id>) along with their owned budgets/rate-limits.
+// Thin wrapper over deleteModelConfigsWhere for the scope/scope_id axis. Exported so
+// out-of-package owner-delete paths (e.g. the enterprise user-deletion flow cleaning up
+// scope=user configs) funnel through the same cleanup instead of reimplementing it.
+func (s *RDBConfigStore) DeleteModelConfigsForScope(ctx context.Context, txDB *gorm.DB, scope, scopeID string) error {
+	// The tx is required (not variadic) on purpose: this cleanup must be atomic
+	// with the owner's delete. Guard against nil rather than falling back to
+	// s.DB(), which would silently run the cleanup outside that transaction.
+	if txDB == nil {
+		return fmt.Errorf("DeleteModelConfigsForScope requires the owner-delete transaction, got nil tx")
+	}
+	return s.deleteModelConfigsWhere(ctx, txDB, "scope = ? AND scope_id = ?", scope, scopeID)
+}
+
 // CreateModelConfig creates a new model config in the database.
 func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	// Locking the scope owner and inserting the config must be atomic, so wrap in a
+	// transaction when the caller didn't supply one.
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.CreateModelConfig(ctx, modelConfig, transaction)
+		})
 	}
+	txDB := tx[0]
+
+	// Serialize against deletion of the scope owner. A scoped config's scope_id carries
+	// no FK, so without this a CreateModelConfig for scope=virtual_key could commit just
+	// after a concurrent DeleteVirtualKey, leaving the config (and its owned budgets/
+	// rate-limits) pointing at a virtual key that no longer exists. Locking the owner row
+	// makes the two transactions mutually exclusive and surfaces an already-deleted owner
+	// as ErrNotFound. Callers that create owner-scoped configs must create the owner first.
+	if err := s.lockModelConfigScopeOwner(ctx, txDB, modelConfig); err != nil {
+		return err
+	}
+
 	if err := txDB.WithContext(ctx).Create(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// lockModelConfigScopeOwner takes a FOR UPDATE lock on the row a scoped model config
+// targets and confirms it still exists, returning ErrNotFound when the owner is gone.
+// Global configs (no scope owner) are a no-op. Only scopes whose owner table lives in
+// this store are locked; other scopes (e.g. the enterprise "user" scope, whose owner
+// table is out of package) are the responsibility of their own create path. The lock is
+// FOR UPDATE on Postgres and a plain existence check on SQLite (whose writer
+// serialization already prevents the interleave), mirroring lockBudgetOwner.
+//
+// Provider-bound configs (any scope) are additionally serialized against
+// DeleteProvider, which tears down every config matching the provider column. The
+// provider row is optional — providers may be env-configured with no DB row — so
+// absence is tolerated rather than treated as a missing owner.
+func (s *RDBConfigStore) lockModelConfigScopeOwner(ctx context.Context, txDB *gorm.DB, mc *tables.TableModelConfig) error {
+	if mc == nil {
+		return nil
+	}
+	if mc.Provider != nil && *mc.Provider != "" {
+		var provider tables.TableProvider
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&provider, "name = ?", *mc.Provider).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if mc.ScopeID == nil || *mc.ScopeID == "" {
+		return nil
+	}
+	switch mc.Scope {
+	case tables.ModelConfigScopeVirtualKey:
+		var vk tables.TableVirtualKey
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&vk, "id = ?", *mc.ScopeID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }

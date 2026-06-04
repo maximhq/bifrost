@@ -1151,6 +1151,10 @@ func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string, tx .
 	return nil
 }
 
+func (m *MockConfigStore) DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error {
+	return nil
+}
+
 // Budget/Rate limit usage
 func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
 	return nil
