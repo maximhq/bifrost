@@ -42,10 +42,13 @@ export const clearAuthStorage = () => {
 const baseQuery = fetchBaseQuery({
 	baseUrl: getApiBaseUrl(),
 	credentials: "include",
-	prepareHeaders: async (headers) => {
-		// Do not force a default Content-Type here. JSON bodies are handled by
-		// fetchBaseQuery, while FormData uploads need the browser-generated
-		// multipart boundary.
+	prepareHeaders: async (headers, { arg }) => {
+		// Skip the JSON default for multipart/FormData uploads so the browser
+		// can set Content-Type with the multipart boundary itself (e.g. uploadSkillFile).
+		const isFormData = typeof arg === "object" && arg.body instanceof FormData;
+		if (!isFormData && !headers.has("Content-Type")) {
+			headers.set("Content-Type", "application/json");
+		}
 		// Automatically include token from localStorage in Authorization header
 		const token = await getTokenFromStorage();
 		if (token) {
@@ -192,6 +195,7 @@ export const baseApi = createApi({
 		"ComplexityAnalyzerConfig",
 		"Skills",
 		"OAuth2Grants",
+		"Devices",
 		"CircuitBreakerPolicies",
 		"CircuitBreakerState",
 		"AlertChannels",
@@ -199,6 +203,9 @@ export const baseApi = createApi({
 		"AlertHistory",
 		"WebhookEndpoints",
 		"WebhookDeliveries",
+		"EdgeApps",
+		"EdgeMCPServers",
+		"EdgeConfig",
 	],
 	endpoints: () => ({}),
 });
