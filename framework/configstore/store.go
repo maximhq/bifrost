@@ -244,7 +244,7 @@ type ConfigStore interface {
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
 	DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error
-	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
+	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error
 
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)

@@ -3992,8 +3992,12 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 
 // UpdateRateLimitUsage updates only the usage fields of a rate limit.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableRateLimit{}).
 		Where("id = ?", id).

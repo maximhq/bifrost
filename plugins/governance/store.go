@@ -176,6 +176,7 @@ type GovernanceStore interface {
 	// Model config in-memory operations
 	UpdateModelConfigInMemory(ctx context.Context, mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig
 	DeleteModelConfigInMemory(ctx context.Context, mcID string)
+	ScopedModelConfigIDs(scope, scopeID string) []string
 	// Provider in-memory operations
 	UpdateProviderInMemory(ctx context.Context, provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
 	DeleteProviderInMemory(ctx context.Context, providerName string)
@@ -444,6 +445,35 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 		if shouldUpdateRequests {
 			clone.RequestCurrentUsage++
 		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
+// BumpRateLimitUsageBy atomically adds arbitrary token and request deltas to the
+// rate limit identified by rateLimitID. Unlike BumpRateLimitUsage (which adds a
+// token count and a single request), this adds caller-supplied counts on both
+// dimensions — used to fold accumulated usage carried from another rate limit.
+// Same CAS-retry contract: no increment is dropped under concurrent callers.
+// No window-reset side effect, since carried deltas are not request traffic.
+// No-op when the rate limit is absent or both deltas are zero.
+func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLimitID string, tokenDelta, requestDelta int64) error {
+	if tokenDelta == 0 && requestDelta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.TokenCurrentUsage += tokenDelta
+		clone.RequestCurrentUsage += requestDelta
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return nil
 		}
@@ -3217,6 +3247,28 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		}
 		return true // continue iteration
 	})
+}
+
+// ScopedModelConfigIDs returns the IDs of all in-memory model configs for the
+// given (scope, scopeID). Callers use this to diff against the DB result and
+// evict stale entries via DeleteModelConfigInMemory.
+func (gs *LocalGovernanceStore) ScopedModelConfigIDs(scope, scopeID string) []string {
+	var ids []string
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		mcScopeID := ""
+		if mc.ScopeID != nil {
+			mcScopeID = *mc.ScopeID
+		}
+		if mc.Scope == scope && mcScopeID == scopeID {
+			ids = append(ids, mc.ID)
+		}
+		return true
+	})
+	return ids
 }
 
 // UpdateProviderInMemory adds or updates a provider in the in-memory store (lock-free)
