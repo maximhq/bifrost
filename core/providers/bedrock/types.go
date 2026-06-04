@@ -291,10 +291,10 @@ type BedrockS3Location struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
-	Name      string          `json:"name"`            // Required: Name of the tool to use
-	Input     json.RawMessage `json:"input"`           // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
-	Type      string          `json:"type,omitempty"`  // Optional: "server_tool_use" for Nova system tools
+	ToolUseID string          `json:"toolUseId"`      // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`           // Required: Name of the tool to use
+	Input     json.RawMessage `json:"input"`          // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
+	Type      string          `json:"type,omitempty"` // Optional: "server_tool_use" for Nova system tools
 }
 
 // BedrockToolResult represents the result of a tool use
@@ -842,7 +842,8 @@ type BedrockMetadataEvent struct {
 
 // BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
 type BedrockTitanEmbeddingRequest struct {
-	InputText   string                 `json:"inputText"`            // Required: Text to embed
+	InputText   string                 `json:"inputText,omitempty"`  // Optional: text to embed (omitted for image-only multimodal requests)
+	InputImage  string                 `json:"inputImage,omitempty"` // Optional: base64-encoded image (titan-embed-image-v1)
 	Dimensions  *int                   `json:"dimensions,omitempty"` // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
 	Normalize   *bool                  `json:"normalize,omitempty"`  // Optional: normalize the embedding
 	ExtraParams map[string]interface{} `json:"-"`
