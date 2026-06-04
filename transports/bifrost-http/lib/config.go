@@ -3005,14 +3005,14 @@ func linkModelConfigBudgets(tx *gorm.DB, mcID string, budgetIDs []string) error 
 	if len(normalized) > 0 {
 		unlinkQ = unlinkQ.Where("id NOT IN ?", normalized)
 	}
-	if err := unlinkQ.Update("model_config_id", nil).Error; err != nil {
+	if err := unlinkQ.UpdateColumn("model_config_id", nil).Error; err != nil {
 		return fmt.Errorf("failed to unlink stale budgets from model config %q: %w", mcID, err)
 	}
 	// Link the declared budgets.
 	for _, id := range normalized {
 		if err := tx.Model(&configstoreTables.TableBudget{}).
 			Where("id = ?", id).
-			Update("model_config_id", mcID).Error; err != nil {
+			UpdateColumn("model_config_id", mcID).Error; err != nil {
 			return fmt.Errorf("failed to link budget %q to model config %q: %w", id, mcID, err)
 		}
 	}

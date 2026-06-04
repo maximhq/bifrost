@@ -2617,6 +2617,12 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 // PostgreSQL's extended protocol parameter limit during GORM preloads.
 const virtualKeyInternalPageSize = 1000
 
+// modelConfigInternalPageSize bounds the page size when loading every model config
+// with preloaded relationships, for the same reason as virtualKeyInternalPageSize:
+// a single un-paginated Find with preloads generates an IN(...) clause with one
+// bind parameter per row and exceeds PostgreSQL's 65535-parameter limit at scale.
+const modelConfigInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	var allVirtualKeys []tables.TableVirtualKey
@@ -2624,11 +2630,20 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 	var lastID string
 	hasCursor := false
 
+	start := time.Now()
+	pageCount := 0
+	defer func() {
+		if s.logger != nil {
+			s.logger.Info("[startup-timing] GetVirtualKeys loaded %d keys across %d pages in %v", len(allVirtualKeys), pageCount, time.Since(start))
+		}
+	}()
+
 	for {
 		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
 		if err != nil {
 			return nil, err
 		}
+		pageCount++
 		if len(virtualKeys) == 0 {
 			return allVirtualKeys, nil
 		}
@@ -2664,6 +2679,53 @@ func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, last
 		return nil, err
 	}
 	return virtualKeys, nil
+}
+
+// getGovernanceConfigVirtualKeys loads every virtual key with the preloads needed
+// by GetGovernanceConfig (ProviderConfigs and their Keys). It pages with a
+// cursor so each preload's generated IN(...) clause stays within PostgreSQL's
+// 65535 bind-parameter limit. A single un-paginated Find with these preloads
+// fails once the key count exceeds ~65535 ("extended protocol limited to 65535
+// parameters"). Mirrors GetVirtualKeys, which is paginated for the same reason.
+func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
+
+	for {
+		var page []tables.TableVirtualKey
+		query := s.DB().WithContext(ctx).
+			Preload("ProviderConfigs").
+			Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+				return db.Select("id, name, key_id, models_json, provider")
+			})
+		if hasCursor {
+			query = query.Where(
+				"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+				lastCreatedAt,
+				lastCreatedAt,
+				lastID,
+			)
+		}
+		if err := query.
+			Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+			Limit(virtualKeyInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allVirtualKeys, nil
+		}
+		allVirtualKeys = append(allVirtualKeys, page...)
+		last := page[len(page)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(page) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
 }
 
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
@@ -4279,11 +4341,32 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 
 // GetModelConfigs retrieves all model configs from the database.
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
-	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
-		return nil, err
+	var allModelConfigs []tables.TableModelConfig
+	lastID := ""
+	hasCursor := false
+
+	for {
+		var page []tables.TableModelConfig
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		if hasCursor {
+			query = query.Where("governance_model_configs.id > ?", lastID)
+		}
+		if err := query.
+			Order("governance_model_configs.id ASC").
+			Limit(modelConfigInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allModelConfigs, nil
+		}
+		allModelConfigs = append(allModelConfigs, page...)
+		lastID = page[len(page)-1].ID
+		hasCursor = true
+		if len(page) < modelConfigInternalPageSize {
+			return allModelConfigs, nil
+		}
 	}
-	return modelConfigs, nil
 }
 
 // GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
@@ -4517,14 +4600,11 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var pricingOverrides []tables.TablePricingOverride
 	var governanceConfigs []tables.TableGovernanceConfig
 
-	if err := s.DB().WithContext(ctx).
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Find(&virtualKeys).Error; err != nil {
+	loadedVKs, err := s.getGovernanceConfigVirtualKeys(ctx)
+	if err != nil {
 		return nil, err
 	}
+	virtualKeys = loadedVKs
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
 		Find(&teams).Error; err != nil {

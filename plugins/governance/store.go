@@ -1923,6 +1923,10 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 
 // loadFromDatabase loads all governance data from the database into memory
 func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
+	loadStart := time.Now()
+	defer func() {
+		gs.logger.Info("[startup-timing] loadFromDatabase total took %v", time.Since(loadStart))
+	}()
 	// Load customers with their budgets
 	customers, err := gs.configStore.GetCustomers(ctx)
 	if err != nil {
@@ -1936,10 +1940,12 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	}
 
 	// Load virtual keys with all relationships
+	vkLoadStart := time.Now()
 	virtualKeys, err := gs.configStore.GetVirtualKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load virtual keys: %w", err)
 	}
+	gs.logger.Info("[startup-timing] loadFromDatabase GetVirtualKeys loaded %d keys in %v", len(virtualKeys), time.Since(vkLoadStart))
 
 	// Load budgets
 	budgets, err := gs.configStore.GetBudgets(ctx)
@@ -1972,7 +1978,9 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	}
 
 	// Rebuild in-memory structures (lock-free)
+	rebuildStart := time.Now()
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
+	gs.logger.Info("[startup-timing] loadFromDatabase rebuildInMemoryStructures took %v", time.Since(rebuildStart))
 
 	return nil
 }
