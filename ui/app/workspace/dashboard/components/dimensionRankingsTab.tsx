@@ -47,8 +47,8 @@ function TopDimensionChart({
 	testIdPrefix: string;
 	attributed?: boolean;
 }) {
-	const { chartData, grandTotal, rankedItems } = useMemo(() => {
-		if (!data?.rankings?.length) return { chartData: [], grandTotal: null, rankedItems: [] };
+	const { chartData, grandTotal, rankedItems, actualTotal, attributedTotal } = useMemo(() => {
+		if (!data?.rankings?.length) return { chartData: [], grandTotal: null, rankedItems: [], actualTotal: null, attributedTotal: null };
 
 		const sorted = [...data.rankings].sort((a, b) => b.total_requests - a.total_requests);
 		const top = sorted.slice(0, 10);
@@ -67,8 +67,13 @@ function TopDimensionChart({
 			fill: getModelColor(item.colorIdx),
 		}));
 
-		return { chartData: chart, grandTotal: total, rankedItems: items };
-	}, [data]);
+		// Server-computed totals (fan-out dimensions only); when absent, fall
+		// back to the client-side attributed sum.
+		const actual = attributed ? (data.total_actual_requests ?? null) : null;
+		const attributedSum = actual !== null ? (data.total_attributed_requests ?? total) : total;
+
+		return { chartData: chart, grandTotal: total, rankedItems: items, actualTotal: actual, attributedTotal: attributedSum };
+	}, [data, attributed]);
 
 	return (
 		<ChartCard
@@ -76,19 +81,37 @@ function TopDimensionChart({
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
 			className="z-[1] h-full"
-			totalLabel={attributed ? "Total Requests (attributed)" : "Total Requests"}
-			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
+			total={
+				actualTotal !== null ? (
+					<NumberFlow value={actualTotal} format={COMPACT_NUMBER_FORMAT} />
+				) : grandTotal !== null ? (
+					<NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} />
+				) : undefined
+			}
 			totalTooltip={
-				grandTotal === null ? undefined : attributed ? (
+				grandTotal === null ? undefined : actualTotal !== null ? (
+					<div className="max-w-[240px] text-xs opacity-80">Actual number of requests sent</div>
+				) : attributed ? (
 					<div className="space-y-1">
-						<div>{grandTotal.toLocaleString("en-US")} requests</div>
 						<div className="max-w-[240px] text-xs opacity-80">
-							Attributed — a request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the actual request
+							Attributed - a request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the actual request
 							count.
 						</div>
 					</div>
 				) : (
 					grandTotal.toLocaleString("en-US")
+				)
+			}
+			secondaryTotalLabel="Attributed Requests"
+			secondaryTotal={actualTotal !== null ? <NumberFlow value={attributedTotal ?? 0} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			secondaryTotalTooltip={
+				actualTotal === null ? undefined : (
+					<div className="space-y-1">
+						<div className="max-w-[240px] text-xs opacity-80">
+							A request counts toward each {dimensionLabel.toLowerCase()} it belongs to, so this can exceed the total request count.
+						</div>
+					</div>
 				)
 			}
 		>

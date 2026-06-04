@@ -238,9 +238,11 @@ var filterMatViews = []filterMatViewDef{
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:            "mv_filter_customers",
-		selectExpr:      "customer_id AS id, customer_name AS name, " + scopeProjection,
-		whereExpr:       "customer_id IS NOT NULL AND customer_id != '' AND customer_name IS NOT NULL AND customer_name != ''",
+		name: "mv_filter_customers",
+		// A request can carry one customer (scalar customer_id) or many (JSON-array
+		// customer_ids, enterprise team↔customer M2M). bodyOverride unions both so
+		// every customer shows in the dropdown, not just the scalar primary.
+		bodyOverride:    multiValueFilterMatViewBody("customer_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
@@ -768,7 +770,8 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
 		len(f.TeamIDs) == 0 &&
-		len(f.BusinessUnitIDs) == 0
+		len(f.BusinessUnitIDs) == 0 &&
+		len(f.CustomerIDs) == 0
 }
 
 // canUseMatView checks both that materialized views are ready (created and

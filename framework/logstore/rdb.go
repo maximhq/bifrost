@@ -123,6 +123,8 @@ func teamOrBUFanoutFrom(idCol string) (string, bool) {
 		arrIDs, arrNames, scalarName = "team_ids", "team_names", "team_name"
 	case "business_unit_id":
 		arrIDs, arrNames, scalarName = "business_unit_ids", "business_unit_names", "business_unit_name"
+	case "customer_id":
+		arrIDs, arrNames, scalarName = "customer_ids", "customer_names", "customer_name"
 	default:
 		return "", false
 	}
@@ -185,7 +187,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	if len(filters.CustomerIDs) > 0 {
-		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		}
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
@@ -2135,6 +2142,27 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		}, nil
 	}
 
+	// For fan-out dimensions the per-row counts credit a request to every
+	// dimension value it touches, so their sum overstates real traffic. Compute
+	// both requestCounts in one pass over the same fanned population (identical
+	// predicate chain) so actual <= attributed always holds — summing the
+	// (limit-capped) rankings client-side could undercount attributed below it.
+	var requestCounts struct {
+		ActualRequests     int64 `gorm:"column:actual_requests"`
+		AttributedRequests int64 `gorm:"column:attributed_requests"`
+	}
+	if fanoutFrom != "" {
+		requestsCountsQuery := baseTable(s.ScopedDB(ctx))
+		requestsCountsQuery = s.applyFilters(requestsCountsQuery, filters)
+		requestsCountsQuery = requestsCountsQuery.Where("status IN ?", []string{"success", "error"})
+		requestsCountsQuery = requestsCountsQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+		if err := requestsCountsQuery.
+			Select("COUNT(DISTINCT id) as actual_requests, COUNT(*) as attributed_requests").
+			Scan(&requestCounts).Error; err != nil {
+			return nil, fmt.Errorf("failed to get dimension ranking totals for %s: %w", dimension, err)
+		}
+	}
+
 	prevMap := make(map[string]DimensionRankingEntry)
 	if filters.StartTime != nil && filters.EndTime != nil {
 		duration := filters.EndTime.Sub(*filters.StartTime)
@@ -2213,7 +2241,12 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		}
 	}
 
-	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
+	return &DimensionRankingResult{
+		Rankings:                rankings,
+		Dimension:               dimension,
+		TotalActualRequests:     requestCounts.ActualRequests,
+		TotalAttributedRequests: requestCounts.AttributedRequests,
+	}, nil
 }
 
 // pctChange computes the percentage change from old to new.
