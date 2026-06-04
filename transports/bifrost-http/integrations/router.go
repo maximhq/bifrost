@@ -824,6 +824,19 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
 							RouteConfigTypeToProvider[config.Type], availableProviders[0],
 						))
+						// For Anthropic-type routes, raw request body passthrough is only valid for
+						// providers that speak the Anthropic Messages API natively. When the model
+						// catalog falls back to a provider that doesn't (e.g. Bedrock), clear the
+						// flag so the provider performs its own format conversion.
+						firstProvider := availableProviders[0]
+						if config.Type == RouteConfigTypeAnthropic &&
+							firstProvider != schemas.Anthropic &&
+							firstProvider != schemas.Vertex &&
+							firstProvider != schemas.Azure {
+							bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+							bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+							bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+						}
 					}
 					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
 				} else if hasExistingProviders {
