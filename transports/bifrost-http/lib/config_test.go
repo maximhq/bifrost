@@ -1152,7 +1152,7 @@ func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string, tx .
 }
 
 // Budget/Rate limit usage
-func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
+func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
 	return nil
 }
 
