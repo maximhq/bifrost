@@ -47,6 +47,61 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
 
+// BifrostCompactionRequest is the request for the context compaction endpoint (POST /v1/responses/compact).
+// It is a strict subset of BifrostResponsesRequest — tools, sampling params, and streaming are not supported.
+type BifrostCompactionRequest struct {
+	Provider             ModelProvider          `json:"provider"`
+	Model                string                 `json:"model"`
+	Input                []ResponsesMessage     `json:"input,omitempty"`
+	Instructions         *string                `json:"instructions,omitempty"`
+	PreviousResponseID   *string                `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *BifrostServiceTier    `json:"service_tier,omitempty"`
+	Fallbacks            []Fallback             `json:"fallbacks,omitempty"`
+	ExtraParams          map[string]interface{} `json:"-"`
+	RawRequestBody       []byte                 `json:"-"`
+}
+
+func (r *BifrostCompactionRequest) GetRawRequestBody() []byte {
+	return r.RawRequestBody
+}
+
+// BifrostCompactionResponse is the response from the context compaction endpoint.
+// object is always "response.compaction". output contains user messages plus one encrypted compaction item.
+type BifrostCompactionResponse struct {
+	ID        *string            `json:"id,omitempty"`
+	Object    string             `json:"object"` // always "response.compaction"
+	Model     string             `json:"model,omitempty"`
+	CreatedAt int                `json:"created_at"`
+	Output    []ResponsesMessage `json:"output"`
+	Usage     *ResponsesResponseUsage    `json:"usage,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+func (resp *BifrostCompactionResponse) WithDefaults() *BifrostCompactionResponse {
+	if resp == nil {
+		return nil
+	}
+	result := &BifrostCompactionResponse{
+		ID:          resp.ID,
+		Object:      "response.compaction",
+		Model:       resp.Model,
+		CreatedAt:   resp.CreatedAt,
+		Usage:       resp.Usage,
+		ExtraFields: resp.ExtraFields,
+	}
+	if result.CreatedAt == 0 {
+		result.CreatedAt = int(time.Now().Unix())
+	}
+	if resp.Output != nil {
+		result.Output = resp.Output
+	} else {
+		result.Output = []ResponsesMessage{}
+	}
+	return result
+}
+
 type BifrostResponsesResponse struct {
 	ID     *string `json:"id,omitempty"` // used for internal conversions
 	Object string  `json:"object"`       // "response"

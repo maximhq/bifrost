@@ -454,6 +454,8 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		usage = result.ChatResponse.Usage
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
+	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+		usage = result.CompactionResponse.Usage.ToBifrostLLMUsage()
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		usage = result.EmbeddingResponse.Usage
 	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
@@ -549,6 +551,9 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		}
 		if result.ResponsesResponse != nil {
 			entry.ResponsesOutputParsed = result.ResponsesResponse.Output
+		}
+		if result.CompactionResponse != nil {
+			entry.ResponsesOutputParsed = result.CompactionResponse.Output
 		}
 		if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
 			entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data

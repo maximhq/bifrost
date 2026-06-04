@@ -951,6 +951,49 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	return response.CountTokensResponse, nil
 }
 
+// CompactionRequest compacts a conversation context window via providers that implement
+// the OpenAI-compatible /v1/responses/compact flow (OpenAI, Azure OpenAI, xAI).
+// Providers without compaction support return an unsupported-operation error.
+func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "compaction request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CompactionRequest,
+			},
+		}
+	}
+
+	if len(req.Input) == 0 && req.PreviousResponseID == nil && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for compaction request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.CompactionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CompactionRequest
+	bifrostReq.CompactionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CompactionResponse, nil
+}
+
 // EmbeddingRequest sends an embedding request to the specified provider.
 func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -4516,6 +4559,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
+	if req.CompactionRequest != nil {
+		tmp := *req.CompactionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CompactionRequest = &tmp
+	}
+
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
@@ -6222,6 +6272,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
+	case schemas.CompactionRequest:
+		compactionResponse, bifrostError := provider.Compaction(req.Context, key, req.BifrostRequest.CompactionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CompactionResponse = compactionResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -7213,6 +7269,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
+	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.OCRRequest = nil
