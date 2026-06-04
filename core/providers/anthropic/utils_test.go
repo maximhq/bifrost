@@ -1631,6 +1631,108 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic_downgrades_mid_conversation_system_for_unsupported_model", func(t *testing.T) {
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"system":[{"type":"text","text":"top","cache_control":{"type":"ephemeral"}}],
+			"messages":[
+				{"role":"user","content":"hello"},
+				{"role":"system","content":"skills"},
+				{"role":"developer","content":[{"type":"text","text":"developer note","cache_control":{"type":"ephemeral"}}]},
+				{"role":"assistant","content":"hi"}
+			],
+			"betas":["` + AnthropicMidConversationSystemBetaHeader + `","other-beta-2026-01-01"]
+		}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		roles := providerUtils.GetJSONField(result, "messages.#.role").Array()
+		if len(roles) != 2 || roles[0].String() != "user" || roles[1].String() != "assistant" {
+			t.Fatalf("expected only user and assistant messages to remain, got %s", string(result))
+		}
+
+		systemTexts := providerUtils.GetJSONField(result, "system.#.text").Array()
+		gotTexts := make([]string, 0, len(systemTexts))
+		for _, text := range systemTexts {
+			gotTexts = append(gotTexts, text.String())
+		}
+		wantTexts := []string{"top", "skills", "developer note"}
+		if !slices.Equal(gotTexts, wantTexts) {
+			t.Fatalf("system texts = %v, want %v (full: %s)", gotTexts, wantTexts, string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "system.2.cache_control") {
+			t.Fatalf("expected cache_control on moved developer system block, got %s", string(result))
+		}
+
+		betas := providerUtils.GetJSONField(result, "betas").Array()
+		if len(betas) != 1 || betas[0].String() != "other-beta-2026-01-01" {
+			t.Fatalf("expected mid-conversation beta removed and other beta preserved, got %s", string(result))
+		}
+	})
+
+	t.Run("anthropic_keeps_mid_conversation_system_for_supported_model", func(t *testing.T) {
+		input := []byte(`{
+			"model":"claude-opus-4-8",
+			"system":[{"type":"text","text":"top"}],
+			"messages":[
+				{"role":"user","content":"hello"},
+				{"role":"system","content":"mid"},
+				{"role":"assistant","content":"hi"}
+			],
+			"betas":["` + AnthropicMidConversationSystemBetaHeader + `"]
+		}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-opus-4-8")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		roles := providerUtils.GetJSONField(result, "messages.#.role").Array()
+		if len(roles) != 3 || roles[1].String() != "system" {
+			t.Fatalf("expected system message to remain for supported model, got %s", string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "betas.0") {
+			t.Fatalf("expected mid-conversation beta to remain for supported model, got %s", string(result))
+		}
+	})
+
+	t.Run("anthropic_downgrades_mid_conversation_system_without_beta", func(t *testing.T) {
+		input := []byte(`{
+			"model":"claude-sonnet-4-6",
+			"system":[{"type":"text","text":"top"}],
+			"messages":[
+				{"role":"user","content":"hello"},
+				{"role":"system","content":"mid"}
+			]
+		}`)
+
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.Anthropic, "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		roles := providerUtils.GetJSONField(result, "messages.#.role").Array()
+		if len(roles) != 1 || roles[0].String() != "user" {
+			t.Fatalf("expected system message to be downgraded without explicit mid-conversation beta, got %s", string(result))
+		}
+
+		systemTexts := providerUtils.GetJSONField(result, "system.#.text").Array()
+		gotTexts := make([]string, 0, len(systemTexts))
+		for _, text := range systemTexts {
+			gotTexts = append(gotTexts, text.String())
+		}
+		wantTexts := []string{"top", "mid"}
+		if !slices.Equal(gotTexts, wantTexts) {
+			t.Fatalf("system texts = %v, want %v (full: %s)", gotTexts, wantTexts, string(result))
+		}
+		if providerUtils.JSONFieldExists(result, "betas") {
+			t.Fatalf("expected no betas field to be added, got %s", string(result))
+		}
+	})
+
 	t.Run("nested_scope_stripped_on_messages_and_system", func(t *testing.T) {
 		// Nested scope on system blocks and message blocks must also be stripped
 		// when the provider lacks PromptCachingScope.
@@ -2977,8 +3079,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

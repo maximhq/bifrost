@@ -60,6 +60,11 @@ const (
 	// on custom tools (streams input_json_delta before full args are determined).
 	// Per Table 20: GA on Anthropic/Bedrock/Vertex, Beta on Azure.
 	AnthropicEagerInputStreamingBetaHeader = "fine-grained-tool-streaming-2025-05-14"
+	// AnthropicMidConversationSystemBetaHeader is a legacy/preview beta value
+	// that may appear on raw requests carrying role:"system" inside messages[].
+	// The current Anthropic API docs say the feature is Opus 4.8 only and no
+	// beta header is required.
+	AnthropicMidConversationSystemBetaHeader = "mid-conversation-system-2026-04-07"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.

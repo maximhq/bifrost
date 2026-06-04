@@ -344,7 +344,8 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 //   - top-level: speed (provider + model gated), container (.skills gated by
 //     features.Skills, bare string by features.ContainerBasic), mcp_servers,
 //     inference_geo, cache_control.scope, output_config.task_budget,
-//     context_management.edits[] (gated per edit type).
+//     context_management.edits[] (gated per edit type), messages[].role=system
+//     downgrade when mid-conversation system messages are unsupported.
 //   - nested: tool.CacheControl.Scope, system block scopes, message block
 //     scopes (all stripped when !features.PromptCachingScope).
 //   - per-tool: defer_loading, allowed_callers (AdvancedToolUse bundle),
@@ -372,6 +373,12 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	var err error
 
+	if shouldDowngradeRawMidConversationSystem(jsonBody, provider, model) {
+		jsonBody, err = downgradeRawMidConversationSystemMessages(jsonBody)
+		if err != nil {
+			return nil, fmt.Errorf("downgrade raw mid-conversation system messages: %w", err)
+		}
+	}
 	// diagnostics — undocumented Claude Code field; gated through the feature
 	// map like every other field. Only Anthropic direct keeps it (fail-closed).
 	if !features.Diagnostics && providerUtils.JSONFieldExists(jsonBody, "diagnostics") {
@@ -1423,6 +1430,149 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	}
 
 	return jsonBody, nil
+}
+
+// shouldDowngradeRawMidConversationSystem reports whether a raw request carries
+// mid-conversation system/developer messages that the target provider/model
+// cannot accept. The decision is based on payload shape plus model capability;
+// the legacy beta value is not a capability signal.
+func shouldDowngradeRawMidConversationSystem(jsonBody []byte, provider schemas.ModelProvider, model string) bool {
+	if SupportsMidConversationSystem(provider, model) {
+		return false
+	}
+
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.IsArray() {
+		return false
+	}
+	for _, msg := range messagesResult.Array() {
+		role := msg.Get("role").String()
+		if role == string(AnthropicMessageRoleSystem) || role == string(schemas.ResponsesInputMessageRoleDeveloper) {
+			return true
+		}
+	}
+	return false
+}
+
+// downgradeRawMidConversationSystemMessages removes unsupported system-like
+// messages from messages[] and appends their text content to the top-level
+// system field, preserving any existing top-level system blocks first.
+func downgradeRawMidConversationSystemMessages(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+
+	remainingMessages := make([]string, 0, len(messagesResult.Array()))
+	var movedSystemBlocks []string
+
+	for _, msg := range messagesResult.Array() {
+		role := msg.Get("role").String()
+		if role != string(AnthropicMessageRoleSystem) && role != string(schemas.ResponsesInputMessageRoleDeveloper) {
+			remainingMessages = append(remainingMessages, msg.Raw)
+			continue
+		}
+		movedSystemBlocks = append(movedSystemBlocks, rawSystemBlocksFromMessageContent(msg.Get("content"))...)
+	}
+
+	var err error
+	jsonBody, err = sjson.SetRawBytes(jsonBody, "messages", []byte("["+strings.Join(remainingMessages, ",")+"]"))
+	if err != nil {
+		return nil, err
+	}
+
+	if len(movedSystemBlocks) > 0 {
+		systemBlocks := rawTopLevelSystemBlocks(jsonBody)
+		systemBlocks = append(systemBlocks, movedSystemBlocks...)
+		jsonBody, err = sjson.SetRawBytes(jsonBody, "system", []byte("["+strings.Join(systemBlocks, ",")+"]"))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return removeRawBeta(jsonBody, AnthropicMidConversationSystemBetaHeader)
+}
+
+// rawSystemBlocksFromMessageContent converts Anthropic message content into
+// top-level system blocks. Non-text blocks are ignored because the system field
+// only accepts text-oriented instructions.
+func rawSystemBlocksFromMessageContent(content gjson.Result) []string {
+	if !content.Exists() {
+		return nil
+	}
+	if content.Type == gjson.String {
+		return rawTextSystemBlock(content.String())
+	}
+	if !content.IsArray() {
+		return nil
+	}
+
+	var blocks []string
+	for _, block := range content.Array() {
+		if block.Get("type").String() != "text" {
+			continue
+		}
+		blocks = append(blocks, block.Raw)
+	}
+	return blocks
+}
+
+// rawTopLevelSystemBlocks normalizes the existing top-level system field into
+// raw block JSON so moved mid-conversation instructions can be appended without
+// reserializing the rest of the request.
+func rawTopLevelSystemBlocks(jsonBody []byte) []string {
+	systemResult := providerUtils.GetJSONField(jsonBody, "system")
+	if !systemResult.Exists() {
+		return nil
+	}
+	if systemResult.Type == gjson.String {
+		return rawTextSystemBlock(systemResult.String())
+	}
+	if !systemResult.IsArray() {
+		return []string{systemResult.Raw}
+	}
+
+	blocks := make([]string, 0, len(systemResult.Array()))
+	for _, block := range systemResult.Array() {
+		blocks = append(blocks, block.Raw)
+	}
+	return blocks
+}
+
+// rawTextSystemBlock wraps a string system instruction in Anthropic's text
+// block shape.
+func rawTextSystemBlock(text string) []string {
+	block, err := sonic.Marshal(map[string]any{
+		"type": "text",
+		"text": text,
+	})
+	if err != nil {
+		return nil
+	}
+	return []string{string(block)}
+}
+
+// removeRawBeta removes a specific beta value from the raw betas array and
+// deletes the array when it becomes empty.
+func removeRawBeta(jsonBody []byte, beta string) ([]byte, error) {
+	betasResult := providerUtils.GetJSONField(jsonBody, "betas")
+	if !betasResult.IsArray() {
+		return jsonBody, nil
+	}
+
+	remaining := make([]string, 0, len(betasResult.Array()))
+	removed := false
+	for _, item := range betasResult.Array() {
+		if item.Type == gjson.String && item.String() == beta {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, item.Raw)
+	}
+	if !removed {
+		return jsonBody, nil
+	}
+	if len(remaining) == 0 {
+		return providerUtils.DeleteJSONField(jsonBody, "betas")
+	}
+	return sjson.SetRawBytes(jsonBody, "betas", []byte("["+strings.Join(remaining, ",")+"]"))
 }
 
 // betaHeaderPrefixToFeature maps each known beta header prefix to a function that checks
