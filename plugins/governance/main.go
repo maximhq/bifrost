@@ -165,10 +165,12 @@ func Init(
 		routingChainMaxDepth = &defaultDepth
 	}
 
+	newStoreStart := time.Now()
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
+	logger.Info("[startup-timing] NewLocalGovernanceStore took %v", time.Since(newStoreStart))
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
@@ -186,10 +188,12 @@ func Init(
 		} else {
 			// Acquire the lock
 			lockAcquired := true
+			lockWaitStart := time.Now()
 			if err := lock.LockWithRetry(ctx, 10); err != nil {
 				logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
 				lockAcquired = false
 			}
+			logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
 			// Only run startup resets if we successfully acquired the lock
 			if lockAcquired {
 				defer func() {
@@ -197,10 +201,12 @@ func Init(
 						logger.Warn("failed to release governance startup reset lock: %v", err)
 					}
 				}()
+				resetStart := time.Now()
 				if err := tracker.PerformStartupResets(ctx); err != nil {
 					logger.Warn("startup reset failed: %v", err)
 					// Continue initialization even if startup reset fails (non-critical)
 				}
+				logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
 			}
 		}
 	}
