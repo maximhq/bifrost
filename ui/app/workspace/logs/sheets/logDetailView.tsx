@@ -942,7 +942,7 @@ export function LogDetailView({
 													to="/workspace/logs"
 													search={{ team_ids: [t.id] }}
 													className="text-blue-600 hover:underline dark:text-blue-400"
-													data-testid="logdetails-team-link"
+													data-testid={`logdetails-team-link-${t.id}`}
 												>
 													{t.name}
 													{i < arr.length - 1 ? "," : ""}
@@ -952,19 +952,28 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.customer_id && (
+							{(log.customer_ids?.length || log.customer_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Customer"
+									label={(log.customer_ids?.length ?? 0) > 1 ? "Customers" : "Customer"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ customer_ids: [log.customer_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-customer-link"
-										>
-											{log.customer_name || log.customer_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.customer_ids?.length
+												? log.customer_ids.map((id, i) => ({ id, name: log.customer_names?.[i] || id }))
+												: [{ id: log.customer_id!, name: log.customer_name || log.customer_id! }]
+											).map((c, i, arr) => (
+												<Link
+													key={c.id}
+													to="/workspace/logs"
+													search={{ customer_ids: [c.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid={`logdetails-customer-link-${c.id}`}
+												>
+													{c.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
@@ -983,7 +992,7 @@ export function LogDetailView({
 													to="/workspace/logs"
 													search={{ business_unit_ids: [b.id] }}
 													className="text-blue-600 hover:underline dark:text-blue-400"
-													data-testid="logdetails-business-unit-link"
+													data-testid={`logdetails-business-unit-link-${b.id}`}
 												>
 													{b.name}
 													{i < arr.length - 1 ? "," : ""}
