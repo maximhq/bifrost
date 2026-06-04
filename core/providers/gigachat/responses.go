@@ -7,13 +7,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
 	gigaChatResponsesRoleReasoning         = "reasoning"
-	gigaChatResponsesGeneratedCallIDSuffix = "__bifrost_fc_"
+	gigaChatResponsesGeneratedCallIDPrefix = "gigachat_call_"
+)
+
+var (
+	gigaChatResponsesGeneratedCallIDCounter atomic.Uint64
+	// Generated call IDs can be replayed in later request payloads; keep the reverse map outside SDK-visible shapes.
+	gigaChatResponsesToolsStateIDsByCallID sync.Map
 )
 
 // ToGigaChatResponsesRequest converts a Bifrost Responses request to GigaChat v2 chat completions format.
@@ -790,29 +798,33 @@ func toBifrostGigaChatResponsesFunctionResult(messageID *string, toolsStateID *s
 }
 
 type gigaChatResponsesCallIDTracker struct {
-	counts map[string]int
+	counts        map[string]int
+	toolsStateIDs map[string]string
 }
 
 func newGigaChatResponsesCallIDTracker() *gigaChatResponsesCallIDTracker {
 	return &gigaChatResponsesCallIDTracker{
-		counts: make(map[string]int),
+		counts:        make(map[string]int),
+		toolsStateIDs: make(map[string]string),
 	}
 }
 
 func (tracker *gigaChatResponsesCallIDTracker) CallID(toolsStateID *string, fallback string) string {
-	if toolsStateID != nil && strings.TrimSpace(*toolsStateID) != "" {
-		trimmed := strings.TrimSpace(*toolsStateID)
-		if tracker == nil {
-			return trimmed
-		}
-		count := tracker.counts[trimmed]
-		tracker.counts[trimmed] = count + 1
-		if count == 0 {
-			return trimmed
-		}
-		return fmt.Sprintf("%s%s%d", trimmed, gigaChatResponsesGeneratedCallIDSuffix, count)
+	trimmed := trimStringPtr(toolsStateID)
+	if trimmed == "" {
+		return fallback
 	}
-	return fallback
+	publicID := newGigaChatResponsesGeneratedCallID()
+	if tracker != nil {
+		tracker.counts[trimmed]++
+		tracker.toolsStateIDs[publicID] = trimmed
+	}
+	gigaChatResponsesToolsStateIDsByCallID.Store(publicID, trimmed)
+	return publicID
+}
+
+func newGigaChatResponsesGeneratedCallID() string {
+	return fmt.Sprintf("%s%d", gigaChatResponsesGeneratedCallIDPrefix, gigaChatResponsesGeneratedCallIDCounter.Add(1))
 }
 
 func toGigaChatResponsesMessageToolStateID(message GigaChatResponsesMessage) *string {
@@ -1248,18 +1260,15 @@ func toGigaChatResponsesToolsStateID(message schemas.ResponsesMessage) *string {
 
 func toGigaChatResponsesToolsStateIDFromCallID(callID string) string {
 	trimmed := strings.TrimSpace(callID)
-	suffixIndex := strings.LastIndex(trimmed, gigaChatResponsesGeneratedCallIDSuffix)
-	if suffixIndex <= 0 {
-		return trimmed
+	if trimmed == "" {
+		return ""
 	}
-	suffix := trimmed[suffixIndex+len(gigaChatResponsesGeneratedCallIDSuffix):]
-	if suffix == "" {
-		return trimmed
+	if toolsStateID, ok := gigaChatResponsesToolsStateIDsByCallID.Load(trimmed); ok {
+		if mapped, ok := toolsStateID.(string); ok && strings.TrimSpace(mapped) != "" {
+			return strings.TrimSpace(mapped)
+		}
 	}
-	if _, err := strconv.Atoi(suffix); err != nil {
-		return trimmed
-	}
-	return strings.TrimSpace(trimmed[:suffixIndex])
+	return trimmed
 }
 
 func toGigaChatResponsesReasoningMessage(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {

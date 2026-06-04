@@ -370,7 +370,7 @@ func testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID(t *testing.
 	t.Parallel()
 
 	toolName := "get_weather"
-	callID := "019e8282-bb13-73fc-bbe8-5f52856d166b"
+	callID := "019e8282-bb13-73fc-bbe8-5f52856d166b__bifrost_fc_1"
 	toolOutput := `{"temperature":5}`
 	request := &schemas.BifrostResponsesRequest{
 		Model: "GigaChat-2-Max",
@@ -1136,9 +1136,7 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	if output.ResponsesToolMessage.Arguments == nil || *output.ResponsesToolMessage.Arguments != `{"city":"Moscow"}` {
 		t.Fatalf("arguments mismatch: %#v", output.ResponsesToolMessage.Arguments)
 	}
-	if output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "tools-state-call" {
-		t.Fatalf("call id mismatch: %#v", output.ResponsesToolMessage.CallID)
-	}
+	assertGigaChatResponsesOpaqueCallID(t, output.ResponsesToolMessage, "tools-state-call")
 }
 
 func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *testing.T) {
@@ -1178,15 +1176,10 @@ func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *t
 	}
 	firstCall := converted.Output[0].ResponsesToolMessage
 	secondCall := converted.Output[1].ResponsesToolMessage
-	if firstCall == nil || firstCall.CallID == nil || *firstCall.CallID != "shared-tools-state" {
-		t.Fatalf("first call id mismatch: %#v", firstCall)
-	}
-	wantSecondCallID := "shared-tools-state" + gigaChatResponsesGeneratedCallIDSuffix + "1"
-	if secondCall == nil || secondCall.CallID == nil || *secondCall.CallID != wantSecondCallID {
-		t.Fatalf("second call id mismatch: %#v", secondCall)
-	}
-	if *firstCall.CallID == *secondCall.CallID {
-		t.Fatalf("call ids must be unique: first=%q second=%q", *firstCall.CallID, *secondCall.CallID)
+	firstCallID := assertGigaChatResponsesOpaqueCallID(t, firstCall, "shared-tools-state")
+	secondCallID := assertGigaChatResponsesOpaqueCallID(t, secondCall, "shared-tools-state")
+	if firstCallID == secondCallID {
+		t.Fatalf("call ids must be unique: first=%q second=%q", firstCallID, secondCallID)
 	}
 
 	weatherOutput := `{"temperature":5}`
@@ -1244,6 +1237,25 @@ func assertGigaChatResponsesToolStateID(t *testing.T, message GigaChatResponsesM
 	}
 }
 
+func assertGigaChatResponsesOpaqueCallID(t *testing.T, toolMessage *schemas.ResponsesToolMessage, toolsStateID string) string {
+	t.Helper()
+
+	if toolMessage == nil || toolMessage.CallID == nil {
+		t.Fatalf("call id missing: %#v", toolMessage)
+	}
+	callID := strings.TrimSpace(*toolMessage.CallID)
+	if callID == "" {
+		t.Fatalf("call id is empty: %#v", toolMessage.CallID)
+	}
+	if callID == toolsStateID || strings.Contains(callID, toolsStateID) {
+		t.Fatalf("call id should be opaque: got %q, tools_state_id %q", callID, toolsStateID)
+	}
+	if !strings.HasPrefix(callID, gigaChatResponsesGeneratedCallIDPrefix) {
+		t.Fatalf("call id should use generated prefix: got %q", callID)
+	}
+	return callID
+}
+
 func testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID(t *testing.T) {
 	t.Parallel()
 
@@ -1273,9 +1285,7 @@ func testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID(t *testing.T) {
 	if output.Type == nil || *output.Type != schemas.ResponsesMessageTypeFunctionCall {
 		t.Fatalf("output type mismatch: %#v", output.Type)
 	}
-	if output.ResponsesToolMessage == nil || output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "019e8282-bb13-73fc-bbe8-5f52856d166b" {
-		t.Fatalf("call id mismatch: %#v", output.ResponsesToolMessage)
-	}
+	assertGigaChatResponsesOpaqueCallID(t, output.ResponsesToolMessage, "019e8282-bb13-73fc-bbe8-5f52856d166b")
 }
 
 func testGigaChatResponsesConverterFallsBackToResponseToolsStateID(t *testing.T) {
@@ -1312,13 +1322,9 @@ func testGigaChatResponsesConverterFallsBackToResponseToolsStateID(t *testing.T)
 		t.Fatalf("converted output mismatch: %#v", converted)
 	}
 	firstCall := converted.Output[0].ResponsesToolMessage
-	if firstCall == nil || firstCall.CallID == nil || *firstCall.CallID != "response-tools-state" {
-		t.Fatalf("response-level call id fallback mismatch: %#v", firstCall)
-	}
+	assertGigaChatResponsesOpaqueCallID(t, firstCall, "response-tools-state")
 	secondCall := converted.Output[1].ResponsesToolMessage
-	if secondCall == nil || secondCall.CallID == nil || *secondCall.CallID != "message-tools-state" {
-		t.Fatalf("message-level call id should win over response fallback: %#v", secondCall)
-	}
+	assertGigaChatResponsesOpaqueCallID(t, secondCall, "message-tools-state")
 }
 
 func testGigaChatResponsesConverterPreservesOrdinaryMessageToolStateID(t *testing.T) {
