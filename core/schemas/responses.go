@@ -893,6 +893,14 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
+
+	// Codex deferred-tool discovery (tool_search). OpenAI's Responses API
+	// supports these item types natively; Bifrost preserves them verbatim
+	// because its typed schema doesn't model them (the call's `arguments` is a
+	// JSON object — unlike function_call's string — and the output carries a
+	// `tools` array). See ResponsesMessage's (Un)MarshalJSON.
+	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -916,6 +924,44 @@ type ResponsesMessage struct {
 	// Reasoning
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
+
+	// rawToolSearch preserves codex `tool_search_call` / `tool_search_output`
+	// items verbatim. OpenAI's Responses API accepts these natively, but
+	// Bifrost's typed schema doesn't model them (the call's `arguments` is a
+	// JSON object — unlike function_call's string — and the output carries a
+	// `tools` array). Rather than fail to deserialize the whole input array or
+	// drop/mangle these items, we round-trip the original bytes unchanged.
+	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
+	rawToolSearch []byte
+}
+
+// isToolSearchItem reports whether t is a codex tool_search item type, which
+// Bifrost preserves verbatim rather than modelling field-by-field.
+func isToolSearchItem(t string) bool {
+	return t == string(ResponsesMessageTypeToolSearchCall) ||
+		t == string(ResponsesMessageTypeToolSearchOutput)
+}
+
+// UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
+// and defers every other item type to the default struct decoding.
+func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
+	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
+		mt := ResponsesMessageType(t)
+		*m = ResponsesMessage{Type: &mt, rawToolSearch: append([]byte(nil), data...)}
+		return nil
+	}
+	type alias ResponsesMessage
+	return sonic.Unmarshal(data, (*alias)(m))
+}
+
+// MarshalJSON re-emits preserved tool_search items verbatim and defers every
+// other item type to the default (sorted-key) struct encoding.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	if m.rawToolSearch != nil {
+		return m.rawToolSearch, nil
+	}
+	type alias ResponsesMessage
+	return MarshalSorted(alias(m))
 }
 
 type ResponsesMessageRoleType string
