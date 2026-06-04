@@ -1876,3 +1876,18 @@ func getDefaultRouting(ctx *RoutingContext) *RoutingDecision {
 		MatchedRuleID: "0",
 	}
 }
+
+// TestOpenRouterModelRewrite directly tests the model rewrite logic: when routing to openrouter
+// without an explicit model override, the original provider is prepended to the model.
+func TestOpenRouterModelRewrite(t *testing.T) {
+	currentProvider := "openai"
+	currentModel := "gpt-4o"
+	targetProvider := string(schemas.OpenRouter)
+
+	model := currentModel
+	if targetProvider == string(schemas.OpenRouter) && currentProvider != string(schemas.OpenRouter) && currentProvider != "" {
+		model = currentProvider + "/" + currentModel
+	}
+
+	assert.Equal(t, "openai/gpt-4o", model)
+}

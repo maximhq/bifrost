@@ -430,6 +430,8 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 			return "openai/" + model, nil
 		}
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.OpenRouter:
+		return mc.refineNestedProviderModel(provider, model)
 	case schemas.Replicate:
 		return mc.refineNestedProviderModel(provider, model)
 	}

@@ -217,6 +217,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				model := currentModel
 				if target.Model != nil && *target.Model != "" {
 					model = *target.Model
+				} else if provider == string(schemas.OpenRouter) && string(currentProvider) != string(schemas.OpenRouter) && string(currentProvider) != "" {
+					model = string(currentProvider) + "/" + currentModel
 				}
 
 				keyID := ""
