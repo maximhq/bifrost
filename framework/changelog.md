@@ -1,3 +1,0 @@
-- feat: file scheme (file://) support for pricing URL sync
-- feat: paginated virtual key fetch to handle large numbers of keys
-- fix: preserve non-pricing model pool entries across pricing reloads
