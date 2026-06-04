@@ -61,6 +61,17 @@ func testGigaChatCountTokensConverterMapsTextInput(t *testing.T) {
 					},
 				}},
 			},
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: schemas.Ptr("assistant output"),
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					},
+				}}},
+			},
 		},
 	}
 
@@ -71,7 +82,7 @@ func testGigaChatCountTokensConverterMapsTextInput(t *testing.T) {
 	if gigaChatReq.Model != "GigaChat" {
 		t.Fatalf("model mismatch: got %q", gigaChatReq.Model)
 	}
-	wantInput := []string{"first", "second", "third"}
+	wantInput := []string{"first", "second", "third", "assistant output"}
 	if !equalStringSlices(gigaChatReq.Input, wantInput) {
 		t.Fatalf("input mismatch: got %#v, want %#v", gigaChatReq.Input, wantInput)
 	}
@@ -80,7 +91,7 @@ func testGigaChatCountTokensConverterMapsTextInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal count tokens request: %v", err)
 	}
-	if !strings.Contains(string(body), `"model":"GigaChat"`) || !strings.Contains(string(body), `"input":["first","second","third"]`) {
+	if !strings.Contains(string(body), `"model":"GigaChat"`) || !strings.Contains(string(body), `"input":["first","second","third","assistant output"]`) {
 		t.Fatalf("unexpected request body: %s", body)
 	}
 }

@@ -92,7 +92,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
 	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
 
-	const [gigaChatAuthType, setGigaChatAuthType] = useState<"credentials" | "access_token" | "password">("credentials");
+	const [gigaChatAuthType, setGigaChatAuthType] = useState<"credentials" | "access_token" | "password" | "mtls">("credentials");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -161,7 +161,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const apiKey = form.getValues("key.value");
 			const user = config?.user;
 			const password = config?.password;
-			let detected: "credentials" | "access_token" | "password" = "credentials";
+			const certFile = config?.cert_file;
+			const keyFile = config?.key_file;
+			let detected: "credentials" | "access_token" | "password" | "mtls" = "credentials";
 			if (accessToken?.value || accessToken?.env_var || apiKey?.value || apiKey?.env_var) {
 				detected = "access_token";
 				if (!accessToken?.value && !accessToken?.env_var && apiKey) {
@@ -169,6 +171,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				}
 			} else if (user?.value || user?.env_var || password?.value || password?.env_var) {
 				detected = "password";
+			} else if (certFile || keyFile) {
+				detected = "mtls";
 			}
 			setGigaChatAuthType(detected);
 			form.setValue("key.gigachat_key_config._auth_type", detected);
@@ -697,11 +701,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>
-						<FormDescription>Bifrost manages GigaChat Authorization and User-Agent headers. TLS files only configure transport.</FormDescription>
+						<FormDescription>Bifrost manages bearer Authorization when configured. mTLS certificates authenticate API requests during TLS.</FormDescription>
 						<Tabs
 							value={gigaChatAuthType}
 							onValueChange={(v) => {
-								const next = v as "credentials" | "access_token" | "password";
+								const next = v as "credentials" | "access_token" | "password" | "mtls";
 								setGigaChatAuthType(next);
 								form.setValue("key.gigachat_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
 								form.setValue("key.value", undefined, { shouldDirty: true });
@@ -717,7 +721,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								}
 							}}
 						>
-							<TabsList className="grid w-full grid-cols-3">
+							<TabsList className="grid w-full grid-cols-4">
 								<TabsTrigger data-testid="apikey-gigachat-credentials-tab" value="credentials">
 									OAuth
 								</TabsTrigger>
@@ -726,6 +730,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-gigachat-password-tab" value="password">
 									Password
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-gigachat-mtls-tab" value="mtls">
+									mTLS
 								</TabsTrigger>
 							</TabsList>
 						</Tabs>

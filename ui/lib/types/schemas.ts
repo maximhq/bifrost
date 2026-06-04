@@ -233,7 +233,7 @@ export const sglKeyConfigSchema = z
 
 export const gigachatKeyConfigSchema = z
 	.object({
-		_auth_type: z.enum(["credentials", "access_token", "password"]).optional(),
+		_auth_type: z.enum(["credentials", "access_token", "password", "mtls"]).optional(),
 		credentials: envVarSchema.optional(),
 		scope: z.string().optional(),
 		user: envVarSchema.optional(),
@@ -277,6 +277,11 @@ function isGigaChatAuthConfigured(config: z.infer<typeof gigachatKeyConfigSchema
 		return true;
 	}
 	return false;
+}
+
+function isGigaChatMTLSConfigured(config: z.infer<typeof gigachatKeyConfigSchema> | undefined): boolean {
+	if (!config) return false;
+	return isStringSet(config.cert_file) && isStringSet(config.key_file);
 }
 
 // Model provider key schema
@@ -323,7 +328,7 @@ export const modelProviderKeySchema = z
 			return;
 		}
 		if (data.gigachat_key_config) {
-			if (isGigaChatAuthConfigured(data.gigachat_key_config) || isEnvVarSet(data.value)) {
+			if (isGigaChatAuthConfigured(data.gigachat_key_config) || isGigaChatMTLSConfigured(data.gigachat_key_config) || isEnvVarSet(data.value)) {
 				return;
 			}
 			const authIssuePath =
@@ -331,10 +336,12 @@ export const modelProviderKeySchema = z
 					? ["gigachat_key_config", "access_token"]
 					: data.gigachat_key_config._auth_type === "password"
 						? ["gigachat_key_config", "user"]
-						: ["gigachat_key_config", "credentials"];
+						: data.gigachat_key_config._auth_type === "mtls"
+							? ["gigachat_key_config", "cert_file"]
+							: ["gigachat_key_config", "credentials"];
 			ctx.addIssue({
 				code: "custom",
-				message: "GigaChat credentials, access token, user/password, or key value access token is required",
+				message: "GigaChat credentials, access token, user/password, mTLS certificate pair, or key value access token is required",
 				path: authIssuePath,
 			});
 			return;

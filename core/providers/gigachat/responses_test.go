@@ -1146,25 +1146,30 @@ func testGigaChatResponsesConverterUsesUniqueCallIDsUnderSharedToolsStateID(t *t
 
 	response := &GigaChatResponsesResponse{
 		Model: "GigaChat-2-Max",
-		Messages: []GigaChatResponsesMessage{{
-			Role:         "assistant",
-			MessageID:    schemas.Ptr("tool-message"),
-			ToolsStateID: schemas.Ptr("shared-tools-state"),
-			Content: []GigaChatResponsesContentPart{
-				{
+		Messages: []GigaChatResponsesMessage{
+			{
+				Role:         "assistant",
+				MessageID:    schemas.Ptr("tool-message-1"),
+				ToolsStateID: schemas.Ptr("shared-tools-state"),
+				Content: []GigaChatResponsesContentPart{{
 					FunctionCall: &GigaChatResponsesFunctionCall{
 						Name:      "get_weather",
 						Arguments: map[string]interface{}{"city": "Moscow"},
 					},
-				},
-				{
+				}},
+			},
+			{
+				Role:         "assistant",
+				MessageID:    schemas.Ptr("tool-message-2"),
+				ToolsStateID: schemas.Ptr("shared-tools-state"),
+				Content: []GigaChatResponsesContentPart{{
 					FunctionCall: &GigaChatResponsesFunctionCall{
 						Name:      "get_time",
 						Arguments: map[string]interface{}{"city": "Moscow"},
 					},
-				},
+				}},
 			},
-		}},
+		},
 	}
 
 	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)

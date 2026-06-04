@@ -31,8 +31,9 @@ func TestGigachat(t *testing.T) {
 	t.Run("Tools", testGigaChatTools)
 	t.Run("Errors", testGigaChatErrors)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
-	t.Run("ReusesTLSClientWithCABundle", testGigaChatReusesTLSClientWithCABundle)
+	t.Run("RefreshesTLSClientWithCABundleRotation", testGigaChatRefreshesTLSClientWithCABundleRotation)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
+	t.Run("RefreshesTLSClientWithCertificateRotation", testGigaChatRefreshesTLSClientWithCertificateRotation)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
 }
 
@@ -135,11 +136,12 @@ func testGigaChatBuildsTLSClientWithCABundle(t *testing.T) {
 	}
 }
 
-func testGigaChatReusesTLSClientWithCABundle(t *testing.T) {
+func testGigaChatRefreshesTLSClientWithCABundleRotation(t *testing.T) {
 	t.Parallel()
 
-	certPEM, _ := generateGigaChatTestCertificate(t)
-	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM)
+	certPEM1, _ := generateGigaChatTestCertificate(t)
+	certPEM2, _ := generateGigaChatTestCertificate(t)
+	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM1)
 
 	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
 	if err != nil {
@@ -154,16 +156,26 @@ func testGigaChatReusesTLSClientWithCABundle(t *testing.T) {
 	if client == provider.client {
 		t.Fatal("expected a cloned client when TLS material is configured")
 	}
+
+	if err := os.WriteFile(caBundleFile, certPEM2, 0o600); err != nil {
+		t.Fatalf("failed to rotate CA bundle file: %v", err)
+	}
+
+	rotatedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error after CA rotation: %v", err)
+	}
+	if rotatedClient == client {
+		t.Fatal("expected rotated CA bundle contents to rebuild TLS client")
+	}
+
 	if err := os.Remove(caBundleFile); err != nil {
 		t.Fatalf("failed to remove CA bundle file: %v", err)
 	}
-
-	cachedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
-	if err != nil {
-		t.Fatalf("getGigaChatTLSClient returned error after CA file removal: %v", err)
-	}
-	if cachedClient != client {
-		t.Fatal("expected cached TLS client to be reused")
+	if _, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig); err == nil {
+		t.Fatal("expected missing CA bundle file to invalidate TLS client cache")
+	} else if !strings.Contains(err.Error(), "ca_bundle_file") {
+		t.Fatalf("unexpected missing CA error: %v", err)
 	}
 }
 
@@ -188,6 +200,44 @@ func testGigaChatBuildsTLSClientWithCertificate(t *testing.T) {
 	}
 	if client.TLSConfig == nil || len(client.TLSConfig.Certificates) != 1 {
 		t.Fatalf("expected one client certificate, got %#v", client.TLSConfig)
+	}
+}
+
+func testGigaChatRefreshesTLSClientWithCertificateRotation(t *testing.T) {
+	t.Parallel()
+
+	certPEM1, keyPEM1 := generateGigaChatTestCertificate(t)
+	certPEM2, keyPEM2 := generateGigaChatTestCertificate(t)
+	certFile := writeGigaChatTestFile(t, "client.pem", certPEM1)
+	keyFile := writeGigaChatTestFile(t, "client.key", keyPEM1)
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	keyConfig := &schemas.GigaChatKeyConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	}
+	client, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error: %v", err)
+	}
+
+	if err := os.WriteFile(certFile, certPEM2, 0o600); err != nil {
+		t.Fatalf("failed to rotate client certificate file: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM2, 0o600); err != nil {
+		t.Fatalf("failed to rotate client key file: %v", err)
+	}
+
+	rotatedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error after certificate rotation: %v", err)
+	}
+	if rotatedClient == client {
+		t.Fatal("expected rotated client certificate contents to rebuild TLS client")
 	}
 }
 

@@ -347,6 +347,15 @@ func (config *GigaChatKeyConfig) HasTLSMaterial() bool {
 		strings.TrimSpace(config.CABundleFile) != ""
 }
 
+// HasClientCertificateMaterial reports whether the config contains a complete
+// client certificate pair for mTLS authentication.
+func (config *GigaChatKeyConfig) HasClientCertificateMaterial() bool {
+	if config == nil {
+		return false
+	}
+	return strings.TrimSpace(config.CertFile) != "" && strings.TrimSpace(config.KeyFile) != ""
+}
+
 // Redacted returns a copy of the GigaChat key config with sensitive fields masked.
 func (config *GigaChatKeyConfig) Redacted() *GigaChatKeyConfig {
 	if config == nil {

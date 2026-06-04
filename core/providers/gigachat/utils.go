@@ -22,7 +22,9 @@ import (
 var (
 	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
 	gigaChatPrivateKeyPattern          = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
-	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
+	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?)\b(authorization|access_token|credentials|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
+	gigaChatUserAssignmentPattern      = regexp.MustCompile(`(?i)(["']?)\b(user)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
+	gigaChatAuthContextTextPattern     = regexp.MustCompile(`(?i)(\b(bearer|basic)\s+|\b(authorization|access_token|credentials|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=])`)
 )
 
 const (
@@ -187,7 +189,11 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 		return buildGigaChatTLSClient(baseClient, keyConfig)
 	}
 
-	cacheKey := cacheKind + ":" + gigaChatTLSMaterialFingerprint(keyConfig)
+	fingerprint, err := gigaChatTLSMaterialFingerprint(keyConfig)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := cacheKind + ":" + fingerprint
 	provider.tlsClientCache.mu.Lock()
 	defer provider.tlsClientCache.mu.Unlock()
 
@@ -203,31 +209,51 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 	return client, nil
 }
 
-func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
 	if keyConfig == nil {
-		return ""
+		return "", nil
 	}
 	hash := sha256.New()
-	for _, value := range []string{
-		strings.TrimSpace(keyConfig.CABundleFile),
-		strings.TrimSpace(keyConfig.CertFile),
-		strings.TrimSpace(keyConfig.KeyFile),
+	for _, material := range []struct {
+		field string
+		path  string
+	}{
+		{field: "ca_bundle_file", path: strings.TrimSpace(keyConfig.CABundleFile)},
+		{field: "cert_file", path: strings.TrimSpace(keyConfig.CertFile)},
+		{field: "key_file", path: strings.TrimSpace(keyConfig.KeyFile)},
 	} {
 		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte(material.field))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(material.path))
+		if material.path == "" {
+			continue
+		}
+		contents, err := os.ReadFile(material.path)
+		if err != nil {
+			return "", fmt.Errorf("failed to read gigachat_key_config.%s for TLS cache key: %w", material.field, err)
+		}
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(contents)
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
 	return gigaChatTLSMaterialFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
 }
 
 func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.GigaChatKeyConfig {
-	if keyConfig == nil || strings.TrimSpace(keyConfig.CABundleFile) == "" {
+	if keyConfig == nil {
 		return nil
 	}
-	return &schemas.GigaChatKeyConfig{CABundleFile: strings.TrimSpace(keyConfig.CABundleFile)}
+	authKeyConfig := &schemas.GigaChatKeyConfig{
+		CABundleFile: strings.TrimSpace(keyConfig.CABundleFile),
+	}
+	if !gigaChatKeyConfigHasTLSMaterial(authKeyConfig) {
+		return nil
+	}
+	return authKeyConfig
 }
 
 func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {
@@ -310,11 +336,17 @@ func redactGigaChatRawValue(raw interface{}) interface{} {
 }
 
 func redactGigaChatJSONValue(value interface{}) bool {
+	return redactGigaChatJSONValueInContext(value, false)
+}
+
+func redactGigaChatJSONValueInContext(value interface{}, inGigaChatKeyConfig bool) bool {
 	changed := false
 	switch typed := value.(type) {
 	case map[string]interface{}:
+		authFieldContext := inGigaChatKeyConfig || hasGigaChatAuthSensitiveField(typed)
 		for key, child := range typed {
-			if isGigaChatSensitiveField(key) {
+			childInGigaChatKeyConfig := inGigaChatKeyConfig || strings.EqualFold(strings.TrimSpace(key), "gigachat_key_config")
+			if isGigaChatSensitiveField(key, authFieldContext) {
 				typed[key] = "<redacted>"
 				changed = true
 				continue
@@ -327,7 +359,7 @@ func redactGigaChatJSONValue(value interface{}) bool {
 				}
 				continue
 			}
-			if redactGigaChatJSONValue(child) {
+			if redactGigaChatJSONValueInContext(child, childInGigaChatKeyConfig) {
 				changed = true
 			}
 		}
@@ -341,7 +373,7 @@ func redactGigaChatJSONValue(value interface{}) bool {
 				}
 				continue
 			}
-			if redactGigaChatJSONValue(child) {
+			if redactGigaChatJSONValueInContext(child, inGigaChatKeyConfig) {
 				changed = true
 			}
 		}
@@ -349,10 +381,21 @@ func redactGigaChatJSONValue(value interface{}) bool {
 	return changed
 }
 
-func isGigaChatSensitiveField(fieldName string) bool {
+func hasGigaChatAuthSensitiveField(fields map[string]interface{}) bool {
+	for fieldName := range fields {
+		if isGigaChatSensitiveField(fieldName, false) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGigaChatSensitiveField(fieldName string, inGigaChatKeyConfig bool) bool {
 	switch strings.ToLower(strings.TrimSpace(fieldName)) {
-	case "authorization", "access_token", "credentials", "user", "username", "password", "cert_file", "key_file", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
+	case "authorization", "access_token", "credentials", "username", "password", "cert_file", "key_file", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
 		return true
+	case "user":
+		return inGigaChatKeyConfig
 	default:
 		return false
 	}
@@ -367,8 +410,16 @@ func redactGigaChatSensitiveText(text string) string {
 }
 
 func redactGigaChatSensitiveAssignments(text string) string {
-	return gigaChatSensitiveAssignmentPattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := gigaChatSensitiveAssignmentPattern.FindStringSubmatch(match)
+	redacted := redactGigaChatAssignmentsWithPattern(text, gigaChatSensitiveAssignmentPattern)
+	if gigaChatAuthContextTextPattern.MatchString(text) {
+		redacted = redactGigaChatAssignmentsWithPattern(redacted, gigaChatUserAssignmentPattern)
+	}
+	return redacted
+}
+
+func redactGigaChatAssignmentsWithPattern(text string, pattern *regexp.Regexp) string {
+	return pattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := pattern.FindStringSubmatch(match)
 		if len(parts) != 6 {
 			return "<redacted>"
 		}

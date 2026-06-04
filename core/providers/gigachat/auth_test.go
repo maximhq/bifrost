@@ -2,7 +2,10 @@ package gigachat
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -160,7 +163,8 @@ func TestGigaChatAuthHeaders(t *testing.T) {
 	t.Run("ExplicitAccessToken", testGigaChatAuthHeadersExplicitAccessToken)
 	t.Run("UserAgentLiteral", testGigaChatAuthHeadersUserAgentLiteral)
 	t.Run("KeyValueAccessToken", testGigaChatAuthHeadersKeyValueAccessToken)
-	t.Run("TLSOnlyDoesNotBypassAuth", testGigaChatAuthHeadersTLSOnlyDoesNotBypassAuth)
+	t.Run("TLSOnlyOmitsBearerAuth", testGigaChatAuthHeadersTLSOnlyOmitsBearerAuth)
+	t.Run("CABundleOnlyDoesNotAuthenticate", testGigaChatAuthHeadersCABundleOnlyDoesNotAuthenticate)
 	t.Run("OAuthToken", testGigaChatAuthHeadersOAuthToken)
 	t.Run("BlocksProviderAuthorizationExtraHeader", testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader)
 	t.Run("RejectsRequestAuthorizationExtraHeader", testGigaChatAuthHeadersRejectsRequestAuthorizationExtraHeader)
@@ -214,21 +218,36 @@ func testGigaChatAuthHeadersKeyValueAccessToken(t *testing.T) {
 	assertGigaChatDefaultHeaders(t, headers, "Bearer key-value-access-token")
 }
 
-func testGigaChatAuthHeadersTLSOnlyDoesNotBypassAuth(t *testing.T) {
+func testGigaChatAuthHeadersTLSOnlyOmitsBearerAuth(t *testing.T) {
 	t.Parallel()
 
 	provider := newTestGigaChatProvider(t, time.Now)
-	_, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
 		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
 			CertFile:     "/secure/client.pem",
 			KeyFile:      "/secure/client.key",
 			CABundleFile: "/secure/ca.pem",
 		},
 	})
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeadersWithoutAuthorization(t, headers)
+}
+
+func testGigaChatAuthHeadersCABundleOnlyDoesNotAuthenticate(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	_, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			CABundleFile: "/secure/ca.pem",
+		},
+	})
 	if bifrostErr == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(bifrostErr.GetErrorString(), "access_token, credentials, or user/password") {
+	if !strings.Contains(bifrostErr.GetErrorString(), "mTLS cert_file/key_file") {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
 }
@@ -495,6 +514,9 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 		if r.URL.Path != "/api/v1/token" {
 			t.Errorf("path mismatch: got %s", r.URL.Path)
 		}
+		if contentType := r.Header.Get("Content-Type"); !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			t.Errorf("content type mismatch: got %q", contentType)
+		}
 		if accept := r.Header.Get("Accept"); accept != "application/json" {
 			t.Errorf("accept mismatch: got %q", accept)
 		}
@@ -533,16 +555,26 @@ func testGigaChatOAuthIgnoresClientCertificate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server, caBundleFile, certFile, keyFile := newGigaChatClientCertRequestingServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/oauth" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.TLS != nil && len(r.TLS.PeerCertificates) != 0 {
+			t.Error("OAuth token request should not include client certificate")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"oauth-token","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
 	}))
-	defer server.Close()
 
 	provider := newTestGigaChatProvider(t, func() time.Time { return now })
-	key := testGigaChatOAuthKey(server.URL, "", "test-credentials")
-	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
-	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+	key := testGigaChatOAuthKey(server.URL+"/api/v2/oauth", "", "test-credentials")
+	key.GigaChatKeyConfig.CABundleFile = caBundleFile
+	key.GigaChatKeyConfig.CertFile = certFile
+	key.GigaChatKeyConfig.KeyFile = keyFile
 
 	token, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key)
 	if bifrostErr != nil {
@@ -557,16 +589,26 @@ func testGigaChatPasswordIgnoresClientCertificate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server, caBundleFile, certFile, keyFile := newGigaChatClientCertRequestingServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/token" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.TLS != nil && len(r.TLS.PeerCertificates) != 0 {
+			t.Error("password token request should not include client certificate")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"tok":"password-token","exp":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
 	}))
-	defer server.Close()
 
 	provider := newTestGigaChatProvider(t, func() time.Time { return now })
-	key := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
-	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
-	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+	key := testGigaChatPasswordKey(server.URL+"/api", "test-user", "test-password")
+	key.GigaChatKeyConfig.CABundleFile = caBundleFile
+	key.GigaChatKeyConfig.CertFile = certFile
+	key.GigaChatKeyConfig.KeyFile = keyFile
 
 	token, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
 	if bifrostErr != nil {
@@ -575,6 +617,50 @@ func testGigaChatPasswordIgnoresClientCertificate(t *testing.T) {
 	if token != "password-token" {
 		t.Fatalf("token mismatch: got %q", token)
 	}
+}
+
+func newGigaChatMTLSServer(t *testing.T, handler http.Handler) (*httptest.Server, string, string, string) {
+	t.Helper()
+
+	clientCertPEM, clientKeyPEM := generateGigaChatTestCertificate(t)
+	clientCAPool := x509.NewCertPool()
+	if !clientCAPool.AppendCertsFromPEM(clientCertPEM) {
+		t.Fatal("failed to parse client CA certificate")
+	}
+
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs:  clientCAPool,
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	caBundleFile := writeGigaChatTestFile(t, "token-server-ca.pem", serverCertPEM)
+	certFile := writeGigaChatTestFile(t, "token-client.pem", clientCertPEM)
+	keyFile := writeGigaChatTestFile(t, "token-client.key", clientKeyPEM)
+	return server, caBundleFile, certFile, keyFile
+}
+
+func newGigaChatClientCertRequestingServer(t *testing.T, handler http.Handler) (*httptest.Server, string, string, string) {
+	t.Helper()
+
+	clientCertPEM, clientKeyPEM := generateGigaChatTestCertificate(t)
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequestClientCert,
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	caBundleFile := writeGigaChatTestFile(t, "token-server-ca.pem", serverCertPEM)
+	certFile := writeGigaChatTestFile(t, "token-client.pem", clientCertPEM)
+	keyFile := writeGigaChatTestFile(t, "token-client.key", clientKeyPEM)
+	return server, caBundleFile, certFile, keyFile
 }
 
 func testGigaChatOAuthParsesMillisecondsExpiresAt(t *testing.T) {
@@ -1267,6 +1353,17 @@ func assertGigaChatDefaultHeaders(t *testing.T, headers map[string]string, wantA
 
 	if got := headers[gigaChatAuthorizationHeader]; got != wantAuthorization {
 		t.Fatalf("authorization header mismatch: got %q, want %q", got, wantAuthorization)
+	}
+	if got := headers[gigaChatUserAgentHeader]; got != gigaChatUserAgent {
+		t.Fatalf("user-agent header mismatch: got %q, want %q", got, gigaChatUserAgent)
+	}
+}
+
+func assertGigaChatDefaultHeadersWithoutAuthorization(t *testing.T, headers map[string]string) {
+	t.Helper()
+
+	if got := headers[gigaChatAuthorizationHeader]; got != "" {
+		t.Fatalf("unexpected authorization header: %q", got)
 	}
 	if got := headers[gigaChatUserAgentHeader]; got != gigaChatUserAgent {
 		t.Fatalf("user-agent header mismatch: got %q, want %q", got, gigaChatUserAgent)

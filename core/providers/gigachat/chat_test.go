@@ -134,6 +134,7 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Run("ConverterPreservesAssistantReasoningContent", testGigaChatChatConverterPreservesAssistantReasoningContent)
 	t.Run("ConverterMapsFileAttachments", testGigaChatChatConverterMapsFileAttachments)
 	t.Run("ExecutesWithOAuthTokenAndExtraParams", testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams)
+	t.Run("ExecutesWithMTLSClientCertificate", testGigaChatChatCompletionExecutesWithMTLSClientCertificate)
 	t.Run("UploadsInlineImageAttachment", testGigaChatChatCompletionUploadsInlineImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatChatCompletionUploadsInlineFileAttachment)
 	t.Run("ReusesUploadedAttachmentAfterBackendError", testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError)
@@ -477,6 +478,63 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 	}
 	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
 		t.Fatal("provider response headers were not stored in context")
+	}
+}
+
+func testGigaChatChatCompletionExecutesWithMTLSClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	var oauthRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server, caBundleFile, certFile, keyFile := newGigaChatMTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth", "/api/v2/oauth", "/v1/token", "/api/v1/token":
+			oauthRequests.Add(1)
+			t.Fatalf("unexpected token endpoint request: %s", request.URL.Path)
+		case "/v1/chat/completions":
+			chatRequests.Add(1)
+			if got := request.Header.Get("Authorization"); got != "" {
+				t.Fatalf("chat authorization header mismatch: got %q, want empty", got)
+			}
+			if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+				t.Fatal("expected client certificate on API request")
+			}
+			assertGigaChatChatRequestBody(t, request)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"chatcmpl-mtls",
+				"choices":[{"index":0,"message":{"role":"assistant","content":"Здравствуйте"},"finish_reason":"stop"}],
+				"created":1700000000,
+				"model":"GigaChat",
+				"object":"chat.completion",
+				"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	response, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			CertFile:     certFile,
+			KeyFile:      keyFile,
+			CABundleFile: caBundleFile,
+		},
+	}, testGigaChatChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr)
+	}
+	if oauthRequests.Load() != 0 {
+		t.Fatalf("oauth request count mismatch: got %d, want 0", oauthRequests.Load())
+	}
+	if chatRequests.Load() != 1 {
+		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
+	}
+	if response.ID != "chatcmpl-mtls" {
+		t.Fatalf("response id mismatch: got %q", response.ID)
 	}
 }
 
@@ -1034,7 +1092,11 @@ func testGigaChatChatCompletionRefreshesTokenAfterUnauthorized(t *testing.T) {
 func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *testing.T) {
 	t.Parallel()
 
-	now := time.Unix(1_700_000_000, 0)
+	var nowUnix atomic.Int64
+	nowUnix.Store(time.Unix(1_700_000_000, 0).Unix())
+	currentNow := func() time.Time {
+		return time.Unix(nowUnix.Load(), 0)
+	}
 	var tokenRequests atomic.Int32
 	var chatRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -1042,7 +1104,7 @@ func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *tes
 		case "/oauth":
 			tokenIndex := tokenRequests.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"access_token":"token-%d","expires_at":%d}`, tokenIndex, now.Add(30*time.Minute).Unix())))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"access_token":"token-%d","expires_at":%d}`, tokenIndex, currentNow().Add(30*time.Minute).Unix())))
 		case "/v1/chat/completions":
 			chatIndex := chatRequests.Add(1)
 			wantAuthorization := fmt.Sprintf("Bearer token-%d", chatIndex)
@@ -1051,7 +1113,7 @@ func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *tes
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if chatIndex == 1 {
-				now = now.Add(31 * time.Minute)
+				nowUnix.Add(int64(31 * time.Minute / time.Second))
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"status":401,"message":"expired token"}`))
 				return
@@ -1064,7 +1126,7 @@ func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *tes
 	defer server.Close()
 
 	provider := newTestGigaChatChatProvider(t, server.URL)
-	provider.tokenCache = newGigaChatTokenCache(func() time.Time { return now })
+	provider.tokenCache = newGigaChatTokenCache(currentNow)
 
 	response, bifrostErr := provider.ChatCompletion(testBifrostContext(), testGigaChatOAuthKey(server.URL+"/oauth", "", "test-credentials"), testGigaChatChatRequest())
 	if bifrostErr != nil {

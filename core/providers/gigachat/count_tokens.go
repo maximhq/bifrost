@@ -152,14 +152,20 @@ func toGigaChatCountTokensContentBlockText(index int, blockIndex int, block sche
 		return "", false, fmt.Errorf("GigaChat count tokens supports only text input; input[%d].content[%d] contains file, image, or audio content", index, blockIndex)
 	}
 
+	if block.ResponsesOutputMessageContentText != nil {
+		if block.Text != nil && strings.TrimSpace(*block.Text) != "" {
+			return *block.Text, true, nil
+		}
+		return "", false, nil
+	}
 	if block.Text != nil {
+		if strings.TrimSpace(*block.Text) == "" {
+			return "", false, nil
+		}
 		return *block.Text, true, nil
 	}
 	if block.ResponsesOutputMessageContentRefusal != nil && strings.TrimSpace(block.ResponsesOutputMessageContentRefusal.Refusal) != "" {
 		return block.ResponsesOutputMessageContentRefusal.Refusal, true, nil
-	}
-	if block.ResponsesOutputMessageContentText != nil {
-		return "", false, nil
 	}
 
 	switch block.Type {
