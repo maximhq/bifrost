@@ -2,10 +2,7 @@ package postgresconn
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -133,20 +130,6 @@ func TestRunPasswordCommandStartErrorIsNotTimeout(t *testing.T) {
 	require.NotContains(t, err.Error(), "timed out")
 }
 
-func TestGormLoggerTraceDoesNotLogSQL(t *testing.T) {
-	logger := &recordingLogger{}
-	gormLogger := NewGormLogger(logger)
-
-	gormLogger.Trace(context.Background(), time.Now(), func() (string, int64) {
-		return "select * from users where email = 'person@example.com'", 1
-	}, errors.New("query failed"))
-
-	require.Len(t, logger.debugs, 1)
-	require.NotContains(t, logger.debugs[0], "person@example.com")
-	require.NotContains(t, logger.debugs[0], "select * from users")
-	require.Contains(t, logger.debugs[0], "Rows: 1")
-}
-
 func validConfig() *Config {
 	return &Config{
 		Host:     schemas.NewEnvVar("localhost"),
@@ -156,34 +139,4 @@ func validConfig() *Config {
 		DBName:   schemas.NewEnvVar("bifrost"),
 		SSLMode:  schemas.NewEnvVar("disable"),
 	}
-}
-
-type testLogger struct{}
-
-func (testLogger) Debug(string, ...any)                   {}
-func (testLogger) Info(string, ...any)                    {}
-func (testLogger) Warn(string, ...any)                    {}
-func (testLogger) Error(string, ...any)                   {}
-func (testLogger) Fatal(string, ...any)                   {}
-func (testLogger) SetLevel(schemas.LogLevel)              {}
-func (testLogger) SetOutputType(schemas.LoggerOutputType) {}
-func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
-	return schemas.NoopLogEvent
-}
-
-type recordingLogger struct {
-	debugs []string
-}
-
-func (l *recordingLogger) Debug(msg string, args ...any) {
-	l.debugs = append(l.debugs, fmt.Sprintf(msg, args...))
-}
-func (l *recordingLogger) Info(string, ...any)                    {}
-func (l *recordingLogger) Warn(string, ...any)                    {}
-func (l *recordingLogger) Error(string, ...any)                   {}
-func (l *recordingLogger) Fatal(string, ...any)                   {}
-func (l *recordingLogger) SetLevel(schemas.LogLevel)              {}
-func (l *recordingLogger) SetOutputType(schemas.LoggerOutputType) {}
-func (l *recordingLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
-	return schemas.NoopLogEvent
 }

@@ -33,7 +33,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
-	mDb, err := postgresconn.Open(migrationDSN, config, logger)
+	mDb, err := postgresconn.Open(migrationDSN, config, newGormLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	postgresconn.Close(mDb, logger)
 
 	// Runtime pool. Opens against post-migration schema.
-	db, err := postgresconn.Open(dsn, config, logger)
+	db, err := postgresconn.Open(dsn, config, newGormLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// migrateOnFreshFn: downstream consumers (e.g. bifrost-enterprise) run
 	// their migrations via this hook on a throwaway pool that closes after fn.
 	d.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
-		tempDB, err := postgresconn.Open(migrationDSN, config, logger)
+		tempDB, err := postgresconn.Open(migrationDSN, config, newGormLogger(logger))
 		if err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// sql.DB.Close blocks until in-flight queries finish, so callers already
 	// using the old pool complete safely.
 	d.refreshPoolFn = func(ctx context.Context) error {
-		newDB, err := postgresconn.Open(dsn, config, logger)
+		newDB, err := postgresconn.Open(dsn, config, newGormLogger(logger))
 		if err != nil {
 			return fmt.Errorf("failed to open fresh runtime pool: %w", err)
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 const defaultPasswordCommandTimeout = 10 * time.Second
@@ -97,10 +98,10 @@ func BuildDSN(config *Config) string {
 }
 
 // Open opens a *gorm.DB against the configured Postgres instance.
-func Open(dsn string, config *Config, logger schemas.Logger) (*gorm.DB, error) {
+func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, error) {
 	if config.PasswordCommand == nil {
 		return gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{
-			Logger: NewGormLogger(logger),
+			Logger: logger,
 		})
 	}
 
@@ -119,9 +120,10 @@ func Open(dsn string, config *Config, logger schemas.Logger) (*gorm.DB, error) {
 	return openGormFromSQLDB(sqlDB, logger)
 }
 
-func openGormFromSQLDB(sqlDB *sql.DB, logger schemas.Logger) (*gorm.DB, error) {
+// openGormFromSQLDB opens a GORM connection over an existing sql.DB.
+func openGormFromSQLDB(sqlDB *sql.DB, logger gormlogger.Interface) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
-		Logger: NewGormLogger(logger),
+		Logger: logger,
 	})
 	if err != nil {
 		_ = sqlDB.Close()
@@ -229,6 +231,7 @@ func RunPasswordCommand(ctx context.Context, config *PasswordCommandConfig) (str
 	return password, nil
 }
 
+// passwordCommandError includes stderr when a password command exits with an error.
 func passwordCommandError(err error, stderr string) error {
 	stderr = strings.TrimSpace(stderr)
 	if stderr == "" {
@@ -237,6 +240,7 @@ func passwordCommandError(err error, stderr string) error {
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
 }
 
+// validatePasswordCommand checks that password_command is a direct executable invocation.
 func validatePasswordCommand(config *PasswordCommandConfig) error {
 	if config == nil {
 		return fmt.Errorf("postgres password_command config is required")
@@ -257,6 +261,7 @@ func validatePasswordCommand(config *PasswordCommandConfig) error {
 	return nil
 }
 
+// parseConnMaxLifetime parses the optional physical connection lifetime.
 func parseConnMaxLifetime(config *Config) (time.Duration, error) {
 	if config == nil || config.ConnMaxLifetime == "" {
 		return 0, nil
@@ -271,6 +276,7 @@ func parseConnMaxLifetime(config *Config) (time.Duration, error) {
 	return lifetime, nil
 }
 
+// parsePasswordCommandTimeout parses the optional password command timeout.
 func parsePasswordCommandTimeout(config *PasswordCommandConfig) (time.Duration, error) {
 	if config == nil || config.Timeout == "" {
 		return defaultPasswordCommandTimeout, nil

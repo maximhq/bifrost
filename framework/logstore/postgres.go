@@ -83,7 +83,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
 
 	openPool := func(connDSN string) (*gorm.DB, error) {
-		return postgresconn.Open(connDSN, pgConfig, logger)
+		return postgresconn.Open(connDSN, pgConfig, newGormLogger(logger))
 	}
 
 	// closePoolStrict returns the close error so callers can abort startup

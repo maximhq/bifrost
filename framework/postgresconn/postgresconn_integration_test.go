@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func TestPasswordCommandOpensRealPostgresConnections(t *testing.T) {
@@ -34,7 +35,7 @@ func TestPasswordCommandOpensRealPostgresConnections(t *testing.T) {
 	}
 
 	require.NoError(t, Validate(cfg, true))
-	db, err := Open(BuildDSN(cfg), cfg, testLogger{})
+	db, err := Open(BuildDSN(cfg), cfg, gormlogger.Default)
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
