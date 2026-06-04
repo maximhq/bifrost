@@ -1,5 +1,4 @@
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
-import { formatCompactNumber } from "@/lib/utils/numbers";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -31,6 +30,7 @@ import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingE
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -421,7 +421,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 										className={cn(
 											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
 											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 										)}
 									>
 										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
@@ -542,18 +542,18 @@ export function LogDetailView({
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const passthroughParams = isPassthrough
 		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-			})
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
 		: null;
 
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch {}
+		} catch { }
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -570,7 +570,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch {}
+		} catch { }
 		return 0;
 	})();
 
@@ -658,9 +658,18 @@ export function LogDetailView({
 								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 							</Badge>
 							{log.routing_rule && (
-								<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-									rule: {log.routing_rule.name}
-								</Badge>
+								<Link
+									to="/workspace/logs"
+									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									data-testid="logdetails-header-routing-rule-link"
+								>
+									<Badge
+										variant="outline"
+										className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline"
+									>
+										rule: {log.routing_rule.name}
+									</Badge>
+								</Link>
 							)}
 							{log.metadata?.isAsyncRequest ? (
 								<Badge variant="outline" className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200">
@@ -722,13 +731,27 @@ export function LogDetailView({
 						{log.routing_rule && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
-								<span className="text-foreground truncate text-[13px] font-medium">&ldquo;{log.routing_rule.name}&rdquo;</span>
+								<Link
+									to="/workspace/logs"
+									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+									data-testid="logdetails-header-rule-link"
+								>
+									&ldquo;{log.routing_rule.name}&rdquo;
+								</Link>
 							</div>
 						)}
 						{log.selected_key && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
-								<code className="text-foreground truncate font-mono text-[13px]">{log.selected_key.name}</code>
+								<Link
+									to="/workspace/logs"
+									search={{ selected_key_ids: [log.selected_key_id] }}
+									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+									data-testid="logdetails-header-selected-key-link"
+								>
+									{log.selected_key.name}
+								</Link>
 							</div>
 						)}
 					</div>
@@ -770,11 +793,10 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
-										log.token_usage.completion_tokens_details?.reasoning_tokens
-											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-											: ""
-									}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+									: ""
+								}`
 								: "—"
 						}
 						hasRightBorder
@@ -896,7 +918,7 @@ export function LogDetailView({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<code
-														className="text-primary hover:text-primary/80 block min-w-0 cursor-pointer font-normal break-all underline-offset-2 hover:underline"
+														className="block min-w-0 cursor-pointer font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
@@ -910,17 +932,38 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
+							{log.selected_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Selected Key"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={{ selected_key_ids: [log.selected_key_id] }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-selected-key-link"
+										>
+											{log.selected_key.name}
+										</Link>
+									}
+								/>
+							)}
 							{(log.selected_prompt_id || log.selected_prompt_name || log.selected_prompt_version) && (
 								<LogEntryDetailsView
 									className="w-full"
 									label="Selected Prompt"
 									value={
-										<span className="break-words">
-											{selectedPromptDisplayName}
-											{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
-											{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
-										</span>
+										<Link
+											to="/workspace/prompt-repo"
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-selected-prompt-link"
+										>
+											<span className="break-words">
+												{selectedPromptDisplayName}
+												{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
+												{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
+											</span>
+										</Link>
 									}
 								/>
 							)}
@@ -1012,7 +1055,7 @@ export function LogDetailView({
 												<Link
 													to="/workspace/logs"
 													search={{ user_ids: [log.user_id] }}
-													className={`text-primary hover:text-primary/80 block min-w-0 cursor-pointer text-sm font-normal break-all underline-offset-2 hover:underline${log.user_name ? "" : " font-mono"}`}
+													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
 													{log.user_name || log.user_id}
@@ -1024,7 +1067,22 @@ export function LogDetailView({
 								/>
 							)}
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
-							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
+							{log.virtual_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Virtual Key"
+									value={
+										<Link
+											to="/workspace/governance/virtual-keys"
+											search={{ selected_vk: log.virtual_key.id }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-virtual-key-link"
+										>
+											{log.virtual_key.name}
+										</Link>
+									}
+								/>
+							)}
 							{log.routing_engines_used && log.routing_engines_used.length > 0 && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1046,7 +1104,22 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
+							{log.routing_rule && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Routing Rule"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={{ routing_rule_ids: [log.routing_rule.id] }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-routing-rule-link"
+										>
+											{log.routing_rule.name}
+										</Link>
+									}
+								/>
+							)}
 
 							{(log.params as any)?.audio && (
 								<>
@@ -1653,11 +1726,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-											if (!m) return false;
-											const mainRole = ((m.role as string) || "user") as MessageRole;
-											const hasReasoning = !!extractChatReasoning(m);
-											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-										})
+										if (!m) return false;
+										const mainRole = ((m.role as string) || "user") as MessageRole;
+										const hasReasoning = !!extractChatReasoning(m);
+										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+									})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
