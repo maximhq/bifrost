@@ -1,1 +1,3 @@
-- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+- feat: file scheme (file://) support for pricing URL sync
+- feat: paginated virtual key fetch to handle large numbers of keys
+- fix: preserve non-pricing model pool entries across pricing reloads
