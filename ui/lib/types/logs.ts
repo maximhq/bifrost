@@ -581,6 +581,8 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
+	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	app?: string; // Backend-detected client app
 }
 
 export interface LogFilters {
@@ -610,6 +612,8 @@ export interface LogFilters {
 	team_ids?: string[];
 	customer_ids?: string[];
 	business_unit_ids?: string[];
+	apps?: string[]; // Backend-detected client apps
+	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
 
 export interface Pagination {
@@ -1076,6 +1080,8 @@ export interface MCPToolLogEntry {
 	metadata?: Record<string, string>;
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
+	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	app?: string; // Backend-detected client app
 }
 
 // MCP Tool Log Filters
@@ -1091,6 +1097,8 @@ export interface MCPToolLogFilters {
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;
+	apps?: string[]; // Backend-detected client apps
+	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
 
 // MCP Tool Log Statistics
@@ -1112,6 +1120,8 @@ export interface MCPToolLogsResponse {
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
+	apps: string[];
+	user_agents: string[];
 	virtual_keys: VirtualKey[];
 }
 
@@ -1200,7 +1210,7 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "virtual_key";
+export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "app" | "user_agent" | "virtual_key";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;
