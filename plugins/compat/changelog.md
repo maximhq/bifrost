@@ -1,1 +1,2 @@
-- chore: upgraded core to v1.5.16 and framework to v1.3.16
+- fix: preserve chat `max_tokens` during param filtering (#3992)
+- chore: upgraded core to v1.5.17 and framework to v1.3.17

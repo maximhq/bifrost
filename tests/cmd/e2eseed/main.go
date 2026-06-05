@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-
-	"github.com/maximhq/bifrost/framework/e2eseed"
 )
 
 // main runs the OSS API e2e seed command.
@@ -19,7 +17,7 @@ func main() {
 
 // run parses flags, connects to the target stores, and writes seed fixtures.
 func run(ctx context.Context, args []string) error {
-	opts := e2eseed.DefaultOptions()
+	opts := DefaultOptions()
 	summaryPath := ""
 
 	fs := flag.NewFlagSet("e2eseed", flag.ContinueOnError)
@@ -39,19 +37,19 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 
-	opts, err := e2eseed.NormalizeOptions(opts)
+	opts, err := NormalizeOptions(opts)
 	if err != nil {
 		return err
 	}
-	e2eseed.InitEncryption(opts)
-	configDB, err := e2eseed.OpenDB(opts.ConfigDialect, opts.ConfigDSN)
+	InitEncryption(opts)
+	configDB, err := OpenDB(opts.ConfigDialect, opts.ConfigDSN)
 	if err != nil {
 		return fmt.Errorf("open config DB: %w", err)
 	}
 	if sqlDB, dbErr := configDB.DB(); dbErr == nil {
 		defer sqlDB.Close()
 	}
-	logsDB, err := e2eseed.OpenDB(opts.LogsDialect, opts.LogsDSN)
+	logsDB, err := OpenDB(opts.LogsDialect, opts.LogsDSN)
 	if err != nil {
 		return fmt.Errorf("open logs DB: %w", err)
 	}
@@ -59,12 +57,12 @@ func run(ctx context.Context, args []string) error {
 		defer sqlDB.Close()
 	}
 
-	summary, err := e2eseed.SeedBase(ctx, configDB, logsDB, opts)
+	summary, err := SeedBase(ctx, configDB, logsDB, opts)
 	if err != nil {
 		return err
 	}
 	if summaryPath != "" {
-		if err := e2eseed.WriteJSONFile(summaryPath, summary); err != nil {
+		if err := WriteJSONFile(summaryPath, summary); err != nil {
 			return err
 		}
 	}

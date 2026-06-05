@@ -1,1 +1,1 @@
-- chore: upgraded core to v1.5.16 and framework to v1.3.16
+- feat: `request_headers` pattern capture with wildcard support (#4012)
