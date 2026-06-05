@@ -1229,8 +1229,11 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
-// StripEmptyThinkingBlocks removes thinking content blocks where
-// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+// StripEmptyThinkingBlocks removes thinking content blocks that would be
+// rejected by Anthropic: those with an empty "thinking" field, or those
+// with an empty "signature" field. An empty signature means the block came
+// from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
+// always does), so it is unsafe to replay to Anthropic.
 func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
@@ -1244,7 +1247,8 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 		}
 		var toStrip []int
 		for ci, block := range contentResult.Array() {
-			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+			if block.Get("type").String() == "thinking" &&
+				(block.Get("thinking").String() == "" || block.Get("signature").String() == "") {
 				toStrip = append(toStrip, ci)
 			}
 		}
@@ -1254,7 +1258,6 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
 			}
-
 		}
 	}
 	return jsonBody, nil
