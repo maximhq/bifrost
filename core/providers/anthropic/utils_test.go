@@ -2524,6 +2524,88 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	}
 }
 
+// TestStripUnsupportedFieldsFromRawBody_ThinkingRewrite exercises the raw-bytes
+// path parity with the typed conversion path: on Opus 4.7+ (incl. 4.8) the
+// deprecated manual thinking form (type:"enabled" with budget_tokens) is
+// rewritten to adaptive (and budget_tokens dropped); other models pass through
+// unchanged.
+func TestStripUnsupportedFieldsFromRawBody_ThinkingRewrite(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		body          string
+		wantType      string
+		wantHasBudget bool
+	}{
+		{
+			name:          "opus 4.8 rewrites enabled to adaptive and drops budget_tokens",
+			model:         "claude-opus-4-8",
+			body:          `{"model":"claude-opus-4-8","thinking":{"type":"enabled","budget_tokens":10000}}`,
+			wantType:      "adaptive",
+			wantHasBudget: false,
+		},
+		{
+			name:          "opus 4.8 dotted variant rewrites enabled to adaptive",
+			model:         "claude-opus-4.8",
+			body:          `{"model":"claude-opus-4.8","thinking":{"type":"enabled","budget_tokens":4096}}`,
+			wantType:      "adaptive",
+			wantHasBudget: false,
+		},
+		{
+			name:          "opus 4.7 rewrites enabled to adaptive and drops budget_tokens",
+			model:         "claude-opus-4-7",
+			body:          `{"model":"claude-opus-4-7","thinking":{"type":"enabled","budget_tokens":8000}}`,
+			wantType:      "adaptive",
+			wantHasBudget: false,
+		},
+		{
+			name:          "opus 4.8 already adaptive is left untouched",
+			model:         "claude-opus-4-8",
+			body:          `{"model":"claude-opus-4-8","thinking":{"type":"adaptive"}}`,
+			wantType:      "adaptive",
+			wantHasBudget: false,
+		},
+		{
+			name:          "model fallback - opus 4.8 inferred from body when arg empty",
+			model:         "",
+			body:          `{"model":"claude-opus-4-8-20260601","thinking":{"type":"enabled","budget_tokens":2048}}`,
+			wantType:      "adaptive",
+			wantHasBudget: false,
+		},
+		{
+			name:          "opus 4.6 keeps deprecated-but-functional manual thinking",
+			model:         "claude-opus-4-6",
+			body:          `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":10000}}`,
+			wantType:      "enabled",
+			wantHasBudget: true,
+		},
+		{
+			name:          "sonnet 4.6 keeps manual thinking",
+			model:         "claude-sonnet-4-6",
+			body:          `{"model":"claude-sonnet-4-6","thinking":{"type":"enabled","budget_tokens":6000}}`,
+			wantType:      "enabled",
+			wantHasBudget: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			gotType := providerUtils.GetJSONField(out, "thinking.type").String()
+			if gotType != tt.wantType {
+				t.Errorf("thinking.type=%q, want %q; body=%s", gotType, tt.wantType, string(out))
+			}
+			haveBudget := providerUtils.JSONFieldExists(out, "thinking.budget_tokens")
+			if haveBudget != tt.wantHasBudget {
+				t.Errorf("thinking.budget_tokens present=%v, want %v; body=%s", haveBudget, tt.wantHasBudget, string(out))
+			}
+		})
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -2952,8 +3034,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

@@ -478,6 +478,27 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// thinking — Opus 4.7+ (incl. 4.8) only support adaptive thinking; the
+	// deprecated manual form (thinking.type:"enabled" with budget_tokens) is
+	// rejected by Anthropic with a 400. Rewrite it to adaptive for parity with
+	// the typed conversion path (chat/responses), which maps enabled→adaptive
+	// via IsOpus47Plus. Raw passthrough clients (e.g. the Claude Agent SDK)
+	// frequently default to the manual form for Opus models.
+	if IsOpus47Plus(model) {
+		if t := providerUtils.GetJSONField(jsonBody, "thinking.type"); t.Exists() && t.String() == "enabled" {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
+			}
+			if providerUtils.JSONFieldExists(jsonBody, "thinking.budget_tokens") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.budget_tokens")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
+				}
+			}
+		}
+	}
+
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
