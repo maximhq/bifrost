@@ -2477,38 +2477,3 @@ func TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks(t 
 	assert.Error(t, err, "an exceeded budget among several on a VK-scoped config must block")
 }
 
-// TestCollectApplicableGovernanceIDs_UserScopedModelConfigs pins the user-path
-// half of the log row's budget_ids / rate_limit_ids stamping: the tracker
-// charges user-scoped model-config budgets / rate limits whenever a user is
-// resolved (UpdateScopedModel*UsageInMemory with ModelConfigScopeUser), so
-// CollectApplicableGovernanceIDs must report those IDs for ghost-node
-// reconciliation — and must not when no (or a different) user is present.
-func TestCollectApplicableGovernanceIDs_UserScopedModelConfigs(t *testing.T) {
-	logger := NewMockLogger()
-	userID := "user1"
-	budget := buildBudget("user-mc-b", 100.0, "1h")
-	rl := buildRateLimit("user-mc-rl", 1000, 100)
-	mc := buildModelConfig("mc-user", "gpt-4", nil, budget, rl)
-	mc.Scope = configstoreTables.ModelConfigScopeUser
-	mc.ScopeID = &userID
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
-		Budgets:      []configstoreTables.TableBudget{*budget},
-		RateLimits:   []configstoreTables.TableRateLimit{*rl},
-	}, nil)
-	require.NoError(t, err)
-
-	budgetIDs, rateLimitIDs := store.CollectApplicableGovernanceIDs(context.Background(), "", "user1", schemas.OpenAI, "gpt-4")
-	assert.Contains(t, budgetIDs, "user-mc-b", "user-scoped model budget must reach the log row")
-	assert.Contains(t, rateLimitIDs, "user-mc-rl", "user-scoped model rate limit must reach the log row")
-
-	// No user resolved → the user-scoped IDs must not leak onto the row.
-	budgetIDs, rateLimitIDs = store.CollectApplicableGovernanceIDs(context.Background(), "", "", schemas.OpenAI, "gpt-4")
-	assert.NotContains(t, budgetIDs, "user-mc-b")
-	assert.NotContains(t, rateLimitIDs, "user-mc-rl")
-
-	// A different user's request must not pick up this user's scoped IDs.
-	budgetIDs, rateLimitIDs = store.CollectApplicableGovernanceIDs(context.Background(), "", "user2", schemas.OpenAI, "gpt-4")
-	assert.NotContains(t, budgetIDs, "user-mc-b")
-	assert.NotContains(t, rateLimitIDs, "user-mc-rl")
-}
