@@ -36,6 +36,7 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Link } from "@tanstack/react-router";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -53,6 +54,7 @@ import {
 	RotateCcw,
 	Search,
 	ShieldCheck,
+	ScrollText,
 	Trash2,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
@@ -214,6 +216,16 @@ function VKActionsMenu({
 					>
 						<Edit className="h-4 w-4" />
 						Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem
+						asChild
+						className="cursor-pointer"
+						data-testid={`vk-view-logs-btn-${vk.name}`}
+					>
+						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
+							<ScrollText className="h-4 w-4" />
+							View logs
+						</Link>
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
