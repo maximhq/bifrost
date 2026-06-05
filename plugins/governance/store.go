@@ -2605,34 +2605,42 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		return // Nothing to create
 	}
 
+	clone := *vk
+
+	// Clone provider configs
+	if vk.ProviderConfigs != nil {
+		clone.ProviderConfigs = make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
+		copy(clone.ProviderConfigs, vk.ProviderConfigs)
+	}
+
 	// Store budgets
-	for i := range vk.Budgets {
-		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
-		gs.budgets.Store(vk.Budgets[i].ID, &vk.Budgets[i])
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
-	if vk.RateLimit != nil {
-		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
-		gs.rateLimits.Store(vk.RateLimit.ID, vk.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
 	// Create provider config budgets and rate limits if they exist
-	if vk.ProviderConfigs != nil {
-		for i := range vk.ProviderConfigs {
-			pc := &vk.ProviderConfigs[i]
+	if clone.ProviderConfigs != nil {
+		for i := range clone.ProviderConfigs {
+			pc := &clone.ProviderConfigs[i]
 			for j := range pc.Budgets {
-				pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
+				pc.Budgets[j].IsCalendarAligned = clone.CalendarAligned
 				gs.budgets.Store(pc.Budgets[j].ID, &pc.Budgets[j])
 			}
 			if pc.RateLimit != nil {
-				pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
+				pc.RateLimit.IsCalendarAligned = clone.CalendarAligned
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
 			}
 		}
 	}
 
-	gs.virtualKeys.Store(vk.Value, vk)
+	gs.virtualKeys.Store(clone.Value, &clone)
 }
 
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
@@ -2886,20 +2894,22 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 		return // Nothing to create
 	}
 
+	clone := *team
+
 	// Create associated budgets if they exist
-	for i := range team.Budgets {
-		team.Budgets[i].IsCalendarAligned = team.CalendarAligned
-		b := team.Budgets[i]
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		b := clone.Budgets[i]
 		gs.budgets.Store(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
-	if team.RateLimit != nil {
-		team.RateLimit.IsCalendarAligned = team.CalendarAligned
-		gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
-	gs.teams.Store(team.ID, team)
+	gs.teams.Store(clone.ID, &clone)
 }
 
 // UpdateTeamInMemory updates an existing team in the in-memory store (lock-free)
@@ -3018,15 +3028,16 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	if customer == nil {
 		return // Nothing to create
 	}
-	for i := range customer.Budgets {
-		customer.Budgets[i].IsCalendarAligned = customer.CalendarAligned
-		gs.budgets.Store(customer.Budgets[i].ID, &customer.Budgets[i])
+	clone := *customer
+	for i := range clone.Budgets {
+		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
+		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
-	if customer.RateLimit != nil {
-		customer.RateLimit.IsCalendarAligned = customer.CalendarAligned
-		gs.rateLimits.Store(customer.RateLimit.ID, customer.RateLimit)
+	if clone.RateLimit != nil {
+		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
-	gs.customers.Store(customer.ID, customer)
+	gs.customers.Store(clone.ID, &clone)
 }
 
 // UpdateCustomerInMemory updates an existing customer in the in-memory store (lock-free)
