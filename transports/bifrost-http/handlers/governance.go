@@ -900,8 +900,8 @@ type UpdateTeamRequest struct {
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
 	Name            string                  `json:"name" validate:"required"`
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
-	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
+	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
@@ -909,8 +909,8 @@ type CreateCustomerRequest struct {
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
 	Name            *string                 `json:"name,omitempty"`
-	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"`          // nil=no change, []=remove all
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`           // Deprecated: use budgets
+	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
+	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
@@ -1051,8 +1051,10 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
+	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
+	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -1062,6 +1064,8 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			Order:                              order,
 			Export:                             isExport,
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
+			ExcludeAssignedVirtualKeys:         excludeAssignedVirtualKeys,
+			ForUserAssignment:                  forUserAssignment,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
