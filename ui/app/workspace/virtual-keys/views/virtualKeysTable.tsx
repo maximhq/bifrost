@@ -1,3 +1,4 @@
+import { BudgetDisplay } from "@/components/budgetDisplay";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -22,7 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { resetDurationLabels } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
@@ -103,26 +104,7 @@ function downloadCSV(content: string) {
 
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { displayBudgets } = useVirtualKeyUsage(vk);
-
-	if (!displayBudgets || displayBudgets.length === 0) {
-		return <span className="text-muted-foreground text-sm">-</span>;
-	}
-
-	return (
-		<div className="flex flex-col gap-0.5">
-			{displayBudgets.map((b, idx) => (
-				<div key={idx} className="flex flex-col">
-					<span className={cn("font-mono text-sm", b.current_usage >= b.max_limit && "text-red-400")}>
-						{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
-					</span>
-					<span className="text-muted-foreground text-xs">
-						Resets {formatResetDuration(b.reset_duration)}
-						{vk.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
-					</span>
-				</div>
-			))}
-		</div>
-	);
+	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
