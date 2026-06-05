@@ -1854,6 +1854,61 @@
               }
             }
           ]
+        },
+        {
+          "name": "Context Compaction cross-cut",
+          "item": [
+            {
+              "name": "Compaction via native Bifrost API (openai/gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"openai/gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/responses/compact","host":["{{baseUrl}}"],"path":["v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (OpenAI gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (Azure gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (xAI grok-4.3)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"xai/grok-4.3\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/responses/compact","host":["{{baseUrl}}"],"path":["v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction with instructions (OpenAI gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ],\n  \"instructions\": \"You are a helpful geography assistant. Be concise.\"\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            }
+          ]
         }
       ]
     },
