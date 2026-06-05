@@ -73,9 +73,7 @@ function VirtualKeyPicker({ value, onChange, disabled, fallbackOption }: ScopePi
 	const virtualKeys = vksData?.virtual_keys ?? [];
 	const options = [
 		...(fallbackOption && !virtualKeys.some((vk) => vk.id === fallbackOption.value) ? [fallbackOption] : []),
-		...virtualKeys
-			.filter((vk) => vk.id !== fallbackOption?.value)
-			.map((vk) => ({ label: vk.name, value: vk.id })),
+		...virtualKeys.map((vk) => ({ label: vk.name, value: vk.id })),
 	];
 	return (
 		<ComboboxSelect
