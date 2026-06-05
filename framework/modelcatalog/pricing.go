@@ -336,7 +336,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 
 	// Route to the appropriate compute function
 	switch requestType {
-	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
@@ -380,6 +380,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
 		input.tier = tierFromString(result.ResponsesResponse.ServiceTier)
+
+	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
@@ -1231,7 +1234,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		}
 
 		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
@@ -1251,7 +1254,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -1271,7 +1274,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -1281,8 +1284,8 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		}
 	}
 
-	// Lookup in chat if responses not found
-	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+	// Lookup in chat if responses/compaction not found
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
@@ -1363,6 +1366,8 @@ func detectPassthroughRequestType(provider schemas.ModelProvider, path string) s
 			return schemas.TextCompletionRequest
 		case strings.HasSuffix(path, "/embeddings"):
 			return schemas.EmbeddingRequest
+		case strings.HasSuffix(path, "/responses/compact"):
+			return schemas.CompactionRequest
 		case strings.HasSuffix(path, "/responses"):
 			return schemas.ResponsesRequest
 		case strings.HasSuffix(path, "/images/generations"):

@@ -4631,7 +4631,8 @@
         "image_variation",
         "image_edit",
         "video_generation",
-        "video_remix"
+        "video_remix",
+        "compaction"
       ]
     },
     "custom_provider_config": {
@@ -4704,6 +4705,9 @@
               "type": "boolean"
             },
             "count_tokens": {
+              "type": "boolean"
+            },
+            "compaction": {
               "type": "boolean"
             },
             "embedding": {
