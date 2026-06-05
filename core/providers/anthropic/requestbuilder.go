@@ -171,11 +171,6 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
-		jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
-		if err != nil {
-			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-		}
-
 		if cfg.RemapToolVersions {
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
@@ -300,6 +295,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+	}
+
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
 	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
