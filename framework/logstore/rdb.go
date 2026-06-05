@@ -258,6 +258,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
 		}
 	}
+	if len(filters.UserAgents) > 0 {
+		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
+	}
+	if len(filters.Apps) > 0 {
+		baseQuery = baseQuery.Where("app IN ?", filters.Apps)
+	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
 		dialect := s.db.Dialector.Name()
@@ -3711,6 +3717,46 @@ func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context, limit int, que
 	return stopReasons, nil
 }
 
+// GetDistinctUserAgents returns all unique non-empty user_agent values using SELECT DISTINCT.
+// The UI maps each raw User-Agent to a client app. Matview path is DAC-aware
+// (see GetDistinctModels); falls back to a recency-scoped raw-table scan.
+func (s *RDBLogStore) GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctUserAgentsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var userAgents []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("user_agent IS NOT NULL AND user_agent != '' AND timestamp >= ?", cutoff).
+		Distinct("user_agent")
+	if query != "" {
+		q = s.applyLikeFilter(q, "user_agent", query)
+	}
+	if err := q.Order("user_agent ASC").Limit(limit).Pluck("user_agent", &userAgents).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct user agents: %w", err)
+	}
+	return userAgents, nil
+}
+
+// GetDistinctApps returns all unique non-empty backend-detected app labels.
+func (s *RDBLogStore) GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctAppsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var apps []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("app IS NOT NULL AND app != '' AND timestamp >= ?", cutoff).
+		Distinct("app")
+	if query != "" {
+		q = s.applyLikeFilter(q, "app", query)
+	}
+	if err := q.Order("app ASC").Limit(limit).Pluck("app", &apps).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct apps: %w", err)
+	}
+	return apps, nil
+}
+
 // metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.
 var metadataSystemKeys = map[string]struct{}{
 	"isAsyncRequest": {},
@@ -3952,6 +3998,12 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if len(filters.LLMRequestIDs) > 0 {
 		baseQuery = baseQuery.Where("llm_request_id IN ?", filters.LLMRequestIDs)
+	}
+	if len(filters.UserAgents) > 0 {
+		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
+	}
+	if len(filters.Apps) > 0 {
+		baseQuery = baseQuery.Where("app IN ?", filters.Apps)
 	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
@@ -4247,6 +4299,39 @@ func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context, limit int, q
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
 	return serverLabels, nil
+}
+
+// GetAvailableMCPUserAgents returns unique non-empty user_agent values from MCP tool logs.
+// The UI maps each raw User-Agent to a client app for the MCP logs "App" filter.
+func (s *RDBLogStore) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var userAgents []string
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("user_agent IS NOT NULL AND user_agent != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "user_agent", query)
+	}
+	result := q.Distinct("user_agent").Order("user_agent ASC").Limit(limit).Pluck("user_agent", &userAgents)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available MCP user agents: %w", result.Error)
+	}
+	return userAgents, nil
+}
+
+// GetAvailableMCPApps returns unique non-empty backend-detected app labels from MCP tool logs.
+func (s *RDBLogStore) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var apps []string
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("app IS NOT NULL AND app != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "app", query)
+	}
+	result := q.Distinct("app").Order("app ASC").Limit(limit).Pluck("app", &apps)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available MCP apps: %w", result.Error)
+	}
+	return apps, nil
 }
 
 func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {

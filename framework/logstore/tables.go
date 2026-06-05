@@ -60,6 +60,8 @@ type SearchFilters struct {
 	UserIDs           []string          `json:"user_ids,omitempty"`
 	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
 	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime         *time.Time        `json:"start_time,omitempty"`
 	EndTime           *time.Time        `json:"end_time,omitempty"`
 	MinLatency        *float64          `json:"min_latency,omitempty"`
@@ -166,33 +168,35 @@ type Log struct {
 	CustomerNames           *string   `gorm:"type:text" json:"-"`
 	BusinessUnitIDs         *string   `gorm:"type:text" json:"-"`
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
-	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
-	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput         string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
-	RerankOutput            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
-	OCROutput               string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostOCRResponse
-	Params                  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools                   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	OCRInput                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.OCRDocument
-	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
-	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
-	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
-	VideoGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
-	SpeechOutput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	ImageGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
-	ListModelsOutput        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
-	VideoGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
-	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
-	VideoDownloadOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
-	VideoListOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
-	VideoDeleteOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
+	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
+	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
+	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
+	ResponsesOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized [][]float32
+	RerankOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.RerankResult
+	OCROutput               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostOCRResponse
+	Params                  string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ModelParameters
+	Tools                   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.Tool
+	ToolCalls               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput             string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.SpeechInput
+	TranscriptionInput      string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.TranscriptionInput
+	OCRInput                string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.OCRDocument
+	ImageGenerationInput    string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageGenerationInput
+	ImageEditInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageEditInput
+	ImageVariationInput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageVariationInput
+	VideoGenerationInput    string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.VideoGenerationInput
+	SpeechOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput        string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.Model
+	VideoGenerationOutput   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoGenerationResponse
+	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoRetrieveResponse
+	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
+	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
+	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
+	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
@@ -961,14 +965,16 @@ type MCPToolLog struct {
 	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
-	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
-	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
-	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
-	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`               // Execution time in milliseconds
-	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
-	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
-	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
-	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
+	UserAgent      *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
+	App            *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	Arguments      string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
+	Result         string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
+	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
+	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`                         // Execution time in milliseconds
+	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                               // Cost in dollars (per execution cost)
+	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"`           // "processing", "success", or "error"
+	Metadata       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized map[string]interface{}
+	HasObject      bool      `gorm:"default:false" json:"-"`                                                      // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed
@@ -1247,6 +1253,8 @@ type MCPToolLogSearchFilters struct {
 	Status        []string   `json:"status,omitempty"`
 	VirtualKeyIDs []string   `json:"virtual_key_ids,omitempty"`
 	LLMRequestIDs []string   `json:"llm_request_ids,omitempty"`
+	Apps          []string   `json:"apps,omitempty"`        // Backend-detected client apps
+	UserAgents    []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime     *time.Time `json:"start_time,omitempty"`
 	EndTime       *time.Time `json:"end_time,omitempty"`
 	MinLatency    *float64   `json:"min_latency,omitempty"`
@@ -1603,6 +1611,8 @@ const (
 	DimensionCustomer     HistogramDimension = "customer_id"
 	DimensionUser         HistogramDimension = "user_id"
 	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+	DimensionApp          HistogramDimension = "app"
+	DimensionUserAgent    HistogramDimension = "user_agent"
 )
 
 // ValidHistogramDimensions is the set of allowed dimension values
@@ -1612,6 +1622,8 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+	DimensionApp:          true,
+	DimensionUserAgent:    true,
 }
 
 // histogramDimensionColumn maps a validated dimension to its SQL column name.
@@ -1806,7 +1818,12 @@ const (
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
 	RankingDimensionUser         RankingDimension = "user"
+<<<<<<< HEAD
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
+=======
+	RankingDimensionApp          RankingDimension = "app"
+	RankingDimensionUserAgent    RankingDimension = "user_agent"
+>>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
@@ -1814,7 +1831,12 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
 	RankingDimensionUser:         true,
+<<<<<<< HEAD
 	RankingDimensionVirtualKey:   true,
+=======
+	RankingDimensionApp:          true,
+	RankingDimensionUserAgent:    true,
+>>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 }
 
 type dimensionColumnDef struct {
@@ -1827,7 +1849,12 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
+<<<<<<< HEAD
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
+=======
+	RankingDimensionApp:          {IDCol: "app", NameCol: ""},
+	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: ""},
+>>>>>>> e32994308 (adds user-agent tracking for llm and mcp logs)
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {

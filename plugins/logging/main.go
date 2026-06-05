@@ -369,6 +369,8 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
+	App                    string // Backend-detected client app derived from UserAgent
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -590,6 +592,26 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
+// userAgentFromContext returns the raw HTTP User-Agent of the calling client from
+// the request header map, or "" when absent. Keys in the map are lowercased, so
+// the lookup is case-insensitive. The value is stored verbatim on the log entry;
+// mapping it to a client app happens in the UI.
+func userAgentFromContext(ctx *schemas.BifrostContext) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if allHeaders != nil {
+		if ua := allHeaders["user-agent"]; ua != "" {
+			return ua
+		}
+		for key, value := range allHeaders {
+			if strings.EqualFold(key, "user-agent") && value != "" {
+				return value
+			}
+		}
+	}
+	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
+	return ua
+}
+
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context. Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
@@ -692,6 +714,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
 	}
+
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.App = schemas.DetectAppFromUserAgent(initialData.UserAgent)
 
 	if p.contentLoggingEnabled(ctx) {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
@@ -974,6 +1001,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
+			}
+			if ua := userAgentFromContext(ctx); ua != "" {
+				entry.UserAgent = &ua
+				if app := schemas.DetectAppFromUserAgent(ua); app != "" {
+					entry.App = &app
+				}
 			}
 			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
@@ -1553,9 +1586,17 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
-	// Set arguments if content logging is enabled. MCP tool logs have no
-	// hidden-content mode, so content is only stored when it is also visible.
-	if p.resolveContentPolicy(ctx).visible() {
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	if ua := userAgentFromContext(ctx); ua != "" {
+		entry.UserAgent = &ua
+		if app := schemas.DetectAppFromUserAgent(ua); app != "" {
+			entry.App = &app
+		}
+	}
+
+	// Set arguments if content logging is enabled
+	if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
 	}
 

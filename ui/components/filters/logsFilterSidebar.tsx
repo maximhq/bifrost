@@ -112,6 +112,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ProvidersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TypeFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -260,6 +261,7 @@ function SearchableCheckboxList({
 	placeholder = "Search...",
 	inputRef,
 	testIdPrefix,
+	normalizeTestIdKey = false,
 	allowCustom = false,
 	onSearch,
 	fetching,
@@ -270,6 +272,10 @@ function SearchableCheckboxList({
 	placeholder?: string;
 	inputRef?: Ref<HTMLInputElement>;
 	testIdPrefix?: string;
+	// When true, item keys are slugified before composing the per-row data-testid
+	// (e.g. "Claude Desktop" -> "claude-desktop"). Use for free-form keys like app
+	// names so E2E selectors stay space/case-stable; leave off for already-safe keys.
+	normalizeTestIdKey?: boolean;
 	allowCustom?: boolean;
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
@@ -324,7 +330,11 @@ function SearchableCheckboxList({
 					label={item.label}
 					checked={isSelected(item.key)}
 					onCheckedChange={() => onToggle(item.key)}
-					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
+					testId={
+						testIdPrefix
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
+							: undefined
+					}
 				/>
 			))}
 			{filtered.length === 0 && !showAddCustom && (
@@ -419,6 +429,51 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// AppFilter
+// ---------------------------------------------------------------------------
+
+function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.apps || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
+	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
+	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+
+	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
+
+	const selectedSet = new Set(filters.apps || []);
+
+	return (
+		<FilterSection
+			title="App"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="app-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search apps"
+				items={items}
+				isSelected={(appName) => selectedSet.has(appName)}
+				onToggle={(appName) => {
+					const current = filters.apps || [];
+					const next = current.includes(appName) ? current.filter((app) => app !== appName) : [...current, appName];
+					onFiltersChange({ ...filters, apps: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="app-filter"
+				normalizeTestIdKey
 			/>
 		</FilterSection>
 	);

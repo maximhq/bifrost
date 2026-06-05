@@ -44,6 +44,61 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+func TestUserAgentFromContextUsesRequestHeaders(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "codex-tui/1.0",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "codex-tui/1.0" {
+		t.Fatalf("expected request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesCanonicalRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"User-Agent": "Claude-Code/1.0",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Claude-Code/1.0" {
+		t.Fatalf("expected canonical request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesUppercaseRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"USER-AGENT": "Cursor/0.47",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Cursor/0.47" {
+		t.Fatalf("expected uppercase request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackWhenHeaderValueIsEmpty(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "fallback/1.0" {
+		t.Fatalf("expected fallback user agent for empty header, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "cursor/0.47")
+
+	if got := userAgentFromContext(ctx); got != "cursor/0.47" {
+		t.Fatalf("expected fallback user agent, got %q", got)
+	}
+}
+
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
@@ -725,6 +780,86 @@ func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 	}
 	if got := entry.MetadataParsed["tenant"]; got != "acme" {
 		t.Fatalf("expected tenant metadata acme, got %#v", got)
+	}
+}
+
+func TestBuildInitialLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "codex-cli/1.0"
+	entry := buildInitialLogEntry(&PendingLogData{
+		RequestID:     "req-initial-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on initial log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on initial log entry")
+	}
+	if got := *entry.App; got != "Codex" {
+		t.Fatalf("expected app Codex, got %q", got)
+	}
+}
+
+func TestBuildCompleteLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "cursor/0.47"
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{
+		RequestID:     "req-complete-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on complete log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on complete log entry")
+	}
+	if got := *entry.App; got != "Cursor" {
+		t.Fatalf("expected app Cursor, got %q", got)
+	}
+}
+
+func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
+	pending := &PendingLogData{
+		RequestID:     "req-empty-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider: string(schemas.OpenAI),
+			Model:    "gpt-4o",
+			Object:   string(schemas.ChatCompletionRequest),
+		},
+	}
+
+	if entry := buildInitialLogEntry(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil initial user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil initial app, got %#v", entry.App)
+	}
+	if entry := buildCompleteLogEntryFromPending(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil complete user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil complete app, got %#v", entry.App)
 	}
 }
 

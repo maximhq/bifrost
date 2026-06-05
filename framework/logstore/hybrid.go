@@ -806,6 +806,18 @@ func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context, limit int, 
 	return h.inner.GetDistinctStopReasons(ctx, limit, query)
 }
 
+// GetDistinctUserAgents delegates to the inner store and returns distinct
+// raw User-Agent strings for the logs "App" filter, capped at limit.
+func (h *HybridLogStore) GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctUserAgents(ctx, limit, query)
+}
+
+// GetDistinctApps delegates to the inner store and returns distinct backend-
+// detected app labels from recent logs.
+func (h *HybridLogStore) GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctApps(ctx, limit, query)
+}
+
 // GetDistinctMetadataKeys delegates to the inner store and returns distinct
 // metadata keys (and their distinct values) matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
@@ -1237,6 +1249,17 @@ func (h *HybridLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) 
 // GetAvailableToolNames returns a list of tool names that match the given query.
 func (h *HybridLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetAvailableToolNames(ctx, limit, query)
+}
+
+// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs.
+func (h *HybridLogStore) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableMCPUserAgents(ctx, limit, query)
+}
+
+// GetAvailableMCPApps delegates to the inner store and returns distinct backend-
+// detected app labels from MCP tool logs.
+func (h *HybridLogStore) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableMCPApps(ctx, limit, query)
 }
 
 // GetAvailableServerLabels returns a list of server labels that match the given query.

@@ -97,6 +97,11 @@ type LogManager interface {
 	// GetAvailableStopReasons returns all unique stop reason values from logs
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableUserAgents returns all unique raw User-Agent strings from logs
+	GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableApps returns all unique backend-detected app labels from logs
+	GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
 	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
@@ -155,6 +160,11 @@ type LogManager interface {
 
 	// GetAvailableServerLabels returns all unique server labels from MCP tool logs
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
+
+	// GetAvailableMCPUserAgents returns all unique raw User-Agent strings from MCP tool logs
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns all unique backend-detected app labels from MCP tool logs
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
@@ -329,6 +339,16 @@ func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit in
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
 }
 
+// GetAvailableUserAgents returns distinct raw User-Agent strings from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableUserAgents(ctx, limit, query)
+}
+
+// GetAvailableApps returns distinct backend-detected app labels from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableApps(ctx, limit, query)
+}
+
 func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableTeams(ctx, limit, query)
 }
@@ -460,6 +480,22 @@ func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context, limit i
 		return []string{}, nil
 	}
 	return p.plugin.store.GetAvailableServerLabels(ctx, limit, query)
+}
+
+// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPUserAgents(ctx, limit, query)
+}
+
+// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPApps(ctx, limit, query)
 }
 
 func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {

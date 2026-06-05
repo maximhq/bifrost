@@ -1,5 +1,5 @@
 import { useGetDimensionRankingsQuery, useLazyGetDimensionRankingsQuery } from "@/lib/store";
-import type { LogFilters, RankingDimension } from "@/lib/types/logs";
+import type { DimensionRankingsResponse, LogFilters, RankingDimension } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";
 import type { DashboardData } from "../../utils/exportUtils";
 import { DimensionRankingsTab } from "../dimensionRankingsTab";
@@ -16,16 +16,21 @@ interface DimensionRankingsTabViewProps {
 	dimensionLabel: string;
 	testIdPrefix: string;
 	dataKey: keyof DashboardData;
+	// Optional client-side reshape of the response before rendering/export. Used by
+	// the App tab to roll per-version User-Agent rows up into one row per client app.
+	transform?: (data: DimensionRankingsResponse | null) => DimensionRankingsResponse | null;
 }
 
 export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandle, DimensionRankingsTabViewProps>(
-	function DimensionRankingsTabView({ filters, active, dimension, dimensionLabel, testIdPrefix, dataKey }, ref) {
+	function DimensionRankingsTabView({ filters, active, dimension, dimensionLabel, testIdPrefix, dataKey, transform }, ref) {
 		const fetchArg = useMemo(() => ({ filters, dimension }), [filters, dimension]);
 		const skipOpts = useMemo(() => ({ skip: !active }), [active]);
 
 		const { data, isLoading: loading } = useGetDimensionRankingsQuery(fetchArg, skipOpts);
 
 		const [triggerDimensionRankings] = useLazyGetDimensionRankingsQuery();
+
+		const displayData = useMemo(() => (transform ? transform(data ?? null) : (data ?? null)), [data, transform]);
 
 		const loadData = useCallback(async () => {
 			await triggerDimensionRankings(fetchArg, true);
@@ -34,15 +39,15 @@ export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandl
 		useImperativeHandle(
 			ref,
 			() => ({
-				getData: () => ({ [dataKey]: data ?? null }),
+				getData: () => ({ [dataKey]: displayData }),
 				loadData,
 			}),
-			[data, dataKey, loadData],
+			[displayData, dataKey, loadData],
 		);
 
 		return (
 			<DimensionRankingsTab
-				data={data ?? null}
+				data={displayData}
 				loading={loading}
 				dimensionLabel={dimensionLabel}
 				testIdPrefix={testIdPrefix}
