@@ -2634,6 +2634,10 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 
 	// Copy nested response (applies defaults)
 	result.Response = resp.Response.WithDefaults()
+	// OpenAI Responses API requires usage=null on response.created; final usage is on response.completed only
+	if resp.Type == ResponsesStreamResponseTypeCreated && result.Response != nil {
+		result.Response.Usage = nil
+	}
 
 	// Copy all streaming-specific fields
 	result.OutputIndex = resp.OutputIndex
