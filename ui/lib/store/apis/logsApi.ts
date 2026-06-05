@@ -87,6 +87,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
 		params.business_unit_ids = filters.business_unit_ids.join(",");
 	}
+	if (filters.apps && filters.apps.length > 0) {
+		params.apps = JSON.stringify(filters.apps);
+	}
+	if (filters.user_agents && filters.user_agents.length > 0) {
+		params.user_agents = JSON.stringify(filters.user_agents);
+	}
 	if (filters.metadata_filters) {
 		for (const [key, value] of Object.entries(filters.metadata_filters)) {
 			params[`metadata_${key}`] = value;
@@ -322,6 +328,8 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				apps?: string[];
+				user_agents?: string[];
 				teams?: { id: string; name: string }[];
 				customers?: { id: string; name: string }[];
 				users?: { id: string; name: string }[];
