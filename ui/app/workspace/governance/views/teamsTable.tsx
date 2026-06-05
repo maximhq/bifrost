@@ -1,3 +1,4 @@
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -10,8 +11,8 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,11 +22,11 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Input } from "@/components/ui/input";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import TeamDialog from "./teamDialog";
+import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
 
 // Helper to format reset duration for display
@@ -79,6 +80,12 @@ function TeamActionsMenu({
 						<Edit className="h-4 w-4" />
 						Edit
 					</DropdownMenuItem>
+					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
+						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
+							<ScrollText className="h-4 w-4" />
+							View logs
+						</Link>
+					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
 						className="cursor-pointer"
@@ -131,6 +138,7 @@ interface TeamsTableProps {
 	onTeamAdd: () => void;
 	onTeamSelect: (team: Team | null) => void;
 	onDialogClose: () => void;
+	isLoading?: boolean
 }
 
 export default function TeamsTable({
@@ -148,8 +156,9 @@ export default function TeamsTable({
 	onTeamAdd,
 	onTeamSelect,
 	onDialogClose,
+	isLoading
 }: TeamsTableProps) {
-	const showTeamDialog = selectedTeamId !== null && selectedTeamId !== "";
+	const showTeamSheet = selectedTeamId !== null && selectedTeamId !== "";
 	const editingTeam = selectedTeamId && selectedTeamId !== "new" ? (teams.find((t) => t.id === selectedTeamId) ?? null) : null;
 
 	// If a team ID is in the URL but can't be resolved (deleted or filtered out),
@@ -200,11 +209,11 @@ export default function TeamsTable({
 	const hasActiveFilters = debouncedSearch;
 
 	// True empty state: no teams at all (not just filtered to zero)
-	if (totalCount === 0 && !hasActiveFilters) {
+	if (totalCount === 0 && !hasActiveFilters && !isLoading) {
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
+					{showTeamSheet && <TeamSheet team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -214,10 +223,10 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamDialog && <TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
+				{showTeamSheet && <TeamSheet team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
-				<div className="space-y-4">
-					<div className="flex items-center justify-between">
+				<div className="flex flex-col overflow-y-auto grow">
+					<div className="flex items-center justify-between mb-4">
 						<div>
 							<h2 className="text-lg font-semibold">Teams</h2>
 							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
@@ -228,7 +237,7 @@ export default function TeamsTable({
 						</Button>
 					</div>
 
-					<div className="flex items-center gap-3">
+					<div className="flex items-center gap-3 mb-4">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -242,9 +251,9 @@ export default function TeamsTable({
 						</div>
 					</div>
 
-					<div className="overflow-auto rounded-sm border" data-testid="teams-table">
-						<Table className="min-w-[1100px]">
-							<TableHeader>
+					<div className="overflow-auto rounded-sm border mb-2 grow" data-testid="teams-table">
+						<Table className="min-w-[1100px]" containerClassName="h-full">
+							<TableHeader className="sticky top-0 bg-background">
 								<TableRow>
 									<TableHead>Name</TableHead>
 									<TableHead>Customer</TableHead>
@@ -467,28 +476,38 @@ export default function TeamsTable({
 
 					{/* Pagination */}
 					{totalCount > 0 && (
-						<div className="flex items-center justify-between px-2">
-							<p className="text-muted-foreground text-sm">
-								Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-							</p>
-							<div className="flex gap-2">
+						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+							<div className="text-muted-foreground flex items-center gap-2">
+								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							</div>
+
+							<div className="flex items-center gap-2">
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset === 0}
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+									disabled={offset === 0}
 									data-testid="teams-pagination-prev-btn"
+									aria-label="Previous page"
 								>
-									<ChevronLeft className="mr-1 h-4 w-4" /> Previous
+									<ChevronLeft className="size-3" />
 								</Button>
+
+								<div className="flex items-center gap-1">
+									<span>Page</span>
+									<span>{Math.floor(offset / limit) + 1}</span>
+									<span>of {Math.ceil(totalCount / limit)}</span>
+								</div>
+
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
-									disabled={offset + limit >= totalCount}
 									onClick={() => onOffsetChange(offset + limit)}
+									disabled={offset + limit >= totalCount}
 									data-testid="teams-pagination-next-btn"
+									aria-label="Next page"
 								>
-									Next <ChevronRight className="ml-1 h-4 w-4" />
+									<ChevronRight className="size-3" />
 								</Button>
 							</div>
 						</div>

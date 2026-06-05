@@ -6,7 +6,7 @@ export default function MCPToolGroups() {
 		<>
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP tool groups</h2>
+					<h2 className="text-lg font-semibold tracking-tight">MCP Tool Groups</h2>
 					<p className="text-muted-foreground text-sm">Configure tool groups for MCP servers to organize and govern tools.</p>
 				</div>
 			</div>

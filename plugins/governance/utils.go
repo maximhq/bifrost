@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -39,6 +40,17 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 		return bifrost.Ptr(xGoogleAPIKey)
 	}
 	return nil
+}
+
+// IsModelRequiredForRequest checks if the requested model is required for this request
+func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
+	// Here we will have to check for some requests which do not need model
+	// For example, batches, container, files, videos, passthrough requests
+	// For these requests, we will only check for provider filtering
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+		return false
+	}
+	return true
 }
 
 // parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
@@ -87,6 +99,36 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func blockedModelCandidates(model string) []string {
+	_, normalized := schemas.ParseModelString(model, "")
+
+	if strings.EqualFold(model, normalized) {
+		return []string{model}
+	}
+
+	return []string{model, normalized}
+}
+
+func isModelBlockedByList(blacklist schemas.BlackList, model string) bool {
+	if blacklist.IsBlockAll() {
+		return true
+	}
+
+	modelForms := blockedModelCandidates(model)
+	for _, blocked := range blacklist {
+		blockedForms := blockedModelCandidates(blocked)
+		for _, form := range modelForms {
+			if slices.ContainsFunc(blockedForms, func(blockedForm string) bool {
+				return strings.EqualFold(blockedForm, form)
+			}) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // filterModelsForVirtualKey filters models based on virtual key's provider configs
 // Returns only models that are allowed by the virtual key's ProviderConfigs
 func (p *GovernancePlugin) filterModelsForVirtualKey(
@@ -114,7 +156,7 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		// Pre-pass: if any matching config blacklists the model, block it entirely.
 		isBlocked := false
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
+			if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, modelName) {
 				isBlocked = true
 				break
 			}

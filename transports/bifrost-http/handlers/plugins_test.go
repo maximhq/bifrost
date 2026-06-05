@@ -51,6 +51,12 @@ func (noopPluginsLoader) RemovePlugin(_ context.Context, _ string) error { retur
 func (noopPluginsLoader) GetPluginStatus(_ context.Context) map[string]schemas.PluginStatus {
 	return nil
 }
+func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[string]any, error) {
+	return nil, nil
+}
+func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (map[string]any, error) {
+	return nil, nil
+}
 
 // buildUpdateRequest creates a PUT /api/plugins/{name} fasthttp context.
 func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {

@@ -1,6 +1,9 @@
 package modelcatalog
 
 import (
+	"context"
+	"encoding/json"
+	"os"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -2592,4 +2595,75 @@ func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
 
 	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
+}
+
+// ---------------------------------------------------------------------------
+// file:// URL loading tests
+// ---------------------------------------------------------------------------
+
+func TestLoadPricingFromURL_FileScheme(t *testing.T) {
+	pricingData := map[string]PricingEntry{
+		"gpt-4o": {
+			Provider: "openai",
+			Mode:     "chat",
+		},
+	}
+	data, err := json.Marshal(pricingData)
+	require.NoError(t, err)
+
+	f, err := os.CreateTemp(t.TempDir(), "pricing-*.json")
+	require.NoError(t, err)
+	_, err = f.Write(data)
+	require.NoError(t, err)
+	f.Close()
+
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.pricingURL = "file://" + f.Name()
+
+	result, err := mc.loadPricingFromURL(context.Background())
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "openai", result["gpt-4o"].Provider)
+}
+
+func TestLoadPricingFromURL_FileMissing(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.pricingURL = "file:///nonexistent/path/pricing.json"
+
+	_, err := mc.loadPricingFromURL(context.Background())
+	require.Error(t, err)
+}
+
+func TestLoadModelParametersFromURL_FileScheme(t *testing.T) {
+	paramsData := map[string]json.RawMessage{
+		"gpt-4o": json.RawMessage(`{"max_output_tokens":4096}`),
+	}
+	data, err := json.Marshal(paramsData)
+	require.NoError(t, err)
+
+	f, err := os.CreateTemp(t.TempDir(), "model-parameters-*.json")
+	require.NoError(t, err)
+	_, err = f.Write(data)
+	require.NoError(t, err)
+	f.Close()
+
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.modelParametersURL = "file://" + f.Name()
+
+	result, err := mc.loadModelParametersFromURL(context.Background())
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.JSONEq(t, `{"max_output_tokens":4096}`, string(result["gpt-4o"]))
+}
+
+func TestLoadModelParametersFromURL_FileMissing(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.modelParametersURL = "file:///nonexistent/path/model-parameters.json"
+
+	_, err := mc.loadModelParametersFromURL(context.Background())
+	require.Error(t, err)
 }

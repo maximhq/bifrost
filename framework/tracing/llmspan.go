@@ -41,8 +41,10 @@ func PopulateRequestAttributes(req *schemas.BifrostRequest) map[string]any {
 	}
 
 	provider, model, _ := req.GetRequestFields()
-	attrs[schemas.AttrProviderName] = string(provider)
+	attrs[schemas.AttrProviderName] = schemas.OTelProviderName(provider)
+	attrs[schemas.AttrBifrostProviderName] = string(provider) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 	attrs[schemas.AttrRequestModel] = model
+	attrs[schemas.AttrOperationName] = schemas.OTelOperationName(req.RequestType)
 
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
@@ -137,7 +139,8 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 
 	attrs[schemas.AttrError] = err.Error.Message
 	if err.Error.Type != nil {
-		attrs[schemas.AttrErrorType] = *err.Error.Type
+		attrs[schemas.AttrErrorType] = *err.Error.Type // legacy: gen_ai.error.type; spec uses the unprefixed error.type
+		attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
 	}
 	if err.Error.Code != nil {
 		attrs[schemas.AttrErrorCode] = *err.Error.Code
@@ -156,28 +159,44 @@ func PopulateContextAttributes(
 	customerID, customerName string,
 	numberOfRetries, fallbackIndex int,
 ) {
+	// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: a
+	// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
+	// are the canonical home going forward; drop the gen_ai.* lines once dashboards
+	// migrate (grep for "// legacy:" inside this function).
 	if virtualKeyID != "" {
-		attrs[schemas.AttrVirtualKeyID] = virtualKeyID
-		attrs[schemas.AttrVirtualKeyName] = virtualKeyName
+		attrs[schemas.AttrVirtualKeyID] = virtualKeyID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrVirtualKeyName] = virtualKeyName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostVirtualKeyID] = virtualKeyID
+		attrs[schemas.AttrBifrostVirtualKeyName] = virtualKeyName
 	}
 	if selectedKeyID != "" {
-		attrs[schemas.AttrSelectedKeyID] = selectedKeyID
-		attrs[schemas.AttrSelectedKeyName] = selectedKeyName
+		attrs[schemas.AttrSelectedKeyID] = selectedKeyID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrSelectedKeyName] = selectedKeyName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostSelectedKeyID] = selectedKeyID
+		attrs[schemas.AttrBifrostSelectedKeyName] = selectedKeyName
 	}
 	if routingRuleID != "" {
-		attrs[schemas.AttrRoutingRuleID] = routingRuleID
-		attrs[schemas.AttrRoutingRuleName] = routingRuleName
+		attrs[schemas.AttrRoutingRuleID] = routingRuleID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrRoutingRuleName] = routingRuleName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostRoutingRuleID] = routingRuleID
+		attrs[schemas.AttrBifrostRoutingRuleName] = routingRuleName
 	}
 	if teamID != "" {
-		attrs[schemas.AttrTeamID] = teamID
-		attrs[schemas.AttrTeamName] = teamName
+		attrs[schemas.AttrTeamID] = teamID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrTeamName] = teamName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostTeamID] = teamID
+		attrs[schemas.AttrBifrostTeamName] = teamName
 	}
 	if customerID != "" {
-		attrs[schemas.AttrCustomerID] = customerID
-		attrs[schemas.AttrCustomerName] = customerName
+		attrs[schemas.AttrCustomerID] = customerID     // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrCustomerName] = customerName // legacy: gen_ai.* placement of bifrost-internal attr
+		attrs[schemas.AttrBifrostCustomerID] = customerID
+		attrs[schemas.AttrBifrostCustomerName] = customerName
 	}
-	attrs[schemas.AttrNumberOfRetries] = numberOfRetries
-	attrs[schemas.AttrFallbackIndex] = fallbackIndex
+	attrs[schemas.AttrNumberOfRetries] = numberOfRetries // legacy: gen_ai.* placement of bifrost-internal attr
+	attrs[schemas.AttrFallbackIndex] = fallbackIndex     // legacy: gen_ai.* placement of bifrost-internal attr
+	attrs[schemas.AttrBifrostRetries] = numberOfRetries
+	attrs[schemas.AttrBifrostFallbackIndex] = fallbackIndex
 }
 
 // ===============================================
@@ -201,7 +220,8 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 			attrs[schemas.AttrTopP] = *req.Params.TopP
 		}
 		if req.Params.Stop != nil {
-			attrs[schemas.AttrStopSequences] = strings.Join(req.Params.Stop, ",")
+			attrs[schemas.AttrStopSequences] = append([]string(nil), req.Params.Stop...)
+			attrs[schemas.AttrBifrostStopSequencesJoined] = strings.Join(req.Params.Stop, ",") // legacy: comma-joined back-compat for dashboards predating the []string fix
 		}
 		if req.Params.PresencePenalty != nil {
 			attrs[schemas.AttrPresencePenalty] = *req.Params.PresencePenalty
@@ -273,9 +293,12 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 
 		if resp.Usage.PromptTokensDetails != nil {
 			if resp.Usage.PromptTokensDetails.TextTokens > 0 {
@@ -288,10 +311,12 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 				attrs[schemas.AttrPromptTokenDetailsImage] = resp.Usage.PromptTokensDetails.ImageTokens
 			}
 			if resp.Usage.PromptTokensDetails.CachedReadTokens > 0 {
-				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens // legacy: nested key; replaced by gen_ai.usage.cache_read.input_tokens
+				attrs[schemas.AttrUsageCacheReadInputTokens] = resp.Usage.PromptTokensDetails.CachedReadTokens
 			}
 			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
-				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens // legacy: nested key; replaced by gen_ai.usage.cache_creation.input_tokens
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = resp.Usage.PromptTokensDetails.CachedWriteTokens
 			}
 			if d := resp.Usage.PromptTokensDetails.CachedWriteTokenDetails; d != nil {
 				if d.CachedWriteTokens5m > 0 {
@@ -318,7 +343,8 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 				attrs[schemas.AttrCompletionTokenDetailsImage] = *resp.Usage.CompletionTokensDetails.ImageTokens
 			}
 			if resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens
+				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = resp.Usage.CompletionTokensDetails.ReasoningTokens
 			}
 			if resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens > 0 {
 				attrs[schemas.AttrCompletionTokenDetailsAccept] = resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens
@@ -357,7 +383,8 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrTopP] = *req.Params.TopP
 		}
 		if req.Params.Stop != nil {
-			attrs[schemas.AttrStopSequences] = strings.Join(req.Params.Stop, ",")
+			attrs[schemas.AttrStopSequences] = append([]string(nil), req.Params.Stop...)
+			attrs[schemas.AttrBifrostStopSequencesJoined] = strings.Join(req.Params.Stop, ",") // legacy: comma-joined back-compat for dashboards predating the []string fix
 		}
 		if req.Params.PresencePenalty != nil {
 			attrs[schemas.AttrPresencePenalty] = *req.Params.PresencePenalty
@@ -378,7 +405,8 @@ func PopulateTextCompletionRequestAttributes(req *schemas.BifrostTextCompletionR
 			attrs[schemas.AttrLogProbs] = *req.Params.LogProbs
 		}
 		if req.Params.N != nil {
-			attrs[schemas.AttrN] = *req.Params.N
+			attrs[schemas.AttrN] = *req.Params.N // legacy: replaced by gen_ai.request.choice.count
+			attrs[schemas.AttrChoiceCount] = *req.Params.N
 		}
 		if req.Params.Seed != nil {
 			attrs[schemas.AttrSeed] = *req.Params.Seed
@@ -440,9 +468,12 @@ func PopulateTextCompletionResponseAttributes(resp *schemas.BifrostTextCompletio
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 	}
 }
 
@@ -458,10 +489,12 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 
 	if req.Params != nil {
 		if req.Params.Dimensions != nil {
-			attrs[schemas.AttrDimensions] = *req.Params.Dimensions
+			attrs[schemas.AttrDimensions] = *req.Params.Dimensions // legacy: replaced by gen_ai.embeddings.dimension.count
+			attrs[schemas.AttrEmbeddingsDimensionCount] = *req.Params.Dimensions
 		}
 		if req.Params.EncodingFormat != nil {
-			attrs[schemas.AttrEncodingFormat] = *req.Params.EncodingFormat
+			attrs[schemas.AttrEncodingFormat] = *req.Params.EncodingFormat // legacy: singular form; replaced by gen_ai.request.encoding_formats (string[])
+			attrs[schemas.AttrEncodingFormats] = []string{*req.Params.EncodingFormat}
 		}
 		// ExtraParams
 		for k, v := range req.Params.ExtraParams {
@@ -493,9 +526,12 @@ func PopulateEmbeddingResponseAttributes(resp *schemas.BifrostEmbeddingResponse,
 	}
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
+		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens         // legacy: deprecated OTel name; replaced by gen_ai.usage.input_tokens
+		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens // legacy: deprecated OTel name; replaced by gen_ai.usage.output_tokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		// Spec keys.
+		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
+		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
 	}
 }
 
@@ -836,10 +872,12 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 				attrs[schemas.AttrInputTokenDetailsImage] = d.ImageTokens
 			}
 			if d.CachedReadTokens > 0 {
-				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
+				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens // legacy: nested key; replaced by gen_ai.usage.cache_read.input_tokens
+				attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
 			}
 			if d.CachedWriteTokens > 0 {
-				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens
+				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens // legacy: nested key; replaced by gen_ai.usage.cache_creation.input_tokens
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
 			}
 			if wd := d.CachedWriteTokenDetails; wd != nil {
 				if wd.CachedWriteTokens5m > 0 {
@@ -862,7 +900,8 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 				attrs[schemas.AttrOutputTokenDetailsImage] = *d.ImageTokens
 			}
 			if d.ReasoningTokens > 0 {
-				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens
+				attrs[schemas.AttrOutputTokenDetailsReason] = d.ReasoningTokens // legacy: nested key; replaced by gen_ai.usage.reasoning.output_tokens
+				attrs[schemas.AttrUsageReasoningOutputTokens] = d.ReasoningTokens
 			}
 			if d.AcceptedPredictionTokens > 0 {
 				attrs[schemas.AttrOutputTokenDetailsAccept] = d.AcceptedPredictionTokens

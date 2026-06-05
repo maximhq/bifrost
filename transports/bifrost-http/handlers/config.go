@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -264,32 +267,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
-		// Checking the accessibility of the pricing URL
-		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != "" && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
-		urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-		resp, err := urlCheckClient.Get(*payload.FrameworkConfig.ModelParametersURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 			return
 		}
 	}
@@ -348,6 +335,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
+	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 
 	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
@@ -485,6 +473,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle allowing per-request override for raw request/response exposure
 	updatedConfig.AllowPerRequestRawOverride = payload.ClientConfig.AllowPerRequestRawOverride
 
+	// Toggle allowing direct key bypass via x-bf-direct-key header
+	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
@@ -561,17 +552,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
-		// Checking the accessibility of the pricing URL
-		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
-		if err != nil {
+		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL
@@ -591,17 +574,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		if effectiveModelParamsURL != *frameworkConfig.ModelParametersURL {
 			if effectiveModelParamsURL != modelcatalog.DefaultModelParametersURL {
-				urlCheckClient := &http.Client{Timeout: 60 * time.Second}
-				resp, err := urlCheckClient.Get(effectiveModelParamsURL)
-				if err != nil {
+				if err := checkURLAccessibility(effectiveModelParamsURL); err != nil {
 					logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
-					return
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					logger.Warn("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode)
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", resp.StatusCode))
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
 					return
 				}
 			}
@@ -1005,5 +980,41 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		return fmt.Errorf("the following headers are not allowed to be configured: %s. These headers are security headers and are always blocked", strings.Join(foundSecurityHeaders, ", "))
 	}
 
+	return nil
+}
+
+// checkURLAccessibility verifies that the given URL is reachable.
+// For file:// URLs it checks that the path exists on disk.
+// For http(s):// URLs it performs a GET and expects a 200 OK.
+func checkURLAccessibility(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme == "file" {
+		info, err := os.Stat(parsed.Path)
+		if err != nil {
+			return fmt.Errorf("file not accessible: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path is not a regular file")
+		}
+		return nil
+	}
+	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		return fmt.Errorf("URL validation failed: %w", err)
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
 	return nil
 }

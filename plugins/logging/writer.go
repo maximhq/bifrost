@@ -23,6 +23,11 @@ const (
 	maxDeferredUsageConcurrency = 5
 	// pendingLogTTL is how long a pending log entry can stay in memory before cleanup
 	pendingLogTTL = 5 * time.Minute
+	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
+	// itself. Matches the outer server shutdown budget at server.go:1596 so the
+	// logging plugin can fully drain in the worst case; remaining entries beyond
+	// the deadline are dropped so the process is never wedged on a slow store.
+	cleanupDrainTimeout = 30 * time.Second
 )
 
 // PendingLogData holds PreLLMHook input data until PostLLMHook fires.
@@ -103,6 +108,14 @@ func (p *LoggerPlugin) batchWriter() {
 			if len(batch) > 0 {
 				flush()
 			}
+
+		case <-p.batchCtx.Done():
+			// Cleanup is taking over: hand the local batch back via
+			// recoveredBatch, signal exit, and return without touching the
+			// store. Cleanup owns the drain budget from this point on.
+			p.recoveredBatch = batch
+			close(p.batchWriterDone)
+			return
 		}
 	}
 }
@@ -266,6 +279,12 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	}
 }
 
+// EnqueueLogEntry pushes a complete log entry through the logging plugin's
+// normal async write queue.
+func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
+	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
 // If the queue is full, the entry is dropped to prevent store slowness from
 // cascading into request handling goroutines.
@@ -393,6 +412,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
+		MetadataParsed:              pending.InitialData.Metadata,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {

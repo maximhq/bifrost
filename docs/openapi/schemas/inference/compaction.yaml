@@ -1,0 +1,59 @@
+# Context Compaction API schemas
+
+CompactionRequest:
+  type: object
+  required:
+    - model
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format (e.g., "openai/gpt-4o")
+    input:
+      $ref: './responses.yaml#/ResponsesRequestInput'
+      description: >
+        Conversation to compact. Required unless previous_response_id is provided.
+        Can be a string or array of ResponsesMessage objects. Compaction items from
+        prior responses (type "response.compaction") may be included in the array.
+    instructions:
+      type: string
+      description: System instructions that persist across the compacted context.
+    previous_response_id:
+      type: string
+      description: ID of a previous response to extend rather than sending full input.
+    prompt_cache_key:
+      type: string
+    prompt_cache_retention:
+      type: string
+    service_tier:
+      type: string
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback model list in provider/model format.
+
+CompactionResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+      description: Always "response.compaction"
+      example: response.compaction
+    model:
+      type: string
+    created_at:
+      type: integer
+    output:
+      type: array
+      items:
+        $ref: './responses.yaml#/ResponsesMessage'
+      description: >
+        The compacted output — the original user messages plus a final item of
+        type "response.compaction" whose encrypted_content holds the opaque compacted
+        state. Pass the full output array as input to a future Responses API request.
+    usage:
+      $ref: './responses.yaml#/ResponsesResponseUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

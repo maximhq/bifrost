@@ -1,1 +1,1 @@
-- feat: stamp MCP tool logs with governance ownership (user, team, customer, and business unit IDs) from the request context
+- chore: upgraded core to v1.5.16 and framework to v1.3.16

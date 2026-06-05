@@ -2,11 +2,8 @@ package otel
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -45,6 +42,13 @@ type MetricsExporter struct {
 	inputTokensTotal      *syncInt64Counter
 	outputTokensTotal     *syncInt64Counter
 	cacheHitsTotal        *syncInt64Counter
+
+	// Provider-side prompt cache token counters (distinct from cacheHitsTotal, which
+	// counts Bifrost's own semantic-cache hits).
+	cacheReadInputTokensTotal    *syncInt64Counter
+	cacheWriteInputTokensTotal   *syncInt64Counter
+	cacheWriteInputTokens5mTotal *syncInt64Counter
+	cacheWriteInputTokens1hTotal *syncInt64Counter
 
 	// Bifrost metrics - float counters (for cost)
 	costTotal *syncFloat64Counter
@@ -237,43 +241,6 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
-// validateCACertPath validates the CA certificate path to prevent path traversal attacks.
-// It ensures the path is absolute, cleaned of traversal sequences, and exists as a regular file.
-func validateCACertPath(certPath string) error {
-	if certPath == "" {
-		return nil
-	}
-
-	// Clean the path to resolve any .. or . components
-	cleanPath := filepath.Clean(certPath)
-
-	// Require absolute paths to prevent relative path attacks
-	if !filepath.IsAbs(cleanPath) {
-		return fmt.Errorf("TLS CA cert path must be absolute: %s", certPath)
-	}
-
-	// Check that the cleaned path doesn't differ significantly from input
-	// (indicates attempted traversal)
-	if cleanPath != filepath.Clean(filepath.FromSlash(certPath)) {
-		return fmt.Errorf("invalid TLS CA cert path: %s", certPath)
-	}
-
-	// Verify the file exists and is not a symlink
-	info, err := os.Lstat(cleanPath)
-	if err != nil {
-		return fmt.Errorf("TLS CA cert path not accessible: %w", err)
-	}
-	// Reject symlinks to prevent symlink-based path traversal
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("TLS CA cert path cannot be a symlink: %s", certPath)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
-	}
-
-	return nil
-}
-
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
@@ -283,34 +250,16 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// TLS priority: custom CA > system roots > insecure
-	if config.TLSCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(config.TLSCACert); err != nil {
-			return nil, err
-		}
-		// Use custom CA certificate
-		caCert, err := os.ReadFile(config.TLSCACert)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert")
-		}
-		tlsConfig := &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
-	} else if config.Insecure {
-		// Skip TLS entirely
+	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
+	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
+	if config.TLSCACert == "" && config.Insecure {
 		opts = append(opts, otlpmetrichttp.WithInsecure())
 	} else {
-		// Use system root CAs (empty tls.Config uses system roots)
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}))
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
 	}
 
 	return otlpmetrichttp.New(ctx, opts...)
@@ -325,37 +274,15 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetricgrpc.WithHeaders(config.Headers))
 	}
 
-	// TLS priority: custom CA > system roots > insecure
-	if config.TLSCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(config.TLSCACert); err != nil {
-			return nil, err
-		}
-		// Use custom CA certificate with MinVersion
-		caCert, err := os.ReadFile(config.TLSCACert)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert")
-		}
-		tlsConfig := &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(creds))
-	} else if config.Insecure {
-		// Skip TLS entirely
+	// gRPC insecure mode uses plaintext (no TLS at all). buildTLSConfig is bypassed for that case.
+	if config.TLSCACert == "" && config.Insecure {
 		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(insecure.NewCredentials()))
 	} else {
-		// Use system root CAs with MinVersion
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+		if err != nil {
+			return nil, err
 		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(creds))
+		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
 	}
 
 	return otlpmetricgrpc.New(ctx, opts...)
@@ -402,6 +329,34 @@ func (m *MetricsExporter) initMetrics() {
 		name:  "bifrost_cache_hits_total",
 		desc:  "Total number of cache hits forwarded to upstream providers by Bifrost",
 		unit:  "{hit}",
+		meter: m.meter,
+	}
+
+	m.cacheReadInputTokensTotal = &syncInt64Counter{
+		name:  "bifrost_cache_read_input_tokens_total",
+		desc:  "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokensTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_total",
+		desc:  "Total provider-side prompt-cache creation (write) input tokens",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokens5mTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_5m_total",
+		desc:  "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
+		unit:  "{token}",
+		meter: m.meter,
+	}
+
+	m.cacheWriteInputTokens1hTotal = &syncInt64Counter{
+		name:  "bifrost_cache_write_input_tokens_1h_total",
+		desc:  "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
+		unit:  "{token}",
 		meter: m.meter,
 	}
 
@@ -511,6 +466,26 @@ func (m *MetricsExporter) RecordOutputTokens(ctx context.Context, count int64, a
 // RecordCacheHit records a cache hit metric
 func (m *MetricsExporter) RecordCacheHit(ctx context.Context, attrs ...attribute.KeyValue) {
 	m.cacheHitsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheReadInputTokens records provider-side prompt-cache read (cached) input tokens.
+func (m *MetricsExporter) RecordCacheReadInputTokens(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheReadInputTokensTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens records provider-side prompt-cache creation (write) input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokensTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens5m records the 5-minute-TTL subset of cache-write input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens5m(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokens5mTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+}
+
+// RecordCacheWriteInputTokens1h records the 1-hour-TTL subset of cache-write input tokens.
+func (m *MetricsExporter) RecordCacheWriteInputTokens1h(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
+	m.cacheWriteInputTokens1hTotal.Add(ctx, count, metric.WithAttributes(attrs...))
 }
 
 // RecordCost records cost metric

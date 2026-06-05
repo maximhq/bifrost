@@ -36,15 +36,16 @@ func TestAzure(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o"},
 		},
-		TextModel:            "", // Azure doesn't support text completion in newer models
-		EmbeddingModel:       "text-embedding-ada-002",
-		ReasoningModel:       "claude-opus-4-5",
-		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		TranscriptionModel:   "whisper",
-		ImageGenerationModel: "gpt-image-1",
-		ImageEditModel:       "gpt-image-1",
-		VideoGenerationModel: "sora-2",
-		PassthroughModel:     "gpt-4o",
+		TextModel:               "", // Azure doesn't support text completion in newer models
+		EmbeddingModel:          "text-embedding-ada-002",
+		ReasoningModel:          "claude-opus-4-5",
+		SpeechSynthesisModel:    "gpt-4o-mini-tts",
+		TranscriptionModel:      "gpt-4o-transcribe",
+		ImageGenerationModel:    "gpt-image-2",
+		ImageEditModel:          "gpt-image-2",
+		VideoGenerationModel:    "sora-2",
+		PassthroughModel:        "gpt-4o",
+		ExternalCompactionModel: "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:               false, // Not supported
 			SimpleChat:                   true,
@@ -94,6 +95,7 @@ func TestAzure(t *testing.T) {
 			ContainerFileRetrieve:        true,
 			ContainerFileContent:         true,
 			ContainerFileDelete:          true,
+			ExternalCompaction:           true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

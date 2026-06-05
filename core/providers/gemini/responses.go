@@ -1651,10 +1651,11 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 	})
 
-	// Emit content_part.done
+	// Emit content_part.done with accumulated text
+	partText := fullText
 	part := &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesOutputMessageContentTypeText,
-		Text: schemas.Ptr(""),
+		Text: &partText,
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1669,13 +1670,23 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		Part:           part,
 	})
 
-	// Emit output_item.done
+	// Emit output_item.done with content blocks
+	itemText := fullText
 	doneItem := &schemas.ResponsesMessage{
 		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Status: schemas.Ptr("completed"),
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &itemText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					},
+				},
+			},
 		},
 	}
 	if itemID != "" {

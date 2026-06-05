@@ -106,6 +106,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 		clear(trace.Attributes)
 	}
 
+	// Reset request headers
+	trace.RequestHeaders = nil
+
 	s.traces.Store(trace.TraceID, trace)
 	return trace.TraceID
 }
@@ -125,6 +128,15 @@ func (s *TraceStore) SetRequestID(traceID string, requestID string) {
 		return
 	}
 	trace.SetRequestID(requestID)
+}
+
+// SetRequestHeaders sets the captured request headers for the trace
+func (s *TraceStore) SetRequestHeaders(traceID string, headers map[string]string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestHeaders(headers)
 }
 
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing

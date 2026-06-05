@@ -6,14 +6,38 @@ import {
 	MCPFlowStartResponse,
 	MCPSessionReauthResponse,
 	MCPSessionsListResponse,
+	MCPSessionsQueryParams,
 } from "@/lib/types/mcpSessions";
 import { baseApi } from "./baseApi";
 
+// buildMCPSessionsListParams shapes the filter+page params for the URL.
+// Array filters are csv-joined (matches the backend's parseCommaSeparated)
+// and sorted so selection order doesn't fragment the RTK Query cache key
+// (same logical filter set always produces the same key + canonical URL).
+// Empty values are dropped so the key doesn't fragment on "" vs unset.
+function buildMCPSessionsListParams(params?: MCPSessionsQueryParams) {
+	if (!params) return {};
+	const out: Record<string, string | number> = {};
+	if (params.q) out.q = params.q;
+	if (params.kind?.length) out.kind = [...params.kind].sort().join(",");
+	if (params.status?.length) out.status = [...params.status].sort().join(",");
+	if (params.auth_mode?.length) out.auth_mode = [...params.auth_mode].sort().join(",");
+	if (params.mcp_client_id?.length) out.mcp_client_id = [...params.mcp_client_id].sort().join(",");
+	if (params.limit !== undefined) out.limit = params.limit;
+	if (params.offset !== undefined) out.offset = params.offset;
+	return out;
+}
+
 export const mcpSessionsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
-		// List token rows + pending flow rows visible to the caller's identity.
-		getMCPSessions: builder.query<MCPSessionsListResponse, void>({
-			query: () => ({ url: "/mcp/sessions" }),
+		// List session rows visible to the caller's identity, with optional
+		// filters + pagination. Each filter combo gets its own cache entry
+		// (RTK Query auto-derives the key from the params object).
+		getMCPSessions: builder.query<MCPSessionsListResponse, MCPSessionsQueryParams | void>({
+			query: (params) => ({
+				url: "/mcp/sessions",
+				params: buildMCPSessionsListParams(params ?? undefined),
+			}),
 			providesTags: ["MCPSessions"],
 		}),
 
@@ -28,24 +52,16 @@ export const mcpSessionsApi = baseApi.injectEndpoints({
 			query: (rowId) => ({ url: `/mcp/sessions/${rowId}/reauth`, method: "POST" }),
 		}),
 
-		// Best-effort upstream revoke + hard-delete the row.
-		// Optimistic patch over invalidatesTags to avoid the cross-replica
-		// stale-list window in clustered deployments — drop the row from the
-		// cached list immediately and roll back if the server rejects.
+		// Best-effort upstream revoke + hard-delete the row. Invalidates the
+		// MCPSessions tag so all keyed cache entries (per filter combo)
+		// refetch. The previous optimistic patch only worked when the cache
+		// was singleton-keyed; with per-filter keys, iterating every keyed
+		// entry to splice the row out is more code than a single refetch is
+		// worth, especially for a destructive action where the user expects
+		// a tiny network roundtrip anyway.
 		revokeMCPSession: builder.mutation<void, string>({
 			query: (rowId) => ({ url: `/mcp/sessions/${rowId}`, method: "DELETE" }),
-			async onQueryStarted(rowId, { dispatch, queryFulfilled }) {
-				const patchResult = dispatch(
-					mcpSessionsApi.util.updateQueryData("getMCPSessions", undefined, (draft) => {
-						draft.sessions = draft.sessions.filter((s) => s.id !== rowId);
-					}),
-				);
-				try {
-					await queryFulfilled;
-				} catch {
-					patchResult.undo();
-				}
-			},
+			invalidatesTags: ["MCPSessions"],
 		}),
 
 		// Flow metadata for the auth landing page.

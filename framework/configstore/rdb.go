@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -108,6 +109,14 @@ func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudg
 			}
 			return err
 		}
+	case budget.CustomerID != nil && *budget.CustomerID != "":
+		var customer tables.TableCustomer
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&customer, "id = ?", *budget.CustomerID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -175,7 +184,6 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 
 	if key.AzureKeyConfig != nil {
 		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-		dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 	}
 
 	if key.VertexKeyConfig != nil {
@@ -246,6 +254,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
 		RequiredHeaders:                       config.RequiredHeaders,
 		LoggingHeaders:                        config.LoggingHeaders,
@@ -256,6 +265,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
+		AllowDirectKeys:                       config.AllowDirectKeys,
 		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
@@ -508,6 +518,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
 		MCPDisableAutoToolInject:              dbConfig.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                     dbConfig.AsyncJobResultTTL,
 		RequiredHeaders:                       dbConfig.RequiredHeaders,
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
@@ -518,6 +529,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
+		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }
@@ -698,7 +710,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 			}
 
 			// Handle Vertex config
@@ -927,7 +938,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 
 		// Handle Vertex config
@@ -1066,7 +1076,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 		// Handle Vertex config
 		if key.VertexKeyConfig != nil {
@@ -1152,6 +1161,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
 			return err
 		}
+	}
+
+	// Clean up model configs scoped to this provider (and their owned budgets/rate-limits).
+	if err := s.deleteModelConfigsWhere(ctx, txDB, "provider = ?", string(provider)); err != nil {
+		return err
 	}
 
 	return nil
@@ -1492,6 +1506,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:          dbClient.ConnectionString,
 					StdioConfig:               dbClient.StdioConfig,
+					TLSConfig:                 dbClient.TLSConfig,
 					AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 					OauthConfigID:             dbClient.OauthConfigID,
 					ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1505,6 +1520,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -1532,6 +1548,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:          dbClient.ConnectionString,
 			StdioConfig:               dbClient.StdioConfig,
+			TLSConfig:                 dbClient.TLSConfig,
 			AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 			OauthConfigID:             dbClient.OauthConfigID,
 			ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1545,6 +1562,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -1617,6 +1635,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:          dbClient.ConnectionString,
 		StdioConfig:               dbClient.StdioConfig,
+		TLSConfig:                 dbClient.TLSConfig,
 		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
 		OauthConfigID:             dbClient.OauthConfigID,
 		ToolsToExecute:            dbClient.ToolsToExecute,
@@ -1630,6 +1649,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 	}, nil
 }
 
@@ -1669,6 +1689,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ConnectionType:        string(clientConfigCopy.ConnectionType),
 			ConnectionString:      clientConfigCopy.ConnectionString,
 			StdioConfig:           clientConfigCopy.StdioConfig,
+			TLSConfig:             clientConfigCopy.TLSConfig,
 			AuthType:              string(clientConfigCopy.AuthType),
 			OauthConfigID:         clientConfigCopy.OauthConfigID,
 			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
@@ -1681,7 +1702,13 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-			Disabled:                  clientConfigCopy.Disabled,
+			// PerUserHeaderKeys is the admin-declared schema for
+			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
+			// hook persists an empty column, and on restart AddClient's
+			// validation rejects the row (empty PerUserHeaderKeys is
+			// invalid for per_user_headers), leaving the client orphaned.
+			PerUserHeaderKeys: clientConfigCopy.PerUserHeaderKeys,
+			Disabled:          clientConfigCopy.Disabled,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1756,6 +1783,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			stdioStr := string(stdioData)
 			stdioConfigJSON = &stdioStr
 		}
+		var tlsConfigJSON *string
+		if clientConfigCopy.TLSConfig != nil {
+			tlsData, marshalErr := clientConfigCopy.TLSConfig.MarshalForStorage()
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal tls_config: %w", marshalErr)
+			}
+			tlsStr := string(tlsData)
+			tlsConfigJSON = &tlsStr
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1779,6 +1815,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 				return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
 			}
 			toolNameMappingJSON = string(data)
+		}
+		// Mirror BeforeSave for PerUserHeaderKeys — same map-based update
+		// path that bypasses GORM hooks for the other virtual fields.
+		perUserHeaderKeysJSON := ""
+		if clientConfig.PerUserHeaderKeys != nil {
+			data, marshalErr := json.Marshal(clientConfig.PerUserHeaderKeys)
+			if marshalErr != nil {
+				return fmt.Errorf("failed to marshal per_user_header_keys: %w", marshalErr)
+			}
+			perUserHeaderKeysJSON = string(data)
 		}
 
 		headersJSONStr := string(headersJSON)
@@ -1811,11 +1857,19 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfigCopy.OauthConfigID != nil {
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 		}
+		updates["tls_config_json"] = tlsConfigJSON
 		if discoveredToolsJSON != "" {
 			updates["discovered_tools_json"] = discoveredToolsJSON
 		}
 		if toolNameMappingJSON != "" {
 			updates["tool_name_mapping_json"] = toolNameMappingJSON
+		}
+		// Always persist PerUserHeaderKeys (empty string clears when the
+		// caller is dropping all keys). Treat absent (nil) as "preserve" by
+		// only writing when PerUserHeaderKeys was explicitly set on the
+		// update payload.
+		if clientConfig.PerUserHeaderKeys != nil {
+			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
 		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.
@@ -1837,8 +1891,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["connection_type"] = clientConfigCopy.ConnectionType
 			updates["connection_string"] = connectionStringToPersist
 			updates["stdio_config_json"] = stdioConfigJSON
+			updates["tls_config_json"] = tlsConfigJSON
 			updates["auth_type"] = clientConfigCopy.AuthType
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
+			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)
@@ -1881,14 +1937,21 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			}
 		}
 
-		// Delete per-user OAuth token + flow rows for this MCP client. Token
-		// rows reference mcp_client_id by the string client_id; nothing
+		// Delete per-user OAuth token + flow rows AND per-user header
+		// credentials + per-user header flow rows for this MCP client. All
+		// four reference mcp_client_id by the string client_id; nothing
 		// auto-cascades, so we do it explicitly inside the same transaction
 		// to keep cleanup atomic.
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
 			return err
 		}
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+			return err
+		}
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
 			return err
 		}
 
@@ -2005,9 +2068,103 @@ func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMode
 	return modelPrices, nil
 }
 
+// pricingSyncUpdateColumns is the explicit set of governance_model_pricing
+// columns the pricing sync is allowed to overwrite via ON CONFLICT. Mirrors
+// every column on TableModelPricing except `id` (the primary key) and
+// `additional_attributes` (editorial metadata that must survive sync).
+// Keep this list in lockstep with the table definition in
+// framework/configstore/tables/modelpricing.go.
+var pricingSyncUpdateColumns = []string{
+	"model",
+	"base_model",
+	"provider",
+	"mode",
+	"context_length",
+	"max_input_tokens",
+	"max_output_tokens",
+	"architecture",
+	// Costs - Text
+	"input_cost_per_token",
+	"output_cost_per_token",
+	"input_cost_per_token_batches",
+	"output_cost_per_token_batches",
+	"input_cost_per_token_priority",
+	"output_cost_per_token_priority",
+	"input_cost_per_token_flex",
+	"output_cost_per_token_flex",
+	"input_cost_per_character",
+	// Costs - 128k Tier
+	"input_cost_per_token_above_128k_tokens",
+	"input_cost_per_image_above_128k_tokens",
+	"input_cost_per_video_per_second_above_128k_tokens",
+	"input_cost_per_audio_per_second_above_128k_tokens",
+	"output_cost_per_token_above_128k_tokens",
+	// Costs - 200k Tier
+	"input_cost_per_token_above_200k_tokens",
+	"input_cost_per_token_above_200k_tokens_priority",
+	"output_cost_per_token_above_200k_tokens",
+	"output_cost_per_token_above_200k_tokens_priority",
+	// Costs - 272k Tier
+	"input_cost_per_token_above_272k_tokens",
+	"input_cost_per_token_above_272k_tokens_priority",
+	"output_cost_per_token_above_272k_tokens",
+	"output_cost_per_token_above_272k_tokens_priority",
+	// Costs - Cache
+	"cache_creation_input_token_cost",
+	"cache_read_input_token_cost",
+	"cache_creation_input_token_cost_above_200k_tokens",
+	"cache_read_input_token_cost_above_200k_tokens",
+	"cache_read_input_token_cost_above_200k_tokens_priority",
+	"cache_creation_input_token_cost_above_1hr",
+	"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+	"cache_creation_input_audio_token_cost",
+	"cache_read_input_token_cost_priority",
+	"cache_read_input_token_cost_flex",
+	"cache_read_input_image_token_cost",
+	"cache_read_input_token_cost_above_272k_tokens",
+	"cache_read_input_token_cost_above_272k_tokens_priority",
+	// Costs - Image
+	"input_cost_per_image",
+	"input_cost_per_pixel",
+	"output_cost_per_image",
+	"output_cost_per_pixel",
+	"output_cost_per_image_premium_image",
+	"output_cost_per_image_above_512_and_512_pixels",
+	"output_cost_per_image_above_512x512_pixels_premium",
+	"output_cost_per_image_above_1024_and_1024_pixels",
+	"output_cost_per_image_above_1024x1024_pixels_premium",
+	"output_cost_per_image_above_2048_and_2048_pixels",
+	"output_cost_per_image_above_4096_and_4096_pixels",
+	"output_cost_per_image_low_quality",
+	"output_cost_per_image_medium_quality",
+	"output_cost_per_image_high_quality",
+	"output_cost_per_image_auto_quality",
+	"input_cost_per_image_token",
+	"output_cost_per_image_token",
+	// Costs - Audio/Video
+	"input_cost_per_audio_token",
+	"input_cost_per_audio_per_second",
+	"input_cost_per_second",
+	"input_cost_per_video_per_second",
+	"output_cost_per_audio_token",
+	"output_cost_per_video_per_second",
+	"output_cost_per_second",
+	// Costs - Other
+	"search_context_cost_per_query",
+	"code_interpreter_cost_per_session",
+	// Costs - OCR
+	"ocr_cost_per_page",
+	"annotation_cost_per_page",
+}
+
 // UpsertModelPrices creates or updates a model pricing record in the database.
 // Uses a single atomic ON CONFLICT statement to avoid deadlocks in multinode deployments
 // where multiple nodes may attempt concurrent upserts for the same model on startup.
+//
+// The update list is intentionally explicit (pricingSyncUpdateColumns) rather
+// than UpdateAll: every datasheet-sourced column is enumerated, but
+// `additional_attributes` is omitted so the 24-hour pricing sync never
+// overwrites editorial metadata set via UpsertModelPricingAttributes.
 func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -2019,11 +2176,44 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
-		UpdateAll: true,
+		DoUpdates: clause.AssignmentColumns(pricingSyncUpdateColumns),
 	}).Create(pricing).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
+}
+
+// UpsertModelPricingAttributes writes only the additional_attributes column
+// for the pricing row keyed by (model, provider). The row must already exist
+// — callers may not seed pricing rows through this path; the management API
+// enforces that. A nil/empty attrs map clears the column to an empty JSON object.
+func (s *RDBConfigStore) UpsertModelPricingAttributes(ctx context.Context, model, provider string, attrs map[string]string, tx ...*gorm.DB) (int64, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	var value string
+	if len(attrs) == 0 {
+		value = "{}"
+	} else {
+		encoded, err := json.Marshal(attrs)
+		if err != nil {
+			return 0, fmt.Errorf("marshal additional_attributes: %w", err)
+		}
+		value = string(encoded)
+	}
+
+	res := db.Model(&tables.TableModelPricing{}).
+		Where("model = ? AND provider = ?", model, provider).
+		Update("additional_attributes", value)
+	if res.Error != nil {
+		return 0, s.parseGormError(res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // DeleteModelPrices deletes all model pricing records from the database.
@@ -2360,7 +2550,7 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
-		Preload(relation("Budget")).
+		Preload(relation("Budgets")).
 		Preload(relation("RateLimit")).
 		Preload(relation("VirtualKeys"))
 }
@@ -2388,17 +2578,120 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
 }
 
+// virtualKeyInternalPageSize is the bounded page size used when loading every
+// virtual key with preloaded relationships. Keeping each page small avoids
+// PostgreSQL's extended protocol parameter limit during GORM preloads.
+const virtualKeyInternalPageSize = 1000
+
+// modelConfigInternalPageSize bounds the page size when loading every model config
+// with preloaded relationships, for the same reason as virtualKeyInternalPageSize:
+// a single un-paginated Find with preloads generates an IN(...) clause with one
+// bind parameter per row and exceeds PostgreSQL's 65535-parameter limit at scale.
+const modelConfigInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
-	var virtualKeys []tables.TableVirtualKey
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
 
-	// Preload all relationships for complete information
-	if err := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx)).
-		Order("created_at ASC").
+	start := time.Now()
+	pageCount := 0
+	defer func() {
+		if s.logger != nil {
+			s.logger.Info("[startup-timing] GetVirtualKeys loaded %d keys across %d pages in %v", len(allVirtualKeys), pageCount, time.Since(start))
+		}
+	}()
+
+	for {
+		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
+		if err != nil {
+			return nil, err
+		}
+		pageCount++
+		if len(virtualKeys) == 0 {
+			return allVirtualKeys, nil
+		}
+
+		allVirtualKeys = append(allVirtualKeys, virtualKeys...)
+		last := virtualKeys[len(virtualKeys)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(virtualKeys) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
+}
+
+// getVirtualKeysPage retrieves one unfiltered page of virtual keys without a
+// COUNT query for internal all-key loading paths.
+func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, lastCreatedAt time.Time, lastID string, hasCursor bool) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+	query := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx))
+	if hasCursor {
+		query = query.Where(
+			"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+			lastCreatedAt,
+			lastCreatedAt,
+			lastID,
+		)
+	}
+	if err := query.
+		Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+		Limit(limit).
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
 	return virtualKeys, nil
+}
+
+// getGovernanceConfigVirtualKeys loads every virtual key with the preloads needed
+// by GetGovernanceConfig (ProviderConfigs and their Keys). It pages with a
+// cursor so each preload's generated IN(...) clause stays within PostgreSQL's
+// 65535 bind-parameter limit. A single un-paginated Find with these preloads
+// fails once the key count exceeds ~65535 ("extended protocol limited to 65535
+// parameters"). Mirrors GetVirtualKeys, which is paginated for the same reason.
+func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
+
+	for {
+		var page []tables.TableVirtualKey
+		query := s.DB().WithContext(ctx).
+			Preload("ProviderConfigs").
+			Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+				return db.Select("id, name, key_id, models_json, provider")
+			})
+		if hasCursor {
+			query = query.Where(
+				"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+				lastCreatedAt,
+				lastCreatedAt,
+				lastID,
+			)
+		}
+		if err := query.
+			Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+			Limit(virtualKeyInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allVirtualKeys, nil
+		}
+		allVirtualKeys = append(allVirtualKeys, page...)
+		last := page[len(page)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(page) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
 }
 
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
@@ -2536,12 +2829,17 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	return &virtualKey, nil
 }
 
-// GetVirtualKeyQuotaByValue retrieves only the budget and rate limit data for a virtual key.
-// This is a lean query that avoids loading Team, Customer, ProviderConfigs, MCPConfigs, and Keys.
+// GetVirtualKeyQuotaByValue retrieves budget, rate limit, and provider-level limit data for a virtual key.
+// This is a lean query that avoids loading Team, Customer, MCPConfigs, and provider Keys.
 func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	baseQuery := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimit")
+	baseQuery := s.DB().WithContext(ctx).
+		Preload("Budgets").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("ProviderConfigs.Budgets").
+		Preload("ProviderConfigs.RateLimit")
 	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Fallback: try plaintext lookup for rows not yet migrated
@@ -2721,8 +3019,22 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
 			return err
 		}
+		// Delete per-user MCP header credentials tied to this VK
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
+			return err
+		}
+		// Delete per-user MCP header submission flows tied to this VK
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+			return err
+		}
 		// Delete budgets owned by this virtual key
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+			return err
+		}
+		// Delete model configs scoped to this virtual key, along with their owned
+		// budgets/rate-limits. scope_id has no FK constraint, so this cleanup must be
+		// explicit; otherwise per-VK model limits would orphan and leak budget/rate-limit rows.
+		if err := s.DeleteModelConfigsForScope(ctx, txDB, tables.ModelConfigScopeVirtualKey, id); err != nil {
 			return err
 		}
 		rateLimitID := virtualKey.RateLimitID
@@ -3237,39 +3549,38 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 // DeleteTeam deletes a team from the database.
 // Owned budgets cascade via the governance_budgets.team_id FK.
 // Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
-func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var team tables.TableTeam
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set team_id to null for all virtual keys associated with the team
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
-			return err
-		}
-		rateLimitID := team.RateLimitID
-		// Delete the team — owned budgets cascade via FK on governance_budgets.team_id
-		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the team's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteTeam(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var team tables.TableTeam
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Set team_id to null for all virtual keys associated with the team
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
+		return err
+	}
+	rateLimitID := team.RateLimitID
+	// Delete the team - owned budgets cascade via FK on governance_budgets.team_id
+	if err := txDB.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Delete the team's rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3370,51 +3681,45 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 }
 
 // DeleteCustomer deletes a customer from the database.
-func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var customer tables.TableCustomer
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set customer_id to null for all virtual keys associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Set customer_id to null for all teams associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Store the budget and rate limit IDs before deleting the customer
-		budgetID := customer.BudgetID
-		rateLimitID := customer.RateLimitID
-		// Delete the customer first
-		if err := tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the customer's budget if it exists
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the customer's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteCustomer(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var customer tables.TableCustomer
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Null out customer_id on associated VKs and teams before deleting the customer row.
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	// Set customer_id to null for all teams associated with the customer
+	if err := txDB.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	rateLimitID := customer.RateLimitID
+	// Explicitly delete owned budgets before the customer row. FK cascades cannot
+	// be relied on across all dialects for constraints added to pre-existing tables.
+	if err := txDB.WithContext(ctx).Where("customer_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+		return err
+	}
+	if err := txDB.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3612,6 +3917,9 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		if ownerBudget.TeamID == nil {
 			ownerBudget.TeamID = existing.TeamID
 		}
+		if ownerBudget.CustomerID == nil {
+			ownerBudget.CustomerID = existing.CustomerID
+		}
 		if err := lockBudgetOwner(ctx, txDB, ownerBudget); err != nil {
 			return err
 		}
@@ -3661,8 +3969,12 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 
 // UpdateBudgetUsage updates only the current_usage field of a budget.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableBudget{}).
 		Where("id = ?", id).
@@ -3678,8 +3990,12 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 
 // UpdateRateLimitUsage updates only the usage fields of a rate limit.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableRateLimit{}).
 		Where("id = ?", id).
@@ -3961,8 +4277,55 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 
 // GetModelConfigs retrieves all model configs from the database.
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var allModelConfigs []tables.TableModelConfig
+	lastID := ""
+	hasCursor := false
+
+	for {
+		var page []tables.TableModelConfig
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		if hasCursor {
+			query = query.Where("governance_model_configs.id > ?", lastID)
+		}
+		if err := query.
+			Order("governance_model_configs.id ASC").
+			Limit(modelConfigInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allModelConfigs, nil
+		}
+		allModelConfigs = append(allModelConfigs, page...)
+		lastID = page[len(page)-1].ID
+		hasCursor = true
+		if len(page) < modelConfigInternalPageSize {
+			return allModelConfigs, nil
+		}
+	}
+}
+
+// GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
+func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+	if len(scopeIDs) == 0 {
+		return nil, nil
+	}
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
+// GetProviderGovernanceModelConfigs retrieves the wildcard "all models on a provider" configs
+func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var modelConfigs []tables.TableModelConfig
+	if err := s.DB().WithContext(ctx).
+		Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
+		Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
 	return modelConfigs, nil
@@ -3975,6 +4338,12 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
+	}
+	if params.Scope != "" {
+		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	}
+	if params.Provider != "" {
+		baseQuery = baseQuery.Where("provider = ?", params.Provider)
 	}
 
 	var totalCount int64
@@ -3997,9 +4366,10 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 
 	var modelConfigs []tables.TableModelConfig
 	if err := baseQuery.
+		Preload("Budgets").
 		Preload("Budget").
 		Preload("RateLimit").
-		Order("created_at ASC, id ASC").
+		Order("created_at DESC, id DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&modelConfigs).Error; err != nil {
@@ -4008,16 +4378,22 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	return modelConfigs, totalCount, nil
 }
 
-// GetModelConfig retrieves a specific model config from the database by model name and optional provider.
-func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+// GetModelConfig retrieves a specific model config from the database by its identity:
+// scope, optional scope ID, model name, and optional provider.
+func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName)
+	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName).Where("scope = ?", scope)
+	if scopeID != nil {
+		query = query.Where("scope_id = ?", *scopeID)
+	} else {
+		query = query.Where("scope_id IS NULL")
+	}
 	if provider != nil {
 		query = query.Where("provider = ?", *provider)
 	} else {
 		query = query.Where("provider IS NULL")
 	}
-	if err := query.Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
+	if err := query.Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4029,7 +4405,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, p
 // GetModelConfigByID retrieves a specific model config from the database by ID.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4038,16 +4414,138 @@ func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*ta
 	return &modelConfig, nil
 }
 
+// deleteModelConfigsWhere deletes every model config matching the given condition,
+// along with the budgets and rate-limits those configs own. It is the single source
+// of truth for tearing down model configs when their owner (a virtual key, provider,
+// user, …) is removed — every owner-delete path funnels through here so the cleanup,
+// including the easy-to-forget preload of multi-budget rows, lives in exactly one place.
+//
+// Owned budgets are gathered from BOTH the active Budgets slice (owned via
+// ModelConfigID) and the legacy single BudgetID column. Deletion happens by
+// snapshotted ID rather than re-running the WHERE clause, so a concurrent
+// CreateModelConfig that lands between the snapshot and the delete can't leave its
+// owned budget/rate-limit rows dangling. The snapshot is taken FOR UPDATE
+// (mirroring DeleteModelConfig) so a concurrent UpdateModelConfig can't swap
+// BudgetID/RateLimitID after the IDs are collected; rows are locked in stable id
+// order to keep concurrent deleters deadlock-free. Configs are removed before
+// their owned rows, matching DeleteModelConfig's order.
+func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm.DB, query string, args ...any) error {
+	var modelConfigs []tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
+		return err
+	}
+	if len(modelConfigs) == 0 {
+		return nil
+	}
+
+	mcIDs := make([]string, 0, len(modelConfigs))
+	budgetIDs := make([]string, 0, len(modelConfigs))
+	rateLimitIDs := make([]string, 0, len(modelConfigs))
+	for i := range modelConfigs {
+		mcIDs = append(mcIDs, modelConfigs[i].ID)
+		for j := range modelConfigs[i].Budgets {
+			budgetIDs = append(budgetIDs, modelConfigs[i].Budgets[j].ID)
+		}
+		if modelConfigs[i].BudgetID != nil {
+			budgetIDs = append(budgetIDs, *modelConfigs[i].BudgetID)
+		}
+		if modelConfigs[i].RateLimitID != nil {
+			rateLimitIDs = append(rateLimitIDs, *modelConfigs[i].RateLimitID)
+		}
+	}
+
+	if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+		return err
+	}
+	if len(budgetIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+			return err
+		}
+	}
+	if len(rateLimitIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteModelConfigsForScope removes all model configs targeting a given scope owner
+// (e.g. scope=virtual_key, scopeID=<vk id>) along with their owned budgets/rate-limits.
+// Thin wrapper over deleteModelConfigsWhere for the scope/scope_id axis. Exported so
+// out-of-package owner-delete paths (e.g. the enterprise user-deletion flow cleaning up
+// scope=user configs) funnel through the same cleanup instead of reimplementing it.
+func (s *RDBConfigStore) DeleteModelConfigsForScope(ctx context.Context, txDB *gorm.DB, scope, scopeID string) error {
+	// The tx is required (not variadic) on purpose: this cleanup must be atomic
+	// with the owner's delete. Guard against nil rather than falling back to
+	// s.DB(), which would silently run the cleanup outside that transaction.
+	if txDB == nil {
+		return fmt.Errorf("DeleteModelConfigsForScope requires the owner-delete transaction, got nil tx")
+	}
+	return s.deleteModelConfigsWhere(ctx, txDB, "scope = ? AND scope_id = ?", scope, scopeID)
+}
+
 // CreateModelConfig creates a new model config in the database.
 func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
-	var txDB *gorm.DB
-	if len(tx) > 0 {
-		txDB = tx[0]
-	} else {
-		txDB = s.DB()
+	// Locking the scope owner and inserting the config must be atomic, so wrap in a
+	// transaction when the caller didn't supply one.
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.CreateModelConfig(ctx, modelConfig, transaction)
+		})
 	}
+	txDB := tx[0]
+
+	// Serialize against deletion of the scope owner. A scoped config's scope_id carries
+	// no FK, so without this a CreateModelConfig for scope=virtual_key could commit just
+	// after a concurrent DeleteVirtualKey, leaving the config (and its owned budgets/
+	// rate-limits) pointing at a virtual key that no longer exists. Locking the owner row
+	// makes the two transactions mutually exclusive and surfaces an already-deleted owner
+	// as ErrNotFound. Callers that create owner-scoped configs must create the owner first.
+	if err := s.lockModelConfigScopeOwner(ctx, txDB, modelConfig); err != nil {
+		return err
+	}
+
 	if err := txDB.WithContext(ctx).Create(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// lockModelConfigScopeOwner takes a FOR UPDATE lock on the row a scoped model config
+// targets and confirms it still exists, returning ErrNotFound when the owner is gone.
+// Global configs (no scope owner) are a no-op. Only scopes whose owner table lives in
+// this store are locked; other scopes (e.g. the enterprise "user" scope, whose owner
+// table is out of package) are the responsibility of their own create path. The lock is
+// FOR UPDATE on Postgres and a plain existence check on SQLite (whose writer
+// serialization already prevents the interleave), mirroring lockBudgetOwner.
+//
+// Provider-bound configs (any scope) are additionally serialized against
+// DeleteProvider, which tears down every config matching the provider column. The
+// provider row is optional — providers may be env-configured with no DB row — so
+// absence is tolerated rather than treated as a missing owner.
+func (s *RDBConfigStore) lockModelConfigScopeOwner(ctx context.Context, txDB *gorm.DB, mc *tables.TableModelConfig) error {
+	if mc == nil {
+		return nil
+	}
+	if mc.Provider != nil && *mc.Provider != "" {
+		var provider tables.TableProvider
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&provider, "name = ?", *mc.Provider).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if mc.ScopeID == nil || *mc.ScopeID == "" {
+		return nil
+	}
+	switch mc.Scope {
+	case tables.ModelConfigScopeVirtualKey:
+		var vk tables.TableVirtualKey
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&vk, "id = ?", *mc.ScopeID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -4070,7 +4568,9 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(modelConfig).Error; err != nil {
+	// Omit associations: budgets (has-many via ModelConfigID) and rate-limit are managed
+	// explicitly by callers. A cascading Save would otherwise clobber their usage counters.
+	if err := txDB.WithContext(ctx).Omit(clause.Associations).Save(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -4096,40 +4596,53 @@ func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []
 }
 
 // DeleteModelConfig deletes a model config from the database.
-func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// First fetch the model config to get budget and rate limit IDs
-		var modelConfig tables.TableModelConfig
-		if err := dbForUpdate(tx).First(&modelConfig, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
+func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteModelConfig(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	// Fetch the model config with its owned budgets to collect all IDs to clean up.
+	var modelConfig tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").First(&modelConfig, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Collect budget IDs from both the Budgets slice (active path, owned via ModelConfigID)
+	// and the legacy single BudgetID column.
+	budgetIDs := make([]string, 0, len(modelConfig.Budgets)+1)
+	for i := range modelConfig.Budgets {
+		budgetIDs = append(budgetIDs, modelConfig.Budgets[i].ID)
+	}
+	if modelConfig.BudgetID != nil {
+		budgetIDs = append(budgetIDs, *modelConfig.BudgetID)
+	}
+	rateLimitID := modelConfig.RateLimitID
+	// Delete the model config first
+	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return s.parseGormError(err)
+	}
+	// Delete the owned budgets (don't rely on FK cascade — it isn't applied to
+	// pre-existing tables on all dialects).
+	if len(budgetIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
 			return err
 		}
-		// Store the budget and rate limit IDs before deleting
-		budgetID := modelConfig.BudgetID
-		rateLimitID := modelConfig.RateLimitID
-		// Delete the model config first
-		if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return s.parseGormError(err)
+	}
+	// Delete the rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
 		}
-		// Delete the budget if it exists
-		if budgetID != nil {
-			if err := tx.Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // GetGovernanceConfig retrieves the governance configuration from the database.
@@ -4145,14 +4658,11 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var pricingOverrides []tables.TablePricingOverride
 	var governanceConfigs []tables.TableGovernanceConfig
 
-	if err := s.DB().WithContext(ctx).
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Find(&virtualKeys).Error; err != nil {
+	loadedVKs, err := s.getGovernanceConfigVirtualKeys(ctx)
+	if err != nil {
 		return nil, err
 	}
+	virtualKeys = loadedVKs
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
 		Find(&teams).Error; err != nil {
@@ -5092,33 +5602,45 @@ func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (
 	return &token, nil
 }
 
-// ListAllOauthUserTokens returns every token row regardless of status. Used by
-// the sessions tab UI, which renders distinct affordances per state; filtering
-// here would only hide rows the user needs to see (especially needs_reauth).
-// Runtime lookups apply their own status='active' filter and don't use this.
-func (s *RDBConfigStore) ListAllOauthUserTokens(ctx context.Context) ([]tables.TableOauthUserToken, error) {
+// ListOauthUserTokens returns token rows matching params, regardless of status.
+// The sessions tab UI renders distinct affordances per state; default status
+// filtering here would only hide rows the user needs to see (especially
+// needs_reauth). Runtime lookups apply their own status='active' filter and
+// don't use this. Pagination is handler-side because cross-table de-dup with
+// the pending-session list happens after the merge.
+func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserToken{})
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "oauth_user_tokens",
+		authModeColumn: "auth_mode",
+	})
 	var tokens []tables.TableOauthUserToken
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Order("created_at DESC").
+		Order("oauth_user_tokens.created_at DESC").
 		Find(&tokens).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all oauth user tokens: %w", err)
+		return nil, fmt.Errorf("failed to list oauth user tokens: %w", err)
 	}
 	return tokens, nil
 }
 
-// ListAllPendingOauthUserSessions returns all pending OAuth flow rows whose
-// expiry is in the future. Companion to ListAllOauthUserTokens.
-func (s *RDBConfigStore) ListAllPendingOauthUserSessions(ctx context.Context) ([]tables.TableOauthUserSession, error) {
+// ListPendingOauthUserSessions returns pending OAuth flow rows matching params
+// whose expiry is in the future. Companion to ListOauthUserTokens.
+func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserSession{}).
+		Where("oauth_user_sessions.status = ? AND oauth_user_sessions.expires_at > ?", "pending", time.Now())
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "oauth_user_sessions",
+		authModeColumn: "flow_mode",
+	})
 	var sessions []tables.TableOauthUserSession
-	if err := s.ScopedDB(ctx).
+	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Where("status = ? AND expires_at > ?", "pending", time.Now()).
-		Order("created_at DESC").
+		Order("oauth_user_sessions.created_at DESC").
 		Find(&sessions).Error; err != nil {
-		return nil, fmt.Errorf("failed to list all pending oauth user sessions: %w", err)
+		return nil, fmt.Errorf("failed to list pending oauth user sessions: %w", err)
 	}
 	return sessions, nil
 }
@@ -5153,4 +5675,624 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 		return 0, fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
 	}
 	return result.RowsAffected, nil
+}
+
+// ---------- Per-User MCP Header Credentials ----------
+
+// GetMCPPerUserHeaderCredentialByMode looks up a usable per-user header
+// credential by a single identity dimension. Returns both 'active' and
+// 'needs_update' rows; the runtime resolver's missing-keys check
+// distinguishes them — needs_update rows that genuinely lack keys for the
+// current schema trigger the auth-required flow, while rows where the
+// schema only narrowed still satisfy and get used. Orphaned rows are
+// filtered at SQL because they mean the user lost grant: neither runtime
+// resolution nor the flow-detail prefill UX should surface them. Mirrors
+// GetOauthUserTokenByMode (which is stricter — OAuth has no needs_update
+// equivalent because tokens are opaque and resubmission is the full IdP
+// dance).
+func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	if identity == "" || mcpClientID == "" {
+		return nil, nil
+	}
+	var cred tables.TableMCPPerUserHeaderCredential
+	var result *gorm.DB
+	statuses := []string{"active", "needs_update"}
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeUser), identity, mcpClientID, statuses).
+			First(&cred)
+	case schemas.MCPAuthModeVK:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeVK), identity, mcpClientID, statuses).
+			First(&cred)
+	case schemas.MCPAuthModeSession:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, statuses).
+			First(&cred)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header credential by mode %s: %w", mode, result.Error)
+	}
+	return &cred, nil
+}
+
+// GetMCPPerUserHeaderCredentialByID looks up a single row by primary key.
+// Returns nil, nil when not found.
+func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var cred tables.TableMCPPerUserHeaderCredential
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&cred).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header credential by id %s: %w", id, err)
+	}
+	return &cred, nil
+}
+
+// UpsertMCPPerUserHeaderCredential atomically inserts or updates a credential
+// row keyed by (auth_mode, identity, mcp_client_id). Mirrors
+// CreateOauthUserToken — the row represents the (identity, mcp_client)
+// binding, so a re-submit preserves CreatedAt.
+func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableMCPPerUserHeaderCredential
+		var lookupErr error
+		switch {
+		case cred.UserID != nil && *cred.UserID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
+				First(&existing).Error
+		case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
+				First(&existing).Error
+		case cred.SessionID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
+				First(&existing).Error
+		default:
+			lookupErr = gorm.ErrRecordNotFound
+		}
+
+		if lookupErr == nil {
+			cred.ID = existing.ID
+			cred.CreatedAt = existing.CreatedAt
+			return tx.Save(cred).Error
+		}
+		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
+		}
+		if cred.ID == "" {
+			cred.ID = uuid.New().String()
+		}
+		if err := tx.Create(cred).Error; err != nil {
+			return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteMCPPerUserHeaderCredential removes a credential row by its primary key.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete mcp per-user header credential: %w", result.Error)
+	}
+	return nil
+}
+
+// ListMCPPerUserHeaderCredentials returns credential rows matching params,
+// regardless of status. The sessions UI surfaces non-active states
+// (needs_update / orphaned) with distinct affordances; default status
+// filtering here would only hide rows the user needs to act on. Runtime
+// lookups apply their own status='active' filter and don't go through
+// this method.
+func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderCredential{})
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "mcp_per_user_header_credentials",
+		authModeColumn: "auth_mode",
+	})
+	var creds []tables.TableMCPPerUserHeaderCredential
+	if err := query.
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Order("mcp_per_user_header_credentials.created_at DESC").
+		Find(&creds).Error; err != nil {
+		return nil, fmt.Errorf("failed to list mcp per-user header credentials: %w", err)
+	}
+	return creds, nil
+}
+
+// MarkMCPPerUserHeaderCredentialsNeedsUpdate flips status to 'needs_update'
+// for every active row tied to mcpClientID. Called when the admin changes
+// PerUserHeaderKeys on the MCP client config.
+func (s *RDBConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPPerUserHeaderCredential{}).
+		Where("mcp_client_id = ? AND status = ?", mcpClientID, "active").
+		Update("status", "needs_update")
+	if result.Error != nil {
+		return fmt.Errorf("failed to mark mcp per-user header credentials needs_update for client %s: %w", mcpClientID, result.Error)
+	}
+	return nil
+}
+
+// DeleteOrphanedMCPPerUserHeaderCredentials hard-deletes rows in 'orphaned'
+// state longer than olderThan. Skipped silently when olderThan is zero or
+// negative.
+func (s *RDBConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-olderThan)
+	result := s.DB().WithContext(ctx).
+		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
+		Delete(&tables.TableMCPPerUserHeaderCredential{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete orphaned mcp per-user header credentials: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// CreateMCPPerUserHeaderFlow persists a pending per-user-headers submission
+// flow row. ID is set by the caller (typically a fresh UUID).
+func (s *RDBConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	if flow == nil {
+		return fmt.Errorf("flow is nil")
+	}
+	if err := s.DB().WithContext(ctx).Create(flow).Error; err != nil {
+		return fmt.Errorf("failed to create mcp per-user header flow: %w", err)
+	}
+	return nil
+}
+
+// GetMCPPerUserHeaderFlowByID looks up a flow row by primary key.
+// Returns nil, nil when not found.
+func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var flow tables.TableMCPPerUserHeaderFlow
+	if err := s.ScopedDB(ctx).
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB {
+			// encryption_status is required for TableMCPClient.AfterFind to
+			// decrypt headers_json in encrypted deployments — omitting it
+			// makes the preload return ciphertext and breaks flowSubmit's
+			// VerifyHeadersConnection path which reads config.Headers.
+			return db.Select("client_id, name, headers_json, allowed_extra_headers_json, per_user_header_keys_json, encryption_status")
+		}).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Where("id = ?", id).First(&flow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header flow by id %s: %w", id, err)
+	}
+	return &flow, nil
+}
+
+// DeleteMCPPerUserHeaderFlow hard-deletes a single flow row by primary key.
+// Called on submit-success and on revoke; no-op when the row is absent so
+// terminal-state transitions are idempotent.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user header flow %s: %w", id, err)
+	}
+	return nil
+}
+
+// GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient returns the canonical
+// pending flow row for the (mode, identity, mcp_client) triple, or nil
+// when none exists. Mirrors GetOauthUserSessionByModeIdentityAndMCPClient.
+// Used by InitiateUserSubmissionFlow to keep at most one pending row per
+// binding (re-init updates in place instead of inserting a duplicate).
+func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderFlow, error) {
+	if identity == "" || mcpClientID == "" {
+		return nil, nil
+	}
+	q := s.DB().WithContext(ctx).
+		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return nil, fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	var flow tables.TableMCPPerUserHeaderFlow
+	if err := q.First(&flow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get mcp per-user header flow by mode/identity/mcp_client: %w", err)
+	}
+	return &flow, nil
+}
+
+// UpdateMCPPerUserHeaderFlow updates a flow row in place.
+func (s *RDBConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
+	if flow == nil || flow.ID == "" {
+		return fmt.Errorf("flow id is required")
+	}
+	if err := s.DB().WithContext(ctx).Save(flow).Error; err != nil {
+		return fmt.Errorf("failed to update mcp per-user header flow: %w", err)
+	}
+	return nil
+}
+
+// DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient hard-deletes any
+// flow rows matching the binding. Mirrors
+// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
+func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	if identity == "" || mcpClientID == "" {
+		return nil
+	}
+	q := s.DB().WithContext(ctx).
+		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		q = q.Where("user_id = ?", identity)
+	case schemas.MCPAuthModeVK:
+		q = q.Where("virtual_key_id = ?", identity)
+	case schemas.MCPAuthModeSession:
+		q = q.Where("session_id = ?", identity)
+	default:
+		return fmt.Errorf("unknown auth mode: %s", mode)
+	}
+	if err := q.Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete mcp per-user header flows by mode/identity/mcp_client: %w", err)
+	}
+	return nil
+}
+
+// ListPendingMCPPerUserHeaderFlows returns pending header-submission flow rows
+// matching params whose expiry is in the future. Uses ScopedDB so a
+// query-scope stashed on ctx (if any) narrows the result; otherwise returns
+// every matching pending row. Mirrors ListPendingOauthUserSessions.
+func (s *RDBConfigStore) ListPendingMCPPerUserHeaderFlows(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderFlow, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderFlow{}).
+		Where("mcp_per_user_header_flows.status = ? AND mcp_per_user_header_flows.expires_at > ?", "pending", time.Now())
+	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
+		table:          "mcp_per_user_header_flows",
+		authModeColumn: "flow_mode",
+	})
+	var flows []tables.TableMCPPerUserHeaderFlow
+	if err := query.
+		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
+		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
+		Order("mcp_per_user_header_flows.created_at DESC").
+		Find(&flows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list pending mcp per-user header flows: %w", err)
+	}
+	return flows, nil
+}
+
+// mcpSessionFilterTable carries the table-specific column names needed to
+// build a generic filter chain. The auth-mode column is named differently
+// on the credential tables ("auth_mode") and the pending-flow tables
+// ("flow_mode"), but the value space is identical.
+type mcpSessionFilterTable struct {
+	table          string
+	authModeColumn string // "auth_mode" or "flow_mode"
+}
+
+// applyMCPSessionFilters appends the shared MCP-sessions WHERE clauses and
+// the search LEFT JOINs to a query. The search JOINs (config_mcp_clients,
+// governance_virtual_keys) and the LIKE WHERE are emitted only when
+// params.Search is non-empty; when absent the columns are never referenced
+// and no JOIN is added. The join cardinality is 1:1 on FK columns, so
+// Count is safe without DISTINCT.
+func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mcpSessionFilterTable) *gorm.DB {
+	if len(params.Statuses) > 0 {
+		query = query.Where(t.table+".status IN ?", params.Statuses)
+	}
+	if len(params.AuthModes) > 0 {
+		query = query.Where(t.table+"."+t.authModeColumn+" IN ?", params.AuthModes)
+	}
+	if len(params.MCPClientIDs) > 0 {
+		query = query.Where(t.table+".mcp_client_id IN ?", params.MCPClientIDs)
+	}
+	if params.Search != "" {
+		needle := "%" + strings.ToLower(params.Search) + "%"
+		query = query.
+			Joins("LEFT JOIN config_mcp_clients ON config_mcp_clients.client_id = " + t.table + ".mcp_client_id").
+			Joins("LEFT JOIN governance_virtual_keys ON governance_virtual_keys.id = " + t.table + ".virtual_key_id")
+		whereClause := "LOWER(config_mcp_clients.name) LIKE ? OR LOWER(config_mcp_clients.client_id) LIKE ? OR LOWER(" + t.table + ".user_id) LIKE ? OR LOWER(" + t.table + ".session_id) LIKE ? OR LOWER(governance_virtual_keys.id) LIKE ? OR LOWER(governance_virtual_keys.name) LIKE ?"
+		whereArgs := []any{needle, needle, needle, needle, needle, needle}
+		if len(params.MatchedUserIDs) > 0 {
+			whereClause += " OR " + t.table + ".user_id IN ?"
+			whereArgs = append(whereArgs, params.MatchedUserIDs)
+		}
+		query = query.Where(whereClause, whereArgs...)
+	}
+	return query
+}
+
+// DeleteExpiredMCPPerUserHeaderFlows hard-deletes pending flow rows whose
+// ExpiresAt has passed. Status filter excludes already-completed rows
+// (which the submit path deletes immediately anyway).
+func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
+	result := s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status = ?", time.Now(), "pending").
+		Delete(&tables.TableMCPPerUserHeaderFlow{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to delete expired mcp per-user header flows: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// ----- Per-user credential reconciliation -----
+//
+// The Reconcile* methods orphan/reactivate vk-keyed credentials whose MCP
+// grant changed (allowlist edit, AllowOnAllVirtualKeys toggle, VK delete).
+// Pending flow rows whose MCP lost the grant are hard-deleted — they're
+// transient in-flight attempts that can't complete without the grant.
+//
+// "Effective allowlist" for a VK = explicit rows in
+// governance_virtual_key_mcp_configs ∪ MCPs with
+// config_mcp_clients.allow_on_all_virtual_keys = true. Mirrors the runtime
+// check in plugins/governance/main.go isMCPToolAllowedByVKWith.
+//
+// Runtime lookups filter status='active', so orphaned rows are invisible
+// until reactivation. 'needs_reauth' (OAuth) and 'needs_update' (headers)
+// rows are left alone — their problem isn't grant state.
+//
+// Wrappers that maintain user-keyed credentials (rows keyed by user_id
+// rather than virtual_key_id) layer on top of these methods.
+
+// vkEffectiveMCPClientIDs returns the set of MCP client_ids the given VK
+// can access — union of explicit per-VK allowlist and MCPs marked
+// AllowOnAllVirtualKeys=true.
+func vkEffectiveMCPClientIDs(tx *gorm.DB, vkID string) ([]string, error) {
+	var explicit []string
+	if err := tx.Table("governance_virtual_key_mcp_configs vkmc").
+		Distinct("mcp.client_id").
+		Joins("JOIN config_mcp_clients mcp ON mcp.id = vkmc.mcp_client_id").
+		Where("vkmc.virtual_key_id = ?", vkID).
+		Pluck("mcp.client_id", &explicit).Error; err != nil {
+		return nil, fmt.Errorf("read VK %s explicit allowlist: %w", vkID, err)
+	}
+	var implicit []string
+	if err := tx.Table("config_mcp_clients").
+		Where("allow_on_all_virtual_keys = ?", true).
+		Pluck("client_id", &implicit).Error; err != nil {
+		return nil, fmt.Errorf("read AllowOnAllVirtualKeys MCPs: %w", err)
+	}
+	if len(implicit) == 0 {
+		return explicit, nil
+	}
+	seen := make(map[string]struct{}, len(explicit)+len(implicit))
+	out := make([]string, 0, len(explicit)+len(implicit))
+	for _, id := range explicit {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range implicit {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// reconcileVKDirectTokensDB orphans/reactivates vk-keyed OAuth token rows
+// against the VK's effective allowlist. Pure DB; runs inside the caller's
+// transaction.
+func reconcileVKDirectTokensDB(tx *gorm.DB, vkID string) error {
+	allowedClientIDs, err := vkEffectiveMCPClientIDs(tx, vkID)
+	if err != nil {
+		return err
+	}
+
+	// Defense-in-depth: every other query in this file that touches these
+	// tables filters on auth_mode/flow_mode (see GetByModeIdentity*,
+	// UpsertCredential, ListPending* etc). Reconciliation matched on
+	// virtual_key_id alone; align with the convention so a stray non-VK
+	// row with virtual_key_id set can never be touched here.
+	orphanQ := tx.Model(&tables.TableOauthUserToken{}).
+		Where("auth_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "active")
+	if len(allowedClientIDs) > 0 {
+		orphanQ = orphanQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := orphanQ.Update("status", "orphaned").Error; err != nil {
+		return fmt.Errorf("orphan vk-keyed tokens for vk %s: %w", vkID, err)
+	}
+
+	if len(allowedClientIDs) > 0 {
+		if err := tx.Model(&tables.TableOauthUserToken{}).
+			Where("auth_mode = ? AND virtual_key_id = ? AND status = ? AND mcp_client_id IN ?", string(schemas.MCPAuthModeVK), vkID, "orphaned", allowedClientIDs).
+			Update("status", "active").Error; err != nil {
+			return fmt.Errorf("reactivate vk-keyed tokens for vk %s: %w", vkID, err)
+		}
+	}
+
+	// Pending-only: an 'authorized' session means the upstream OAuth callback
+	// already arrived and the code-for-token exchange is mid-flight; deleting
+	// it would surface a confusing "session not found" error to the user.
+	// Leave non-pending statuses ('authorized', 'failed', 'expired') alone —
+	// the next sweep pass cleans up finished/expired rows, and any token the
+	// in-flight exchange produces becomes immediately-orphaned (tidier than
+	// a hard error).
+	flowsQ := tx.Where("flow_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "pending")
+	if len(allowedClientIDs) > 0 {
+		flowsQ = flowsQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := flowsQ.Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		return fmt.Errorf("delete vk-keyed flow rows for vk %s: %w", vkID, err)
+	}
+	return nil
+}
+
+// reconcileVKDirectHeaderRowsDB is the headers counterpart of
+// reconcileVKDirectTokensDB.
+func reconcileVKDirectHeaderRowsDB(tx *gorm.DB, vkID string) error {
+	allowedClientIDs, err := vkEffectiveMCPClientIDs(tx, vkID)
+	if err != nil {
+		return err
+	}
+
+	// Defense-in-depth: see reconcileVKDirectTokensDB above — filter on
+	// auth_mode/flow_mode so non-VK rows with virtual_key_id set can
+	// never be touched here.
+	orphanQ := tx.Model(&tables.TableMCPPerUserHeaderCredential{}).
+		Where("auth_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "active")
+	if len(allowedClientIDs) > 0 {
+		orphanQ = orphanQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := orphanQ.Update("status", "orphaned").Error; err != nil {
+		return fmt.Errorf("orphan vk-keyed header credentials for vk %s: %w", vkID, err)
+	}
+
+	if len(allowedClientIDs) > 0 {
+		if err := tx.Model(&tables.TableMCPPerUserHeaderCredential{}).
+			Where("auth_mode = ? AND virtual_key_id = ? AND status = ? AND mcp_client_id IN ?", string(schemas.MCPAuthModeVK), vkID, "orphaned", allowedClientIDs).
+			Update("status", "active").Error; err != nil {
+			return fmt.Errorf("reactivate vk-keyed header credentials for vk %s: %w", vkID, err)
+		}
+	}
+
+	// Pending-only — same rationale as the OAuth flow delete above. Headers
+	// flows complete by row-deletion, so 'completed' rows shouldn't normally
+	// exist, but expired rows do and shouldn't be touched here either.
+	flowsQ := tx.Where("flow_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "pending")
+	if len(allowedClientIDs) > 0 {
+		flowsQ = flowsQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
+	}
+	if err := flowsQ.Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+		return fmt.Errorf("delete vk-keyed header flow rows for vk %s: %w", vkID, err)
+	}
+	return nil
+}
+
+// readVKsHoldingOauthCredsForMCP returns the distinct virtual_key_ids
+// with an active or pending OAuth row (token or session) for the given
+// MCP client. Used by ReconcileOauthAfterMCPChange to know which VKs
+// need re-evaluation.
+func readVKsHoldingOauthCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
+	var vkIDs []string
+	if err := tx.Raw(`
+		SELECT DISTINCT virtual_key_id FROM oauth_user_tokens
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		UNION
+		SELECT DISTINCT virtual_key_id FROM oauth_user_sessions
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+	`, mcpClientID, mcpClientID).Scan(&vkIDs).Error; err != nil {
+		return nil, fmt.Errorf("read VK owners of OAuth creds for mcp %s: %w", mcpClientID, err)
+	}
+	return vkIDs, nil
+}
+
+// readVKsHoldingHeaderCredsForMCP is the headers counterpart of
+// readVKsHoldingOauthCredsForMCP.
+func readVKsHoldingHeaderCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
+	var vkIDs []string
+	if err := tx.Raw(`
+		SELECT DISTINCT virtual_key_id FROM mcp_per_user_header_credentials
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		UNION
+		SELECT DISTINCT virtual_key_id FROM mcp_per_user_header_flows
+		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+	`, mcpClientID, mcpClientID).Scan(&vkIDs).Error; err != nil {
+		return nil, fmt.Errorf("read VK owners of header creds for mcp %s: %w", mcpClientID, err)
+	}
+	return vkIDs, nil
+}
+
+// ReconcileOauthAfterVKChange orphans/reactivates vk-keyed OAuth rows
+// against the VK's current effective allowlist. Called whenever a VK's
+// MCP grants might have changed (AP propagation, direct dashboard edit,
+// SCIM auto-assign).
+func (s *RDBConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error {
+	if vkID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return reconcileVKDirectTokensDB(tx, vkID)
+	})
+}
+
+// ReconcileMCPHeadersAfterVKChange is the headers counterpart of
+// ReconcileOauthAfterVKChange.
+func (s *RDBConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error {
+	if vkID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return reconcileVKDirectHeaderRowsDB(tx, vkID)
+	})
+}
+
+// ReconcileOauthAfterMCPChange re-evaluates every VK that holds an OAuth
+// credential for the given MCP. Called when an MCP edit mutates who can
+// access it (vk_configs diff or AllowOnAllVirtualKeys toggle).
+func (s *RDBConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		vkIDs, err := readVKsHoldingOauthCredsForMCP(tx, mcpClientID)
+		if err != nil {
+			return err
+		}
+		// Sort so concurrent MCP edits lock the same VKs in the same order;
+		// the UNION returned by readVKsHoldingOauthCredsForMCP is unordered,
+		// which can deadlock two overlapping reconciliations otherwise.
+		sort.Strings(vkIDs)
+		for _, vkID := range vkIDs {
+			if err := reconcileVKDirectTokensDB(tx, vkID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ReconcileMCPHeadersAfterMCPChange is the headers counterpart of
+// ReconcileOauthAfterMCPChange.
+func (s *RDBConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		vkIDs, err := readVKsHoldingHeaderCredsForMCP(tx, mcpClientID)
+		if err != nil {
+			return err
+		}
+		// See ReconcileOauthAfterMCPChange — deterministic lock order
+		// across concurrent MCP edits.
+		sort.Strings(vkIDs)
+		for _, vkID := range vkIDs {
+			if err := reconcileVKDirectHeaderRowsDB(tx, vkID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

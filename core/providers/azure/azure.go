@@ -186,7 +186,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &AzureProvider{
@@ -265,15 +265,7 @@ func (provider *AzureProvider) completeRequest(
 			req.Header.Del(anthropic.AnthropicBetaHeader)
 		}
 	} else {
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-		if path == "openai/v1/responses" {
-			url = fmt.Sprintf("%s/%s?api-version=preview", endpoint, path)
-		} else {
-			url = fmt.Sprintf("%s/%s?api-version=%s", endpoint, path, apiVersion.GetValue())
-		}
+		url = fmt.Sprintf("%s/%s", endpoint, path)
 	}
 
 	req.SetRequestURI(url)
@@ -315,12 +307,6 @@ func (provider *AzureProvider) completeRequest(
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	// Get API version
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	// Create the request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -330,7 +316,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(key.AzureKeyConfig.Endpoint.GetValue() + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("/openai/models?api-version=%s", apiVersion.GetValue())))
+	req.SetRequestURI(key.AzureKeyConfig.Endpoint.GetValue() + providerUtils.GetPathFromContext(ctx, "/openai/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
@@ -425,7 +411,7 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
 		ctx,
 		jsonData,
-		fmt.Sprintf("openai/deployments/%s/completions", request.Model),
+		"openai/v1/completions",
 		key,
 		request.Model,
 	)
@@ -474,12 +460,7 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
-	url := fmt.Sprintf("%s/openai/deployments/%s/completions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/completions", key.AzureKeyConfig.Endpoint.GetValue())
 
 	// Get Azure authentication headers
 	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
@@ -537,7 +518,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	if schemas.IsAnthropicModel(request.Model) {
 		path = "anthropic/v1/messages"
 	} else {
-		path = fmt.Sprintf("openai/deployments/%s/chat/completions", request.Model)
+		path = "openai/v1/chat/completions"
 	}
 
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
@@ -656,11 +637,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		if err != nil {
 			return nil, err
 		}
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-		url = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, apiVersion.GetValue())
+		url = fmt.Sprintf("%s/openai/v1/chat/completions", key.AzureKeyConfig.Endpoint.GetValue())
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
@@ -711,7 +688,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	if schemas.IsAnthropicModel(request.Model) {
 		path = "anthropic/v1/messages"
 	} else {
-		path = "openai/v1/responses"
+		path = fmt.Sprintf("openai/v1/responses?api-version=%s", AzureAPIVersionPreview)
 	}
 
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
@@ -813,7 +790,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/responses?api-version=preview", key.AzureKeyConfig.Endpoint.GetValue())
+		url = fmt.Sprintf("%s/openai/v1/responses?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), AzureAPIVersionPreview)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
@@ -856,7 +833,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(
 		ctx,
 		jsonData,
-		fmt.Sprintf("openai/deployments/%s/embeddings", request.Model),
+		"openai/v1/embeddings",
 		key,
 		request.Model,
 	)
@@ -904,17 +881,12 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 
 // Speech is not supported by the Azure provider.
 func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	url := fmt.Sprintf("%s/openai/deployments/%s/audio/speech?api-version=%s", endpoint, request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/audio/speech", endpoint)
 
 	response, err := openai.HandleOpenAISpeechRequest(
 		ctx,
@@ -956,11 +928,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		return nil, err
 	}
 
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-	url := fmt.Sprintf("%s/openai/deployments/%s/audio/speech?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/audio/speech", key.AzureKeyConfig.Endpoint.GetValue())
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1243,12 +1211,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
-	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", key.AzureKeyConfig.Endpoint.GetValue(), request.Model, DefaultAzureAPIVersion)
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
@@ -1280,11 +1243,6 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1293,7 +1251,7 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,
-		fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", endpoint, request.Model, apiVersion.GetValue()),
+		fmt.Sprintf("%s/openai/v1/images/generations", endpoint),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -1319,17 +1277,12 @@ func (provider *AzureProvider) ImageGenerationStream(
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	url := fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", endpoint, request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/images/generations", endpoint)
 
 	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 	if err != nil {
@@ -1360,17 +1313,12 @@ func (provider *AzureProvider) ImageGenerationStream(
 
 // ImageEdit performs an image edit request to Azure's API.
 func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/images/edits", endpoint)
 	response, err := openai.HandleOpenAIImageEditRequest(
 		ctx,
 		provider.client,
@@ -1392,17 +1340,12 @@ func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schema
 
 // ImageEditStream performs a streaming image edit request to Azure's API.
 func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, request.Model, apiVersion.GetValue())
+	url := fmt.Sprintf("%s/openai/v1/images/edits", endpoint)
 
 	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 	if err != nil {
@@ -1655,12 +1598,6 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil)
 	}
 
-	// Get API version
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	// Create multipart form data
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -1693,11 +1630,8 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL with query params
-	baseURL := fmt.Sprintf("%s/openai/files", key.AzureKeyConfig.Endpoint.GetValue())
-	values := url.Values{}
-	values.Set("api-version", apiVersion.GetValue())
-	requestURL := baseURL + "?" + values.Encode()
+	// Build URL
+	requestURL := fmt.Sprintf("%s/openai/v1/files", key.AzureKeyConfig.Endpoint.GetValue())
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1768,12 +1702,6 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 		}, nil
 	}
 
-	// Get API version
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1781,9 +1709,8 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with query params
-	requestURL := fmt.Sprintf("%s/openai/files", key.AzureKeyConfig.Endpoint.GetValue())
+	requestURL := fmt.Sprintf("%s/openai/v1/files", key.AzureKeyConfig.Endpoint.GetValue())
 	values := url.Values{}
-	values.Set("api-version", apiVersion.GetValue())
 	if request.Purpose != "" {
 		values.Set("purpose", string(request.Purpose))
 	}
@@ -1878,21 +1805,12 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		// Get API version
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		// Build URL with query params
-		baseURL := fmt.Sprintf("%s/openai/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
-		values := url.Values{}
-		values.Set("api-version", apiVersion.GetValue())
-		requestURL := baseURL + "?" + values.Encode()
+		// Build URL
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1971,21 +1889,12 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		// Get API version
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		// Build URL with query params
-		baseURL := fmt.Sprintf("%s/openai/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
-		values := url.Values{}
-		values.Set("api-version", apiVersion.GetValue())
-		requestURL := baseURL + "?" + values.Encode()
+		// Build URL
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2093,21 +2002,12 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 	var lastErr *schemas.BifrostError
 
 	for _, key := range keys {
-		// Get API version
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		// Build URL with query params
-		baseURL := fmt.Sprintf("%s/openai/files/%s/content", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
-		values := url.Values{}
-		values.Set("api-version", apiVersion.GetValue())
-		requestURL := baseURL + "?" + values.Encode()
+		// Build URL
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s/content", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.FileID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2205,23 +2105,14 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.NewBifrostOperationError("either input_file_id, input_blob, or requests array is required for Azure batch API", nil)
 	}
 
-	// Get API version
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL with query params
-	baseURL := fmt.Sprintf("%s/openai/batches", key.AzureKeyConfig.Endpoint.GetValue())
-	values := url.Values{}
-	values.Set("api-version", apiVersion.GetValue())
-	requestURL := baseURL + "?" + values.Encode()
+	// Build URL
+	requestURL := fmt.Sprintf("%s/openai/v1/batches", key.AzureKeyConfig.Endpoint.GetValue())
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2320,12 +2211,6 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 		}, nil
 	}
 
-	// Get API version
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2333,9 +2218,8 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL with query params
-	baseURL := fmt.Sprintf("%s/openai/batches", key.AzureKeyConfig.Endpoint.GetValue())
+	baseURL := fmt.Sprintf("%s/openai/v1/batches", key.AzureKeyConfig.Endpoint.GetValue())
 	values := url.Values{}
-	values.Set("api-version", apiVersion.GetValue())
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
 	}
@@ -2421,21 +2305,12 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		// Get API version
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		// Build URL with query params
-		baseURL := fmt.Sprintf("%s/openai/batches/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
-		values := url.Values{}
-		values.Set("api-version", apiVersion.GetValue())
-		requestURL := baseURL + "?" + values.Encode()
+		// Build URL
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2515,21 +2390,12 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		// Get API version
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-		}
-
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		// Build URL with query params
-		baseURL := fmt.Sprintf("%s/openai/batches/%s/cancel", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
-		values := url.Values{}
-		values.Set("api-version", apiVersion.GetValue())
-		requestURL := baseURL + "?" + values.Encode()
+		// Build URL
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s/cancel", key.AzureKeyConfig.Endpoint.GetValue(), url.PathEscape(request.BatchID))
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2813,11 +2679,61 @@ func (provider *AzureProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
+// Compaction compacts a conversation context window using Azure OpenAI's /openai/v1/responses/compact endpoint.
+func (provider *AzureProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return openai.ToOpenAICompactionRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	path := fmt.Sprintf("openai/v1/responses/compact?api-version=%s", AzureAPIVersionPreview)
+
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, path, key, request.Model)
+	if providerResponseHeaders != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+	}
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostCompactionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Latency:                 latency.Milliseconds(),
+				ProviderResponseHeaders: providerResponseHeaders,
+			},
+		}, nil
+	}
+
+	response := &schemas.BifrostCompactionResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // buildContainerURL constructs the Azure container API URL.
 // Container endpoints are not per-deployment, so they use the openai/v1 prefix directly.
 func (provider *AzureProvider) buildContainerURL(key schemas.Key, path string) string {
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
-	return fmt.Sprintf("%s/openai/v1%s?api-version=%s", endpoint, path, AzureAPIVersionPreview)
+	return fmt.Sprintf("%s/openai/v1%s", endpoint, path)
 }
 
 // ContainerCreate creates a new container via Azure's OpenAI API.
@@ -3271,7 +3187,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 		queryParams.Set("order", *request.Order)
 	}
 	if len(queryParams) > 0 {
-		requestURL += "&" + queryParams.Encode()
+		requestURL += "?" + queryParams.Encode()
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -3674,12 +3590,17 @@ func (provider *AzureProvider) Passthrough(
 		return nil, bifrostErr
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
+	}
+
+	var passthroughUsage *schemas.BifrostPassthroughUsage
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3689,7 +3610,9 @@ func (provider *AzureProvider) Passthrough(
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
+			PassthroughPath:         req.Path,
 		},
+		PassthroughUsage: passthroughUsage,
 	}
 
 	return bifrostResponse, nil
@@ -3755,7 +3678,7 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	rawBodyStream := resp.BodyStream()
@@ -3764,112 +3687,81 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError("provider returned an empty stream body", fmt.Errorf("provider returned an empty stream body"))
 	}
 
-	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(rawBodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx), ctx)
-	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
-
-	extraFields := schemas.BifrostResponseExtraFields{
-		ProviderResponseHeaders: headers,
+	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
+	if schemas.IsAnthropicModel(req.Model) {
+		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{}
 	}
-	statusCode := resp.StatusCode()
-
-	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-	go func() {
-		usage := &schemas.BifrostLLMUsage{}
-
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
-		defer func() {
-			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, providerUtils.PassthroughJSONBody(fasthttpReq, req.Body), usage)
-			}
-			close(ch)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer stopIdleTimeout()
-		defer stopCancellation()
-
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := bodyStream.Read(buf)
-			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  statusCode,
-						Headers:     headers,
-						Body:        chunk,
-						ExtraFields: extraFields,
-					},
-				}, ch, postHookSpanFinalizer)
-			}
-			if readErr == io.EOF {
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  statusCode,
-						Headers:     headers,
-						ExtraFields: extraFields,
-					},
-				}, ch, postHookSpanFinalizer)
-				return
-			}
-			if readErr != nil {
-				if ctx.Err() != nil {
-					return
+	return providerUtils.StreamPassthrough(
+		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
+		providerUtils.PassthroughStreamParams{
+			StatusCode:       resp.StatusCode(),
+			Headers:          headers,
+			Path:             req.Path,
+			RawRequest:       req.Body,
+			CancellationBody: providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
+			StartTime:        startTime,
+			Logger:           provider.logger,
+			HasUsage: func(event []byte) bool {
+				if anthropicUsage != nil {
+					return anthropic.HasAnthropicPassthroughUsage(event)
 				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
-				return
-			}
-		}
-	}()
-	return ch, nil
+				return openai.HasOpenAIPassthroughUsage(event)
+			},
+			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+				if anthropicUsage != nil {
+					return anthropicUsage.ObserveEvent(event)
+				}
+				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+			},
+		},
+	), nil
 }
 
 // buildPassthroughURL constructs the full Azure URL for a passthrough request.
 func (provider *AzureProvider) buildPassthroughURL(key schemas.Key, path, rawQuery string) string {
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 
-	// Normalise the responses path emitted by the Azure SDK.
+	// Normalise paths emitted by the Azure SDK.
 	path = strings.Replace(path, "/openai/responses", "/openai/v1/responses", 1)
-
 	path = strings.Replace(path, "/openai/videos", "/openai/v1/videos", 1)
 
-	var apiVersion string
 	switch {
-	case strings.Contains(path, "openai/v1/responses"):
-		apiVersion = AzureAPIVersionPreview
-	case strings.HasPrefix(path, "/anthropic/"),
-		strings.HasPrefix(path, "/openai/v1/videos"):
-		apiVersion = ""
-	default:
-		if key.AzureKeyConfig.APIVersion != nil {
-			apiVersion = key.AzureKeyConfig.APIVersion.GetValue()
+	case strings.HasPrefix(path, "/anthropic/") || strings.HasPrefix(path, "/openai/v1/videos"):
+		// Anthropic and video routes do not accept api-version — strip it if present.
+		if values, err := url.ParseQuery(rawQuery); err == nil {
+			values.Del("api-version")
+			rawQuery = values.Encode()
 		}
-		if apiVersion == "" {
-			if values, err := url.ParseQuery(rawQuery); err == nil {
-				apiVersion = values.Get("api-version")
-			}
+	case strings.Contains(path, "/openai/v1/responses"):
+		// Responses API requires api-version=preview.
+		values, _ := url.ParseQuery(rawQuery)
+		if values.Get("api-version") == "" {
+			values.Set("api-version", AzureAPIVersionPreview)
+			rawQuery = values.Encode()
+		}
+	case strings.Contains(path, "/openai/deployments/"):
+		// Classic /deployments/ routes require api-version. Inject a default if absent.
+		values, _ := url.ParseQuery(rawQuery)
+		if values.Get("api-version") == "" {
+			values.Set("api-version", DefaultAzureAPIVersion)
+			rawQuery = values.Encode()
 		}
 	}
-
-	// Strip api-version from the client query to avoid duplicates.
-	queryValues, _ := url.ParseQuery(rawQuery)
-	queryValues.Del("api-version")
-	cleanQuery := queryValues.Encode()
 
 	fullURL := endpoint + path
-	switch {
-	case cleanQuery != "" && apiVersion != "":
-		fullURL += "?" + cleanQuery + "&api-version=" + apiVersion
-	case cleanQuery != "":
-		fullURL += "?" + cleanQuery
-	case apiVersion != "":
-		fullURL += "?api-version=" + apiVersion
+	if rawQuery != "" {
+		fullURL += "?" + rawQuery
 	}
 	return fullURL
+}
+
+// extractAzurePassthroughUsage dispatches usage extraction by the upstream API the
+// passthrough request targets. Azure serves both OpenAI and Azure-hosted Anthropic models,
+// so Anthropic routes (e.g. /messages) must use the Anthropic extractor — otherwise their
+// usage is dropped and budgets/logging stay wrong.
+func extractAzurePassthroughUsage(method, path string, reqBody, body []byte, model string) *schemas.BifrostPassthroughUsage {
+	if schemas.IsAnthropicModel(model) {
+		return anthropic.ExtractAnthropicPassthroughUsage(path, reqBody, body)
+	}
+	return openai.ExtractOpenAIPassthroughUsage(method, path, reqBody, body)
 }

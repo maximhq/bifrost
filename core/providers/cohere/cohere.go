@@ -114,7 +114,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Setting proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
@@ -1231,6 +1231,11 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	return bifrostResponse, nil
+}
+
+// Compaction is not supported by the Cohere provider.
+func (provider *CohereProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Cohere provider.

@@ -7,10 +7,12 @@ import { useQueryState } from "nuqs";
 import { useEffect, useMemo } from "react";
 import BigQueryView from "./plugins/bigqueryView";
 import DatadogView from "./plugins/datadogView";
+import KafkaView from "./plugins/kafkaView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
 import PrometheusView from "./plugins/prometheusView";
+import PubSubView from "./plugins/pubsubView";
 
 type SupportedPlatform = {
 	id: string;
@@ -56,6 +58,16 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "bigquery",
 		name: "BigQuery",
 		icon: <img alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
+	},
+	{
+		id: "kafka",
+		name: "Kafka",
+		icon: <img alt="Kafka" src="/images/kafka-logo.svg" width={21} height={21} className="-ml-0.5" />,
+	},
+	{
+		id: "pubsub",
+		name: "Pub/Sub",
+		icon: <img alt="Pub/Sub" src="/images/pubsub-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "newrelic",
@@ -172,8 +184,10 @@ export default function ObservabilityView() {
 				{selectedPluginId === "prometheus" && <PrometheusView />}
 				{selectedPluginId === "otel" && <OtelView />}
 				{selectedPluginId === "maxim" && <MaximView />}
+				{selectedPluginId === "kafka" && <KafkaView />}
 				{selectedPluginId === "datadog" && <DatadogView />}
 				{selectedPluginId === "bigquery" && <BigQueryView />}
+				{selectedPluginId === "pubsub" && <PubSubView />}
 				{selectedPluginId === "newrelic" && <NewrelicView />}
 			</div>
 		</div>

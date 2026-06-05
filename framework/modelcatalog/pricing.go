@@ -1,6 +1,8 @@
 package modelcatalog
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -18,6 +20,7 @@ const (
 
 // PricingEntry represents a single model's pricing information.
 // Field names and JSON tags match the datasheet schema exactly.
+// AdditionalAttributes carries editorial metadata stored on the pricing row, never populated from the URL datasheet — only from DB reads via the management API.
 type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
@@ -27,6 +30,12 @@ type PricingEntry struct {
 	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
 	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
+	// AdditionalAttributes carries editorial metadata stored on the pricing
+	// row (e.g. description). Populated from the DB read path only; the
+	// json:"-" tag prevents URL datasheet payloads from ever feeding into
+	// this field via json.Unmarshal.
+	AdditionalAttributes map[string]string `json:"-"`
 
 	PricingOptions
 }
@@ -369,7 +378,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	resolvedModelUsed := extraFields.ResolvedModelUsed
 	requestType := extraFields.RequestType
 
-	// Extract usage data from the response
+	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
 
 	// If provider already computed cost, use it
@@ -382,8 +391,13 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 		return 0
 	}
 
-	// Normalize stream request types to their base type for pricing lookup
-	requestType = normalizeStreamRequestType(requestType)
+	if result.PassthroughResponse != nil {
+		// Infer request type from usage fields + path; passthrough bypasses stream normalization.
+		requestType = inferPassthroughRequestType(extraFields.Provider, extraFields.PassthroughPath, result.PassthroughResponse.PassthroughUsage)
+	} else {
+		// Normalize stream request types to their base type for pricing lookup
+		requestType = normalizeStreamRequestType(requestType)
+	}
 
 	// When a pricing model override is set, use it in place of the actual requested/resolved
 	// model names during pricing lookup (e.g. container creates always look up "container").
@@ -401,7 +415,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 
 	// Route to the appropriate compute function
 	switch requestType {
-	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
@@ -432,6 +446,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	var input costInput
 
 	switch {
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+		return passthroughUsageToCostInput(result.PassthroughResponse.PassthroughUsage)
+
 	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
 		input.usage = result.TextCompletionResponse.Usage
 
@@ -442,6 +459,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
 		input.tier = tierFromString(result.ResponsesResponse.ServiceTier)
+
+	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
@@ -1293,7 +1313,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		}
 
 		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
@@ -1313,7 +1333,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -1333,7 +1353,7 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 			}
 
 			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
@@ -1343,8 +1363,8 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 		}
 	}
 
-	// Lookup in chat if responses not found
-	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest {
+	// Lookup in chat if responses/compaction not found
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
@@ -1382,4 +1402,159 @@ func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schem
 	}
 
 	return nil, false
+}
+
+// UpsertModelPricingAttributes writes the additional_attributes column for
+// every pricing row that matches (model, provider), then reloads the pricing
+// cache so the new values are immediately visible to list-models. Returns
+// the number of rows updated (0 = no such pricing row, which callers must
+// surface as a validation error). An empty/nil attrs map clears the column.
+func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model string, provider schemas.ModelProvider, attrs map[string]string) (int64, error) {
+	if mc.configStore == nil {
+		return 0, fmt.Errorf("model catalog requires a config store")
+	}
+	rows, err := mc.configStore.UpsertModelPricingAttributes(ctx, model, string(provider), attrs)
+	if err != nil {
+		return 0, err
+	}
+	if rows == 0 {
+		return 0, nil
+	}
+	if err := mc.loadPricingFromDatabase(ctx); err != nil {
+		return rows, fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
+	}
+	return rows, nil
+}
+
+// ---------------------------------------------------------------------------
+// Passthrough pricing helpers
+// ---------------------------------------------------------------------------
+
+// detectPassthroughRequestType maps a provider + stripped path to a RequestType.
+func detectPassthroughRequestType(provider schemas.ModelProvider, path string) schemas.RequestType {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.TrimRight(path, "/")
+	switch provider {
+	case schemas.OpenAI, schemas.Azure:
+		switch {
+		case strings.HasSuffix(path, "/chat/completions"):
+			return schemas.ChatCompletionRequest
+		case strings.HasSuffix(path, "/completions"):
+			return schemas.TextCompletionRequest
+		case strings.HasSuffix(path, "/embeddings"):
+			return schemas.EmbeddingRequest
+		case strings.HasSuffix(path, "/responses/compact"):
+			return schemas.CompactionRequest
+		case strings.HasSuffix(path, "/responses"):
+			return schemas.ResponsesRequest
+		case strings.HasSuffix(path, "/images/generations"):
+			return schemas.ImageGenerationRequest
+		case strings.HasSuffix(path, "/images/edits"):
+			return schemas.ImageEditRequest
+		case strings.HasSuffix(path, "/images/variations"):
+			return schemas.ImageVariationRequest
+		case strings.HasSuffix(path, "/audio/speech"):
+			return schemas.SpeechRequest
+		case strings.HasSuffix(path, "/audio/transcriptions"),
+			strings.HasSuffix(path, "/audio/translations"):
+			return schemas.TranscriptionRequest
+		case strings.HasSuffix(path, "/containers"):
+			return schemas.ContainerCreateRequest
+		case strings.Contains(path, "/video"):
+			return schemas.VideoGenerationRequest
+		default:
+			return schemas.ChatCompletionRequest
+		}
+	case schemas.Gemini, schemas.Vertex:
+		// Interactions API paths carry no colon action suffix.
+		if strings.Contains(path, "/interactions") {
+			return schemas.ResponsesRequest
+		}
+		colonIdx := strings.LastIndexByte(path, ':')
+		if colonIdx < 0 {
+			return schemas.ChatCompletionRequest
+		}
+		switch path[colonIdx+1:] {
+		case "generateContent", "streamGenerateContent":
+			return schemas.ResponsesRequest
+		case "embedContent", "batchEmbedContents":
+			return schemas.EmbeddingRequest
+		case "generateImages":
+			return schemas.ImageGenerationRequest
+		case "predict":
+			return schemas.EmbeddingRequest
+		case "predictLongRunning":
+			return schemas.VideoGenerationRequest
+		default:
+			return schemas.ChatCompletionRequest
+		}
+	case schemas.Anthropic:
+		switch {
+		case strings.HasSuffix(path, "/messages"):
+			return schemas.ResponsesRequest
+		case strings.HasSuffix(path, "/complete"):
+			return schemas.TextCompletionRequest
+		default:
+			return schemas.ResponsesRequest
+		}
+	default:
+		return schemas.ChatCompletionRequest
+	}
+}
+
+// inferPassthroughRequestType determines the request type from usage fields (primary)
+// and falls back to path detection for text/embedding/responses where LLMUsage is ambiguous.
+func inferPassthroughRequestType(provider schemas.ModelProvider, path string, su *schemas.BifrostPassthroughUsage) schemas.RequestType {
+	if su != nil {
+		if su.ContainerIdentifier != "" {
+			return schemas.ContainerCreateRequest
+		}
+		if su.ImageUsage != nil {
+			return schemas.ImageGenerationRequest
+		}
+		if su.AudioInputChars > 0 {
+			return schemas.SpeechRequest
+		}
+		if su.AudioTokenDetails != nil || su.AudioSeconds != nil {
+			return schemas.TranscriptionRequest
+		}
+		if su.VideoSeconds != nil {
+			return schemas.VideoGenerationRequest
+		}
+	}
+	return detectPassthroughRequestType(provider, path)
+}
+
+// passthroughUsageToCostInput converts BifrostPassthroughUsage into costInput.
+func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput {
+	var input costInput
+	if su.LLMUsage != nil {
+		input.usage = su.LLMUsage
+	}
+	if su.ServiceTier != nil {
+		input.tier = tierFromString(su.ServiceTier)
+	}
+	if su.ImageUsage != nil {
+		input.imageUsage = su.ImageUsage
+		input.imageSize = su.ImageSize
+		input.imageQuality = su.ImageQuality
+	}
+	if su.AudioInputChars > 0 {
+		input.audioTextInputChars = su.AudioInputChars
+	}
+	if su.AudioSeconds != nil {
+		input.audioSeconds = su.AudioSeconds
+	}
+	if su.AudioTokenDetails != nil {
+		input.audioTokenDetails = su.AudioTokenDetails
+	}
+	if su.VideoSeconds != nil {
+		input.videoSeconds = su.VideoSeconds
+	}
+	if su.ContainerIdentifier != "" {
+		input.containerIdentifierString = su.ContainerIdentifier
+	}
+	return input
 }

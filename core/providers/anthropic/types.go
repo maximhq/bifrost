@@ -103,9 +103,11 @@ const (
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
+	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
 	WebSearchDynamic       bool // web_search_20260209 dynamic filtering (cite: A)
 	WebFetch               bool // web_fetch server tool (cite: A)
 	CodeExecution          bool // code_execution server tool (cite: A)
+	CodeExecNova           bool // code_execution via nova_code_interpreter — Bedrock Responses path only, not Chat/Converse
 	ComputerUse            bool // computer_use client tool (cite: A, B-header)
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
@@ -133,6 +135,7 @@ type ProviderFeatureSupport struct {
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
+	Diagnostics            bool // diagnostics request field — undocumented Claude Code session-continuity field (diagnostics.previous_message_id); not in the public Messages API reference, so treated as Claude API only and stripped elsewhere (fail-closed). Azure rejects it; Bedrock/Vertex undocumented.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -151,6 +154,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
 		ServiceTier: true,
+		Diagnostics: true, // Claude Code talks to the direct API and sends diagnostics.previous_message_id; only this provider keeps it.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -185,6 +189,8 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
 	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
 	schemas.Bedrock: {
+		WebSearchNova: true, // nova_grounding — Responses path only
+		CodeExecNova:  true, // nova_code_interpreter — Responses path only
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic: true,
 		// StructuredOutputs: kept true to match pre-existing behavior and the
@@ -798,11 +804,12 @@ type AnthropicMessageRole string
 const (
 	AnthropicMessageRoleUser      AnthropicMessageRole = "user"
 	AnthropicMessageRoleAssistant AnthropicMessageRole = "assistant"
+	AnthropicMessageRoleSystem    AnthropicMessageRole = "system"
 )
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant"
+	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
 	Content AnthropicContent     `json:"content"` // Array of content blocks
 }
 

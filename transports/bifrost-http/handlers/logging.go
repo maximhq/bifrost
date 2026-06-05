@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -41,13 +42,18 @@ type LoggingHandler struct {
 const sessionLogPageLimit = 500
 
 // filterDataCacheTTL is short enough that newly used models/keys appear in
-// dropdowns within ~half a minute — matview refresh runs every 30s anyway, so a
-// longer TTL would just hide stale results.
+// dropdowns promptly without hiding results beyond the matview refresh cadence.
 const filterDataCacheTTL = 30 * time.Second
 
 const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
+
+// shouldUseFilterDataCache reports whether a filterdata response can be shared
+// across callers without bypassing DAC-scoped query constraints.
+func shouldUseFilterDataCache(ctx context.Context, query string) bool {
+	return strings.TrimSpace(query) == "" && queryscope.FromContext(ctx) == nil
+}
 
 // Filter dimension names accepted by the ?dimensions= query param on
 // /api/logs/filterdata. Each maps to one DB call and one response field.
@@ -235,6 +241,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
+	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.getDimensionRankings, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 
@@ -432,7 +439,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -673,7 +680,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -832,7 +839,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1080,6 +1087,29 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, result)
 }
 
+func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
+	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
+	if dim == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Missing required query parameter: dimension. Valid values: team, customer, business_unit, user")
+		return
+	}
+	if !logstore.ValidRankingDimensions[dim] {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid dimension: %s. Valid values: team, customer, business_unit, user", dim))
+		return
+	}
+
+	filters := parseHistogramFilters(ctx)
+
+	result, err := h.logManager.GetDimensionRankings(ctx, filters, dim)
+	if err != nil {
+		logger.Error("failed to get dimension rankings: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
 // getAvailableFilterData handles GET /api/logs/filterdata - Get all unique filter data from logs
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
@@ -1087,7 +1117,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
@@ -1130,7 +1160,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 
 	if _, ok := want[filterDimModels]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableModels(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableModels(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			models = result
 			mu.Unlock()
@@ -1139,7 +1172,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimAliases]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableAliases(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableAliases(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			aliases = result
 			mu.Unlock()
@@ -1148,7 +1184,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimSelectedKeys]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableSelectedKeys(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableSelectedKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			selectedKeys = result
 			mu.Unlock()
@@ -1157,7 +1196,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimVirtualKeys]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableVirtualKeys(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			virtualKeys = result
 			mu.Unlock()
@@ -1166,7 +1208,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimRoutingRules]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableRoutingRules(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableRoutingRules(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			routingRules = result
 			mu.Unlock()
@@ -1175,7 +1220,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimRoutingEngines]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableRoutingEngines(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableRoutingEngines(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			routingEngines = result
 			mu.Unlock()
@@ -1184,7 +1232,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableStopReasons(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableStopReasons(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			stopReasons = result
 			mu.Unlock()
@@ -1193,7 +1244,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimTeams]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableTeams(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableTeams(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			teams = result
 			mu.Unlock()
@@ -1202,7 +1256,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimCustomers]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableCustomers(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableCustomers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			customers = result
 			mu.Unlock()
@@ -1211,7 +1268,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimUsers]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableUsers(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableUsers(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			users = result
 			mu.Unlock()
@@ -1220,7 +1280,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimBusinessUnits]; ok {
 		g.Go(func() error {
-			result := h.logManager.GetAvailableBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableBusinessUnits(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
 			mu.Lock()
 			businessUnits = result
 			mu.Unlock()
@@ -1612,7 +1675,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			startTimeErr = nil
@@ -1734,7 +1797,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := resolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			timeParseErr = nil
@@ -1863,7 +1926,7 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := query == ""
+	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
@@ -1907,7 +1970,12 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
-		virtualKeys := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
+		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP virtual keys: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP virtual keys: %v", err))
+			return
+		}
 
 		virtualKeyIDs := make([]string, len(virtualKeys))
 		for i, key := range virtualKeys {

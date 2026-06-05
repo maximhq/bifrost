@@ -1249,6 +1249,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET mcp_disable_auto_tool_inject = false WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.mcp_enable_temp_token_auth
+  if column_exists_postgres "config_client" "mcp_enable_temp_token_auth"; then
+    echo "UPDATE config_client SET mcp_enable_temp_token_auth = false WHERE id = 1;" >> "$output_file"
+  fi
+
   # config_client.whitelisted_routes_json (added in v1.5.0)
   if column_exists_postgres "config_client" "whitelisted_routes_json"; then
     echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
@@ -1750,6 +1755,29 @@ append_dynamic_columns_postgres() {
     echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
     echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.4 columns
+  # -------------------------------------------------------------------------
+
+  # governance_virtual_key_provider_configs.blacklisted_models (added in v1.5.4 via migrationAddVirtualKeyBlacklistedModelsColumn)
+  if column_exists_postgres "governance_virtual_key_provider_configs" "blacklisted_models"; then
+    echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_virtual_keys.created_by_user_id (added in v1.5.4 via migrationAddCreatedByUserIDColumnForVirtualKeys)
+  if column_exists_postgres "governance_virtual_keys" "created_by_user_id"; then
+    echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # logs.inc_number (added in v1.5.4 via migrationAddLogIncNumberColumn)
+  if column_exists_postgres "logs" "inc_number"; then
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2231,6 +2259,11 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE config_client SET mcp_disable_auto_tool_inject = 0 WHERE id = 1;" >> "$output_file"
     fi
 
+    # config_client.mcp_enable_temp_token_auth
+    if column_exists_sqlite "$config_db" "config_client" "mcp_enable_temp_token_auth"; then
+      echo "UPDATE config_client SET mcp_enable_temp_token_auth = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
     # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
     # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
     # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true
@@ -2702,6 +2735,30 @@ append_dynamic_columns_sqlite() {
   # mcp_tool_logs.business_unit_id (added in v1.5.3 via migrationAddGovernanceColumnsToMCPToolLogs)
   echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-001';" >> "$output_file"
   echo "UPDATE mcp_tool_logs SET business_unit_id = NULL WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.5.4 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # governance_virtual_key_provider_configs.blacklisted_models (added in v1.5.4 via migrationAddVirtualKeyBlacklistedModelsColumn)
+    if column_exists_sqlite "$config_db" "governance_virtual_key_provider_configs" "blacklisted_models"; then
+      echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_virtual_keys.created_by_user_id (added in v1.5.4 via migrationAddCreatedByUserIDColumnForVirtualKeys)
+    if column_exists_sqlite "$config_db" "governance_virtual_keys" "created_by_user_id"; then
+      echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_keys SET created_by_user_id = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+    fi
+  fi
+
+  # logs.inc_number (added in v1.5.4 via migrationAddLogIncNumberColumn)
+  # Emitted unconditionally - logs table is in logs_db; fails silently on config_db
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
 }
 
 # ============================================================================
@@ -3838,8 +3895,9 @@ compare_postgres_snapshots() {
     fi
     # azure_deployments_json, vertex_deployments_json, bedrock_deployments_json, replicate_deployments_json
     # (dropped from config_keys - migrated to provider-level deployment config)
+    # azure_api_version (dropped from config_keys in v1.5.4 via migrationDropAzureAPIVersionColumn)
     if [ "$table" = "config_keys" ]; then
-      dropped_columns="$dropped_columns azure_deployments_json vertex_deployments_json bedrock_deployments_json replicate_deployments_json"
+      dropped_columns="$dropped_columns azure_deployments_json vertex_deployments_json bedrock_deployments_json replicate_deployments_json azure_api_version"
     fi
     # budget_id (dropped from governance_virtual_keys and governance_virtual_key_provider_configs
     # in add_multi_budget_tables - ownership moved to governance_budgets.virtual_key_id/provider_config_id)
@@ -4015,9 +4073,29 @@ compare_postgres_snapshots() {
       fi
     done
 
-    # Extract and sort data for comparison
-    tail -n +2 "$before_file" | cut -d'|' -f"$before_cut_cols" | sort > "$before_comparable"
-    tail -n +2 "$after_file" | cut -d'|' -f"$after_cut_cols" | sort > "$after_comparable"
+    # Extract and sort data for comparison.
+    # awk is used instead of `cut -f` because cut always emits fields in
+    # ascending position order regardless of the spec, which misaligns rows
+    # when before/after physical column orders differ (e.g. a column that
+    # was dropped and then re-added via ALTER TABLE ADD COLUMN ends up at
+    # the end of the table in the after-schema even though its logical
+    # position is in the middle).
+    tail -n +2 "$before_file" | awk -F'|' -v cols="$before_cut_cols" '
+      BEGIN { n = split(cols, idx, ",") }
+      {
+        out = $idx[1]
+        for (i = 2; i <= n; i++) out = out "|" $idx[i]
+        print out
+      }
+    ' | sort > "$before_comparable"
+    tail -n +2 "$after_file" | awk -F'|' -v cols="$after_cut_cols" '
+      BEGIN { n = split(cols, idx, ",") }
+      {
+        out = $idx[1]
+        for (i = 2; i <= n; i++) out = out "|" $idx[i]
+        print out
+      }
+    ' | sort > "$after_comparable"
 
     # Compare the extracted data
     if ! diff -q "$before_comparable" "$after_comparable" > /dev/null 2>&1; then

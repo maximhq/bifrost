@@ -521,8 +521,13 @@ This flag affects only what is written to the log record (messages, params, tool
 
 Enable passthrough mode for extra parameters. When enabled, any parameters in `extra_params` (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider.
 
+How parameters are collected depends on the entrypoint:
+
+- Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.
+- OpenAI integration routes under `/openai` preserve the OpenAI request shape, so provider-specific fields must be put under `extra_params`.
+
 <Tabs>
-<Tab title="Gateway (cURL)">
+<Tab title="Standard Inference Routes">
 ```bash
 curl --location 'http://localhost:8080/v1/chat/completions' \
 --header 'x-bf-passthrough-extra-params: true' \
@@ -539,12 +544,30 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ````
 
 </Tab>
+<Tab title="OpenAI Integration">
+```bash
+curl --location 'http://localhost:8080/openai/chat/completions' \
+--header 'x-bf-passthrough-extra-params: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "extra_params": {
+        "custom_param": "value",
+        "nested_param": {
+            "a": "value",
+            "b": 123
+        }
+    }
+}'
+````
+</Tab>
 <Tab title="Go SDK">
 ```go
-ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
+ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
 Model: "gpt-4o-mini",
 Input: messages,
@@ -687,11 +710,31 @@ Input: messages,
 
 The headers `x-bf-eh-user-id` and `x-bf-eh-tracking-id` are forwarded to the provider as `user-id` and `tracking-id` respectively.
 
+When the OTel plugin is enabled, each forwarded header is also attached to the `llm.call` span as a `gen_ai.request.extra_header.<name>` attribute, so the same metadata you send to the provider is searchable in your observability backend without extra wiring.
+
 **Example use cases:**
 - User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
 - Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
 - Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
 - A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
+**Example: forwarding a session ID**
+
+Send a stable `session-id` for each user session so every LLM call shares the same value on both the provider request and the OTel span:
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-eh-session-id: sess-abc-123' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+Result:
+- Provider receives `session-id: sess-abc-123` in the request headers.
+- OTel `llm.call` span gets attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"` so you can filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc.
 
 ## Semantic Cache Options
 

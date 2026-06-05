@@ -30,6 +30,7 @@ type TableClientConfig struct {
 	MCPCodeModeBindingLevel               string `gorm:"default:server" json:"mcp_code_mode_binding_level"`               // How tools are exposed in VFS: "server" or "tool"
 	MCPToolSyncInterval                   int    `gorm:"default:10" json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	MCPDisableAutoToolInject              bool   `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`               // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool   `gorm:"default:false" json:"mcp_enable_temp_token_auth"`                 // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	AsyncJobResultTTL                     int    `gorm:"default:3600" json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON                   string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	LoggingHeadersJSON                    string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
@@ -37,8 +38,9 @@ type TableClientConfig struct {
 	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	WhitelistedRoutesJSON                 string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
-	AllowPerRequestContentStorageOverride bool   `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
-	AllowPerRequestRawOverride            bool   `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
+	AllowPerRequestContentStorageOverride bool `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
+	AllowPerRequestRawOverride            bool `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
+	AllowDirectKeys                       bool `gorm:"default:false" json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key header
 
 	// Compat plugin feature flags
 	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`

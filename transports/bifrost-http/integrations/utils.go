@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -335,8 +336,8 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 	return true
 }
 
-// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
-func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest.
+func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, req interface{}, bifrostReq *schemas.BifrostRequest) error {
 	// Check if the request has a fallbacks field ([]string)
 	fallbacks, err := g.extractFallbacksFromRequest(req)
 	if err != nil {
@@ -348,6 +349,11 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 	}
 
 	provider, _, _ := bifrostReq.GetRequestFields()
+	var availableProviders []schemas.ModelProvider
+	var hasAvailableProviders bool
+	if ctx != nil {
+		availableProviders, hasAvailableProviders = ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	}
 
 	// Parse fallbacks from strings to Fallback structs
 	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
@@ -358,6 +364,9 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 
 		// Use ParseModelString to extract provider and model
 		provider, model := schemas.ParseModelString(fallbackStr, provider)
+		if hasAvailableProviders && !slices.Contains(availableProviders, provider) {
+			continue
+		}
 
 		parsedFallback := schemas.Fallback{
 			Provider: provider,
@@ -367,6 +376,7 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 	}
 
 	if len(parsedFallbacks) == 0 {
+		bifrostReq.SetFallbacks(nil)
 		return nil // No valid fallbacks found
 	}
 

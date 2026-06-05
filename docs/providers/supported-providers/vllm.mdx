@@ -34,47 +34,67 @@ vLLM is an **OpenAI-compatible provider** for self-hosted inference. Bifrost del
 
 ---
 
-## Authentication
+## Setup & Configuration
 
-- **API key**: Optional. For local vLLM instances, the key is often left empty.
-- When set, the key is sent as `Authorization: Bearer <key>`.
-
----
-
-## Configuration
-
-- **Base URL**: Default is `http://localhost:8000`. Override via provider `network_config.base_url`.
-- **Model names**: Depend on the models loaded in your vLLM instance (e.g. `meta-llama/Llama-3.2-1B-Instruct`, `BAAI/bge-m3` for embeddings).
+Configure vLLM as a provider.
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
 
-```bash
-# Point to local or remote vLLM instance (default: http://localhost:8000)
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "vllm/meta-llama/Llama-3.2-1B-Instruct",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+![vLLM provider dashboard](../../media/provider-dashboard-vllm.png)
 
-# Gateway provider config: set base_url for remote vLLM
-# "network_config": { "base_url": "http://vllm-endpoint:8000" }
+1. Navigate to **Models** > **Model Providers**. Look for **vLLM** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **vLLM**.
+2. Click **Add New Model** or edit an existing key.
+3. Set a name for your key.
+4. Leave **API Key** blank for local servers. If your endpoint requires auth, paste a bearer token directly or use an environment variable.
+5. Set **vLLM URL** to `http://localhost:8000` and **Model Name** to the exact model loaded by the server.
+6. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vllm": {
+      "keys": [
+        {
+          "name": "vllm-local",
+          "value": "",
+          "models": [
+            "meta-llama/Llama-3.2-1B-Instruct"
+          ],
+          "weight": 1.0,
+          "vllm_key_config": {
+            "url": "http://localhost:8000",
+            "model_name": "meta-llama/Llama-3.2-1B-Instruct"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
 
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
 ```go
-config := &schemas.ProviderConfig{
-    NetworkConfig: schemas.NetworkConfig{
-        BaseURL: "http://localhost:8000",  // optional; default is http://localhost:8000
-        DefaultRequestTimeoutInSeconds: 30,
-    },
-}
-provider, _ := vllm.NewVLLMProvider(config, logger)
-
-response, _ := provider.ChatCompletion(ctx, key, request)
+case schemas.VLLM:
+    return []schemas.Key{{
+        Name:   "vllm-local",
+        Value:  *schemas.NewEnvVar(""),
+        Models: []string{"meta-llama/Llama-3.2-1B-Instruct"},
+        Weight: 1.0,
+        VLLMKeyConfig: &schemas.VLLMKeyConfig{
+            URL:       *schemas.NewEnvVar("http://localhost:8000"),
+            ModelName: "meta-llama/Llama-3.2-1B-Instruct",
+        },
+    }}, nil
 ```
 
 </Tab>
@@ -168,10 +188,10 @@ Your upstream vLLM server must be started with a rerank-capable model (pooling/c
 
 ## Caveats
 
-<Accordion title="Default base URL is localhost">
-**Severity**: Low  
-**Behavior**: Default base URL is `http://localhost:8000`.  
-**Impact**: For remote or custom ports, set `network_config.base_url` in the provider config.  
+<Accordion title="Per-key BaseURL Required">
+**Severity**: High
+**Behavior**: vLLM resolves request routing from `vllm_key_config.url`.
+**Impact**: Requests fail without `vllm_key_config.url`, even if a provider-level `network_config.base_url` is present.
 </Accordion>
 
 <Accordion title="Error responses with HTTP 200">

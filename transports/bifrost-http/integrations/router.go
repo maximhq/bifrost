@@ -303,6 +303,9 @@ type ContainerFileDeleteResponseConverter func(ctx *schemas.BifrostContext, resp
 // It takes a BifrostCountTokensResponse and returns the format expected by the specific integration.
 type CountTokensResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error)
 
+// CompactionResponseConverter is a function that converts BifrostCompactionResponse to integration-specific format.
+type CompactionResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCompactionResponse) (interface{}, error)
+
 // TextStreamResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific streaming format.
 // It takes a BifrostTextCompletionResponse and returns the event type and the streaming format expected by the specific integration.
 type TextStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error)
@@ -507,6 +510,7 @@ type RouteConfig struct {
 	ContainerFileContentResponseConverter  ContainerFileContentResponseConverter  // Function to convert BifrostContainerFileContentResponse to integration format
 	ContainerFileDeleteResponseConverter   ContainerFileDeleteResponseConverter   // Function to convert BifrostContainerFileDeleteResponse to integration format
 	CountTokensResponseConverter           CountTokensResponseConverter           // Function to convert BifrostCountTokensResponse to integration format
+	CompactionResponseConverter            CompactionResponseConverter            // Function to convert BifrostCompactionResponse to integration format
 	ErrorConverter                         ErrorConverter                         // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig                           *StreamConfig                          // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback                            PreRequestCallback                     // Optional: called after parsing but before Bifrost processing
@@ -792,6 +796,18 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			skipModelCatalogProviderSelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipModelCatalogProviderSelection).(bool)
 			if extractedProvider == "" && !skipModelCatalogProviderSelection {
 				availableProviders := g.handlerStore.GetProvidersForModel(extractedModel)
+				existingProviders, hasExistingProviders := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+				if hasExistingProviders {
+					if len(existingProviders) == 0 {
+						availableProviders = []schemas.ModelProvider{}
+					} else if len(availableProviders) == 0 {
+						availableProviders = existingProviders
+					} else {
+						availableProviders = slices.DeleteFunc(availableProviders, func(provider schemas.ModelProvider) bool {
+							return !slices.Contains(existingProviders, provider)
+						})
+					}
+				}
 				availableProvidersStrs := make([]string, len(availableProviders))
 				for i, p := range availableProviders {
 					availableProvidersStrs[i] = string(p)
@@ -812,8 +828,23 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 							"Integration route default provider %s is not found in the available providers list, selecting first: %s",
 							RouteConfigTypeToProvider[config.Type], availableProviders[0],
 						))
+						// For Anthropic-type routes, raw request body passthrough is only valid for
+						// providers that speak the Anthropic Messages API natively. When the model
+						// catalog falls back to a provider that doesn't (e.g. Bedrock), clear the
+						// flag so the provider performs its own format conversion.
+						firstProvider := availableProviders[0]
+						if config.Type == RouteConfigTypeAnthropic &&
+							firstProvider != schemas.Anthropic &&
+							firstProvider != schemas.Vertex &&
+							firstProvider != schemas.Azure {
+							bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+							bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+							bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+						}
 					}
 					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+				} else if hasExistingProviders {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 				}
 				schemas.AppendToContextList(bifrostCtx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
 			}
@@ -912,7 +943,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		// Extract and parse fallbacks from the request if present
-		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
+		if err := g.extractAndParseFallbacks(bifrostCtx, req, bifrostReq); err != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
 			return
 		}
@@ -1524,6 +1555,33 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 		response, err = config.CountTokensResponseConverter(bifrostCtx, countTokensResponse)
 		bifrostExtraFields = countTokensResponse.ExtraFields
+
+	case bifrostReq.CompactionRequest != nil:
+		compactionResponse, bifrostErr := g.client.CompactionRequest(bifrostCtx, bifrostReq.CompactionRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, compactionResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if compactionResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.CompactionResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "CompactionResponseConverter not configured"))
+			return
+		}
+		response, err = config.CompactionResponseConverter(bifrostCtx, compactionResponse)
+		bifrostExtraFields = compactionResponse.ExtraFields
+
 	default:
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid request type"))
 		return
@@ -2840,7 +2898,10 @@ func extractModelFromPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
-		if p == "models" || p == "tunedModels" {
+		// GenAI uses models/{model} and tunedModels/{model}; Azure OpenAI uses
+		// deployments/{deployment}, where the deployment name is the model identifier
+		// (deployment-based Azure routes usually omit "model" from the request body).
+		if p == "models" || p == "tunedModels" || p == "deployments" {
 			if i+1 < len(parts) {
 				model := parts[i+1]
 				// Strip :suffix for GenAI (e.g. :generateContent, :streamGenerateContent)
@@ -3054,7 +3115,22 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
 	ctx.SetStatusCode(passthroughResp.StatusCode)
-	ctx.SetContentType("text/event-stream")
+	// Preserve the upstream Content-Type. Passthrough streams aren't always SSE — e.g.
+	// Vertex/Gemini :streamGenerateContent without ?alt=sse returns an incrementally-delivered
+	// JSON array with Content-Type: application/json. Forcing text/event-stream mislabels that
+	// stream, so clients that dispatch on content-type run an SSE parser over a non-SSE body and
+	// hang. Fall back to text/event-stream only when the upstream didn't provide a Content-Type.
+	contentType := ""
+	for k, v := range passthroughResp.Headers {
+		if strings.EqualFold(k, "content-type") {
+			contentType = v
+			break
+		}
+	}
+	if contentType == "" {
+		contentType = "text/event-stream"
+	}
+	ctx.SetContentType(contentType)
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
@@ -3063,7 +3139,8 @@ func (g *GenericRouter) handlePassthroughStream(
 		case "connection", "transfer-encoding", "content-length", "content-type",
 			"cache-control", "x-accel-buffering",
 			"set-cookie", "proxy-authenticate", "www-authenticate":
-			// drop — streaming invariants are set explicitly above; upstream must not override them
+			// drop — streaming invariants are set explicitly above (Content-Type is set from the
+			// upstream value before this loop); upstream must not override them here
 		default:
 			ctx.Response.Header.Set(k, v)
 		}

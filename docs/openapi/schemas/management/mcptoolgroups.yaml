@@ -1,0 +1,187 @@
+# Schemas for MCP Tool Group management.
+
+MCPToolSpec:
+  type: object
+  required:
+    - mcp_client_id
+  properties:
+    mcp_client_id:
+      type: string
+      description: ID of a deployed MCP client.
+    tool_names:
+      type: array
+      items:
+        type: string
+      description: |
+        Specific tools from this client to include in the group.
+        An empty or omitted array means "all tools from this client".
+
+MCPToolGroup:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    name:
+      type: string
+      maxLength: 255
+    description:
+      type: string
+      nullable: true
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: '#/MCPToolSpec'
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    user_ids:
+      type: array
+      items:
+        type: string
+    provider_names:
+      type: array
+      items:
+        type: string
+    api_key_ids:
+      type: array
+      items:
+        type: integer
+        format: uint
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateMCPToolGroupRequest:
+  type: object
+  required:
+    - name
+    - tools
+  properties:
+    name:
+      type: string
+      maxLength: 255
+    description:
+      type: string
+    enabled:
+      type: boolean
+      description: |
+        If omitted, the group is created with `enabled: false`.
+        Send `true` explicitly to activate the group on creation.
+    tools:
+      type: array
+      items:
+        $ref: '#/MCPToolSpec'
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    user_ids:
+      type: array
+      items:
+        type: string
+    provider_names:
+      type: array
+      items:
+        type: string
+    api_key_ids:
+      type: array
+      items:
+        type: integer
+        format: uint
+
+UpdateMCPToolGroupRequest:
+  type: object
+  description: |
+    Partial update.
+    - Scalar fields (`name`, `description`, `enabled`) preserve the current value when omitted.
+    - Array fields are replace-on-send: whatever you provide becomes the new full value. To clear an attachment dimension, send an empty array.
+  properties:
+    name:
+      type: string
+      maxLength: 255
+    description:
+      type: string
+      nullable: true
+    enabled:
+      type: boolean
+      nullable: true
+    tools:
+      type: array
+      items:
+        $ref: '#/MCPToolSpec'
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    user_ids:
+      type: array
+      items:
+        type: string
+    provider_names:
+      type: array
+      items:
+        type: string
+    api_key_ids:
+      type: array
+      items:
+        type: integer
+        format: uint
+
+MCPToolGroupResponse:
+  type: object
+  properties:
+    mcp_tool_group:
+      $ref: '#/MCPToolGroup'
+
+MCPToolGroupListResponse:
+  type: object
+  properties:
+    mcp_tool_groups:
+      type: array
+      items:
+        $ref: '#/MCPToolGroup'
+    count:
+      type: integer
+    total_count:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+MCPToolGroupDeleteResponse:
+  type: object
+  properties:
+    success:
+      type: boolean

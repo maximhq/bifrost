@@ -76,6 +76,22 @@ const (
 	phaseSummary
 )
 
+type summaryAction int
+
+const (
+	summaryActionLaunch summaryAction = iota
+	summaryActionBaseURL
+	summaryActionVirtualKey
+	summaryActionWorktree
+	summaryActionHarness
+	summaryActionModel
+	summaryActionDashboard
+	summaryActionDocs
+	summaryActionIssues
+	summaryActionRepo
+	summaryActionQuit
+)
+
 type modelsMsg struct {
 	models []string
 	err    error
@@ -101,14 +117,20 @@ type chooserModel struct {
 	vkInput       textInput.Model
 	worktreeInput textInput.Model
 
-	harnessIdx int
-	modelIdx   int
-	models     []string
+	harnessIdx          int
+	modelIdx            int
+	models              []string
+	modelManualSelected bool
 
 	filterInput textInput.Model
 	filtered    []int // indices into models
 	loading     bool
 	loadErr     string
+
+	summaryIdx          int
+	summaryEditing      bool
+	summaryEditAction   summaryAction
+	summaryEditOriginal string
 
 	message string
 	warming bool // true while ignoring input after session ended
@@ -406,9 +428,16 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if s == "esc" {
-				m.filterInput.SetValue("")
+				if strings.TrimSpace(m.filterInput.Value()) != "" || m.filtered != nil || m.modelManualSelected || m.message != "" {
+					m.filterInput.SetValue("")
+					m.filtered = nil
+					m.modelIdx = 0
+					m.modelManualSelected = false
+					m.message = ""
+					m.loadErr = ""
+					return m, nil
+				}
 				m.filterInput.Blur()
-				m.filtered = nil
 				if m.returnToSummary {
 					m.returnToSummary = false
 					m.phase = phaseSummary
@@ -420,17 +449,37 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if s == "up" {
 				visible := m.visibleModels()
+				if m.modelManualSelected {
+					m.modelManualSelected = false
+					if len(visible) > 0 {
+						m.modelIdx = len(visible) - 1
+					}
+					return m, nil
+				}
 				if m.modelIdx > 0 {
 					m.modelIdx--
 				} else if len(visible) > 0 {
-					m.modelIdx = len(visible) - 1
+					if m.manualModelName() != "" {
+						m.modelManualSelected = true
+					} else {
+						m.modelIdx = len(visible) - 1
+					}
+				} else if m.manualModelName() != "" {
+					m.modelManualSelected = true
 				}
 				return m, nil
 			}
 			if s == "down" {
 				visible := m.visibleModels()
+				if m.modelManualSelected {
+					m.modelManualSelected = false
+					m.modelIdx = 0
+					return m, nil
+				}
 				if m.modelIdx < len(visible)-1 {
 					m.modelIdx++
+				} else if m.manualModelName() != "" {
+					m.modelManualSelected = true
 				} else {
 					m.modelIdx = 0
 				}
@@ -438,20 +487,23 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if s == "enter" {
-				model := m.currentModel()
+				model := ""
+				if m.modelManualSelected {
+					model = m.manualModelName()
+				} else {
+					model = m.currentModel()
+				}
 				if model == "" {
-					// If filter text is non-empty, use it as manual model name
-					ft := strings.TrimSpace(m.filterInput.Value())
-					if ft != "" {
-						model = ft
-					} else {
-						m.notify("select a model", true)
-						return m, nil
-					}
+					model = m.manualModelName()
+				}
+				if model == "" {
+					m.notify("select a model", true)
+					return m, nil
 				}
 				// Pin the selected model so the summary always shows it correctly
 				m.models = []string{model}
 				m.modelIdx = 0
+				m.modelManualSelected = false
 				m.filtered = nil
 				m.filterInput.SetValue("")
 				m.filterInput.Blur()
@@ -462,28 +514,10 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// All other keys go to the filter input
 			var cmd tea.Cmd
 			m.filterInput, cmd = m.filterInput.Update(msg)
-			query := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
-			if query == "" {
-				m.filtered = nil
-			} else {
-				terms := strings.Fields(query)
-				var indices []int
-				for i, model := range m.models {
-					lower := strings.ToLower(model)
-					match := true
-					for _, t := range terms {
-						if !strings.Contains(lower, t) {
-							match = false
-							break
-						}
-					}
-					if match {
-						indices = append(indices, i)
-					}
-				}
-				m.filtered = indices
-			}
+			m.filtered = filterModelIndices(m.models, m.filterInput.Value())
 			m.modelIdx = 0
+			m.modelManualSelected = false
+			m.message = ""
 			return m, cmd
 
 		case phaseWorktree:
@@ -504,18 +538,78 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 
 		case phaseSummary:
+			if m.summaryEditing {
+				switch s {
+				case "enter":
+					if m.summaryEditAction == summaryActionBaseURL && strings.TrimSpace(m.baseInput.Value()) == "" {
+						m.notify("base URL is required", true)
+						return m, nil
+					}
+					m.summaryEditing = false
+					m.summaryEditAction = 0
+					m.summaryEditOriginal = ""
+					m.baseInput.Blur()
+					m.vkInput.Blur()
+					return m, nil
+				case "esc":
+					if m.summaryEditAction == summaryActionVirtualKey {
+						m.vkInput.SetValue(m.summaryEditOriginal)
+					} else {
+						m.baseInput.SetValue(m.summaryEditOriginal)
+					}
+					m.summaryEditing = false
+					m.summaryEditAction = 0
+					m.summaryEditOriginal = ""
+					m.baseInput.Blur()
+					m.vkInput.Blur()
+					return m, nil
+				}
+				var cmd tea.Cmd
+				if m.summaryEditAction == summaryActionVirtualKey {
+					m.vkInput, cmd = m.vkInput.Update(msg)
+				} else {
+					m.baseInput, cmd = m.baseInput.Update(msg)
+				}
+				return m, cmd
+			}
+
+			if s == "up" || s == "k" {
+				actions := m.summaryActions()
+				if len(actions) > 0 {
+					if m.summaryIdx > 0 {
+						m.summaryIdx--
+					} else {
+						m.summaryIdx = len(actions) - 1
+					}
+				}
+				return m, nil
+			}
+			if s == "down" || s == "j" {
+				actions := m.summaryActions()
+				if len(actions) > 0 {
+					if m.summaryIdx < len(actions)-1 {
+						m.summaryIdx++
+					} else {
+						m.summaryIdx = 0
+					}
+				}
+				return m, nil
+			}
 			switch s {
 			case "enter":
-				m.done = true
-				return m, tea.Quit
+				return m.performSummaryAction(m.currentSummaryAction())
 			case "u":
-				m.phase = phaseBaseURL
-				m.returnToSummary = true
+				m.summaryIdx = m.summaryIndexForAction(summaryActionBaseURL)
+				m.summaryEditing = true
+				m.summaryEditAction = summaryActionBaseURL
+				m.summaryEditOriginal = m.baseInput.Value()
 				m.baseInput.Focus()
 				return m, nil
 			case "v":
-				m.phase = phaseVirtualKey
-				m.returnToSummary = true
+				m.summaryIdx = m.summaryIndexForAction(summaryActionVirtualKey)
+				m.summaryEditing = true
+				m.summaryEditAction = summaryActionVirtualKey
+				m.summaryEditOriginal = m.vkInput.Value()
 				m.vkInput.Focus()
 				return m, nil
 			case "w":
@@ -578,6 +672,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.modelIdx = 0
 		m.filtered = nil
+		m.modelManualSelected = false
 		m.filterInput.SetValue("")
 		m.filterInput.Focus()
 	}
@@ -603,8 +698,11 @@ func (m chooserModel) View() string {
 		h = 24
 	}
 
-	// Build logo block (gray/white)
-	logoBlock := logoColor.Render(logo.Render(w))
+	hideLogo := m.returnToSummary && (m.phase == phaseHarness || m.phase == phaseModel || m.phase == phaseWorktree)
+	logoBlock := ""
+	if !hideLogo {
+		logoBlock = logoColor.Render(logo.Render(w))
+	}
 
 	// Meta line
 	meta := hint.Render(fmt.Sprintf("%s (%s)  config=%s", m.cfg.Version, m.cfg.Commit, m.cfg.ConfigSrc))
@@ -670,6 +768,10 @@ func (m chooserModel) View() string {
 		}
 		if m.returnToSummary {
 			footer = hint.Render("up/down: move  enter: select  esc: cancel")
+			bodyStr := body.String()
+			body.Reset()
+			body.WriteString(renderChooserPopup("Choose Harness", bodyStr, w))
+			title = accent.Render("Bifrost CLI")
 		} else {
 			footer = hint.Render("up/down: move  enter: select  esc: back")
 		}
@@ -679,42 +781,21 @@ func (m chooserModel) View() string {
 		if m.loading {
 			body.WriteString(hint.Render("loading models from /v1/models..."))
 			footer = hint.Render("esc: back")
-		} else {
-			body.WriteString(m.filterInput.View())
-			body.WriteString("\n\n")
-
-			visible := m.visibleModels()
-			maxShow := 12
-			if len(visible) == 0 {
-				ft := strings.TrimSpace(m.filterInput.Value())
-				if ft != "" {
-					body.WriteString(hint.Render("  no matches \u2014 enter to use as model name"))
-				} else {
-					body.WriteString(hint.Render("  type to filter models"))
-				}
-			} else {
-				start, end := scrollWindow(m.modelIdx, len(visible), maxShow)
-				if start > 0 {
-					body.WriteString(hint.Render(fmt.Sprintf("  ... %d more above", start)))
-					body.WriteString("\n")
-				}
-				for i := start; i < end; i++ {
-					if i == m.modelIdx {
-						body.WriteString(accent.Render("> " + visible[i]))
-						body.WriteString("\n")
-					} else {
-						body.WriteString("  " + visible[i] + "\n")
-					}
-				}
-				if end < len(visible) {
-					body.WriteString(hint.Render(fmt.Sprintf("  ... %d more below", len(visible)-end)))
-					body.WriteString("\n")
-				}
-				body.WriteString("\n")
-				body.WriteString(hint.Render(fmt.Sprintf("  %d/%d models", len(visible), len(m.models))))
+			if m.returnToSummary {
+				bodyStr := body.String()
+				body.Reset()
+				body.WriteString(renderChooserPopup("Model", bodyStr, w))
+				title = accent.Render("Bifrost CLI")
+				footer = hint.Render("esc: cancel")
 			}
+		} else {
+			body.WriteString(m.renderModelPicker(accent, label, hint))
 			if m.returnToSummary {
 				footer = hint.Render("type: filter  up/down: move  enter: select  esc: cancel")
+				bodyStr := body.String()
+				body.Reset()
+				body.WriteString(renderChooserPopup("Model", bodyStr, w))
+				title = accent.Render("Bifrost CLI")
 			} else {
 				footer = hint.Render("type: filter  up/down: move  enter: select  esc: back")
 			}
@@ -724,13 +805,15 @@ func (m chooserModel) View() string {
 		title = accent.Render("Worktree") + label.Render(" (optional)")
 		body.WriteString(m.worktreeInput.View())
 		footer = hint.Render("enter: update  esc: cancel")
+		if m.returnToSummary {
+			bodyStr := body.String()
+			body.Reset()
+			body.WriteString(renderChooserPopup("Worktree", bodyStr, w))
+			title = accent.Render("Bifrost CLI")
+		}
 
 	case phaseSummary:
 		ho := m.currentHarness()
-		vkState := "no"
-		if strings.TrimSpace(m.vkInput.Value()) != "" {
-			vkState = "yes"
-		}
 		baseURL := strings.TrimSpace(m.baseInput.Value())
 		model := m.currentModel()
 		harnessStr := ho.Label
@@ -739,45 +822,62 @@ func (m chooserModel) View() string {
 		}
 
 		title = accent.Render("Ready to launch")
-
-		body.WriteString(label.Render("  Base URL     ") + " " + baseURL + "\n")
-		body.WriteString(label.Render("  Harness      ") + " " + harnessStr + "\n")
+		renderSummaryLine := func(action summaryAction, name, value string) {
+			cursor := "  "
+			nameStyle := label
+			valueStyle := lipgloss.NewStyle()
+			if action == m.currentSummaryAction() {
+				cursor = accent.Render("> ")
+				nameStyle = lipgloss.NewStyle().Bold(true)
+				valueStyle = lipgloss.NewStyle().Bold(true)
+			}
+			body.WriteString(cursor + nameStyle.Render(fmt.Sprintf("%-12s", name)) + " " + valueStyle.Render(value) + "\n")
+		}
+		baseURLValue := baseURL
+		if m.summaryEditing && m.currentSummaryAction() == summaryActionBaseURL {
+			baseURLValue = m.baseInput.View()
+		}
+		renderSummaryLine(summaryActionBaseURL, "Base URL", baseURLValue)
+		renderSummaryLine(summaryActionHarness, "Harness", harnessStr)
 		if ho.SupportsModelOverride {
-			body.WriteString(label.Render("  Model        ") + " " + accent.Render(model) + "\n")
+			modelValue := model
+			if summaryActionModel == m.currentSummaryAction() {
+				modelValue = accent.Render(model)
+			}
+			renderSummaryLine(summaryActionModel, "Model", modelValue)
 		} else {
-			body.WriteString(label.Render("  Model        ") + " " + hint.Render("managed by "+ho.Label) + "\n")
+			renderSummaryLine(summaryActionModel, "Model", hint.Render("managed by "+ho.Label))
 		}
 		if ho.ID == "claude" && strings.Contains(strings.ToLower(model), "gemini") {
 			warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("⚠ Gemini function calling is not compatible with") + "\n")
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("  Claude Code and may not work as intended") + "\n")
 		}
-		body.WriteString(label.Render("  Virtual Key  ") + " " + vkState + "\n")
+		vkValue := maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
+		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
+			vkValue = m.vkInput.View()
+		}
+		renderSummaryLine(summaryActionVirtualKey, "Virtual Key", vkValue)
 		if ho.SupportsWorktree {
 			wtState := "no"
 			if wt := strings.TrimSpace(m.worktreeInput.Value()); wt != "" {
 				wtState = wt
 			}
-			body.WriteString(label.Render("  Worktree     ") + " " + wtState + "\n")
+			renderSummaryLine(summaryActionWorktree, "Worktree", wtState)
 		}
+		body.WriteString("\n")
+		renderSummaryLine(summaryActionLaunch, "Start", ho.Label)
+		renderSummaryLine(summaryActionDashboard, "Dashboard", baseURL)
+		renderSummaryLine(summaryActionDocs, "Docs", docsURL)
+		renderSummaryLine(summaryActionIssues, "Report issue", issuesURL)
+		renderSummaryLine(summaryActionRepo, "Star", repoURL)
+		renderSummaryLine(summaryActionQuit, "Exit", "Bifrost CLI")
 
-		var fb strings.Builder
-		fb.WriteString(accent.Render("enter") + hint.Render(" launch  "))
-		fb.WriteString(accent.Render("u") + hint.Render(" url  "))
-		fb.WriteString(accent.Render("v") + hint.Render(" virtual key  "))
-		if ho.SupportsWorktree {
-			fb.WriteString(accent.Render("w") + hint.Render(" worktree  "))
+		if m.summaryEditing {
+			footer = hint.Render("editing  enter: save  esc: cancel")
+		} else {
+			footer = hint.Render("up/down: move  enter: select  shortcuts: u/v/h/m/d/r/i/s/q")
 		}
-		fb.WriteString(accent.Render("h") + hint.Render(" harness  "))
-		if ho.SupportsModelOverride {
-			fb.WriteString(accent.Render("m") + hint.Render(" model  "))
-		}
-		fb.WriteString(accent.Render("d") + hint.Render(" dashboard  "))
-		fb.WriteString(accent.Render("r") + hint.Render(" docs  "))
-		fb.WriteString(accent.Render("i") + hint.Render(" report issue  "))
-		fb.WriteString(accent.Render("s") + hint.Render(" star  "))
-		fb.WriteString(accent.Render("q") + hint.Render(" quit"))
-		footer = fb.String()
 	}
 
 	// Compose: vertically center logo+content, footer at bottom
@@ -805,7 +905,10 @@ func (m chooserModel) View() string {
 		return renderPlainChooserView(title, bodyStr, footer)
 	}
 
-	logoLines := strings.Count(logoBlock, "\n") + 1
+	logoLines := 0
+	if logoBlock != "" {
+		logoLines = strings.Count(logoBlock, "\n") + 1
+	}
 	contentLines := strings.Count(contentStr, "\n") + 1
 
 	// Calculate how many lines the footer will occupy after wrapping
@@ -814,9 +917,10 @@ func (m chooserModel) View() string {
 		footerLines = strings.Count(wrapFooter(footer, w), "\n") + 1
 	}
 
-	// Actual rendered lines between topPad and bottomPad:
-	//   logoLines + 1 (meta) + 1 (blank gap line) + contentLines
-	bodyHeight := logoLines + 2 + contentLines
+	bodyHeight := logoLines + contentLines
+	if logoBlock != "" {
+		bodyHeight += 2 // meta line and blank gap after logo
+	}
 	topPad := (h - bodyHeight - footerLines) / 2
 	if topPad < 0 {
 		topPad = 0
@@ -826,17 +930,18 @@ func (m chooserModel) View() string {
 		bottomPad = 1
 	}
 
-	centeredLogo := centerBlock(logoBlock, w)
 	centeredMeta := centerLine(meta, w)
 
 	var out strings.Builder
 	if topPad > 0 {
 		out.WriteString(strings.Repeat("\n", topPad))
 	}
-	out.WriteString(centeredLogo)
-	out.WriteString("\n")
-	out.WriteString(centeredMeta)
-	out.WriteString("\n\n")
+	if logoBlock != "" {
+		out.WriteString(centerBlock(logoBlock, w))
+		out.WriteString("\n")
+		out.WriteString(centeredMeta)
+		out.WriteString("\n\n")
+	}
 	out.WriteString(contentStr)
 	// N newlines between two text blocks produce N-1 visible blank lines,
 	// so emit bottomPad+1 to get exactly bottomPad blank lines.
@@ -885,6 +990,46 @@ func renderPlainChooserView(title, body, footer string) string {
 	return out.String()
 }
 
+func maskVirtualKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "no"
+	}
+
+	runes := []rune(value)
+	if len(runes) <= 3 {
+		return strings.Repeat("*", len(runes))
+	}
+	if len(runes) <= 5 {
+		return string(runes[:1]) + strings.Repeat("*", len(runes)-2) + string(runes[len(runes)-1:])
+	}
+
+	return string(runes[:2]) + strings.Repeat("*", len(runes)-5) + string(runes[len(runes)-3:])
+}
+
+// renderChooserPopup wraps chooser content in a bordered box so summary actions
+// can open as overlays instead of visually replacing the Ready screen.
+func renderChooserPopup(title, content string, width int) string {
+	boxWidth := 84
+	if width > 0 && width < boxWidth+8 {
+		boxWidth = width - 8
+	}
+	if boxWidth < 36 {
+		boxWidth = 36
+	}
+	box := lipgloss.NewStyle().
+		Width(boxWidth).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(title))
+	b.WriteString("\n")
+	b.WriteString(strings.TrimRight(content, "\n"))
+	return box.Render(b.String())
+}
+
 func (m *chooserModel) notify(message string, isError bool) {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -895,6 +1040,195 @@ func (m *chooserModel) notify(message string, isError bool) {
 		return
 	}
 	m.message = message
+}
+
+// summaryActions returns the Ready-screen rows in the same order they are
+// rendered, so arrow navigation follows the visible sequence.
+func (m chooserModel) summaryActions() []summaryAction {
+	ho := m.currentHarness()
+	actions := []summaryAction{
+		summaryActionBaseURL,
+		summaryActionHarness,
+	}
+	if ho.SupportsModelOverride {
+		actions = append(actions, summaryActionModel)
+	}
+	actions = append(actions,
+		summaryActionVirtualKey,
+	)
+	if ho.SupportsWorktree {
+		actions = append(actions, summaryActionWorktree)
+	}
+	actions = append(actions,
+		summaryActionLaunch,
+		summaryActionDashboard,
+		summaryActionDocs,
+		summaryActionIssues,
+		summaryActionRepo,
+		summaryActionQuit,
+	)
+	return actions
+}
+
+// currentSummaryAction returns the action highlighted on the Ready screen.
+func (m chooserModel) currentSummaryAction() summaryAction {
+	actions := m.summaryActions()
+	if len(actions) == 0 {
+		return summaryActionLaunch
+	}
+	if m.summaryIdx < 0 {
+		return actions[0]
+	}
+	if m.summaryIdx >= len(actions) {
+		return actions[len(actions)-1]
+	}
+	return actions[m.summaryIdx]
+}
+
+// summaryIndexForAction returns the Ready-screen row index for an action.
+func (m chooserModel) summaryIndexForAction(action summaryAction) int {
+	for i, candidate := range m.summaryActions() {
+		if candidate == action {
+			return i
+		}
+	}
+	return 0
+}
+
+// performSummaryAction executes the highlighted Ready-screen action.
+func (m chooserModel) performSummaryAction(action summaryAction) (tea.Model, tea.Cmd) {
+	switch action {
+	case summaryActionLaunch:
+		m.done = true
+		return m, tea.Quit
+	case summaryActionBaseURL:
+		m.summaryEditing = true
+		m.summaryEditAction = summaryActionBaseURL
+		m.summaryEditOriginal = m.baseInput.Value()
+		m.baseInput.Focus()
+		return m, nil
+	case summaryActionVirtualKey:
+		m.summaryEditing = true
+		m.summaryEditAction = summaryActionVirtualKey
+		m.summaryEditOriginal = m.vkInput.Value()
+		m.vkInput.Focus()
+		return m, nil
+	case summaryActionWorktree:
+		if m.currentHarness().SupportsWorktree {
+			m.phase = phaseWorktree
+			m.returnToSummary = true
+			m.worktreeInput.Focus()
+		}
+		return m, nil
+	case summaryActionHarness:
+		m.phase = phaseHarness
+		m.returnToSummary = true
+		return m, nil
+	case summaryActionModel:
+		if !m.currentHarness().SupportsModelOverride {
+			m.notify(m.currentHarness().Label+" manages its own model selection", true)
+			return m, nil
+		}
+		m.phase = phaseModel
+		m.returnToSummary = true
+		m.loading = true
+		m.loadErr = ""
+		m.models = nil
+		m.filtered = nil
+		m.modelIdx = 0
+		m.modelManualSelected = false
+		m.filterInput.SetValue("")
+		return m, m.fetchModelsCmd()
+	case summaryActionDashboard:
+		baseURL := strings.TrimSpace(m.baseInput.Value())
+		if baseURL != "" {
+			openBrowser(baseURL)
+			m.notify("opened bifrost dashboard", false)
+		}
+		return m, nil
+	case summaryActionDocs:
+		openBrowser(docsURL)
+		m.notify("opened docs", false)
+		return m, nil
+	case summaryActionIssues:
+		openBrowser(issuesURL)
+		m.notify("opened GitHub issues", false)
+		return m, nil
+	case summaryActionRepo:
+		openBrowser(repoURL)
+		m.notify("opened GitHub repo", false)
+		return m, nil
+	case summaryActionQuit:
+		m.quit = true
+		return m, tea.Quit
+	default:
+		return m, nil
+	}
+}
+
+// renderModelPicker renders the model search box with the input above the
+// filtered results.
+func (m chooserModel) renderModelPicker(accent, label, hint lipgloss.Style) string {
+	section := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+
+	var content strings.Builder
+	content.WriteString(section.Render("Search model"))
+	content.WriteString("\n")
+	content.WriteString("  ")
+	content.WriteString(m.filterInput.View())
+	content.WriteString("\n\n")
+	content.WriteString(section.Render("Filtered results"))
+	content.WriteString("\n")
+
+	visible := m.visibleModels()
+	maxShow := 10
+	if len(visible) == 0 {
+		if m.manualModelName() == "" {
+			content.WriteString(hint.Render("  type to search models"))
+		} else {
+			content.WriteString(hint.Render("  no matching models"))
+		}
+		content.WriteString("\n")
+	} else {
+		start, end := scrollWindow(m.modelIdx, len(visible), maxShow)
+		if start > 0 {
+			content.WriteString(hint.Render(fmt.Sprintf("  ... %d more above", start)))
+			content.WriteString("\n")
+		}
+		for i := start; i < end; i++ {
+			if i == m.modelIdx && !m.modelManualSelected {
+				content.WriteString(accent.Render("> " + visible[i]))
+			} else {
+				content.WriteString("  " + visible[i])
+			}
+			content.WriteString("\n")
+		}
+		if end < len(visible) {
+			content.WriteString(hint.Render(fmt.Sprintf("  ... %d more below", len(visible)-end)))
+			content.WriteString("\n")
+		}
+		content.WriteString(hint.Render(fmt.Sprintf("  %d/%d models", len(visible), len(m.models))))
+		content.WriteString("\n")
+	}
+
+	manual := m.manualModelName()
+	if manual != "" {
+		if len(visible) > 0 {
+			content.WriteString("\n")
+		}
+		if m.modelManualSelected {
+			content.WriteString(accent.Render("> Use \"" + manual + "\""))
+		} else {
+			content.WriteString(label.Render("  Use \"" + manual + "\""))
+		}
+	}
+
+	return content.String()
+}
+
+// manualModelName returns the typed model name from the search input.
+func (m chooserModel) manualModelName() string {
+	return strings.TrimSpace(m.filterInput.Value())
 }
 
 // centerBlock centers each line of a multi-line string within the given width.
@@ -978,6 +1312,53 @@ func (m chooserModel) visibleModels() []string {
 		return out
 	}
 	return m.models
+}
+
+// filterModelIndices returns model indices matching the current search query.
+func filterModelIndices(models []string, query string) []int {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+
+	terms := strings.Fields(query)
+	indices := make([]int, 0, len(models))
+	for i, model := range models {
+		if modelMatchesTerms(model, terms) {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}
+
+// modelMatchesTerms reports whether every search term matches the model after
+// punctuation-insensitive normalization.
+func modelMatchesTerms(model string, terms []string) bool {
+	normalizedModel := normalizeModelSearchText(model)
+	for _, term := range terms {
+		normalizedTerm := normalizeModelSearchText(term)
+		if normalizedTerm == "" {
+			continue
+		}
+		if !strings.Contains(normalizedModel, normalizedTerm) {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeModelSearchText lowercases text and removes punctuation so partial
+// model names like "claude-4-8" match provider-qualified model IDs.
+func normalizeModelSearchText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // scrollWindow calculates the visible range [start, end) for a scrollable list,

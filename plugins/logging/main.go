@@ -56,8 +56,8 @@ type UpdateLogData struct {
 	VideoDownloadOutput    *schemas.BifrostVideoDownloadResponse   // For non-streaming video download responses
 	VideoListOutput        *schemas.BifrostVideoListResponse       // For non-streaming video list responses
 	VideoDeleteOutput      *schemas.BifrostVideoDeleteResponse     // For non-streaming video delete responses
-	RawRequest             interface{}
-	RawResponse            interface{}
+	RawRequest             any
+	RawResponse            any
 	IsLargePayloadRequest  bool // When true, RawRequest is a truncated preview string (skip sonic.Marshal)
 	IsLargePayloadResponse bool // When true, RawResponse is a truncated preview string (skip sonic.Marshal)
 }
@@ -79,6 +79,8 @@ func applyLargePayloadPreviews(ctx *schemas.BifrostContext, updateData *UpdateLo
 	}
 }
 
+// applyLargePayloadPreviewsToEntry applies the large payload preview values from
+// the context to the log entry, if they are available and content logging is enabled.
 func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
 	if ctx == nil || entry == nil {
 		return
@@ -316,6 +318,10 @@ type LoggerPlugin struct {
 	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
 	clusterNodeID          atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
+	batchCtx               context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
+	batchCancel            context.CancelFunc    // Cancels batchCtx
+	batchWriterDone        chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
+	recoveredBatch         []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 }
 
 // Init creates new logger plugin with given log store
@@ -333,6 +339,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		logger.Warn("logging plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
+	batchCtx, batchCancel := context.WithCancel(ctx)
 	plugin := &LoggerPlugin{
 		ctx:                   ctx,
 		store:                 logsStore,
@@ -344,6 +351,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		logger:                logger,
 		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
 		deferredUsageSem:      make(chan struct{}, maxDeferredUsageConcurrency),
+		batchCtx:              batchCtx,
+		batchCancel:           batchCancel,
+		batchWriterDone:       make(chan struct{}),
 		logMsgPool: sync.Pool{
 			New: func() any {
 				return &LogMessage{}
@@ -451,17 +461,19 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		return nil
 	}
 
-	var metadata map[string]interface{}
+	var metadata map[string]any
 
-	// Check configured logging headers
+	// Check configured logging headers (supports wildcard patterns like "x-custom-*")
 	if p.loggingHeaders != nil {
 		for _, h := range *p.loggingHeaders {
-			key := strings.ToLower(h)
-			if val, ok := allHeaders[key]; ok {
-				if metadata == nil {
-					metadata = make(map[string]interface{})
+			pattern := strings.ToLower(strings.TrimSpace(h))
+			for hKey, hVal := range allHeaders {
+				if schemas.MatchHeaderPattern(hKey, pattern) {
+					if metadata == nil {
+						metadata = make(map[string]any)
+					}
+					metadata[hKey] = hVal
 				}
-				metadata[key] = val
 			}
 		}
 	}
@@ -470,7 +482,7 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 	for key, val := range allHeaders {
 		if labelName, ok := strings.CutPrefix(key, "x-bf-lh-"); ok && labelName != "" {
 			if metadata == nil {
-				metadata = make(map[string]interface{})
+				metadata = make(map[string]any)
 			}
 			metadata[labelName] = val
 		}
@@ -480,7 +492,7 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 	if dims, ok := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string); ok {
 		for k, v := range dims {
 			if metadata == nil {
-				metadata = make(map[string]interface{})
+				metadata = make(map[string]any)
 			}
 			if _, exists := metadata[k]; !exists {
 				metadata[k] = v
@@ -665,6 +677,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				Method:   req.PassthroughRequest.Method,
 				Path:     req.PassthroughRequest.Path,
 				RawQuery: req.PassthroughRequest.RawQuery,
+				Model:    req.PassthroughRequest.Model,
 			}
 			if len(req.PassthroughRequest.Body) > 0 {
 				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
@@ -815,6 +828,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
 			}
+			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
+				if entry.MetadataParsed == nil {
+					entry.MetadataParsed = make(map[string]interface{})
+				}
+				entry.MetadataParsed["isAsyncRequest"] = true
+			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
 				entry.ErrorDetails = string(data)
@@ -898,6 +918,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	if rateLimitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok && len(rateLimitIDs) > 0 {
 		entry.RateLimitIDsParsed = rateLimitIDs
+	}
+	if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
+		entry.TeamIDsParsed = teamIDs
+	}
+	if teamNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamNames).([]string); ok && len(teamNames) > 0 {
+		entry.TeamNamesParsed = teamNames
+	}
+	if buIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitIDs).([]string); ok && len(buIDs) > 0 {
+		entry.BusinessUnitIDsParsed = buIDs
+	}
+	if buNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitNames).([]string); ok && len(buNames) > 0 {
+		entry.BusinessUnitNamesParsed = buNames
+	}
+	if customerIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerIDs).([]string); ok && len(customerIDs) > 0 {
+		entry.CustomerIDsParsed = customerIDs
+	}
+	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
+		entry.CustomerNamesParsed = customerNames
 	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
@@ -1029,13 +1067,18 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if isPassthroughErrorResponse(result) {
 				entry.Status = "error"
 			}
+			// Compute cost for streaming passthrough using StreamUsage set by the accumulator.
+			if entry.Cost == nil && p.pricingManager != nil && result.PassthroughResponse.PassthroughUsage != nil {
+				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+					entry.Cost = &cost
+				}
+			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-
 		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
-
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
@@ -1110,26 +1153,80 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	return result, bifrostErr, nil
 }
 
-// Cleanup is called when the plugin is being shut down
+// Cleanup is called when the plugin is being shut down. It stops the
+// batchWriter goroutine before it issues any further DB writes, takes over
+// ownership of the write queue, and drains whatever is pending under a
+// bounded wall-clock deadline (cleanupDrainTimeout). Any entries that do not
+// finish within the deadline are dropped so that a slow or wedged log store
+// cannot wedge the server's overall 30s shutdown budget.
 func (p *LoggerPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
-		// Stop the cleanup ticker
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
-		// Signal the cleanup worker to stop
+		// Signal the cleanup worker to stop.
 		close(p.done)
-		// Close write queue FIRST — batchWriter drains remaining entries and exits.
-		// THEN set closed flag — this prevents panics from sends-on-closed-channel
-		// in enqueueLogEntry (the defer/recover there catches the race window).
-		close(p.writeQueue)
+		// Block new producers BEFORE killing batchWriter so the channel does
+		// not grow further while we drain it ourselves.
 		p.closed.Store(true)
-		// Wait for the cleanup worker and batch writer to finish
+		// Kill batchWriter. Its current in-memory batch is handed back via
+		// p.recoveredBatch; it does not issue any further DB writes.
+		p.batchCancel()
+		// Receiving from batchWriterDone is the ownership handoff: after this
+		// point, no other goroutine reads from p.writeQueue, so we can drain
+		// it ourselves. This wait is microseconds (no DB work involved).
+		<-p.batchWriterDone
+		// Drain p.recoveredBatch and whatever is still buffered in
+		// p.writeQueue under a bounded deadline.
+		p.drainPending()
+		// Close the channel as hygiene. The defer/recover in enqueueLogEntry
+		// (writer.go:254-259) absorbs any racing producer send.
+		close(p.writeQueue)
+		// wg.Wait covers the cleanupWorker (exited via close(p.done)) and
+		// any in-flight deferred usage updater goroutines. batchWriter has
+		// already called wg.Done before closing batchWriterDone above.
 		p.wg.Wait()
-		// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
-		// GORM handles connection cleanup automatically
 	})
 	return nil
+}
+
+// drainPending processes p.recoveredBatch followed by any entries still
+// buffered in p.writeQueue. Runs synchronously under a wall-clock deadline;
+// remaining entries past the deadline are counted as dropped.
+func (p *LoggerPlugin) drainPending() {
+	deadline := time.Now().Add(cleanupDrainTimeout)
+	batch := p.recoveredBatch
+	p.recoveredBatch = nil
+
+	// Pull everything currently buffered in the channel. Non-blocking — we
+	// only want what is there right now; new sends are already blocked by
+	// p.closed.
+drainQueue:
+	for {
+		select {
+		case entry := <-p.writeQueue:
+			batch = append(batch, entry)
+		default:
+			break drainQueue
+		}
+	}
+
+	// Process in chunks of maxBatchSize, checking the wall-clock deadline
+	// between chunks so a single slow processBatch cannot consume the whole
+	// budget and starve later chunks.
+	for len(batch) > 0 {
+		if time.Now().After(deadline) {
+			p.droppedRequests.Add(int64(len(batch)))
+			p.logger.Warn("logging plugin cleanup deadline reached; dropping %d entries", len(batch))
+			return
+		}
+		chunkSize := maxBatchSize
+		if chunkSize > len(batch) {
+			chunkSize = len(batch)
+		}
+		p.safeProcessBatch(batch[:chunkSize])
+		batch = batch[chunkSize:]
+	}
 }
 
 // storeOrEnqueueEntry stores a log entry in pendingLogs keyed by traceID for later
@@ -1232,10 +1329,6 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	fullToolName := req.GetToolName()
 	arguments := req.GetToolArguments()
-	// Skip execution for codemode tools
-	if bifrost.IsCodemodeTool(fullToolName) {
-		return req, nil, nil
-	}
 
 	// Extract server label from tool name (format: {client}-{tool_name})
 	// The first part before hyphen is the client/server label
@@ -1252,6 +1345,13 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				serverLabel = "codemode"
 			}
 		}
+	}
+	// Skip logging for codemode meta-tools. Check both the full name (bare,
+	// e.g. "executeToolCode") and the suffix after the client prefix (e.g.
+	// "myclient-executeToolCode") so PreMCP and PostMCP agree on what to skip
+	// and we never leave an orphan pending row to expire via the TTL path.
+	if bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName) {
+		return req, nil, nil
 	}
 
 	// Get virtual key information from context - using same method as normal LLM logging

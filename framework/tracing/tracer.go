@@ -18,12 +18,13 @@ import (
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store          *TraceStore
-	accumulator    *streaming.Accumulator
-	pricingManager *modelcatalog.ModelCatalog
-	logger         schemas.Logger
-	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
-	flushWG        sync.WaitGroup
+	store              *TraceStore
+	accumulator        *streaming.Accumulator
+	pricingManager     *modelcatalog.ModelCatalog
+	logger             schemas.Logger
+	obsPlugins         atomic.Pointer[[]schemas.ObservabilityPlugin]
+	cachedHdrPatterns  atomic.Pointer[[]string]
+	flushWG            sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -40,11 +41,66 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 }
 
 // SetObservabilityPlugins updates the plugins that receive completed traces.
+// It also precomputes the deduplicated, normalized union of request-header patterns
+// requested by those plugins so the per-request capture path is a single atomic load.
 func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
 	if t == nil {
 		return
 	}
 	t.obsPlugins.Store(&obsPlugins)
+
+	seen := make(map[string]struct{})
+	var patterns []string
+	for _, plugin := range obsPlugins {
+		if w, ok := plugin.(interface{ RequestHeaderPatterns() []string }); ok {
+			for _, p := range w.RequestHeaderPatterns() {
+				normalized := strings.ToLower(strings.TrimSpace(p))
+				if normalized == "" {
+					continue
+				}
+				if _, exists := seen[normalized]; !exists {
+					seen[normalized] = struct{}{}
+					patterns = append(patterns, normalized)
+				}
+			}
+		}
+	}
+	t.cachedHdrPatterns.Store(&patterns)
+}
+
+// ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
+// request-header capture (by implementing RequestHeaderPatterns). Derived from the cached
+// pattern union computed in SetObservabilityPlugins, so there is no per-request recompute.
+func (t *Tracer) ShouldCaptureRequestHeaders() bool {
+	cached := t.cachedHdrPatterns.Load()
+	return cached != nil && len(*cached) > 0
+}
+
+// CollectRequestHeaderPatterns returns the deduplicated union of header patterns
+// requested by all observability plugins. The middleware uses this to capture only
+// matched headers onto the trace, keeping the trace lean. The union is precomputed in
+// SetObservabilityPlugins; this is a single atomic load.
+func (t *Tracer) CollectRequestHeaderPatterns() []string {
+	cached := t.cachedHdrPatterns.Load()
+	if cached == nil {
+		return nil
+	}
+	return *cached
+}
+
+// SetTraceRequestHeaders filters the given request headers down to the union of
+// patterns requested by observability plugins and stores the matched subset on the
+// trace. Header keys are expected to be lowercased by the caller.
+func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]string) {
+	if len(headers) == 0 {
+		return
+	}
+	patterns := t.CollectRequestHeaderPatterns()
+	matched := schemas.FilterHeaders(headers, patterns)
+	if len(matched) == 0 {
+		return
+	}
+	t.store.SetRequestHeaders(traceID, matched)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -248,7 +304,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	respAttrs := PopulateResponseAttributes(resp)
 	for k, v := range respAttrs {
 		if k == schemas.AttrFinishReasons {
-			// llm.call span gets the singular finish_reason (first element only)
+			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
+			span.SetAttribute(schemas.AttrFinishReasons, v)
+			// legacy: also expose the singular scalar finish_reason (first element) for back-compat.
 			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
 				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
 			}

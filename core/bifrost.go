@@ -5,6 +5,7 @@ package bifrost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -19,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -78,10 +80,10 @@ type Bifrost struct {
 	responseStreamPool  sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool                           // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
-	oauth2Provider      schemas.OAuth2Provider              // OAuth provider instance
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
 	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
 	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
+	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
@@ -224,17 +226,17 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 	bifrost := &Bifrost{
-		ctx:            bifrostCtx,
-		cancel:         cancel,
-		account:        config.Account,
-		llmPlugins:     atomic.Pointer[[]schemas.LLMPlugin]{},
-		mcpPlugins:     atomic.Pointer[[]schemas.MCPPlugin]{},
-		requestQueues:  sync.Map{},
-		waitGroups:     sync.Map{},
-		keySelector:    config.KeySelector,
-		oauth2Provider: config.OAuth2Provider,
-		logger:         config.Logger,
-		kvStore:        config.KVStore,
+		ctx:           bifrostCtx,
+		cancel:        cancel,
+		account:       config.Account,
+		llmPlugins:    atomic.Pointer[[]schemas.LLMPlugin]{},
+		mcpPlugins:    atomic.Pointer[[]schemas.MCPPlugin]{},
+		requestQueues: sync.Map{},
+		waitGroups:    sync.Map{},
+		keySelector:   config.KeySelector,
+		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
+		logger:        config.Logger,
+		kvStore:       config.KVStore,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -331,7 +333,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -456,6 +458,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
+	providerKeys = filterProvidersByContext(ctx, providerKeys)
 
 	startTime := time.Now()
 
@@ -599,6 +602,35 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
+	if ctx == nil {
+		return providerKeys
+	}
+
+	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	if rawAvailableProviders == nil {
+		return providerKeys
+	}
+
+	availableProviders, ok := rawAvailableProviders.([]schemas.ModelProvider)
+	if !ok {
+		return []schemas.ModelProvider{}
+	}
+
+	if len(availableProviders) == 0 || len(providerKeys) == 0 {
+		return []schemas.ModelProvider{}
+	}
+
+	filteredProviders := make([]schemas.ModelProvider, 0, len(providerKeys))
+	for _, providerKey := range providerKeys {
+		if slices.Contains(availableProviders, providerKey) {
+			filteredProviders = append(filteredProviders, providerKey)
+		}
+	}
+
+	return filteredProviders
 }
 
 // TextCompletionRequest sends a text completion request to the specified provider.
@@ -917,6 +949,49 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	}
 
 	return response.CountTokensResponse, nil
+}
+
+// CompactionRequest compacts a conversation context window via providers that implement
+// the OpenAI-compatible /v1/responses/compact flow (OpenAI, Azure OpenAI, xAI).
+// Providers without compaction support return an unsupported-operation error.
+func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "compaction request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CompactionRequest,
+			},
+		}
+	}
+
+	if len(req.Input) == 0 && req.PreviousResponseID == nil && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for compaction request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.CompactionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CompactionRequest
+	bifrostReq.CompactionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CompactionResponse, nil
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
@@ -3640,12 +3715,12 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 //
 // Example:
 //
-//	err := bifrost.AddMCPClient(schemas.MCPClientConfig{
+//	err := bifrost.AddMCPClient(ctx, &schemas.MCPClientConfig{
 //	    Name: "my-mcp-client",
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
-func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
+func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
 		bifrost.mcpInitOnce.Do(func() {
@@ -3664,7 +3739,7 @@ func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 			}
 			// Create Starlark CodeMode for code execution (with default config)
 			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
 		})
 	}
 
@@ -3673,7 +3748,7 @@ func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("MCP manager is not initialized")
 	}
 
-	return bifrost.MCPManager.AddClient(config)
+	return bifrost.MCPManager.AddClient(ctx, config)
 }
 
 // RemoveMCPClient removes an MCP client from the Bifrost instance.
@@ -3700,7 +3775,7 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 }
 
 // SetMCPManager sets the MCP manager for this Bifrost instance.
-// This allows injecting a custom MCP manager implementation (e.g., for enterprise features).
+// This allows injecting a custom MCP manager implementation.
 // If the provided manager is a concrete *mcp.MCPManager, Bifrost's plugin pipeline is injected
 // into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
@@ -3814,13 +3889,41 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
 		})
 	}
 	if bifrost.MCPManager == nil {
 		return nil, nil, fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+}
+
+// VerifyHeadersConnection delegates to the MCP manager to verify an MCP
+// server using caller-supplied header values (admin sample or user-submitted)
+// and discover available tools. Mirrors VerifyPerUserOAuthConnection's lazy
+// MCP-manager init.
+func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+	if bifrost.MCPManager == nil {
+		bifrost.mcpInitOnce.Do(func() {
+			mcpConfig := schemas.MCPConfig{
+				ClientConfigs: []*schemas.MCPClientConfig{},
+			}
+			mcpConfig.PluginPipelineProvider = func() interface{} {
+				return bifrost.getPluginPipeline()
+			}
+			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			}
+			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+		})
+	}
+	if bifrost.MCPManager == nil {
+		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+	}
+	return bifrost.MCPManager.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
 // SetClientTools delegates to the MCP manager to update the tool map for an
@@ -4456,6 +4559,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
+	if req.CompactionRequest != nil {
+		tmp := *req.CompactionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CompactionRequest = &tmp
+	}
+
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
@@ -4573,7 +4683,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
 		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(fallback.Provider)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
 		tracer.SetAttribute(handle, "fallback.index", i+1)
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
@@ -4654,7 +4765,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
 		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(fallback.Provider)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
 		tracer.SetAttribute(handle, "fallback.index", i+1)
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
@@ -5216,20 +5328,32 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 }
 
+// errAllKeysDead is returned by a keyProvider closure when every key in the configured pool
+// has been marked permanently dead via deadKeyIDs (or, for a fixed/sticky key, when that key
+// is itself dead). executeRequestWithRetries detects this via errors.Is and surfaces it as a
+// synthetic 502 upstream_credentials_exhausted, rather than bubbling the raw 401/403 which
+// would falsely suggest the *caller's* Bifrost API key is bad. Any other error from the
+// keyProvider (custom selector failure, etc.) is propagated unchanged.
+var errAllKeysDead = errors.New("all configured keys returned permanent per-key errors (401/402/403)")
+
 // executeRequestWithRetries is a generic function that handles common request processing logic.
 // It consolidates retry logic, backoff calculation, error handling, and key rotation.
 // It is not a bifrost method because interface methods in go cannot be generic.
 //
-// keyProvider, when non-nil, is called on the first attempt and again whenever a rate-limit error
-// triggers a key rotation. It receives the set of key IDs already used in the current rotation
-// cycle so it can exclude them; when the pool is exhausted the provider resets the set and starts
-// a fresh weighted round. Network errors (5xx) reuse the same key since they are transient server
-// issues rather than per-key capacity problems.
+// keyProvider, when non-nil, is called on the first attempt and again whenever a per-key error
+// triggers a rotation. It receives two sets of key IDs to exclude:
+//   - usedKeyIDs: keys that hit a transient per-key failure (429). When the pool is exhausted of
+//     non-dead keys, the provider resets this set and starts a fresh weighted round — a previously
+//     rate-limited key may have free quota by then.
+//   - deadKeyIDs: keys that hit a permanent per-key failure (401/402/403). These are NEVER reset
+//     within a single request — a bad credential will not become valid by waiting.
+//
+// Network/5xx errors reuse the same key since they are transient server issues, not per-key.
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
 	requestHandler func(key schemas.Key) (T, *schemas.BifrostError),
-	keyProvider func(usedKeyIDs map[string]bool) (schemas.Key, error),
+	keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error),
 	requestType schemas.RequestType,
 	providerKey schemas.ModelProvider,
 	model string,
@@ -5242,7 +5366,20 @@ func executeRequestWithRetries[T any](
 
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
-	lastWasRateLimit := false
+	var deadKeyIDs map[string]bool
+	lastWasPerKeyFailure := false
+	// True iff the previous attempt failed with a *permanent* per-key error (401/402/403).
+	// Used to suppress backoff on the next attempt only when we genuinely rotated to a
+	// different credential — a dead key gains nothing from waiting. 429 rotations stay
+	// subject to backoff because account-level rate limits share quota across keys.
+	lastWasPermanentKeyFailure := false
+	// ID of the key used on the previous attempt. Compared against the freshly selected
+	// key to confirm an actual credential swap happened before suppressing backoff —
+	// after a 429 pool reset, the selector can legitimately re-pick the same key.
+	previousKeyID := ""
+	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
+	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
+	pendingRotationAttemptIdx := -1
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -5253,9 +5390,10 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{})
 		}
 
-		// Select / rotate key: always on attempt 0, and again when the previous failure was a
-		// rate-limit (different key may have remaining capacity). Network errors keep the same key.
-		if keyProvider != nil && (attempts == 0 || lastWasRateLimit) {
+		// Select / rotate key: always on attempt 0, and again when the previous failure was
+		// tied to the key itself (rate-limit, auth, billing, or permission error). Transient
+		// server errors (5xx, network) keep the same key since they're not per-key problems.
+		if keyProvider != nil && (attempts == 0 || lastWasPerKeyFailure) {
 			if usedKeyIDs == nil {
 				usedKeyIDs = make(map[string]bool)
 			}
@@ -5268,14 +5406,15 @@ func executeRequestWithRetries[T any](
 			var keyHandle schemas.SpanHandle
 			if keyTracer != nil {
 				keySpanCtx, keyHandle = keyTracer.StartSpan(ctx, "key.selection", schemas.SpanKindInternal)
-				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, string(providerKey))
+				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
+				keyTracer.SetAttribute(keyHandle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
 				if attempts > 0 {
-					keyTracer.SetAttribute(keyHandle, "retry.count", attempts)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrLegacyRetryCount, attempts)
 				}
 			}
 
-			selectedKey, err := keyProvider(usedKeyIDs)
+			selectedKey, err := keyProvider(usedKeyIDs, deadKeyIDs)
 
 			if keyTracer != nil {
 				if err != nil {
@@ -5293,11 +5432,48 @@ func executeRequestWithRetries[T any](
 
 			if err != nil {
 				var zero T
+				// Clear any selected_key_* set by a *previous* attempt: this early return
+				// skips the terminal cleanup at the end of the function, and the invariant
+				// is that selected_key_id / selected_key_name are populated only on a
+				// successful response. Use attempt_trail for failure attribution.
+				ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "")
+				ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "")
+				// Only collapse into 502 upstream_credentials_exhausted when keyProvider
+				// explicitly signals "every key is dead" via the errAllKeysDead sentinel.
+				// Any other error (custom selector failure, etc.) propagates unchanged so
+				// that a stray selector error doesn't get misreported as exhausted just
+				// because *some* keys happened to be dead.
+				if errors.Is(err, errAllKeysDead) {
+					statusCode := 502
+					errType := "upstream_credentials_exhausted"
+					return zero, &schemas.BifrostError{
+						IsBifrostError: false,
+						StatusCode:     &statusCode,
+						Type:           &errType,
+						Error: &schemas.ErrorField{
+							Type:    &errType,
+							Message: err.Error(),
+						},
+					}
+				}
 				return zero, newBifrostErrorFromMsg(err.Error())
 			}
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
+
+			// Resolve any pending rotation marker from the previous failed attempt. Only mark
+			// TriggeredRotation=true if the newly selected key differs from the failed one —
+			// fixed-key paths return the same key, in which case no rotation actually happened.
+			if pendingRotationAttemptIdx >= 0 {
+				if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok &&
+					pendingRotationAttemptIdx < len(trail) &&
+					trail[pendingRotationAttemptIdx].KeyID != currentKey.ID {
+					trail[pendingRotationAttemptIdx].TriggeredRotation = true
+					ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+				}
+				pendingRotationAttemptIdx = -1
+			}
 		}
 
 		// Append a trail record for every attempt (key rotation and same-key retries alike).
@@ -5324,11 +5500,22 @@ func executeRequestWithRetries[T any](
 			}
 			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
 
-			// Calculate and apply backoff
-			backoff := calculateBackoff(attempts-1, config)
-			logger.Debug("sleeping for %s before retry", backoff)
-
-			time.Sleep(backoff)
+			// Skip backoff only when (a) we genuinely rotated to a different credential AND
+			// (b) the previous failure was a *permanent* per-key error (401/402/403) where
+			// waiting offers nothing against a dead key.
+			//
+			// Backoff is preserved in every other case:
+			//   - 5xx / network retries (same key) — transient upstream issue, classic backoff.
+			//   - 429 rotations — account-level rate limits share quota across keys, so the
+			//     new key may not have fresh capacity; the backoff lets the quota window slide.
+			//   - 429 pool reset that re-picks the same key — no rotation actually happened.
+			//   - keyless providers — currentKey.ID stays empty, so keyChanged is false.
+			keyChanged := keyProvider != nil && currentKey.ID != previousKeyID
+			if !(lastWasPermanentKeyFailure && keyChanged) {
+				backoff := calculateBackoff(attempts-1, config)
+				logger.Debug("sleeping for %s before retry", backoff)
+				time.Sleep(backoff)
+			}
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
@@ -5341,50 +5528,92 @@ func executeRequestWithRetries[T any](
 		}
 		var spanName string
 		var spanKind schemas.SpanKind
+		otelOp := schemas.OTelOperationName(requestType)
 		if attempts > 0 {
 			spanName = fmt.Sprintf("retry.attempt.%d", attempts)
 			spanKind = schemas.SpanKindRetry
 		} else {
-			spanName = "llm.call"
+			// Span name format per OTel GenAI semconv: "{operation} {model}".
+			spanName = fmt.Sprintf("%s %s", otelOp, model)
 			spanKind = schemas.SpanKindLLMCall
 		}
 		spanCtx, handle := tracer.StartSpan(ctx, spanName, spanKind)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, string(providerKey))
+		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
+		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
 		tracer.SetAttribute(handle, schemas.AttrRequestModel, model)
-		tracer.SetAttribute(handle, "request.type", string(requestType))
+		tracer.SetAttribute(handle, schemas.AttrOperationName, otelOp)
+		tracer.SetAttribute(handle, schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
 		if attempts > 0 {
-			tracer.SetAttribute(handle, "retry.count", attempts)
+			tracer.SetAttribute(handle, schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
 		}
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
+		// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: the
+		// Bifrost-internal concept does not belong under gen_ai.*. The bifrost.* mirrors
+		// are the canonical home going forward; once all dashboards migrate, drop the
+		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID)
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName)
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID)
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName)
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID)
+			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName)
+			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID)
+			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName)
+			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerName, customerName)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex)
+			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
+			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts)
+		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
+		tracer.SetAttribute(handle, schemas.AttrBifrostRetries, attempts)
+
+		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
+		// header forwarding) as span attributes so observability backends see the
+		// same set Bifrost forwards to the upstream provider.
+		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			for name, values := range extraHeaders {
+				if name == "" || len(values) == 0 {
+					continue
+				}
+				// Never export credential-bearing headers verbatim. The transport
+				// layer denylists most sensitive headers, but plain authorization /
+				// set-cookie can still reach here, and core SDK callers bypass that
+				// guard entirely. Keep the key (presence is useful) but redact the value.
+				if schemas.IsSensitiveHeader(name) {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, schemas.RedactedAttrValue)
+					continue
+				}
+				if len(values) == 1 {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values[0])
+				} else {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values)
+				}
+			}
+		}
 
 		// Populate LLM request attributes (messages, parameters, etc.)
 		if req != nil {
@@ -5476,9 +5705,14 @@ func executeRequestWithRetries[T any](
 			break
 		}
 
-		// Check if we should retry based on status code or error message
+		// Classify the failure to decide whether to retry and whether to rotate the key.
+		//
+		// isPerKeyFailure: failure is bound to this specific key/account (401/402/403/429, or a
+		//   rate-limit error surfaced via message text instead of a 429 status). The same key
+		//   won't help — try a different one.
+		// retryable 5xx / network errors: transient server issues — retry with the same key.
 		shouldRetry := false
-		isRateLimit := (bifrostError.StatusCode != nil && *bifrostError.StatusCode == 429) ||
+		isPerKeyFailure := (bifrostError.StatusCode != nil && perKeyFailureStatusCodes[*bifrostError.StatusCode]) ||
 			(bifrostError.Error != nil &&
 				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
 					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
@@ -5491,19 +5725,28 @@ func executeRequestWithRetries[T any](
 				bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
 			shouldRetry = true
 			logger.Debug("detected request HTTP/network error, will retry: %s", errMessage)
-		} else if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) || isRateLimit {
+		} else if (bifrostError.StatusCode != nil && transientServerStatusCodes[*bifrostError.StatusCode]) || isPerKeyFailure {
 			shouldRetry = true
 			logger.Debug("encountered error that should be retried: %s", errMessage)
 		}
 
-		// Fill FailReason on any failed attempt (retryable or terminal).
-		// Use the provider error type when present; fall back to "unknown".
+		// Fill FailReason on any failed attempt (retryable or terminal). The trail field
+		// answers "why was this key skipped?", so for rotation-triggering status codes the
+		// status itself is the truthful answer — provider Type labels can be misleading
+		// (e.g. OpenAI returns Type="invalid_request_error" for 401 invalid_api_key, which
+		// describes the request, not the rotation reason). Fall back to provider Type for
+		// non-rotation failures, then "unknown".
 		if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 			reason := "unknown"
-			if bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type != "" {
-				reason = *bifrostError.Error.Type
-			} else if isRateLimit {
+			switch {
+			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 429:
 				reason = "rate_limit_error"
+			case bifrostError.StatusCode != nil && (*bifrostError.StatusCode == 401 || *bifrostError.StatusCode == 403):
+				reason = "authentication_error"
+			case bifrostError.StatusCode != nil && *bifrostError.StatusCode == 402:
+				reason = "billing_error"
+			case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type != "":
+				reason = *bifrostError.Error.Type
 			}
 			trail[len(trail)-1].FailReason = &reason
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
@@ -5513,15 +5756,44 @@ func executeRequestWithRetries[T any](
 			break
 		}
 
-		// Mark current key as used so the next selection excludes it (rate-limit only).
-		// Network errors keep the same key — they are transient server issues, not per-key.
-		if isRateLimit && keyProvider != nil {
-			if usedKeyIDs == nil {
-				usedKeyIDs = make(map[string]bool)
+		// Track key state so the next keyProvider call excludes this key. Permanent
+		// per-key failures (401/402/403) go into deadKeyIDs which is never reset within
+		// this request — a bad credential won't become valid by waiting. Transient
+		// per-key failures (429) go into usedKeyIDs which the keyProvider may reset
+		// once all keys are exhausted, since a rate-limited key may have free quota by
+		// the time we come back to it.
+		isPermanentKeyFailure := false
+		if isPerKeyFailure && keyProvider != nil {
+			isPermanentKeyFailure = bifrostError.StatusCode != nil &&
+				(*bifrostError.StatusCode == 401 || *bifrostError.StatusCode == 402 || *bifrostError.StatusCode == 403)
+			if isPermanentKeyFailure {
+				if deadKeyIDs == nil {
+					deadKeyIDs = make(map[string]bool)
+				}
+				deadKeyIDs[currentKey.ID] = true
+			} else {
+				if usedKeyIDs == nil {
+					usedKeyIDs = make(map[string]bool)
+				}
+				usedKeyIDs[currentKey.ID] = true
 			}
-			usedKeyIDs[currentKey.ID] = true
 		}
-		lastWasRateLimit = isRateLimit
+		lastWasPerKeyFailure = isPerKeyFailure
+		lastWasPermanentKeyFailure = isPermanentKeyFailure
+		// Remember the key used on this attempt so the next iteration's backoff check
+		// can detect whether key selection genuinely picked a different credential.
+		previousKeyID = currentKey.ID
+
+		// Record the just-failed attempt as a *candidate* for rotation. The next iteration will
+		// confirm it (and set TriggeredRotation=true) only if key selection actually picks a
+		// different key — this avoids false positives for fixed-key providers whose keyProvider
+		// is non-nil but returns the same key. Network-error retries reuse the same key, and
+		// terminal attempts (attempts == MaxRetries) won't run another iteration.
+		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
+			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
+				pendingRotationAttemptIdx = len(trail) - 1
+			}
+		}
 	}
 
 	// Add retry information to error
@@ -5656,7 +5928,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
 		// batch/file/container operations that manage their own key lists.
-		var keyProvider func(usedKeyIDs map[string]bool) (schemas.Key, error)
+		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
 
 		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
@@ -5738,9 +6010,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
 						// Fixed key (explicit ID/name, session stickiness): always
-						// return the same key regardless of usedKeyIDs.
+						// return the same key — *unless* it has been marked permanently
+						// dead this request, in which case surface errAllKeysDead so the
+						// caller emits 502 upstream_credentials_exhausted instead of
+						// burning the remaining retries on the same bad credential.
 						fixedKey := supportedKeys[0]
-						keyProvider = func(_ map[string]bool) (schemas.Key, error) {
+						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+							if deadKeyIDs[fixedKey.ID] {
+								return schemas.Key{}, errAllKeysDead
+							}
 							return fixedKey, nil
 						}
 					} else {
@@ -5749,19 +6027,31 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						pool := supportedKeys
 						provKey := provider.GetProviderKey()
 						mdl := model
-						keyProvider = func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
 							available := make([]schemas.Key, 0, len(pool))
 							for _, k := range pool {
-								if !usedKeyIDs[k.ID] {
-									available = append(available, k)
+								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+									continue
 								}
+								available = append(available, k)
 							}
 							if len(available) == 0 {
-								// All keys exhausted — start a fresh weighted round.
+								// No non-dead keys remain in this cycle. If every key has been
+								// marked permanently dead, give up — retrying won't help.
+								// Otherwise reset usedKeyIDs and start a fresh weighted round
+								// across the still-live (non-dead) keys; a previously
+								// rate-limited key may have free quota by now.
+								for _, k := range pool {
+									if !deadKeyIDs[k.ID] {
+										available = append(available, k)
+									}
+								}
+								if len(available) == 0 {
+									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
+								}
 								for id := range usedKeyIDs {
 									delete(usedKeyIDs, id)
 								}
-								available = pool
 							}
 							return bifrost.keySelector(req.Context, available, provKey, mdl)
 						}
@@ -5982,6 +6272,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
+	case schemas.CompactionRequest:
+		compactionResponse, bifrostError := provider.Compaction(req.Context, key, req.BifrostRequest.CompactionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CompactionResponse = compactionResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -6237,6 +6533,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		if passthroughResponse != nil {
+			passthroughResponse.Path = req.BifrostRequest.PassthroughRequest.Path
 		}
 		response.PassthroughResponse = passthroughResponse
 	default:
@@ -6970,6 +7269,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
+	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.OCRRequest = nil
@@ -7027,6 +7327,12 @@ func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.
 // allowing the provider to aggregate results from multiple keys.
 func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider) ([]schemas.Key, error) {
+	if ctx != nil {
+		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+			return []schemas.Key{key}, nil
+		}
+	}
+
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return nil, err
@@ -7065,6 +7371,12 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 // For batch operations, only keys with UseForBatchAPI enabled are included.
 // Model filtering: if model is specified and key has model restrictions, only include if model is in list.
 func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider, model *string, isBatchOp bool) ([]schemas.Key, error) {
+	if ctx != nil {
+		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+			return []schemas.Key{key}, nil
+		}
+	}
+
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return nil, err
@@ -7144,6 +7456,13 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=true is returned when there are two or more eligible keys and no pinning
 // or stickiness constraint is in effect.
 func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
+	// Direct key bypass: caller supplied a raw API key via x-bf-direct-key header.
+	if ctx != nil {
+		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+			return []schemas.Key{key}, false, nil
+		}
+	}
+
 	// SkipKeySelection: provider allows keyless requests — return empty pool, no rotation.
 	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
 		return []schemas.Key{}, false, nil
