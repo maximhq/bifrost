@@ -1,5 +1,2 @@
-- feat: file scheme (file://) support for pricing URLs
-- fix: corrected Bedrock outputAssessments type
-- fix: added Model field to TextCompletionChunkResponse (thanks [@kuishou68](https://github.com/kuishou68)!)
-- fix: accept orphaned tool results in OpenAI to Anthropic conversion flow
-- fix(mcp): allow inline stdio env assignments (thanks [@Shushmitaaaa](https://github.com/Shushmitaaaa)!)
+- [fix]: map upstream connection failures to 502 instead of 400 (#3929) [@chris-colinsky](https://github.com/chris-colinsky)
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

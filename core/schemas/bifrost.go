@@ -1468,8 +1468,9 @@ type BifrostCacheDebug struct {
 }
 
 const (
-	RequestCancelled = "request_cancelled"
-	RequestTimedOut  = "request_timed_out"
+	RequestCancelled         = "request_cancelled"
+	RequestTimedOut          = "request_timed_out"
+	ProviderConnectionFailed = "provider_connection_failed"
 )
 
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.

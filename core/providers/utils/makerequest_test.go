@@ -337,11 +337,36 @@ func TestMakeRequestWithContext_ClientError(t *testing.T) {
 	if bifrostErr == nil {
 		t.Fatal("expected error for nonexistent host")
 	}
+	// Upstream connectivity failures (DNS/OpError) should surface as 502 Bad Gateway,
+	// not the default 400 — see NewBifrostUpstreamConnectionError.
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 502 {
+		t.Fatalf("expected StatusCode 502, got %v", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.ProviderConnectionFailed {
+		t.Fatalf("expected ProviderConnectionFailed type, got %v", bifrostErr.Error.Type)
+	}
 	// wait should be noop since the goroutine completed (with error)
 	start := time.Now()
 	wait()
 	if time.Since(start) > 10*time.Millisecond {
 		t.Fatal("wait() should be noop on error path")
+	}
+}
+
+func TestNewBifrostUpstreamConnectionError(t *testing.T) {
+	err := NewBifrostUpstreamConnectionError("upstream dropped connection", context.DeadlineExceeded)
+
+	if err.IsBifrostError {
+		t.Fatal("expected IsBifrostError to be false (upstream is at fault)")
+	}
+	if err.StatusCode == nil || *err.StatusCode != 502 {
+		t.Fatalf("expected StatusCode 502, got %v", err.StatusCode)
+	}
+	if err.Error.Type == nil || *err.Error.Type != schemas.ProviderConnectionFailed {
+		t.Fatalf("expected ProviderConnectionFailed type, got %v", err.Error.Type)
+	}
+	if err.Error.Message != "upstream dropped connection" {
+		t.Fatalf("expected 'upstream dropped connection', got %s", err.Error.Message)
 	}
 }
 
