@@ -217,11 +217,12 @@ func RunPasswordCommand(ctx context.Context, config *PasswordCommandConfig) (str
 		}
 	case <-cmdCtx.Done():
 		_ = cmd.Process.Kill()
-		<-waitErr
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("postgres password_command timed out after %s", timeout)
+		if err := <-waitErr; err != nil {
+			if cmdCtx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("postgres password_command timed out after %s", timeout)
+			}
+			return "", fmt.Errorf("postgres password_command canceled: %w", cmdCtx.Err())
 		}
-		return "", fmt.Errorf("postgres password_command canceled: %w", cmdCtx.Err())
 	}
 
 	password := strings.TrimRight(stdout.String(), "\r\n")
