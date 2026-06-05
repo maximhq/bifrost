@@ -133,21 +133,30 @@ function TopDimensionChart({
 									dataKey="displayName"
 									tick={(props: any) => {
 										const { x, y, payload } = props;
-										const maxChars = 14;
-										const label = payload.value.length > maxChars ? `${payload.value.slice(0, maxChars)}…` : payload.value;
+										const labelWidth = 92;
 										return (
-											<text x={x} y={y} dy={4} textAnchor="end" fontSize={11} className="fill-zinc-500">
-												<title>{payload.value}</title>
-												{label}
-											</text>
+											<foreignObject x={x - labelWidth} y={y - 9} width={labelWidth} height={18} style={{ overflow: "visible" }}>
+												<div
+													title={payload.value}
+													className="truncate text-right text-[11px] leading-[18px] text-zinc-500 dark:text-zinc-400"
+													style={{ width: labelWidth }}
+												>
+													{payload.value}
+												</div>
+											</foreignObject>
 										);
 									}}
 									tickLine={false}
 									axisLine={false}
-									width={92}
+									width={100}
 								/>
-								<Tooltip content={<TopDimensionTooltip />} />
-								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} radius={[0, 4, 4, 0]}>
+								<Tooltip content={<TopDimensionTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Bar
+									dataKey="total_requests"
+									isAnimationActive={false}
+									barSize={24}
+									radius={[0, 4, 4, 0]}
+								>
 									{chartData.map((entry, idx) => (
 										<Cell key={entry.id} fill={getModelColor(idx)} />
 									))}
