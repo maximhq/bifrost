@@ -3200,26 +3200,6 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 				return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
 			}
 		}
-		for i := range config.GovernanceConfig.ModelConfigs {
-			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
-			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
-				return err
-			}
-			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
-			if err != nil {
-				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
-			} else {
-				modelConfig.ConfigHash = modelConfigHash
-			}
-			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
-				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
-			}
-			if len(modelConfig.BudgetIDs) > 0 {
-				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
-					return err
-				}
-			}
-		}
 		for i := range config.GovernanceConfig.Providers {
 			provider := &config.GovernanceConfig.Providers[i]
 			if provider.Name == "" {
@@ -3360,6 +3340,31 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		for _, budget := range pendingProviderConfigBudgets {
 			if err := createBudget(budget); err != nil {
 				return err
+			}
+		}
+
+		// Create model configs last: scope=virtual_key configs reference a virtual key by
+		// scope_id, and CreateModelConfig now locks that owner row and rejects a missing one
+		// (ErrNotFound), so the owning virtual keys must already exist. Budgets referenced via
+		// BudgetIDs are likewise all created by this point.
+		for i := range config.GovernanceConfig.ModelConfigs {
+			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
+			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
+				return err
+			}
+			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
+			if err != nil {
+				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
+			} else {
+				modelConfig.ConfigHash = modelConfigHash
+			}
+			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
+				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 

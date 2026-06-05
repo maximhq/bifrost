@@ -850,6 +850,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -7378,6 +7381,99 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigBudgetsFKConstraint adds the missing
+// governance_budgets.model_config_id -> governance_model_configs(id)
+// ON DELETE CASCADE foreign key (defined on TableModelConfig.Budgets via
+// foreignKey:ModelConfigID;constraint:OnDelete:CASCADE).
+//
+// migrationAddMultiBudgetTables created the equivalent cascade FKs for VK- and
+// ProviderConfig-owned budgets but never the model-config edge, and
+// migrationAddBudgetModelConfigIDColumn added the column without a constraint.
+// As a result deleting a model config never cascaded to its multi-budget rows,
+// so they leaked (orphaned governance_budgets whose model_config_id points at a
+// since-deleted config). This makes that cleanup structurally sound at the DB
+// level, underneath the existing application-level cleanup in
+// DeleteModelConfigsForScope/DeleteModelConfig. (The single owned rate-limit is
+// intentionally left to application cleanup — rate-limits use the opposite
+// owner.rate_limit_id convention, so reversing it just for model configs would
+// introduce a one-off ownership split for a one-row-per-config leak surface.)
+func migrationAddModelConfigBudgetsFKConstraint(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_budgets_fk_constraint",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Pre-clean: budgets whose model_config_id already references a
+			// missing config would violate the FK we're about to add and block
+			// its creation. They are exactly the rows the cascade would have
+			// removed, so delete them — but only when nothing live still
+			// references them via the legacy governance_model_configs.budget_id
+			// (a NO ACTION FK), so this DELETE can't trip that constraint.
+			if err := tx.Exec(`
+				DELETE FROM governance_budgets
+				WHERE model_config_id IS NOT NULL
+				  AND model_config_id NOT IN (SELECT id FROM governance_model_configs)
+				  AND id NOT IN (
+				      SELECT budget_id FROM governance_model_configs WHERE budget_id IS NOT NULL
+				  )
+			`).Error; err != nil {
+				return fmt.Errorf("failed to pre-clean orphaned model-config budgets: %w", err)
+			}
+
+			// Create the cascade FK (no-op if a prior fresh-DB migrate already made it).
+			if !mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for ModelConfig -> Budgets: %w", err)
+				}
+			}
+			return nil
+		},
+		// Partially non-rollbackable: dropping the FK restores the previous
+		// schema, but the orphaned governance_budgets rows removed by the
+		// pre-clean are gone permanently. That loss is intentional — they were
+		// exactly the dead rows the missing cascade had leaked — so the schema
+		// rollback below is still provided rather than hard-failing.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.DropConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables:
+	// CreateConstraint rebuilds governance_budgets via DROP+RENAME inside a
+	// transaction, which fails while other tables hold FKs into it and
+	// foreign_keys is ON. PRAGMA foreign_keys can't change inside a transaction,
+	// so disable it (pinned to one connection) before the migrator opens its tx.
+	// Postgres supports ALTER TABLE ADD CONSTRAINT natively and needs none of this.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_config_budgets_fk_constraint migration: %s", err.Error())
 	}
 	return nil
 }

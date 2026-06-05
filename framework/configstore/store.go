@@ -267,6 +267,8 @@ type ConfigStore interface {
 	UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
 	UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error
 	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
+	// DeleteModelConfigsForScope deletes all model configs (and their owned budgets/rate-limits) for a scope owner. Must run inside the owner-delete transaction.
+	DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
