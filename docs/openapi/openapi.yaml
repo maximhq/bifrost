@@ -177,6 +177,8 @@ paths:
     $ref: './paths/inference/videos.yaml#/video-remix'
   /v1/responses/input_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+  /v1/responses/compact:
+    $ref: './paths/inference/compaction.yaml#/compact'
   /v1/batches:
     $ref: './paths/inference/batches.yaml#/batches'
   /v1/batches/{batch_id}:
@@ -278,6 +280,10 @@ paths:
     $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
   /openai/v1/responses/input_tokens:
     $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+
+  # Context Compaction
+  /openai/v1/responses/compact:
+    $ref: './paths/integrations/openai/compaction.yaml#/compact'
 
   # Embeddings
   /openai/v1/embeddings:
