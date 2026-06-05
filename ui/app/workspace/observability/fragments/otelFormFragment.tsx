@@ -314,7 +314,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 	const collectorPreview = collectorUrl?.from_env ? collectorUrl.env_var : collectorUrl?.value;
 
 	return (
-		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-lg border" data-testid={`otel-profile-${index}`}>
+		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border" data-testid={`otel-profile-${index}`}>
 			<div className="flex flex-row items-center gap-2 px-4 py-3">
 				<CollapsibleTrigger asChild>
 					<button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left">
