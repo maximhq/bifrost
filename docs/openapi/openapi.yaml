@@ -824,6 +824,18 @@ paths:
   /api/governance/customers/{customer_id}:
     $ref: './paths/management/governance.yaml#/customers-by-id'
 
+  # Governance - Business Units (Enterprise)
+  /api/governance/business-units:
+    $ref: './paths/management/businessunits.yaml#/business-units'
+  /api/governance/business-units/{id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-by-id'
+  /api/governance/business-units/{id}/teams:
+    $ref: './paths/management/businessunits.yaml#/business-units-teams'
+  /api/governance/business-units/{id}/teams/{team_id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
+  /api/governance/business-units/{id}/governance:
+    $ref: './paths/management/businessunits.yaml#/business-units-governance'
+
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
     $ref: './paths/management/governance.yaml#/budgets'
