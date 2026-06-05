@@ -685,6 +685,194 @@ CustomerResponse:
     customer:
       $ref: '#/Customer'
 
+# Business Units (Enterprise)
+
+BusinessUnit:
+  type: object
+  description: Business unit configuration with governance association
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    source_id:
+      type: string
+      description: External source identifier (e.g. from SCIM provisioning)
+    profile:
+      type: object
+      additionalProperties: true
+      nullable: true
+    config:
+      type: object
+      additionalProperties: true
+      nullable: true
+    claims:
+      type: object
+      additionalProperties: true
+      nullable: true
+    budget_id:
+      type: string
+    rate_limit_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+BusinessUnitListItem:
+  type: object
+  description: Business unit summary as returned in list responses
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ListBusinessUnitsResponse:
+  type: object
+  description: Paginated list of business units
+  required:
+    - business_units
+    - total
+    - page
+    - limit
+  properties:
+    business_units:
+      type: array
+      items:
+        $ref: '#/BusinessUnitListItem'
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+BusinessUnitDetailResponse:
+  type: object
+  description: Single business unit with governance and team count
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateBusinessUnitRequest:
+  type: object
+  description: Create business unit request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+BusinessUnitMutationResponse:
+  type: object
+  description: Response for business unit create/update operations
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+AssignTeamToBusinessUnitRequest:
+  type: object
+  description: Request to assign a team to a business unit
+  required:
+    - team_id
+  properties:
+    team_id:
+      type: string
+
+BusinessUnitTeamsResponse:
+  type: object
+  description: Paginated list of teams assigned to a business unit
+  required:
+    - teams
+    - total
+    - page
+    - limit
+  properties:
+    teams:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+CreateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Create business unit governance request. The business unit is identified by
+    the {id} path parameter. At least one of budget or rate_limit is required.
+  anyOf:
+    - required: [budget]
+    - required: [rate_limit]
+  properties:
+    budget:
+      $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+
+UpdateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Update business unit governance request. Passing an empty budget or rate_limit
+    object removes that governance component.
+  properties:
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+
+BusinessUnitGovernanceResponse:
+  type: object
+  description: Business unit governance operation response
+  properties:
+    message:
+      type: string
+    business_unit:
+      $ref: '#/BusinessUnit'
+
 TableKey:
   type: object
   description: Table key configuration

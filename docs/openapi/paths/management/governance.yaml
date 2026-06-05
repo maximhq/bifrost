@@ -835,10 +835,10 @@ model-configs:
           type: string
       - name: scope
         in: query
-        description: Filter by scope (`global` or `virtual_key`)
+        description: Filter by scope (`global`, `virtual_key`, or `user`; `user` is Enterprise only)
         schema:
           type: string
-          enum: [global, virtual_key]
+          enum: [global, virtual_key, user]
       - name: provider
         in: query
         description: Filter by provider name
