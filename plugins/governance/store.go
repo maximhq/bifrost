@@ -194,12 +194,11 @@ type GovernanceStore interface {
 	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
 	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
 	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
-	// CollectApplicableGovernanceIDs returns the budget and rate-limit IDs that
-	// govern a request for the given virtual key, provider, and model. The
-	// returned IDs are attached to log entries so that ghost-node usage
-	// reconciliation can attribute cost and tokens to the correct governance
-	// entities.
-	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
+	// CollectApplicableGovernanceIDs returns every budget and rate-limit ID this node charges for the given (virtualKey, userID, provider, model).
+	// The IDs are stamped on the log row so ghost-node reconciliation can re-attribute cost and tokens;
+	// missing any ID here means that usage vanishes from cluster baselines when the node ghosts.
+	// userID contributes the user-scoped model-config IDs;
+	CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -2635,7 +2634,7 @@ func (gs *LocalGovernanceStore) collectRateLimitIDsFromMemory(ctx context.Contex
 // affected by a request with the given virtual key, provider, and model.
 // It combines provider-level, model-level, and VK-hierarchy (team/customer) IDs.
 // All lookups are fast in-memory sync.Map reads.
-func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
+func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, virtualKey string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
 	seenBudgets := map[string]bool{}
 	seenRateLimits := map[string]bool{}
 
@@ -2679,6 +2678,13 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 	// --- Model-level (global scope), all four tiers incl. provider/all-models wildcards ---
 	if model != "" {
 		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
+			addModelConfigIDs(mc)
+		}
+	}
+
+	// --- User-scoped model configs (user / AP path) ---
+	if userID != "" && model != "" {
+		for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeUser, userID, model, providerStr) {
 			addModelConfigIDs(mc)
 		}
 	}
