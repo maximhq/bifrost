@@ -190,7 +190,7 @@ function TopModelsChart({
 									domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 									allowDataOverflow={false}
 								/>
-								<Tooltip content={<UsageShareTooltip models={displayModels} />} />
+								<Tooltip content={<UsageShareTooltip models={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 								{displayModels.map((model, idx) => (
 									<Bar
 										key={model}
