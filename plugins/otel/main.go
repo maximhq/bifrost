@@ -83,6 +83,11 @@ type Profile struct {
 	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
 	// or "*") whose captured values are attached to the root span as attributes.
 	RequestHeaders []string `json:"request_headers,omitempty"`
+
+	// DisableContentLogging controls whether message content is exported to the OTEL collector.
+	// When true, only metadata (model, tokens, latency, etc.) is exported; input/output message
+	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
+	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -191,18 +196,19 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled             bool              `json:"enabled"`
-	ServiceName         string            `json:"service_name"`
-	CollectorURL        string            `json:"collector_url"`
-	Headers             map[string]string `json:"headers,omitempty"`
-	TraceType           TraceType         `json:"trace_type"`
-	Protocol            Protocol          `json:"protocol"`
-	TLSCACert           string            `json:"tls_ca_cert,omitempty"`
-	Insecure            bool              `json:"insecure"`
-	MetricsEnabled      bool              `json:"metrics_enabled"`
-	MetricsEndpoint     string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval int               `json:"metrics_push_interval,omitempty"`
-	RequestHeaders      []string          `json:"request_headers,omitempty"`
+	Enabled               bool              `json:"enabled"`
+	ServiceName           string            `json:"service_name"`
+	CollectorURL          string            `json:"collector_url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	TraceType             TraceType         `json:"trace_type"`
+	Protocol              Protocol          `json:"protocol"`
+	TLSCACert             string            `json:"tls_ca_cert,omitempty"`
+	Insecure              bool              `json:"insecure"`
+	MetricsEnabled        bool              `json:"metrics_enabled"`
+	MetricsEndpoint       string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
+	RequestHeaders        []string          `json:"request_headers,omitempty"`
+	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -225,18 +231,19 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:             p.Enabled,
-			ServiceName:         p.ServiceName,
-			CollectorURL:        schemas.EnvVarAsString(p.CollectorURL),
-			Headers:             p.Headers,
-			TraceType:           p.TraceType,
-			Protocol:            p.Protocol,
-			TLSCACert:           p.TLSCACert,
-			Insecure:            p.Insecure,
-			MetricsEnabled:      p.MetricsEnabled,
-			MetricsEndpoint:     schemas.EnvVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval: p.MetricsPushInterval,
-			RequestHeaders:      p.RequestHeaders,
+			Enabled:               p.Enabled,
+			ServiceName:           p.ServiceName,
+			CollectorURL:          schemas.EnvVarAsString(p.CollectorURL),
+			Headers:               p.Headers,
+			TraceType:             p.TraceType,
+			Protocol:              p.Protocol,
+			TLSCACert:             p.TLSCACert,
+			Insecure:              p.Insecure,
+			MetricsEnabled:        p.MetricsEnabled,
+			MetricsEndpoint:       schemas.EnvVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:   p.MetricsPushInterval,
+			RequestHeaders:        p.RequestHeaders,
+			DisableContentLogging: p.DisableContentLogging,
 		})
 	}
 	return sonic.Marshal(out)
@@ -300,12 +307,13 @@ func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
 type otelTarget struct {
-	serviceName     string
-	url             string
-	traceType       TraceType
-	client          OtelClient
-	metricsExporter *MetricsExporter
-	requestHeaders  []string
+	serviceName           string
+	url                   string
+	traceType             TraceType
+	client                OtelClient
+	metricsExporter       *MetricsExporter
+	requestHeaders        []string
+	disableContentLogging bool
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -428,10 +436,11 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 
 	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
-		serviceName:    serviceName,
-		url:            url,
-		traceType:      profile.TraceType,
-		requestHeaders: slices.Clone(profile.RequestHeaders),
+		serviceName:           serviceName,
+		url:                   url,
+		traceType:             profile.TraceType,
+		requestHeaders:        slices.Clone(profile.RequestHeaders),
+		disableContentLogging: profile.DisableContentLogging,
 	}
 
 	var err error
@@ -614,7 +623,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		go func(t *otelTarget) {
 			defer wg.Done()
 			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders)
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging)
 				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
 					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
 				}

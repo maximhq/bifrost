@@ -3450,6 +3450,11 @@
           "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
           "default": true
         },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/otelPluginSpanFilter"
         }
@@ -3551,6 +3556,10 @@
         "insecure": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure insecure per profile instead."
+        },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure disable_content_logging per profile instead."
         }
       },
       "required": ["profiles"],

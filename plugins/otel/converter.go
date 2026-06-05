@@ -130,7 +130,7 @@ func (p *OtelPlugin) buildReparentMap(spans []*schemas.Span) map[string]string {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool) *ResourceSpan {
 	reparent := p.buildReparentMap(trace.Spans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 	otelSpans := make([]*Span, 0, len(trace.Spans))
@@ -138,7 +138,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		if !p.shouldExportSpan(span) {
 			continue
 		}
-		otelSpan := convertSpanToOTELSpan(trace.TraceID, span)
+		otelSpan := convertSpanToOTELSpan(trace.TraceID, span, disableContentLogging)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -176,7 +176,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
+func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -184,9 +184,9 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
 		Kind:              convertSpanKind(span.Kind),
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
-		Attributes:        convertAttributesToKeyValues(span.Attributes),
+		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
 		Status:            convertSpanStatus(span.Status, span.StatusMsg),
-		Events:            convertSpanEvents(span.Events),
+		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
 
 	// Set parent span ID if present
@@ -218,19 +218,44 @@ func (p *OtelPlugin) getInstrumentationScope(serviceName string) *commonpb.Instr
 	}
 }
 
-// convertAttributesToKeyValues converts map[string]any to OTEL KeyValue slice
-func convertAttributesToKeyValues(attrs map[string]any) []*KeyValue {
+// convertAttributesToKeyValues converts map[string]any to OTEL KeyValue slice.
+// When disableContentLogging is true, attributes carrying message/input/output content or
+// tool definitions/arguments/results are dropped so only metadata is exported.
+func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bool) []*KeyValue {
 	if attrs == nil {
 		return nil
 	}
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
+		if disableContentLogging && isContentAttribute(k) {
+			continue
+		}
 		kv := anyToKeyValue(k, v)
 		if kv != nil {
 			kvs = append(kvs, kv)
 		}
 	}
 	return kvs
+}
+
+// isContentAttribute returns true if the attribute key contains message/input/output content
+// or tool definitions/arguments/results that should be filtered when content logging is disabled.
+func isContentAttribute(key string) bool {
+	switch key {
+	case schemas.AttrInputMessages, schemas.AttrOutputMessages,
+		schemas.AttrInputText, schemas.AttrInputSpeech,
+		schemas.AttrInputEmbedding:
+		return true
+	case schemas.AttrTools, schemas.AttrRespTools,
+		schemas.AttrToolName, schemas.AttrToolCallID,
+		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
+		schemas.AttrToolType,
+		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
+		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName:
+		return true
+	default:
+		return false
+	}
 }
 
 // anyToKeyValue converts any Go value to OTEL KeyValue
@@ -378,7 +403,7 @@ func convertSpanStatus(status schemas.SpanStatus, msg string) *tracepb.Status {
 }
 
 // convertSpanEvents converts Bifrost span events to OTEL events
-func convertSpanEvents(events []schemas.SpanEvent) []*Event {
+func convertSpanEvents(events []schemas.SpanEvent, disableContentLogging bool) []*Event {
 	if len(events) == 0 {
 		return nil
 	}
@@ -387,7 +412,7 @@ func convertSpanEvents(events []schemas.SpanEvent) []*Event {
 		otelEvents[i] = &Event{
 			TimeUnixNano: uint64(event.Timestamp.UnixNano()),
 			Name:         event.Name,
-			Attributes:   convertAttributesToKeyValues(event.Attributes),
+			Attributes:   convertAttributesToKeyValues(event.Attributes, disableContentLogging),
 		}
 	}
 	return otelEvents
