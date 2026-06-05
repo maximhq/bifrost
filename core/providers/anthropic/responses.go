@@ -1482,6 +1482,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	return nil, nil, false
 }
 
+// isAnthropicNativeThinking returns true when the upstream response carries
+// genuine Anthropic-signed thinking blocks that are safe to forward as-is.
+func isAnthropicNativeThinking(provider schemas.ModelProvider, model string) bool {
+	if provider == schemas.Anthropic {
+		return true
+	}
+	if (provider == schemas.Vertex || provider == schemas.Azure || provider == schemas.Bedrock) && schemas.IsAnthropicModel(model) {
+		return true
+	}
+	return false
+}
+
 // ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response to Anthropic SSE string format
 func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
@@ -1615,29 +1627,39 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						contentBlock.Type = AnthropicContentBlockTypeText
 						contentBlock.Text = schemas.Ptr("")
 					case schemas.ResponsesMessageTypeReasoning:
-						contentBlock.Type = AnthropicContentBlockTypeThinking
-						contentBlock.Thinking = schemas.Ptr("")
-						contentBlock.Signature = schemas.Ptr("")
-						// Preserve signature if present
-						if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
-							contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
-							// When signature is present but thinking content is empty, use redacted_thinking
-							if contentBlock.Thinking != nil && *contentBlock.Thinking == "" {
-								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
+						if isAnthropicNativeThinking(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.ResolvedModelUsed) {
+							contentBlock.Type = AnthropicContentBlockTypeThinking
+							contentBlock.Thinking = schemas.Ptr("")
+							contentBlock.Signature = schemas.Ptr("")
+							// Preserve encrypted content for redacted_thinking
+							if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
+								contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+								if contentBlock.Thinking != nil && *contentBlock.Thinking == "" {
+									contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
+								}
 							}
+						} else {
+							// Non-Anthropic reasoning has no valid Anthropic signature.
+							// Emit as text so the block is safe to replay in cross-provider sessions.
+							contentBlock.Type = AnthropicContentBlockTypeText
+							contentBlock.Text = schemas.Ptr("")
 						}
 					case schemas.ResponsesMessageTypeFunctionCall:
 						// Check if this item actually has reasoning content (misclassified)
 						// When thinking is enabled, reasoning content might be incorrectly classified as FunctionCall
 						if bifrostResp.Item.ResponsesReasoning != nil {
 							// This is actually reasoning content, not a function call
-							contentBlock.Type = AnthropicContentBlockTypeThinking
-							contentBlock.Thinking = schemas.Ptr("")
-							contentBlock.Signature = schemas.Ptr("")
-							// Check if there's encrypted content for redacted_thinking
-							if bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
-								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
-								contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+							if isAnthropicNativeThinking(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.ResolvedModelUsed) {
+								contentBlock.Type = AnthropicContentBlockTypeThinking
+								contentBlock.Thinking = schemas.Ptr("")
+								contentBlock.Signature = schemas.Ptr("")
+								if bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
+									contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
+									contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+								}
+							} else {
+								contentBlock.Type = AnthropicContentBlockTypeText
+								contentBlock.Text = schemas.Ptr("")
 							}
 						} else {
 							// Regular function call - check if ContentIndex is 0 and thinking might be enabled
@@ -1659,11 +1681,17 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 								}
 							}
 
-							// When thinking is enabled and this is the first block, use thinking/redacted_thinking
+							// When thinking is enabled and this is the first block, only emit
+							// native Anthropic thinking for Anthropic-native providers.
 							if isFirstBlock && hasReasoningInResponse {
-								contentBlock.Type = AnthropicContentBlockTypeThinking
-								contentBlock.Thinking = schemas.Ptr("")
-								contentBlock.Signature = schemas.Ptr("")
+								if isAnthropicNativeThinking(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.ResolvedModelUsed) {
+									contentBlock.Type = AnthropicContentBlockTypeThinking
+									contentBlock.Thinking = schemas.Ptr("")
+									contentBlock.Signature = schemas.Ptr("")
+								} else {
+									contentBlock.Type = AnthropicContentBlockTypeText
+									contentBlock.Text = schemas.Ptr("")
+								}
 							} else {
 								contentBlock.Type = AnthropicContentBlockTypeToolUse
 								if bifrostResp.Item.ResponsesToolMessage != nil {
@@ -1826,18 +1854,24 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			streamResp.Index = bifrostResp.ContentIndex
 		}
 
-		// Check if this is a signature delta or text delta
-		if bifrostResp.Signature != nil {
-			// This is a signature_delta
-			streamResp.Delta = &AnthropicStreamDelta{
-				Type:      AnthropicStreamDeltaTypeSignature,
-				Signature: bifrostResp.Signature,
+		// For non-Anthropic providers, reasoning was emitted as a text block so
+		// deltas must be text_delta; signature_delta is dropped (no valid signature).
+		if isAnthropicNativeThinking(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.ResolvedModelUsed) {
+			if bifrostResp.Signature != nil {
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:      AnthropicStreamDeltaTypeSignature,
+					Signature: bifrostResp.Signature,
+				}
+			} else if bifrostResp.Delta != nil {
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:     AnthropicStreamDeltaTypeThinking,
+					Thinking: bifrostResp.Delta,
+				}
 			}
 		} else if bifrostResp.Delta != nil {
-			// This is a thinking_delta
 			streamResp.Delta = &AnthropicStreamDelta{
-				Type:     AnthropicStreamDeltaTypeThinking,
-				Thinking: bifrostResp.Delta,
+				Type: AnthropicStreamDeltaTypeText,
+				Text: bifrostResp.Delta,
 			}
 		}
 
@@ -2874,6 +2908,30 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 					Type: AnthropicContentBlockTypeText,
 					Text: msg.Content.ContentStr,
 				})
+			}
+		}
+	}
+
+	// Non-Anthropic reasoning has no valid Anthropic signature. Convert any
+	// thinking/redacted_thinking blocks to text so they are safe to replay in
+	// cross-provider sessions.
+	if !isAnthropicNativeThinking(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.ResolvedModelUsed) {
+		for i, block := range contentBlocks {
+			switch block.Type {
+			case AnthropicContentBlockTypeThinking:
+				text := ""
+				if block.Thinking != nil {
+					text = *block.Thinking
+				}
+				contentBlocks[i] = AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeText,
+					Text: &text,
+				}
+			case AnthropicContentBlockTypeRedactedThinking:
+				contentBlocks[i] = AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeText,
+					Text: schemas.Ptr(""),
+				}
 			}
 		}
 	}
