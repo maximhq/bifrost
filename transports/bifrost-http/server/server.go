@@ -1203,9 +1203,13 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
-		if err != nil {
-			return fmt.Errorf("failed to initialize governance handler: %v", err)
+		if s.Config.ConfigStore != nil {
+			governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
+			if err != nil {
+				return fmt.Errorf("failed to initialize governance handler: %v", err)
+			}
+		} else {
+			logger.Warn("config store is nil, skipping governance API handler initialization")
 		}
 	}
 	// Resolve the semantic_cache plugin per request so plugin reloads via
