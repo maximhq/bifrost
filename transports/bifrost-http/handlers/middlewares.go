@@ -46,6 +46,27 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 	}
 }
 
+// clientForwardedIP returns the client-supplied originating IP from reverse-proxy
+// headers, or "" if none are present. X-Forwarded-For may be a comma-separated list
+// (client, proxy1, proxy2); the leftmost entry is the original client.
+//
+// These headers are caller-controlled and unauthenticated unless Bifrost sits behind
+// a trusted proxy that overwrites them. The value is logged as http.forwarded_for —
+// separate from the authoritative http.remote_addr (the real TCP peer) — so a forged
+// header cannot mask the true peer in the access log.
+func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
+	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
+		if first, _, found := strings.Cut(xff, ","); found {
+			return strings.TrimSpace(first)
+		}
+		return xff
+	}
+	if xrip := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); xrip != "" {
+		return xrip
+	}
+	return ""
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -70,8 +91,16 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
 						Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
+					if forwarded := clientForwardedIP(ctx); forwarded != "" {
+						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
+					}
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
+					}
+					if statusCode >= 400 && !ctx.Response.IsBodyStream() {
+						if body := ctx.Response.Body(); len(body) > 0 {
+							logBuilder = logBuilder.Str("http.error", string(body))
+						}
 					}
 					logBuilder.Send()
 				}()
@@ -1144,6 +1173,16 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
 				}
+			}
+			// Capture request headers onto the trace when a connector has opted in.
+			// Gated so there is no overhead when no observability plugin wants headers.
+			if tracer.ShouldCaptureRequestHeaders() {
+				headers := make(map[string]string)
+				ctx.Request.Header.All()(func(key, value []byte) bool {
+					headers[strings.ToLower(string(key))] = string(value)
+					return true
+				})
+				tracer.SetTraceRequestHeaders(traceID, headers)
 			}
 			defer func() {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)

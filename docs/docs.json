@@ -227,6 +227,7 @@
                   "features/governance/virtual-keys",
                   "features/governance/routing",
                   "features/governance/budget-and-limits",
+                  "features/governance/model-limits",
                   "features/governance/mcp-tools",
                   "features/governance/required-headers"
                 ]
@@ -509,6 +510,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
           }
@@ -797,6 +799,7 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.5",
               "changelogs/cli-v0.10.4",
               {
                 "group": "March 2026",

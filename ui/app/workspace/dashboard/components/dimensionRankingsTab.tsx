@@ -84,7 +84,7 @@ function TopDimensionChart({
 							<BarChart
 								data={chartData}
 								layout="vertical"
-								margin={{ top: 6, right: 20, left: 4, bottom: 0 }}
+								margin={{ top: 6, right: 20, left: 0, bottom: 0 }}
 								barCategoryGap={4}
 							>
 								<CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -98,10 +98,23 @@ function TopDimensionChart({
 								<YAxis
 									type="category"
 									dataKey="displayName"
-									tick={{ fontSize: 11, className: "fill-zinc-500" }}
+									tick={(props: any) => {
+										const { x, y, payload } = props;
+										const maxChars = 14;
+										const label =
+											payload.value.length > maxChars
+												? `${payload.value.slice(0, maxChars)}…`
+												: payload.value;
+										return (
+											<text x={x} y={y} dy={4} textAnchor="end" fontSize={11} className="fill-zinc-500">
+												<title>{payload.value}</title>
+												{label}
+											</text>
+										);
+									}}
 									tickLine={false}
 									axisLine={false}
-									width={110}
+									width={92}
 								/>
 								<Tooltip content={<TopDimensionTooltip />} />
 								<Bar

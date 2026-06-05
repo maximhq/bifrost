@@ -380,6 +380,17 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return nil, err
 	}
+	// Fetch VK-scoped model configs up front, alongside the VK load, so that a DB
+	// failure here aborts before we mutate any in-memory state. Reloading these
+	// reflects governance changes made via the VK sheet (syncVKGovernanceToModelConfigs)
+	// in memory immediately — both on the node that handled the update and on peers
+	// that receive this reload via the cluster gossip broadcast.
+	mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(
+		ctx, tables.ModelConfigScopeVirtualKey, []string{id},
+	)
+	if err != nil {
+		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
+	}
 	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
 		for _, existingVK := range governanceData.VirtualKeys {
 			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
@@ -388,7 +399,23 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 			}
 		}
 	}
-	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	store := governancePlugin.GetGovernanceStore()
+	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
+	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
+	// an access profile has its VK-scoped governance model configs deleted).
+	// Without this their stale budgets keep enforcing.
+	staleIDs := make(map[string]bool)
+	for _, mcID := range store.ScopedModelConfigIDs(tables.ModelConfigScopeVirtualKey, id) {
+		staleIDs[mcID] = true
+	}
+	for i := range mcs {
+		delete(staleIDs, mcs[i].ID)
+		store.UpdateModelConfigInMemory(ctx, &mcs[i])
+	}
+	for mcID := range staleIDs {
+		store.DeleteModelConfigInMemory(ctx, mcID)
+	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
 }
@@ -507,10 +534,16 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		return preloadedMC, nil
 	}
 
-	// Sync updated usage values back to database if they changed
-	if updatedMC.Budget != nil && preloadedMC.Budget != nil {
-		if updatedMC.Budget.CurrentUsage != preloadedMC.Budget.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedMC.Budget.ID, updatedMC.Budget.CurrentUsage); err != nil {
+	// Sync updated budget usage values back to database if they changed (per budget ID,
+	// since a model config may own multiple budgets).
+	preloadedUsage := make(map[string]float64, len(preloadedMC.Budgets))
+	for i := range preloadedMC.Budgets {
+		preloadedUsage[preloadedMC.Budgets[i].ID] = preloadedMC.Budgets[i].CurrentUsage
+	}
+	for i := range updatedMC.Budgets {
+		b := &updatedMC.Budgets[i]
+		if old, ok := preloadedUsage[b.ID]; ok && old != b.CurrentUsage {
+			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, b.ID, b.CurrentUsage); err != nil {
 				logger.Error("failed to sync budget usage to database: %v", err)
 			}
 		}

@@ -165,10 +165,12 @@ func Init(
 		routingChainMaxDepth = &defaultDepth
 	}
 
+	newStoreStart := time.Now()
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
+	logger.Info("[startup-timing] NewLocalGovernanceStore took %v", time.Since(newStoreStart))
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
@@ -186,10 +188,12 @@ func Init(
 		} else {
 			// Acquire the lock
 			lockAcquired := true
+			lockWaitStart := time.Now()
 			if err := lock.LockWithRetry(ctx, 10); err != nil {
 				logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
 				lockAcquired = false
 			}
+			logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
 			// Only run startup resets if we successfully acquired the lock
 			if lockAcquired {
 				defer func() {
@@ -197,10 +201,12 @@ func Init(
 						logger.Warn("failed to release governance startup reset lock: %v", err)
 					}
 				}()
+				resetStart := time.Now()
 				if err := tracker.PerformStartupResets(ctx); err != nil {
 					logger.Warn("startup reset failed: %v", err)
 					// Continue initialization even if startup reset fails (non-critical)
 				}
+				logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
 			}
 		}
 	}
@@ -755,6 +761,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
 		return body, nil
@@ -818,9 +825,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	var allowedProviders []string
+	allowedModelProviders := make([]schemas.ModelProvider, 0, len(allowedProviderConfigs))
 	for _, pc := range allowedProviderConfigs {
 		allowedProviders = append(allowedProviders, pc.Provider)
+		allowedModelProviders = append(allowedModelProviders, schemas.ModelProvider(pc.Provider))
 	}
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, allowedModelProviders)
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
@@ -1819,8 +1829,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
 				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			case result.PassthroughResponse != nil:
+				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+					tokensUsed = su.LLMUsage.TotalTokens
+				}
 			}
 		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			VirtualKey:   virtualKey,
@@ -1833,7 +1848,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+			HasUsageData: tokensUsed > 0 || cost > 0,
 		}
 
 		// Queue usage update asynchronously using tracker

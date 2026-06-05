@@ -198,12 +198,12 @@ export function HeadersTable<T extends HeaderValue>({
 				</label>
 			)}
 			<div className="rounded-md border">
-				<Table>
+				<Table className="table-fixed">
 					<TableHeader>
 						<TableRow>
-							<TableHead className="px-4 py-2">Name</TableHead>
+							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
 							<TableHead className="px-4 py-2">Value</TableHead>
-							<TableHead className="w-12 px-4 py-2">
+							<TableHead className="w-10 p-0">
 								<span className="sr-only">Actions</span>
 							</TableHead>
 						</TableRow>
@@ -285,7 +285,7 @@ export function HeadersTable<T extends HeaderValue>({
 											/>
 										)}
 									</TableCell>
-									<TableCell className="p-2">
+									<TableCell className="p-0">
 										{!disabled && !isEmptyTrailingRow && (
 											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
 												<Trash className="h-4 w-4" />

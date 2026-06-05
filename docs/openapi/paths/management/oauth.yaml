@@ -36,6 +36,10 @@ oauth-callback:
         description: Error description if authorization failed
         schema:
           type: string
+    # Public: hit by the browser after the upstream OAuth provider redirects
+    # back, with no cookie/bearer context. Whitelisted server-side; the `state`
+    # query parameter provides CSRF protection.
+    security: []
     responses:
       '200':
         description: OAuth authorization successful. Returns HTML page that closes the authorization window.
@@ -67,6 +71,8 @@ oauth-config-status:
         description: OAuth config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: OAuth config status retrieved successfully
@@ -99,6 +105,8 @@ oauth-config-by-id:
         description: OAuth config ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: OAuth token revoked successfully
@@ -127,9 +135,7 @@ per-user-oauth-flow-detail:
       will be bound to, and whether an active token already exists for that
       binding (`has_active_token`).
 
-      Authorization accepts either a dashboard session OR a short-lived
-      `mcp_auth` temp token bound to the flow ID (carried in the URL fragment
-      by the auth-landing page link).
+      Requires management API authentication via `Authorization: Bearer <API key>`.
     tags:
       - OAuth
     parameters:
@@ -139,6 +145,8 @@ per-user-oauth-flow-detail:
         description: Flow row ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Flow detail
@@ -176,6 +184,8 @@ per-user-oauth-flow-start:
         description: Flow row ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Authorize URL
@@ -208,8 +218,7 @@ per-user-oauth-flow-start:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
 # ─── Removed: OAuth-server endpoints (RFC 7591/8414 surface) ────────────────
-# Bifrost is not an OAuth Authorization Server. MCP clients identify
-# themselves via request headers (x-bf-vk, x-bf-mcp-session-id, SSO);
-# upstream OAuth happens via the per-user-oauth-flow-* endpoints above.
+# Bifrost is not an OAuth Authorization Server. Upstream OAuth happens via
+# the per-user-oauth-flow-* endpoints above.
 
 # Legacy block intentionally removed:

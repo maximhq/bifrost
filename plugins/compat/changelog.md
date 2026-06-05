@@ -1,1 +1,1 @@
-- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+- chore: upgraded core to v1.5.16 and framework to v1.3.16

@@ -32548,6 +32548,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -32588,6 +32593,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Configuration updated successfully",
@@ -32630,6 +32640,11 @@
         "tags": [
           "Configuration"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -32651,6 +32666,11 @@
         "description": "Retrieves the current global proxy configuration.",
         "tags": [
           "Configuration"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -32786,6 +32806,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Proxy configuration updated successfully",
@@ -32827,6 +32852,11 @@
         "description": "Triggers an immediate pricing sync and resets the pricing sync timer.",
         "tags": [
           "Configuration"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -32899,6 +32929,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -33099,6 +33134,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "User created successfully",
@@ -33277,6 +33317,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "User deleted successfully",
@@ -33328,6 +33373,11 @@
         "description": "Returns the RBAC permissions for the authenticated user. When SCIM is not enabled, returns full permissions for all resources. Otherwise returns the permissions associated with the user's assigned role.\n",
         "tags": [
           "Users"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -33423,6 +33473,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Role assigned successfully",
@@ -33484,6 +33539,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -33591,6 +33651,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Teams updated successfully",
@@ -33653,6 +33718,11 @@
               "type": "string",
               "format": "email"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -33775,6 +33845,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -33875,6 +33950,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team created successfully",
@@ -33944,6 +34024,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -34039,6 +34124,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team updated successfully",
@@ -34108,6 +34198,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team deleted successfully",
@@ -34159,6 +34254,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -34264,6 +34364,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Member added successfully",
@@ -34336,6 +34441,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Member removed successfully",
@@ -34388,6 +34498,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Login successful",
@@ -34450,6 +34565,11 @@
         "tags": [
           "Session"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Logout successful",
@@ -34489,6 +34609,11 @@
         "tags": [
           "Session"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -34520,6 +34645,11 @@
         "description": "Issues a short-lived ticket for authenticating WebSocket connections.\nThe ticket can be used as a query parameter when upgrading to WebSocket.\n",
         "tags": [
           "Session"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -34569,6 +34699,11 @@
         "tags": [
           "Providers"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -34609,6 +34744,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Provider added successfully",
@@ -34670,6 +34810,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -34743,6 +34888,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Provider updated successfully",
@@ -34792,6 +34942,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -34855,6 +35010,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -34928,6 +35088,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Key created successfully",
@@ -35010,6 +35175,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -35090,6 +35260,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Key updated successfully",
@@ -35160,6 +35335,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Key deleted successfully",
@@ -35211,6 +35391,11 @@
         "description": "Returns a list of all configured API keys across all providers.",
         "tags": [
           "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -35294,6 +35479,11 @@
               "type": "boolean",
               "default": false
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -35404,6 +35594,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -35498,6 +35693,11 @@
         "tags": [
           "Providers"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -35557,6 +35757,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -35589,6 +35794,11 @@
         "description": "Returns a list of all plugins with their configurations and status.\nThe `actualName` field contains the plugin name from `GetName()` (used as the map key),\nwhile `name` contains the display name from the configuration.\nThe `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).\n",
         "tags": [
           "Plugins"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -35630,6 +35840,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "201": {
             "description": "Plugin created successfully",
@@ -35691,6 +35906,11 @@
         "tags": [
           "Plugins"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Built-in plugin names retrieved successfully",
@@ -35741,6 +35961,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -35814,6 +36039,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Plugin updated successfully",
@@ -35882,6 +36112,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -36344,6 +36579,11 @@
         "description": "Returns a list of all configured MCP clients with their tools and connection state.",
         "tags": [
           "MCP"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -36900,6 +37140,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP client added successfully",
@@ -37145,6 +37390,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP client updated successfully",
@@ -37194,6 +37444,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37247,6 +37502,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37303,6 +37563,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP client connected successfully with OAuth",
@@ -37355,6 +37620,11 @@
         "tags": [
           "MCP"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Sessions visible to the caller",
@@ -37406,6 +37676,11 @@
               "type": "string"
             },
             "description": "Session / credential / flow row ID"
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37464,6 +37739,11 @@
             "description": "Session row ID (OAuth token or header credential)"
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Fresh flow opened",
@@ -37514,7 +37794,7 @@
     "/api/mcp/per-user-headers/flows/{id}": {
       "get": {
         "summary": "Get per-user-headers submission flow",
-        "description": "Returns the pending submission flow row plus the live MCP client's schema\n(required header names + optional admin header names). Used by the\n`/workspace/mcp-sessions/auth?flow=<id>&kind=headers` landing page to\nrender the values form.\n\nAuthorization accepts either a dashboard session OR a short-lived\n`mcp_headers_auth` temp token bound to the flow ID (carried in the URL\nfragment by the auth-landing page link).\n",
+        "description": "Returns the pending submission flow row plus the live MCP client's schema\n(required header names + optional admin header names). Used by the\n`/workspace/mcp-sessions/auth?flow=<id>&kind=headers` landing page to\nrender the values form.\n\nRequires management API authentication via `Authorization: Bearer <API key>`.\n",
         "operationId": "getPerUserHeadersFlow",
         "tags": [
           "MCP"
@@ -37528,6 +37808,11 @@
               "type": "string"
             },
             "description": "Flow row ID"
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37601,6 +37886,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Credential persisted",
@@ -37680,6 +37970,11 @@
             "description": "Credential row primary key"
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "204": {
             "description": "Revoked"
@@ -37721,7 +38016,7 @@
       "get": {
         "operationId": "getPerUserOauthFlow",
         "summary": "Get per-user OAuth flow detail",
-        "description": "Returns the pending OAuth flow row metadata: which MCP client is being\nauthorized, which identity (user / VK / session) the resulting token\nwill be bound to, and whether an active token already exists for that\nbinding (`has_active_token`).\n\nAuthorization accepts either a dashboard session OR a short-lived\n`mcp_auth` temp token bound to the flow ID (carried in the URL fragment\nby the auth-landing page link).\n",
+        "description": "Returns the pending OAuth flow row metadata: which MCP client is being\nauthorized, which identity (user / VK / session) the resulting token\nwill be bound to, and whether an active token already exists for that\nbinding (`has_active_token`).\n\nRequires management API authentication via `Authorization: Bearer <API key>`.\n",
         "tags": [
           "OAuth"
         ],
@@ -37734,6 +38029,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37797,6 +38097,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -37918,6 +38223,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "OAuth authorization successful. Returns HTML page that closes the authorization window.",
@@ -37959,6 +38269,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38012,6 +38327,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38153,6 +38473,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -38193,6 +38518,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Virtual key created successfully",
@@ -38237,13 +38567,7 @@
         ],
         "security": [
           {
-            "VirtualKeyAuth": []
-          },
-          {
-            "BearerAuth": []
-          },
-          {
-            "ApiKeyAuth": []
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38311,6 +38635,11 @@
               "type": "boolean",
               "default": false
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38382,6 +38711,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Virtual key updated successfully",
@@ -38441,6 +38775,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38504,6 +38843,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -38544,6 +38888,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team created successfully",
@@ -38604,6 +38953,11 @@
               "type": "boolean",
               "default": false
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38672,6 +39026,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team updated successfully",
@@ -38733,6 +39092,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Team deleted successfully",
@@ -38786,6 +39150,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -38826,6 +39195,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Customer created successfully",
@@ -38886,6 +39260,11 @@
               "type": "boolean",
               "default": false
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -38954,6 +39333,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Customer updated successfully",
@@ -39015,6 +39399,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Customer deleted successfully",
@@ -39068,6 +39457,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -39109,6 +39503,11 @@
               "type": "boolean",
               "default": false
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -39161,6 +39560,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -39201,6 +39605,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Routing rule created successfully",
@@ -39252,6 +39661,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -39320,6 +39734,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Routing rule updated successfully",
@@ -39381,6 +39800,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Routing rule deleted successfully",
@@ -39423,6 +39847,11 @@
         "tags": [
           "Governance"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -39463,6 +39892,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Model config created successfully",
@@ -39514,6 +39948,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -39582,6 +40021,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Model config updated successfully",
@@ -39643,6 +40087,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Model config deleted successfully",
@@ -39684,6 +40133,11 @@
         "description": "Returns a list of all providers with their governance settings (budget and rate limits).",
         "tags": [
           "Governance"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -39738,6 +40192,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Provider governance updated successfully",
@@ -39797,6 +40256,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -39883,6 +40347,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -39923,6 +40392,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "201": {
             "description": "Pricing override created successfully",
@@ -39986,6 +40460,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Pricing override updated successfully",
@@ -40047,6 +40526,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Pricing override deleted successfully",
@@ -40078,6 +40562,11 @@
         "description": "Returns all roles visible to the caller, scoped by data access control.",
         "tags": [
           "RBAC"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -40188,6 +40677,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Role created",
@@ -40281,6 +40775,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -40401,6 +40900,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Role updated",
@@ -40498,6 +41002,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Role deleted",
@@ -40561,6 +41070,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -40648,6 +41162,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Permissions updated",
@@ -40698,6 +41217,11 @@
         "tags": [
           "RBAC"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -40747,6 +41271,11 @@
         "tags": [
           "RBAC"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -40795,6 +41324,11 @@
         "description": "Returns every (resource, operation) pair that can be granted to a role.",
         "tags": [
           "RBAC"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -40884,6 +41418,11 @@
             "schema": {
               "type": "boolean"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -41539,6 +42078,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "201": {
             "description": "Profile created",
@@ -41901,6 +42445,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -42590,6 +43139,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Profile updated",
@@ -42955,6 +43509,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Profile deleted",
@@ -43006,6 +43565,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -43360,6 +43924,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -43737,6 +44306,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "201": {
             "description": "Cloned profile created.",
@@ -44155,6 +44729,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Propagation result.",
@@ -44272,6 +44851,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Roles attached.",
@@ -44342,6 +44926,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Role detached.",
@@ -44389,6 +44978,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -44475,6 +45069,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -44584,6 +45183,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -44691,6 +45295,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -44776,6 +45385,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -44872,6 +45486,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Profile detached.",
@@ -44956,6 +45575,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Virtual key created.",
@@ -45025,6 +45649,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Virtual key deleted.",
@@ -45087,6 +45716,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -45309,6 +45943,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "201": {
             "description": "Group created",
@@ -45440,6 +46079,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -45658,6 +46302,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Group updated",
@@ -45791,6 +46440,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -46028,6 +46682,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -46078,6 +46737,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Logs deleted successfully",
@@ -46129,6 +46793,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -46214,6 +46883,11 @@
               ],
               "default": "asc"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -46315,6 +46989,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -46536,6 +47215,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -46724,6 +47408,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -46948,6 +47637,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -47168,6 +47862,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -47395,6 +48094,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -47635,6 +48339,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -47861,6 +48570,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -48085,6 +48799,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -48323,6 +49042,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -48584,6 +49308,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Dimension cost histogram retrieved successfully",
@@ -48836,6 +49565,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -49103,6 +49837,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Dimension latency histogram retrieved successfully",
@@ -49207,6 +49946,11 @@
         "tags": [
           "Logging"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -49235,6 +49979,11 @@
         "description": "Returns all unique filter data from logs (models, keys, virtual keys).",
         "tags": [
           "Logging"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -49451,6 +50200,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Model rankings retrieved successfully",
@@ -49572,6 +50326,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Costs recalculated successfully",
@@ -49747,6 +50506,11 @@
               ],
               "default": "desc"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -49927,6 +50691,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP tool logs deleted successfully",
@@ -49978,6 +50747,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -50198,6 +50972,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -50258,6 +51037,11 @@
         "description": "Returns all unique filter data from MCP tool logs (tool names, server labels).",
         "tags": [
           "Logging"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -50411,6 +51195,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -50571,6 +51360,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP cost histogram retrieved successfully",
@@ -50720,6 +51514,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "MCP top tools retrieved successfully",
@@ -50783,6 +51582,11 @@
         "description": "Returns all prompt folders.",
         "tags": [
           "Prompt Repository"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -50869,6 +51673,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Folder created",
@@ -50950,6 +51759,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -51052,6 +51866,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Folder updated",
@@ -51143,6 +51962,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Folder deleted",
@@ -51193,6 +52017,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -51485,6 +52314,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Prompt created",
@@ -51771,6 +52605,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -52078,6 +52917,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Prompt updated",
@@ -52364,6 +53208,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Prompt deleted",
@@ -52415,6 +53264,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -52560,6 +53414,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Version created",
@@ -52672,6 +53531,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -52782,6 +53646,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Version deleted",
@@ -52833,6 +53702,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -52983,6 +53857,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session created",
@@ -53096,6 +53975,11 @@
             "schema": {
               "type": "integer"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -53250,6 +54134,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session updated",
@@ -53363,6 +54252,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session deleted",
@@ -53434,6 +54328,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Session renamed",
@@ -53567,6 +54466,11 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Version created from session",
@@ -53679,6 +54583,11 @@
             }
           }
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Cache cleared successfully",
@@ -53730,6 +54639,11 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
           }
         ],
         "responses": {
@@ -53947,6 +54861,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Bearer token authentication. Use your provider API key or Bifrost authentication token.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      },
+      "ManagementBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.\nVirtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.\n"
       },
       "BasicAuth": {
         "type": "http",
@@ -65837,6 +66756,11 @@
           "ca_cert_pem": {
             "type": "string",
             "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+          },
+          "allow_private_network": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked."
           }
         }
       },

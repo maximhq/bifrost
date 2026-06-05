@@ -109,6 +109,14 @@ func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudg
 			}
 			return err
 		}
+	case budget.CustomerID != nil && *budget.CustomerID != "":
+		var customer tables.TableCustomer
+		if err := dbForUpdate(txDB.WithContext(ctx)).First(&customer, "id = ?", *budget.CustomerID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -1152,6 +1160,45 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	if rateLimitID != nil {
 		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
 			return err
+		}
+	}
+
+	// Clean up model configs scoped to this provider (and their owned budgets/rate-limits).
+	// Delete by snapshotted IDs rather than a second WHERE provider=? pass to avoid a race
+	// where a concurrent CreateModelConfig lands between the snapshot and the delete, leaving
+	// its owned budget/rate-limit rows dangling.
+	var providerModelConfigs []tables.TableModelConfig
+	if err := txDB.WithContext(ctx).Preload("Budgets").Where("provider = ?", string(provider)).Find(&providerModelConfigs).Error; err != nil {
+		return err
+	}
+	if len(providerModelConfigs) > 0 {
+		var mcIDs []string
+		var budgetIDs []string
+		var rateLimitIDs []string
+		for i := range providerModelConfigs {
+			mcIDs = append(mcIDs, providerModelConfigs[i].ID)
+			for j := range providerModelConfigs[i].Budgets {
+				budgetIDs = append(budgetIDs, providerModelConfigs[i].Budgets[j].ID)
+			}
+			if providerModelConfigs[i].BudgetID != nil {
+				budgetIDs = append(budgetIDs, *providerModelConfigs[i].BudgetID)
+			}
+			if providerModelConfigs[i].RateLimitID != nil {
+				rateLimitIDs = append(rateLimitIDs, *providerModelConfigs[i].RateLimitID)
+			}
+		}
+		if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+			return err
+		}
+		if len(budgetIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+				return err
+			}
+		}
+		if len(rateLimitIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+				return err
+			}
 		}
 	}
 
@@ -2537,7 +2584,7 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
-		Preload(relation("Budget")).
+		Preload(relation("Budgets")).
 		Preload(relation("RateLimit")).
 		Preload(relation("VirtualKeys"))
 }
@@ -2565,17 +2612,120 @@ func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
 }
 
+// virtualKeyInternalPageSize is the bounded page size used when loading every
+// virtual key with preloaded relationships. Keeping each page small avoids
+// PostgreSQL's extended protocol parameter limit during GORM preloads.
+const virtualKeyInternalPageSize = 1000
+
+// modelConfigInternalPageSize bounds the page size when loading every model config
+// with preloaded relationships, for the same reason as virtualKeyInternalPageSize:
+// a single un-paginated Find with preloads generates an IN(...) clause with one
+// bind parameter per row and exceeds PostgreSQL's 65535-parameter limit at scale.
+const modelConfigInternalPageSize = 1000
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
-	var virtualKeys []tables.TableVirtualKey
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
 
-	// Preload all relationships for complete information
-	if err := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx)).
-		Order("created_at ASC").
+	start := time.Now()
+	pageCount := 0
+	defer func() {
+		if s.logger != nil {
+			s.logger.Info("[startup-timing] GetVirtualKeys loaded %d keys across %d pages in %v", len(allVirtualKeys), pageCount, time.Since(start))
+		}
+	}()
+
+	for {
+		virtualKeys, err := s.getVirtualKeysPage(ctx, virtualKeyInternalPageSize, lastCreatedAt, lastID, hasCursor)
+		if err != nil {
+			return nil, err
+		}
+		pageCount++
+		if len(virtualKeys) == 0 {
+			return allVirtualKeys, nil
+		}
+
+		allVirtualKeys = append(allVirtualKeys, virtualKeys...)
+		last := virtualKeys[len(virtualKeys)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(virtualKeys) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
+}
+
+// getVirtualKeysPage retrieves one unfiltered page of virtual keys without a
+// COUNT query for internal all-key loading paths.
+func (s *RDBConfigStore) getVirtualKeysPage(ctx context.Context, limit int, lastCreatedAt time.Time, lastID string, hasCursor bool) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+	query := preloadVirtualKeyBaseRelations(s.ScopedDB(ctx))
+	if hasCursor {
+		query = query.Where(
+			"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+			lastCreatedAt,
+			lastCreatedAt,
+			lastID,
+		)
+	}
+	if err := query.
+		Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+		Limit(limit).
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
 	return virtualKeys, nil
+}
+
+// getGovernanceConfigVirtualKeys loads every virtual key with the preloads needed
+// by GetGovernanceConfig (ProviderConfigs and their Keys). It pages with a
+// cursor so each preload's generated IN(...) clause stays within PostgreSQL's
+// 65535 bind-parameter limit. A single un-paginated Find with these preloads
+// fails once the key count exceeds ~65535 ("extended protocol limited to 65535
+// parameters"). Mirrors GetVirtualKeys, which is paginated for the same reason.
+func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
+	var allVirtualKeys []tables.TableVirtualKey
+	var lastCreatedAt time.Time
+	var lastID string
+	hasCursor := false
+
+	for {
+		var page []tables.TableVirtualKey
+		query := s.DB().WithContext(ctx).
+			Preload("ProviderConfigs").
+			Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+				return db.Select("id, name, key_id, models_json, provider")
+			})
+		if hasCursor {
+			query = query.Where(
+				"(governance_virtual_keys.created_at > ? OR (governance_virtual_keys.created_at = ? AND governance_virtual_keys.id > ?))",
+				lastCreatedAt,
+				lastCreatedAt,
+				lastID,
+			)
+		}
+		if err := query.
+			Order("governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC").
+			Limit(virtualKeyInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allVirtualKeys, nil
+		}
+		allVirtualKeys = append(allVirtualKeys, page...)
+		last := page[len(page)-1]
+		lastCreatedAt = last.CreatedAt
+		lastID = last.ID
+		hasCursor = true
+		if len(page) < virtualKeyInternalPageSize {
+			return allVirtualKeys, nil
+		}
+	}
 }
 
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
@@ -2914,6 +3064,42 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		// Delete budgets owned by this virtual key
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 			return err
+		}
+		// Delete model configs scoped to this virtual key, along with their owned
+		// budgets/rate-limits. scope_id has no FK constraint, so this cleanup must be
+		// explicit; otherwise per-VK model limits would orphan and leak budget/rate-limit rows.
+		// Model configs are deleted first (matching DeleteModelConfig order) before their
+		// owned budget/rate-limit rows.
+		var scopedModelConfigs []tables.TableModelConfig
+		if err := txDB.WithContext(ctx).
+			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
+			Find(&scopedModelConfigs).Error; err != nil {
+			return err
+		}
+		budgetIDs := make([]string, 0, len(scopedModelConfigs))
+		rateLimitIDs := make([]string, 0, len(scopedModelConfigs))
+		for _, mc := range scopedModelConfigs {
+			if mc.BudgetID != nil {
+				budgetIDs = append(budgetIDs, *mc.BudgetID)
+			}
+			if mc.RateLimitID != nil {
+				rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
+			}
+		}
+		if err := txDB.WithContext(ctx).
+			Where("scope = ? AND scope_id = ?", tables.ModelConfigScopeVirtualKey, id).
+			Delete(&tables.TableModelConfig{}).Error; err != nil {
+			return err
+		}
+		if len(budgetIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+				return err
+			}
+		}
+		if len(rateLimitIDs) > 0 {
+			if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+				return err
+			}
 		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
@@ -3427,39 +3613,38 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 // DeleteTeam deletes a team from the database.
 // Owned budgets cascade via the governance_budgets.team_id FK.
 // Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
-func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var team tables.TableTeam
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set team_id to null for all virtual keys associated with the team
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
-			return err
-		}
-		rateLimitID := team.RateLimitID
-		// Delete the team — owned budgets cascade via FK on governance_budgets.team_id
-		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the team's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteTeam(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var team tables.TableTeam
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Set team_id to null for all virtual keys associated with the team
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
+		return err
+	}
+	rateLimitID := team.RateLimitID
+	// Delete the team - owned budgets cascade via FK on governance_budgets.team_id
+	if err := txDB.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Delete the team's rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3560,51 +3745,45 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 }
 
 // DeleteCustomer deletes a customer from the database.
-func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var customer tables.TableCustomer
-		if err := dbForUpdate(tx.WithContext(ctx)).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Set customer_id to null for all virtual keys associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Set customer_id to null for all teams associated with the customer
-		if err := tx.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
-			return err
-		}
-		// Store the budget and rate limit IDs before deleting the customer
-		budgetID := customer.BudgetID
-		rateLimitID := customer.RateLimitID
-		// Delete the customer first
-		if err := tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-		// Delete the customer's budget if it exists
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the customer's rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteCustomer(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	var customer tables.TableCustomer
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+	// Null out customer_id on associated VKs and teams before deleting the customer row.
+	if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	// Set customer_id to null for all teams associated with the customer
+	if err := txDB.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
+		return err
+	}
+	rateLimitID := customer.RateLimitID
+	// Explicitly delete owned budgets before the customer row. FK cascades cannot
+	// be relied on across all dialects for constraints added to pre-existing tables.
+	if err := txDB.WithContext(ctx).Where("customer_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+		return err
+	}
+	if err := txDB.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3802,6 +3981,9 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		if ownerBudget.TeamID == nil {
 			ownerBudget.TeamID = existing.TeamID
 		}
+		if ownerBudget.CustomerID == nil {
+			ownerBudget.CustomerID = existing.CustomerID
+		}
 		if err := lockBudgetOwner(ctx, txDB, ownerBudget); err != nil {
 			return err
 		}
@@ -3851,8 +4033,12 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 
 // UpdateBudgetUsage updates only the current_usage field of a budget.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableBudget{}).
 		Where("id = ?", id).
@@ -3868,8 +4054,12 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 
 // UpdateRateLimitUsage updates only the usage fields of a rate limit.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
-	result := s.DB().WithContext(ctx).
+func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).
 		Session(&gorm.Session{SkipHooks: true}).
 		Model(&tables.TableRateLimit{}).
 		Where("id = ?", id).
@@ -4151,8 +4341,55 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 
 // GetModelConfigs retrieves all model configs from the database.
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var allModelConfigs []tables.TableModelConfig
+	lastID := ""
+	hasCursor := false
+
+	for {
+		var page []tables.TableModelConfig
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		if hasCursor {
+			query = query.Where("governance_model_configs.id > ?", lastID)
+		}
+		if err := query.
+			Order("governance_model_configs.id ASC").
+			Limit(modelConfigInternalPageSize).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return allModelConfigs, nil
+		}
+		allModelConfigs = append(allModelConfigs, page...)
+		lastID = page[len(page)-1].ID
+		hasCursor = true
+		if len(page) < modelConfigInternalPageSize {
+			return allModelConfigs, nil
+		}
+	}
+}
+
+// GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
+func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+	if len(scopeIDs) == 0 {
+		return nil, nil
+	}
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
+// GetProviderGovernanceModelConfigs retrieves the wildcard "all models on a provider" configs
+func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var modelConfigs []tables.TableModelConfig
+	if err := s.DB().WithContext(ctx).
+		Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
+		Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
 	return modelConfigs, nil
@@ -4165,6 +4402,12 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
+	}
+	if params.Scope != "" {
+		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	}
+	if params.Provider != "" {
+		baseQuery = baseQuery.Where("provider = ?", params.Provider)
 	}
 
 	var totalCount int64
@@ -4187,9 +4430,10 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 
 	var modelConfigs []tables.TableModelConfig
 	if err := baseQuery.
+		Preload("Budgets").
 		Preload("Budget").
 		Preload("RateLimit").
-		Order("created_at ASC, id ASC").
+		Order("created_at DESC, id DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&modelConfigs).Error; err != nil {
@@ -4198,16 +4442,22 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	return modelConfigs, totalCount, nil
 }
 
-// GetModelConfig retrieves a specific model config from the database by model name and optional provider.
-func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+// GetModelConfig retrieves a specific model config from the database by its identity:
+// scope, optional scope ID, model name, and optional provider.
+func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName)
+	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName).Where("scope = ?", scope)
+	if scopeID != nil {
+		query = query.Where("scope_id = ?", *scopeID)
+	} else {
+		query = query.Where("scope_id IS NULL")
+	}
 	if provider != nil {
 		query = query.Where("provider = ?", *provider)
 	} else {
 		query = query.Where("provider IS NULL")
 	}
-	if err := query.Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
+	if err := query.Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4219,7 +4469,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, p
 // GetModelConfigByID retrieves a specific model config from the database by ID.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4260,7 +4510,9 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(modelConfig).Error; err != nil {
+	// Omit associations: budgets (has-many via ModelConfigID) and rate-limit are managed
+	// explicitly by callers. A cascading Save would otherwise clobber their usage counters.
+	if err := txDB.WithContext(ctx).Omit(clause.Associations).Save(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -4286,40 +4538,53 @@ func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []
 }
 
 // DeleteModelConfig deletes a model config from the database.
-func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// First fetch the model config to get budget and rate limit IDs
-		var modelConfig tables.TableModelConfig
-		if err := dbForUpdate(tx).First(&modelConfig, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
+func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.DeleteModelConfig(ctx, id, transaction)
+		})
+	}
+
+	txDB := tx[0]
+	// Fetch the model config with its owned budgets to collect all IDs to clean up.
+	var modelConfig tables.TableModelConfig
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").First(&modelConfig, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// Collect budget IDs from both the Budgets slice (active path, owned via ModelConfigID)
+	// and the legacy single BudgetID column.
+	budgetIDs := make([]string, 0, len(modelConfig.Budgets)+1)
+	for i := range modelConfig.Budgets {
+		budgetIDs = append(budgetIDs, modelConfig.Budgets[i].ID)
+	}
+	if modelConfig.BudgetID != nil {
+		budgetIDs = append(budgetIDs, *modelConfig.BudgetID)
+	}
+	rateLimitID := modelConfig.RateLimitID
+	// Delete the model config first
+	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return s.parseGormError(err)
+	}
+	// Delete the owned budgets (don't rely on FK cascade — it isn't applied to
+	// pre-existing tables on all dialects).
+	if len(budgetIDs) > 0 {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
 			return err
 		}
-		// Store the budget and rate limit IDs before deleting
-		budgetID := modelConfig.BudgetID
-		rateLimitID := modelConfig.RateLimitID
-		// Delete the model config first
-		if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return s.parseGormError(err)
+	}
+	// Delete the rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
 		}
-		// Delete the budget if it exists
-		if budgetID != nil {
-			if err := tx.Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
-		}
-		// Delete the rate limit if it exists
-		if rateLimitID != nil {
-			if err := tx.Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // GetGovernanceConfig retrieves the governance configuration from the database.
@@ -4335,14 +4600,11 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var pricingOverrides []tables.TablePricingOverride
 	var governanceConfigs []tables.TableGovernanceConfig
 
-	if err := s.DB().WithContext(ctx).
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Find(&virtualKeys).Error; err != nil {
+	loadedVKs, err := s.getGovernanceConfigVirtualKeys(ctx)
+	if err != nil {
 		return nil, err
 	}
+	virtualKeys = loadedVKs
 	if err := s.DB().WithContext(ctx).
 		Select(teamSelectWithVKCount).
 		Find(&teams).Error; err != nil {

@@ -835,70 +835,11 @@
                   "type": "boolean"
                 },
                 "config": {
-                  "type": "object",
-                  "properties": {
-                    "service_name": {
-                      "type": "string",
-                      "description": "Service name to be used for tracing",
-                      "default": "bifrost"
-                    },
-                    "collector_url": {
-                      "type": "string",
-                      "description": "URL of the OpenTelemetry collector"
-                    },
-                    "trace_type": {
-                      "type": "string",
-                      "enum": ["genai_extension", "vercel", "open_inference"],
-                      "description": "Type of trace to use for the OTEL collector"
-                    },
-                    "protocol": {
-                      "type": "string",
-                      "enum": ["http", "grpc"],
-                      "description": "Protocol to use for the OTEL collector"
-                    },
-                    "metrics_enabled": {
-                      "type": "boolean",
-                      "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
-                      "default": false
-                    },
-                    "metrics_endpoint": {
-                      "type": "string",
-                      "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
-                    },
-                    "metrics_push_interval": {
-                      "type": "integer",
-                      "description": "Metrics push interval in seconds",
-                      "default": 15,
-                      "minimum": 1,
-                      "maximum": 300
-                    },
-                    "headers": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
-                    },
-                    "tls_ca_cert": {
-                      "type": "string",
-                      "description": "Path to TLS CA certificate file"
-                    },
-                    "insecure": {
-                      "type": "boolean",
-                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
-                    }
-                  },
-                  "if": {
-                    "properties": {
-                      "metrics_enabled": {
-                        "const": true
-                      }
-                    },
-                    "required": ["metrics_enabled"]
-                  },
-                  "then": {
-                    "required": ["metrics_endpoint"]
-                  }
+                  "anyOf": [
+                    { "$ref": "#/$defs/otelProfileConfig" },
+                    { "$ref": "#/$defs/otelProfilesConfig" }
+                  ],
+                  "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
                 }
               },
               "if": {
@@ -911,7 +852,10 @@
               "then": {
                 "properties": {
                   "config": {
-                    "required": ["collector_url", "trace_type", "protocol"]
+                    "anyOf": [
+                      { "$ref": "#/$defs/otelProfileConfig" },
+                      { "$ref": "#/$defs/otelProfilesConfig" }
+                    ]
                   }
                 }
               }
@@ -1191,6 +1135,42 @@
                 "required": ["id", "name"]
               }
             },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "dac": {
+                    "type": "string",
+                    "enum": ["own-data", "team-data", "all-data"],
+                    "default": "all-data"
+                  },
+                  "access_profile": {
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "resource": { "type": "string" },
+                        "operation": { "type": "string" }
+                      },
+                      "required": ["resource", "operation"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+              }
+            },
             "virtualKeys": {
               "type": "array",
               "items": {
@@ -1366,10 +1346,22 @@
                     "type": "string"
                   },
                   "model_name": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Model name, or \"*\" to match all models"
                   },
                   "provider": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Provider name; omit to apply to all providers"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": ["global", "virtual_key"],
+                    "default": "global",
+                    "description": "Scope where this limit applies"
+                  },
+                  "scope_id": {
+                    "type": "string",
+                    "description": "Target entity ID — required when scope is \"virtual_key\""
                   },
                   "budget_id": {
                     "type": "string"
@@ -1474,14 +1466,7 @@
                     "description": "Internal hash for change detection (auto-managed)"
                   }
                 },
-                "required": [
-                  "id",
-                  "name",
-                  "scope_kind",
-                  "match_type",
-                  "pattern",
-                  "request_types"
-                ]
+                "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
             }
           },
@@ -1537,11 +1522,7 @@
                       "description": "Number of failed probes before marking as failed"
                     }
                   },
-                  "required": [
-                    "timeoutSeconds",
-                    "successThreshold",
-                    "failureThreshold"
-                  ],
+                  "required": ["timeoutSeconds", "successThreshold", "failureThreshold"],
                   "additionalProperties": false
                 }
               },
@@ -1575,15 +1556,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": [
-                    "",
-                    "kubernetes",
-                    "dns",
-                    "udp",
-                    "consul",
-                    "etcd",
-                    "mdns"
-                  ],
+                  "enum": ["", "kubernetes", "dns", "udp", "consul", "etcd", "mdns"],
                   "description": "Discovery type (empty when not configured)"
                 },
                 "serviceName": {
@@ -1779,9 +1752,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -1789,13 +1771,28 @@
                       },
                       "attributeTeamMappings": {
                         "type": "array",
-                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name).",
+                        "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through (every claim value becomes a team name). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "team": { "type": "string" }
+                            "attribute": { "type": "string", "description": "JWT claim name" },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match, or '*' for pass-through"
+                            },
+                            "team": {
+                              "type": "string",
+                              "description": "Bifrost team slug to assign"
+                            },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
+                            }
                           },
                           "required": ["attribute", "value", "team"],
                           "additionalProperties": false
@@ -1803,25 +1800,32 @@
                       },
                       "attributeBusinessUnitMappings": {
                         "type": "array",
-                        "description": "Attribute -> business-unit mappings (all matches apply).",
+                        "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string" },
-                            "value": { "type": "string" },
-                            "business_unit": { "type": "string" }
+                            "attribute": { "type": "string", "description": "JWT claim name" },
+                            "value": { "type": "string", "description": "Claim value to match" },
+                            "business_unit": {
+                              "type": "string",
+                              "description": "Bifrost business unit slug to assign"
+                            },
+                            "attributeType": {
+                              "type": "string",
+                              "enum": ["user", "group"],
+                              "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+                            },
+                            "attributeValue": {
+                              "type": "string",
+                              "description": "SCIM attribute value to match (for 'user': SCIM user attribute value; for 'group': SCIM group displayName, auto-set to 'displayName')"
+                            }
                           },
                           "required": ["attribute", "value", "business_unit"],
                           "additionalProperties": false
                         }
                       }
                     },
-                    "required": [
-                      "issuerUrl",
-                      "clientId",
-                      "clientSecret",
-                      "apiToken"
-                    ],
+                    "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
                   }
                 }
@@ -1893,9 +1897,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths)" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths)"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -1996,9 +2009,18 @@
                         "items": {
                           "type": "object",
                           "properties": {
-                            "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-                            "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-                            "role": { "type": "string", "description": "Bifrost role to assign on match" }
+                            "attribute": {
+                              "type": "string",
+                              "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+                            },
+                            "value": {
+                              "type": "string",
+                              "description": "Claim value to match (case-insensitive)"
+                            },
+                            "role": {
+                              "type": "string",
+                              "description": "Bifrost role to assign on match"
+                            }
                           },
                           "required": ["attribute", "value", "role"],
                           "additionalProperties": false
@@ -2033,12 +2055,7 @@
                         }
                       }
                     },
-                    "required": [
-                      "serverUrl",
-                      "realm",
-                      "clientId",
-                      "clientSecret"
-                    ],
+                    "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
                   }
                 }
@@ -2257,7 +2274,9 @@
                     "allOf": [
                       {
                         "if": {
-                          "properties": { "credentialMode": { "const": "env" } },
+                          "properties": {
+                            "credentialMode": { "const": "env" }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -2266,7 +2285,9 @@
                       },
                       {
                         "if": {
-                          "properties": { "credentialMode": { "const": "file" } },
+                          "properties": {
+                            "credentialMode": { "const": "file" }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -2275,7 +2296,11 @@
                       },
                       {
                         "if": {
-                          "properties": { "credentialMode": { "enum": ["inherit", "env", "file"] } },
+                          "properties": {
+                            "credentialMode": {
+                              "enum": ["inherit", "env", "file"]
+                            }
+                          },
                           "required": ["credentialMode"]
                         },
                         "then": {
@@ -2388,13 +2413,7 @@
                     "description": "IDs of provider configurations to use with this rule"
                   }
                 },
-                "required": [
-                  "id",
-                  "name",
-                  "enabled",
-                  "cel_expression",
-                  "apply_to"
-                ],
+                "required": ["id", "name", "enabled", "cel_expression", "apply_to"],
                 "additionalProperties": false
               }
             },
@@ -2899,14 +2918,7 @@
             },
             "sslMode": {
               "type": "string",
-              "enum": [
-                "disable",
-                "allow",
-                "prefer",
-                "require",
-                "verify-ca",
-                "verify-full"
-              ]
+              "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
             },
             "existingSecret": {
               "type": "string"
@@ -3342,6 +3354,208 @@
     }
   },
   "$defs": {
+    "otelEndpoint": {
+      "type": "string",
+      "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
+      "anyOf": [
+        {
+          "format": "uri"
+        },
+        {
+          "pattern": "^[^:\\s]+:\\d+$"
+        },
+        {
+          "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        {
+          "const": ""
+        }
+      ]
+    },
+    "otelPluginSpanFilter": {
+      "type": "object",
+      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["include", "exclude"]
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mode", "plugins"],
+      "additionalProperties": false
+    },
+    "otelProfileConfig": {
+      "type": "object",
+      "description": "OpenTelemetry export profile. This legacy single-profile shape is still accepted directly as bifrost.plugins.otel.config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this profile exports traces and metrics",
+          "default": true
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Service name to be used for tracing",
+          "default": "bifrost"
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "URL of the OpenTelemetry collector"
+        },
+        "trace_type": {
+          "type": "string",
+          "enum": ["genai_extension", "vercel", "open_inference"],
+          "description": "Type of trace to use for the OTEL collector"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "grpc"],
+          "description": "Protocol to use for the OTEL collector"
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
+          "default": false
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "description": "Metrics push interval in seconds",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 300
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Path to TLS CA certificate file"
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
+          "default": true
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otelPluginSpanFilter"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "enabled": {
+                  "const": false
+                }
+              },
+              "required": ["enabled"]
+            }
+          },
+          "then": {
+            "required": ["collector_url", "trace_type", "protocol"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "metrics_enabled": {
+                "const": true
+              }
+            },
+            "required": ["metrics_enabled"]
+          },
+          "then": {
+            "required": ["metrics_endpoint"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "otelProfilesConfig": {
+      "type": "object",
+      "description": "OpenTelemetry plugin configuration with one or more export profiles.",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "description": "OpenTelemetry export profiles",
+          "items": {
+            "$ref": "#/$defs/otelProfileConfig"
+          },
+          "minItems": 1
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otelPluginSpanFilter"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; kept only so Helm's default map merge does not reject values that switch from the legacy shape to profiles."
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Deprecated in the profiles wrapper; configure service_name per profile instead."
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "Deprecated in the profiles wrapper; configure collector_url per profile instead."
+        },
+        "trace_type": {
+          "type": "string",
+          "enum": ["genai_extension", "vercel", "open_inference"],
+          "description": "Deprecated in the profiles wrapper; configure trace_type per profile instead."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "grpc"],
+          "description": "Deprecated in the profiles wrapper; configure protocol per profile instead."
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure metrics_enabled per profile instead."
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otelEndpoint",
+          "description": "Deprecated in the profiles wrapper; configure metrics_endpoint per profile instead."
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Deprecated in the profiles wrapper; configure metrics_push_interval per profile instead."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Deprecated in the profiles wrapper; configure headers per profile instead."
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Deprecated in the profiles wrapper; configure tls_ca_cert per profile instead."
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure insecure per profile instead."
+        }
+      },
+      "required": ["profiles"],
+      "additionalProperties": false
+    },
     "authConfig": {
       "type": "object",
       "description": "Authentication configuration. Deprecated: Use governance.auth_config instead.",
@@ -3491,6 +3705,25 @@
               "type": "string",
               "description": "Azure endpoint (can use env. prefix)"
             },
+            "client_id": {
+              "type": "string",
+              "description": "Azure client ID for authentication (can use env. prefix)"
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Azure client secret for authentication (can use env. prefix)"
+            },
+            "tenant_id": {
+              "type": "string",
+              "description": "Azure tenant ID for authentication (can use env. prefix)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Azure scopes for authentication"
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
@@ -3504,6 +3737,11 @@
             }
           },
           "required": ["endpoint"],
+          "dependentRequired": {
+            "client_id": ["client_secret", "tenant_id"],
+            "client_secret": ["client_id", "tenant_id"],
+            "tenant_id": ["client_id", "client_secret"]
+          },
           "additionalProperties": false
         },
         "vertex_key_config": {
@@ -3877,7 +4115,7 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
           "description": "Authentication type for MCP connection"
         },
         "oauthConfigId": {
@@ -4218,6 +4456,25 @@
                     "type": "string",
                     "description": "Azure endpoint (can use env. prefix)"
                   },
+                  "client_id": {
+                    "type": "string",
+                    "description": "Azure client ID for authentication (can use env. prefix)"
+                  },
+                  "client_secret": {
+                    "type": "string",
+                    "description": "Azure client secret for authentication (can use env. prefix)"
+                  },
+                  "tenant_id": {
+                    "type": "string",
+                    "description": "Azure tenant ID for authentication (can use env. prefix)"
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Azure scopes for authentication"
+                  },
                   "deployments": {
                     "type": "object",
                     "additionalProperties": {
@@ -4229,6 +4486,12 @@
                     "type": "string",
                     "description": "Azure API version"
                   }
+                },
+                "required": ["endpoint"],
+                "dependentRequired": {
+                  "client_id": ["client_secret", "tenant_id"],
+                  "client_secret": ["client_id", "tenant_id"],
+                  "tenant_id": ["client_id", "client_secret"]
                 },
                 "additionalProperties": false
               },

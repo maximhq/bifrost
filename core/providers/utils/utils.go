@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -240,7 +241,7 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 //
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
-func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -266,10 +267,53 @@ func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
 		default:
-			conn, err = (&net.Dialer{
+			// resolve DNS ourselves, reject private IPs, then dial
+			// the IP literal directly — closes the DNS rebinding window that exists
+			// between ValidateExternalURL (save time) and this connection.
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			// Bound DNS resolution with the same timeout that governs the TCP
+			resolveCtx := context.Background()
+			if client.ReadTimeout > 0 {
+				var cancel context.CancelFunc
+				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
+				defer cancel()
+			}
+			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			dialer := &net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}).Dial("tcp", addr)
+			}
+			var lastErr error
+			for _, ip := range ips {
+				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+				if ip.IsUnspecified() {
+					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+				}
+				if network.IsLinkLocal(ip) {
+					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+				}
+				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
+				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				}
+				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					break
+				}
+				lastErr = err
+			}
+			if conn == nil {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, fmt.Errorf("no usable address resolved for %s", host)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -487,6 +531,7 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
+	"content-type":                     true,
 	"transfer-encoding":                true,
 	"connection":                       true,
 	"keep-alive":                       true,
@@ -494,6 +539,9 @@ var providerResponseFilterHeaders = map[string]bool{
 	"proxy-authenticate":               true,
 	"proxy-authorization":              true,
 	"authorization":                    true,
+	"x-goog-api-key":                   true,
+	"x-api-key":                        true,
+	"api-key":                          true,
 	"cookie":                           true,
 	"set-cookie":                       true,
 	"set-cookie2":                      true,
@@ -506,7 +554,6 @@ var providerResponseFilterHeaders = map[string]bool{
 	"server":                           true,
 	"alt-svc":                          true,
 	"strict-transport-security":        true,
-	"content-type":                     true,
 	"access-control-allow-origin":      true,
 	"access-control-allow-methods":     true,
 	"access-control-allow-headers":     true,
@@ -525,6 +572,32 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		if providerResponseFilterHeaders[strings.ToLower(k)] {
+			return
+		}
+		v := string(value)
+		if existing, ok := headers[k]; ok && existing != "" {
+			headers[k] = existing + ", " + v
+		} else {
+			headers[k] = v
+		}
+	})
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+// ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
+// fasthttp response. Transport-level headers are excluded.
+func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	resp.Header.VisitAll(func(key, value []byte) {
+		k := string(key)
+		kLower := strings.ToLower(k)
+		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
 			return
 		}
 		v := string(value)
@@ -981,21 +1054,55 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 	}
 }
 
-// DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
-// If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
-// non-line-delimited data. Returns true if body was drained (caller should skip scanner).
-// We intentionally do not touch valid SSE bodies here: callers must continue reading from
-// the reader returned by DecompressStreamBody, and draining SSE in this helper would consume
-// the stream before the scanner/manual event loop starts.
-func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+// Some OpenAI-compatible backends return valid SSE frames without Content-Type:
+// text/event-stream. In that case, peek at the first field prefix without consuming
+// it so the downstream SSE parser sees the full stream.
+func DrainNonSSEStreamReader(resp *fasthttp.Response, reader io.Reader) (io.Reader, bool) {
 	ct := strings.ToLower(string(resp.Header.ContentType()))
 	if strings.Contains(ct, "text/event-stream") {
+		return reader, false
+	}
+	if reader == nil {
+		return nil, true
+	}
+
+	br := bufio.NewReaderSize(reader, sseInitialBufSize)
+	if hasSSEPrefix(br) {
+		return br, false
+	}
+
+	_, _ = io.Copy(io.Discard, br)
+	return nil, true
+}
+
+func hasSSEPrefix(reader *bufio.Reader) bool {
+	first, err := reader.Peek(1)
+	if err != nil || len(first) == 0 {
 		return false
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		_, _ = io.Copy(io.Discard, bodyStream)
+	switch first[0] {
+	case ':', '\n', '\r':
+		return true
+	case 'd':
+		return peekHasPrefix(reader, []byte("data:"))
+	case 'e':
+		return peekHasPrefix(reader, []byte("event:"))
+	case 'i':
+		return peekHasPrefix(reader, []byte("id:"))
+	case 'r':
+		return peekHasPrefix(reader, []byte("retry:"))
+	default:
+		return false
 	}
-	return true
+}
+
+func peekHasPrefix(reader *bufio.Reader, prefix []byte) bool {
+	n := min(reader.Buffered(), len(prefix))
+	if n == 0 {
+		return false
+	}
+	peeked, err := reader.Peek(n)
+	return err == nil && bytes.Equal(peeked, prefix[:n])
 }
 
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
@@ -2395,9 +2502,11 @@ func CreateBifrostTextCompletionChunkResponse(
 	finishReason *string,
 	currentChunkIndex int,
 	requestType schemas.RequestType,
+	model string,
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
 		ID:     id,
+		Model:  model,
 		Object: "text_completion",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{
@@ -2949,8 +3058,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 // CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
 // It returns the default provider if it should be used, otherwise it returns an empty string.
-// Checks if key selection is skipped, or if the available providers are set in the context
-// and the default provider is in the list.
+// Checks if key selection is skipped, if a resolved provider was selected by routing,
+// or if the available providers are set in the context and the default provider is in the list.
 func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
 	if ctx != nil {
 		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
@@ -2960,6 +3069,10 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 			availableProviders, ok := ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
 			if !ok || len(availableProviders) == 0 {
 				return ""
+			}
+			if resolvedProvider, ok := ctx.Value(schemas.BifrostContextKeyResolvedProvider).(schemas.ModelProvider); ok && slices.Contains(availableProviders, resolvedProvider) {
+				getLogger().Debug("[Provider] Using routing-resolved provider: %s (available: %v)", resolvedProvider, availableProviders)
+				return resolvedProvider
 			}
 			getLogger().Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
 			if slices.Contains(availableProviders, defaultProvider) {

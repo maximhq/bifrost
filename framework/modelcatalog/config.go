@@ -11,8 +11,9 @@ const (
 	// syncWorkerTickerPeriod is the fixed interval at which the background sync worker
 	// wakes up to check whether a sync is due. This is independent of pricingSyncInterval —
 	// the ticker defines the check granularity, not the sync frequency.
-	// Setting pricingSyncInterval below this value has no effect on actual sync frequency.
-	syncWorkerTickerPeriod = 1 * time.Hour
+	// Kept well below MinimumPricingSyncIntervalSec so the threshold check is not
+	// defeated by ticker drift when pricingSyncInterval is set near the minimum.
+	syncWorkerTickerPeriod = 5 * time.Minute
 
 	ConfigLastPricingSyncKey      = "LastModelPricingSync"
 	ConfigLastParamsSyncKey       = "LastModelParametersSync"
