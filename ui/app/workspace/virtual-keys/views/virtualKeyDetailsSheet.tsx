@@ -140,8 +140,8 @@ export default function VirtualKeyDetailSheet({
 
   return (
     <Sheet open onOpenChange={onClose}>
-      <SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl">
-        <SheetHeader className="flex flex-row items-center justify-between p-0">
+      <SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
+        <SheetHeader className="flex flex-row items-center justify-between px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
           <div className="flex flex-col items-start">
             <SheetTitle>{virtualKey.name}</SheetTitle>
             <SheetDescription>
@@ -158,7 +158,7 @@ export default function VirtualKeyDetailSheet({
           />
         </SheetHeader>
 
-        <div className="space-y-6">
+        <div className="space-y-6 px-8 py-4">
           <ManagedVirtualKeyNotice managingProfile={managingProfile} />
 
           {assignedUsers.length > 0 ? (
