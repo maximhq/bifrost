@@ -3235,6 +3235,7 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"customer_id":        {},
 	"customer_name":      {},
 	"user_id":            {},
+	"user_name":          {},
 	"business_unit_id":   {},
 	"business_unit_name": {},
 }
