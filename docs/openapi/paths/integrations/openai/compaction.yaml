@@ -1,0 +1,39 @@
+# OpenAI Integration - Context Compaction Endpoints
+
+compact:
+  post:
+    operationId: openaiCreateCompaction
+    summary: Compact context (OpenAI)
+    description: |
+      Compresses a conversation into an opaque compaction item using the OpenAI-compatible
+      `/v1/responses/compact` endpoint. Drop-in compatible with the OpenAI SDK.
+
+      The response `output` contains the user messages plus a final item with
+      `type: "response.compaction"` and `encrypted_content`. Pass this output as `input`
+      to future Responses API calls to continue the conversation using the compacted context.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/compact`).
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/compaction.yaml#/OpenAICompactionRequest'
+    responses:
+      '200':
+        description: Successful compaction response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/compaction.yaml#/OpenAICompactionResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

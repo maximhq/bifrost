@@ -29,6 +29,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Image Generation | ✅            | ✅        | `/openai/v1/images/generations` |
 | Image Edit       | ✅            | ✅        | `/openai/v1/images/edits`       |
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
+| Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
@@ -993,6 +994,16 @@ Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compa
 | Delete    | ✅        | `DELETE /v1/videos/{id}`      |
 | List      | ✅        | `GET /v1/videos`              |
 | Remix     | ❌        | Not supported                 |
+
+---
+
+# 9. Context Compaction
+
+Context compaction is supported for OpenAI models on Azure. It follows the same request and response format as [OpenAI Context Compaction](/providers/supported-providers/openai#14-context-compaction).
+
+**Endpoint**: `POST /openai/v1/responses/compact`
+
+Bifrost routes the request to `{endpoint}/openai/v1/responses/compact` using the configured Azure deployment. Deployment mapping and authentication (API key, Entra ID, or managed identity) are applied automatically, identical to the Responses API.
 
 ---
 

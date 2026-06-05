@@ -4330,6 +4330,750 @@
         ]
       }
     },
+    "/v1/responses/compact": {
+      "post": {
+        "operationId": "createCompaction",
+        "summary": "Compact context",
+        "description": "Compresses a conversation into an opaque encrypted compaction item using the\nOpenAI-compatible context compaction API.\n\nThe response `output` array contains the original user messages plus a final item\nwith `type: \"response.compaction\"` and an `encrypted_content` field. Pass the\nfull `output` array as `input` to future Responses API requests to continue the\nconversation without retransmitting the full history.\n\n**Supported providers:** OpenAI, Azure OpenAI, xAI. Requests to unsupported\nproviders return a 400 error.\n",
+        "tags": [
+          "Compaction"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model in provider/model format (e.g., \"openai/gpt-4o\")"
+                  },
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "message",
+                                "file_search_call",
+                                "computer_call",
+                                "computer_call_output",
+                                "web_search_call",
+                                "web_fetch_call",
+                                "function_call",
+                                "function_call_output",
+                                "code_interpreter_call",
+                                "local_shell_call",
+                                "local_shell_call_output",
+                                "mcp_call",
+                                "custom_tool_call",
+                                "custom_tool_call_output",
+                                "image_generation_call",
+                                "mcp_list_tools",
+                                "mcp_approval_request",
+                                "mcp_approval_responses",
+                                "reasoning",
+                                "item_reference",
+                                "refusal"
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "in_progress",
+                                "completed",
+                                "incomplete",
+                                "interpreting",
+                                "failed"
+                              ]
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "assistant",
+                                "user",
+                                "system",
+                                "developer"
+                              ]
+                            },
+                            "content": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "type"
+                                    ],
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "input_text",
+                                          "input_image",
+                                          "input_file",
+                                          "input_audio",
+                                          "output_text",
+                                          "refusal",
+                                          "reasoning_text"
+                                        ]
+                                      },
+                                      "file_id": {
+                                        "type": "string"
+                                      },
+                                      "text": {
+                                        "type": "string"
+                                      },
+                                      "signature": {
+                                        "type": "string"
+                                      },
+                                      "image_url": {
+                                        "type": "string"
+                                      },
+                                      "detail": {
+                                        "type": "string"
+                                      },
+                                      "file_data": {
+                                        "type": "string"
+                                      },
+                                      "file_url": {
+                                        "type": "string"
+                                      },
+                                      "filename": {
+                                        "type": "string"
+                                      },
+                                      "file_type": {
+                                        "type": "string"
+                                      },
+                                      "input_audio": {
+                                        "type": "object",
+                                        "required": [
+                                          "format",
+                                          "data"
+                                        ],
+                                        "properties": {
+                                          "format": {
+                                            "type": "string",
+                                            "enum": [
+                                              "mp3",
+                                              "wav"
+                                            ]
+                                          },
+                                          "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "annotations": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "enum": [
+                                                "file_citation",
+                                                "url_citation",
+                                                "container_file_citation",
+                                                "file_path"
+                                              ]
+                                            },
+                                            "index": {
+                                              "type": "integer"
+                                            },
+                                            "file_id": {
+                                              "type": "string"
+                                            },
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "start_index": {
+                                              "type": "integer"
+                                            },
+                                            "end_index": {
+                                              "type": "integer"
+                                            },
+                                            "filename": {
+                                              "type": "string"
+                                            },
+                                            "title": {
+                                              "type": "string"
+                                            },
+                                            "url": {
+                                              "type": "string"
+                                            },
+                                            "container_id": {
+                                              "type": "string"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "logprobs": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "bytes": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "integer"
+                                              }
+                                            },
+                                            "logprob": {
+                                              "type": "number"
+                                            },
+                                            "token": {
+                                              "type": "string"
+                                            },
+                                            "top_logprobs": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "bytes": {
+                                                    "type": "array",
+                                                    "items": {
+                                                      "type": "integer"
+                                                    }
+                                                  },
+                                                  "logprob": {
+                                                    "type": "number"
+                                                  },
+                                                  "token": {
+                                                    "type": "string"
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "refusal": {
+                                        "type": "string"
+                                      },
+                                      "cache_control": {
+                                        "$ref": "#/components/schemas/CacheControl"
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "call_id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "arguments": {
+                              "type": "string"
+                            },
+                            "output": {
+                              "type": "object"
+                            },
+                            "action": {
+                              "type": "object"
+                            },
+                            "error": {
+                              "type": "string"
+                            },
+                            "queries": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "results": {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            },
+                            "summary": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "summary_text"
+                                    ]
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            },
+                            "encrypted_content": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Conversation to compact. Required unless previous_response_id is provided. Can be a string or array of ResponsesMessage objects. Compaction items from prior responses (type \"response.compaction\") may be included in the array.\n"
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "description": "System instructions that persist across the compacted context."
+                  },
+                  "previous_response_id": {
+                    "type": "string",
+                    "description": "ID of a previous response to extend rather than sending full input."
+                  },
+                  "prompt_cache_key": {
+                    "type": "string"
+                  },
+                  "prompt_cache_retention": {
+                    "type": "string"
+                  },
+                  "service_tier": {
+                    "type": "string"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Fallback model list in provider/model format."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful compaction response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string",
+                      "description": "Always \"response.compaction\"",
+                      "example": "response.compaction"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "output": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "message",
+                              "file_search_call",
+                              "computer_call",
+                              "computer_call_output",
+                              "web_search_call",
+                              "web_fetch_call",
+                              "function_call",
+                              "function_call_output",
+                              "code_interpreter_call",
+                              "local_shell_call",
+                              "local_shell_call_output",
+                              "mcp_call",
+                              "custom_tool_call",
+                              "custom_tool_call_output",
+                              "image_generation_call",
+                              "mcp_list_tools",
+                              "mcp_approval_request",
+                              "mcp_approval_responses",
+                              "reasoning",
+                              "item_reference",
+                              "refusal"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "in_progress",
+                              "completed",
+                              "incomplete",
+                              "interpreting",
+                              "failed"
+                            ]
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "assistant",
+                              "user",
+                              "system",
+                              "developer"
+                            ]
+                          },
+                          "content": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "type"
+                                  ],
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "input_text",
+                                        "input_image",
+                                        "input_file",
+                                        "input_audio",
+                                        "output_text",
+                                        "refusal",
+                                        "reasoning_text"
+                                      ]
+                                    },
+                                    "file_id": {
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    },
+                                    "signature": {
+                                      "type": "string"
+                                    },
+                                    "image_url": {
+                                      "type": "string"
+                                    },
+                                    "detail": {
+                                      "type": "string"
+                                    },
+                                    "file_data": {
+                                      "type": "string"
+                                    },
+                                    "file_url": {
+                                      "type": "string"
+                                    },
+                                    "filename": {
+                                      "type": "string"
+                                    },
+                                    "file_type": {
+                                      "type": "string"
+                                    },
+                                    "input_audio": {
+                                      "type": "object",
+                                      "required": [
+                                        "format",
+                                        "data"
+                                      ],
+                                      "properties": {
+                                        "format": {
+                                          "type": "string",
+                                          "enum": [
+                                            "mp3",
+                                            "wav"
+                                          ]
+                                        },
+                                        "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "annotations": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "enum": [
+                                              "file_citation",
+                                              "url_citation",
+                                              "container_file_citation",
+                                              "file_path"
+                                            ]
+                                          },
+                                          "index": {
+                                            "type": "integer"
+                                          },
+                                          "file_id": {
+                                            "type": "string"
+                                          },
+                                          "text": {
+                                            "type": "string"
+                                          },
+                                          "start_index": {
+                                            "type": "integer"
+                                          },
+                                          "end_index": {
+                                            "type": "integer"
+                                          },
+                                          "filename": {
+                                            "type": "string"
+                                          },
+                                          "title": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "container_id": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "logprobs": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "bytes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "integer"
+                                            }
+                                          },
+                                          "logprob": {
+                                            "type": "number"
+                                          },
+                                          "token": {
+                                            "type": "string"
+                                          },
+                                          "top_logprobs": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "bytes": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "integer"
+                                                  }
+                                                },
+                                                "logprob": {
+                                                  "type": "number"
+                                                },
+                                                "token": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "refusal": {
+                                      "type": "string"
+                                    },
+                                    "cache_control": {
+                                      "$ref": "#/components/schemas/CacheControl"
+                                    }
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "call_id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "arguments": {
+                            "type": "string"
+                          },
+                          "output": {
+                            "type": "object"
+                          },
+                          "action": {
+                            "type": "object"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "queries": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "results": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "summary": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "type",
+                                "text"
+                              ],
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "summary_text"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "encrypted_content": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "The compacted output — the original user messages plus a final item of type \"response.compaction\" whose encrypted_content holds the opaque compacted state. Pass the full output array as input to a future Responses API request.\n"
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "cached_read_tokens": {
+                              "type": "integer",
+                              "description": "Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate. Already included in the parent input_tokens total.\n"
+                            },
+                            "cached_write_tokens": {
+                              "type": "integer",
+                              "description": "Tokens written to the prompt cache on this request, billed at the cache-creation rate. Already included in the parent input_tokens total. Populated for providers that separately report cache write tokens (Anthropic, Bedrock).\n"
+                            }
+                          }
+                        },
+                        "output_tokens": {
+                          "type": "integer"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "accepted_prediction_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer"
+                            },
+                            "rejected_prediction_tokens": {
+                              "type": "integer"
+                            },
+                            "citation_tokens": {
+                              "type": "integer"
+                            },
+                            "num_search_queries": {
+                              "type": "integer"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer"
+                        },
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/v1/batches": {
       "post": {
         "operationId": "createBatch",
@@ -11408,6 +12152,750 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CountTokensResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/responses/compact": {
+      "post": {
+        "operationId": "openaiCreateCompaction",
+        "summary": "Compact context (OpenAI)",
+        "description": "Compresses a conversation into an opaque compaction item using the OpenAI-compatible\n`/v1/responses/compact` endpoint. Drop-in compatible with the OpenAI SDK.\n\nThe response `output` contains the user messages plus a final item with\n`type: \"response.compaction\"` and `encrypted_content`. Pass this output as `input`\nto future Responses API calls to continue the conversation using the compacted context.\n\n**Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/compact`).\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier (e.g., \"gpt-4o\"). When routing through Bifrost's provider-prefixed path, use \"provider/model\" format.\n"
+                  },
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "message",
+                                "file_search_call",
+                                "computer_call",
+                                "computer_call_output",
+                                "web_search_call",
+                                "web_fetch_call",
+                                "function_call",
+                                "function_call_output",
+                                "code_interpreter_call",
+                                "local_shell_call",
+                                "local_shell_call_output",
+                                "mcp_call",
+                                "custom_tool_call",
+                                "custom_tool_call_output",
+                                "image_generation_call",
+                                "mcp_list_tools",
+                                "mcp_approval_request",
+                                "mcp_approval_responses",
+                                "reasoning",
+                                "item_reference",
+                                "refusal"
+                              ]
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "in_progress",
+                                "completed",
+                                "incomplete",
+                                "interpreting",
+                                "failed"
+                              ]
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "assistant",
+                                "user",
+                                "system",
+                                "developer"
+                              ]
+                            },
+                            "content": {
+                              "oneOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "type"
+                                    ],
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "input_text",
+                                          "input_image",
+                                          "input_file",
+                                          "input_audio",
+                                          "output_text",
+                                          "refusal",
+                                          "reasoning_text"
+                                        ]
+                                      },
+                                      "file_id": {
+                                        "type": "string"
+                                      },
+                                      "text": {
+                                        "type": "string"
+                                      },
+                                      "signature": {
+                                        "type": "string"
+                                      },
+                                      "image_url": {
+                                        "type": "string"
+                                      },
+                                      "detail": {
+                                        "type": "string"
+                                      },
+                                      "file_data": {
+                                        "type": "string"
+                                      },
+                                      "file_url": {
+                                        "type": "string"
+                                      },
+                                      "filename": {
+                                        "type": "string"
+                                      },
+                                      "file_type": {
+                                        "type": "string"
+                                      },
+                                      "input_audio": {
+                                        "type": "object",
+                                        "required": [
+                                          "format",
+                                          "data"
+                                        ],
+                                        "properties": {
+                                          "format": {
+                                            "type": "string",
+                                            "enum": [
+                                              "mp3",
+                                              "wav"
+                                            ]
+                                          },
+                                          "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "annotations": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "enum": [
+                                                "file_citation",
+                                                "url_citation",
+                                                "container_file_citation",
+                                                "file_path"
+                                              ]
+                                            },
+                                            "index": {
+                                              "type": "integer"
+                                            },
+                                            "file_id": {
+                                              "type": "string"
+                                            },
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "start_index": {
+                                              "type": "integer"
+                                            },
+                                            "end_index": {
+                                              "type": "integer"
+                                            },
+                                            "filename": {
+                                              "type": "string"
+                                            },
+                                            "title": {
+                                              "type": "string"
+                                            },
+                                            "url": {
+                                              "type": "string"
+                                            },
+                                            "container_id": {
+                                              "type": "string"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "logprobs": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "bytes": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "integer"
+                                              }
+                                            },
+                                            "logprob": {
+                                              "type": "number"
+                                            },
+                                            "token": {
+                                              "type": "string"
+                                            },
+                                            "top_logprobs": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "bytes": {
+                                                    "type": "array",
+                                                    "items": {
+                                                      "type": "integer"
+                                                    }
+                                                  },
+                                                  "logprob": {
+                                                    "type": "number"
+                                                  },
+                                                  "token": {
+                                                    "type": "string"
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "refusal": {
+                                        "type": "string"
+                                      },
+                                      "cache_control": {
+                                        "$ref": "#/components/schemas/CacheControl"
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "call_id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "arguments": {
+                              "type": "string"
+                            },
+                            "output": {
+                              "type": "object"
+                            },
+                            "action": {
+                              "type": "object"
+                            },
+                            "error": {
+                              "type": "string"
+                            },
+                            "queries": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "results": {
+                              "type": "array",
+                              "items": {
+                                "type": "object"
+                              }
+                            },
+                            "summary": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "summary_text"
+                                    ]
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            },
+                            "encrypted_content": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Conversation to compact. Required unless previous_response_id is set. Compaction items (type \"response.compaction\") from prior responses may be included.\n"
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "description": "System instructions that persist across the compacted context."
+                  },
+                  "previous_response_id": {
+                    "type": "string",
+                    "description": "ID of a previous response to extend rather than sending full input."
+                  },
+                  "prompt_cache_key": {
+                    "type": "string"
+                  },
+                  "prompt_cache_retention": {
+                    "type": "string"
+                  },
+                  "service_tier": {
+                    "type": "string"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Bifrost-specific — fallback model list in provider/model format."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful compaction response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string",
+                      "description": "Always \"response.compaction\"",
+                      "example": "response.compaction"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "output": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "message",
+                              "file_search_call",
+                              "computer_call",
+                              "computer_call_output",
+                              "web_search_call",
+                              "web_fetch_call",
+                              "function_call",
+                              "function_call_output",
+                              "code_interpreter_call",
+                              "local_shell_call",
+                              "local_shell_call_output",
+                              "mcp_call",
+                              "custom_tool_call",
+                              "custom_tool_call_output",
+                              "image_generation_call",
+                              "mcp_list_tools",
+                              "mcp_approval_request",
+                              "mcp_approval_responses",
+                              "reasoning",
+                              "item_reference",
+                              "refusal"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "in_progress",
+                              "completed",
+                              "incomplete",
+                              "interpreting",
+                              "failed"
+                            ]
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "assistant",
+                              "user",
+                              "system",
+                              "developer"
+                            ]
+                          },
+                          "content": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "type"
+                                  ],
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "input_text",
+                                        "input_image",
+                                        "input_file",
+                                        "input_audio",
+                                        "output_text",
+                                        "refusal",
+                                        "reasoning_text"
+                                      ]
+                                    },
+                                    "file_id": {
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    },
+                                    "signature": {
+                                      "type": "string"
+                                    },
+                                    "image_url": {
+                                      "type": "string"
+                                    },
+                                    "detail": {
+                                      "type": "string"
+                                    },
+                                    "file_data": {
+                                      "type": "string"
+                                    },
+                                    "file_url": {
+                                      "type": "string"
+                                    },
+                                    "filename": {
+                                      "type": "string"
+                                    },
+                                    "file_type": {
+                                      "type": "string"
+                                    },
+                                    "input_audio": {
+                                      "type": "object",
+                                      "required": [
+                                        "format",
+                                        "data"
+                                      ],
+                                      "properties": {
+                                        "format": {
+                                          "type": "string",
+                                          "enum": [
+                                            "mp3",
+                                            "wav"
+                                          ]
+                                        },
+                                        "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "annotations": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "enum": [
+                                              "file_citation",
+                                              "url_citation",
+                                              "container_file_citation",
+                                              "file_path"
+                                            ]
+                                          },
+                                          "index": {
+                                            "type": "integer"
+                                          },
+                                          "file_id": {
+                                            "type": "string"
+                                          },
+                                          "text": {
+                                            "type": "string"
+                                          },
+                                          "start_index": {
+                                            "type": "integer"
+                                          },
+                                          "end_index": {
+                                            "type": "integer"
+                                          },
+                                          "filename": {
+                                            "type": "string"
+                                          },
+                                          "title": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "container_id": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "logprobs": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "bytes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "integer"
+                                            }
+                                          },
+                                          "logprob": {
+                                            "type": "number"
+                                          },
+                                          "token": {
+                                            "type": "string"
+                                          },
+                                          "top_logprobs": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "bytes": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "integer"
+                                                  }
+                                                },
+                                                "logprob": {
+                                                  "type": "number"
+                                                },
+                                                "token": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "refusal": {
+                                      "type": "string"
+                                    },
+                                    "cache_control": {
+                                      "$ref": "#/components/schemas/CacheControl"
+                                    }
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "call_id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "arguments": {
+                            "type": "string"
+                          },
+                          "output": {
+                            "type": "object"
+                          },
+                          "action": {
+                            "type": "object"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "queries": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "results": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "summary": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "type",
+                                "text"
+                              ],
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "summary_text"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "encrypted_content": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "The compacted output — the original user messages plus a final item of type \"response.compaction\" whose encrypted_content holds the opaque compacted state. Pass the full output array as input to a future Responses API request.\n"
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "cached_read_tokens": {
+                              "type": "integer",
+                              "description": "Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate. Already included in the parent input_tokens total.\n"
+                            },
+                            "cached_write_tokens": {
+                              "type": "integer",
+                              "description": "Tokens written to the prompt cache on this request, billed at the cache-creation rate. Already included in the parent input_tokens total. Populated for providers that separately report cache write tokens (Anthropic, Bedrock).\n"
+                            }
+                          }
+                        },
+                        "output_tokens": {
+                          "type": "integer"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "accepted_prediction_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer"
+                            },
+                            "rejected_prediction_tokens": {
+                              "type": "integer"
+                            },
+                            "citation_tokens": {
+                              "type": "integer"
+                            },
+                            "num_search_queries": {
+                              "type": "integer"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer"
+                        },
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
                 }
               }
             }
@@ -34498,11 +35986,7 @@
             }
           }
         },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Login successful",
@@ -34568,6 +36052,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "SessionCookieAuth": []
           }
         ],
         "responses": {
@@ -34609,11 +36096,7 @@
         "tags": [
           "Session"
         ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -34649,6 +36132,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "SessionCookieAuth": []
           }
         ],
         "responses": {
@@ -38223,11 +39709,7 @@
             }
           }
         ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "OAuth authorization successful. Returns HTML page that closes the authorization window.",
@@ -38567,7 +40049,13 @@
         ],
         "security": [
           {
-            "ManagementBearerAuth": []
+            "VirtualKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
           }
         ],
         "responses": {
@@ -39842,14 +41330,71 @@
     "/api/governance/model-configs": {
       "get": {
         "operationId": "listModelConfigs",
-        "summary": "List model configs",
-        "description": "Returns a list of all model configurations with their budget and rate limit settings.",
+        "summary": "List model limits",
+        "description": "Returns a paginated list of model limits with their budget and rate limit settings.",
         "tags": [
           "Governance"
         ],
         "security": [
           {
             "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of results to skip (for pagination)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive filter by model name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Filter by scope (`global` or `virtual_key`)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "global",
+                "virtual_key"
+              ]
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Filter by provider name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from_memory",
+            "in": "query",
+            "description": "If true, returns data from in-memory cache (faster, may lag DB by one poll cycle)",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -54883,6 +56428,12 @@
         "in": "header",
         "name": "x-api-key",
         "description": "API key authentication via the `x-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      },
+      "SessionCookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "token",
+        "description": "Dashboard session authentication via the HTTPOnly `token` cookie that is\nset by `POST /api/session/login`. Used by the Bifrost UI for same-origin\nrequests in place of an `Authorization` header. Accepted on session\nendpoints (`logout`, `ws-ticket`) as an alternative to the management API key.\n"
       }
     },
     "parameters": {
@@ -69506,15 +71057,47 @@
           },
           "model_name": {
             "type": "string",
-            "description": "Name of the model"
+            "description": "Name of the model. Use `*` to match all models."
           },
           "provider": {
             "type": "string",
             "description": "Provider name (optional - applies to all providers if not specified)"
           },
+          "scope": {
+            "type": "string",
+            "description": "Scope where this limit applies. `global` covers all traffic; `virtual_key` scopes to a single virtual key; `user` scopes to a single user (Enterprise only).",
+            "enum": [
+              "global",
+              "virtual_key",
+              "user"
+            ],
+            "default": "global"
+          },
+          "scope_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`."
+          },
+          "scope_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Resolved human-readable name of the scope target (read-only, set by server)."
+          },
+          "calendar_aligned": {
+            "type": "boolean",
+            "description": "When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).",
+            "default": false
+          },
+          "budgets": {
+            "type": "array",
+            "description": "Budget configurations for this model limit. Each entry must have a unique reset_duration.",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
           "budget": {
             "$ref": "#/components/schemas/Budget",
-            "description": "Budget configuration for this model"
+            "description": "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
           },
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit",
@@ -69554,9 +71137,9 @@
               "$ref": "#/components/schemas/ModelConfig"
             }
           },
-          "count": {
+          "total_count": {
             "type": "integer",
-            "description": "Number of model configs returned"
+            "description": "Total number of model configs matching the filter (used for pagination)"
           }
         }
       },
@@ -69569,15 +71152,32 @@
         "properties": {
           "model_name": {
             "type": "string",
-            "description": "Name of the model (required)"
+            "description": "Name of the model (required). Use `*` to match all models."
           },
           "provider": {
             "type": "string",
             "description": "Provider name (optional - applies to all providers if not specified)"
           },
-          "budget": {
-            "$ref": "#/components/schemas/CreateBudgetRequest",
-            "description": "Budget configuration"
+          "scope": {
+            "type": "string",
+            "description": "Scope where this limit applies. Defaults to `global`.",
+            "enum": [
+              "global",
+              "virtual_key",
+              "user"
+            ],
+            "default": "global"
+          },
+          "scope_id": {
+            "type": "string",
+            "description": "ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`."
+          },
+          "budgets": {
+            "type": "array",
+            "description": "Budget lines for this limit. Each entry must have a unique reset_duration.",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           },
           "rate_limit": {
             "$ref": "#/components/schemas/CreateRateLimitRequest",
@@ -69587,7 +71187,7 @@
       },
       "UpdateModelConfigRequest": {
         "type": "object",
-        "description": "Request to update an existing model config",
+        "description": "Request to update an existing model config. Scope and scope_id are identity fields and cannot be changed.",
         "properties": {
           "model_name": {
             "type": "string",
@@ -69597,9 +71197,12 @@
             "type": "string",
             "description": "Provider name"
           },
-          "budget": {
-            "$ref": "#/components/schemas/UpdateBudgetRequest",
-            "description": "Budget configuration"
+          "budgets": {
+            "type": "array",
+            "description": "Full desired set of budgets (reconciled server-side). Send an empty array to remove all budgets.",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest",
@@ -69633,13 +71236,25 @@
             "type": "string",
             "description": "Provider name"
           },
+          "budgets": {
+            "type": "array",
+            "description": "Budget configurations for this provider. Each entry has a unique reset_duration.",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
           "budget": {
             "$ref": "#/components/schemas/Budget",
-            "description": "Budget configuration"
+            "description": "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
           },
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit",
             "description": "Rate limit configuration"
+          },
+          "calendar_aligned": {
+            "type": "boolean",
+            "description": "When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).",
+            "default": false
           }
         }
       },
@@ -69663,13 +71278,26 @@
         "type": "object",
         "description": "Request to update provider governance settings",
         "properties": {
+          "budgets": {
+            "type": "array",
+            "nullable": true,
+            "description": "Full desired set of budgets. Pointer-to-slice semantics apply: omitting the field leaves budgets unchanged; sending an empty array `[]` removes all budgets; sending a non-empty array replaces all existing budgets with the provided set.\n",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
+          },
           "budget": {
             "$ref": "#/components/schemas/UpdateBudgetRequest",
-            "description": "Budget configuration"
+            "description": "Deprecated: use `budgets`."
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest",
             "description": "Rate limit configuration"
+          },
+          "calendar_aligned": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged."
           }
         }
       },
