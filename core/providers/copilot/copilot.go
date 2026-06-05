@@ -3,6 +3,7 @@ package copilot
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,21 @@ type CopilotProvider struct {
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
 	tokenManagers       sync.Map // map[string]*CopilotTokenManagerEntry keyed by Key.ID
+
+	// responsesUnsupportedModels caches model ids that Copilot's native
+	// /responses endpoint has rejected as not served on that endpoint, so
+	// subsequent Responses requests for those models skip the failed native
+	// attempt and go straight to /chat/completions. Keyed by model id; value is
+	// struct{}.
+	responsesUnsupportedModels sync.Map
+
+	// chatUnsupportedModels caches model ids that Copilot's /chat/completions
+	// endpoint has rejected as not accessible there (OpenAI deprecated
+	// chat-completions for newer models such as gpt-5.5/codex, which are served
+	// only via /responses), so subsequent ChatCompletion requests for those
+	// models skip the failed native attempt and go straight to /responses.
+	// Keyed by model id; value is struct{}.
+	chatUnsupportedModels sync.Map
 }
 
 // NewCopilotProvider creates a new Copilot provider instance.
@@ -201,7 +217,31 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 }
 
 // ChatCompletion performs a chat completion request to the Copilot API.
+// ChatCompletion performs a chat completion request to the Copilot API.
+//
+// OpenAI has deprecated /chat/completions for its newer models (e.g. gpt-5.5,
+// the *-codex family, mai-code-*), which Copilot serves only via /responses.
+// We therefore try the native /chat/completions endpoint first (the backward-
+// compatible default that virtually every other model owner still supports) and
+// transparently fall back to the /responses endpoint when, and only when, the
+// upstream rejects the model as not accessible on /chat/completions. Models
+// observed to be unsupported on /chat/completions are cached so later requests
+// skip the failed native attempt.
 func (provider *CopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if provider.isChatUnsupported(request.Model) {
+		return provider.chatViaResponses(ctx, key, request)
+	}
+
+	response, err := provider.chatNative(ctx, key, request)
+	if err != nil && chatUnsupportedByModel(err) {
+		provider.markChatUnsupported(request.Model, err)
+		return provider.chatViaResponses(ctx, key, request)
+	}
+	return response, err
+}
+
+// chatNative issues a request against Copilot's native /chat/completions endpoint.
+func (provider *CopilotProvider) chatNative(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	tm := provider.getOrCreateTokenManager(key)
 	token, apiBase, bifrostErr := tm.getToken()
 	if bifrostErr != nil {
@@ -224,8 +264,51 @@ func (provider *CopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	)
 }
 
-// ChatCompletionStream performs a streaming chat completion request to the Copilot API.
+// chatViaResponses satisfies a chat completion request by translating it to a
+// Responses request against Copilot's native /responses endpoint and converting
+// the result back to the chat-completion shape. Used for models that OpenAI has
+// removed from /chat/completions (served only via /responses).
+func (provider *CopilotProvider) chatViaResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	responsesRequest := request.ToResponsesRequest()
+	if responsesRequest == nil {
+		return nil, providerUtils.NewBifrostOperationError("copilot: failed to convert chat completion request to responses request for /responses fallback", nil)
+	}
+
+	// Call the native /responses endpoint directly (not provider.Responses) to
+	// avoid any chance of mutual recursion between the two fallback directions.
+	responsesResponse, err := provider.responsesNative(ctx, key, responsesRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	response := responsesResponse.ToBifrostChatResponse()
+	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	response.ExtraFields.OriginalModelRequested = request.Model
+
+	return response, nil
+}
+
+// ChatCompletionStream performs a streaming chat completion request to the
+// Copilot API. Mirrors ChatCompletion: try the native /chat/completions endpoint
+// first, falling back to the /responses translation (and caching the model) when
+// the upstream rejects the model as not accessible on /chat/completions before
+// any chunks are streamed.
 func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if provider.isChatUnsupported(request.Model) {
+		return provider.chatStreamViaResponses(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+
+	stream, err := provider.chatStreamNative(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if err != nil && chatUnsupportedByModel(err) {
+		provider.markChatUnsupported(request.Model, err)
+		return provider.chatStreamViaResponses(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+	return stream, err
+}
+
+// chatStreamNative streams from Copilot's native /chat/completions endpoint.
+func (provider *CopilotProvider) chatStreamNative(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	authHeader, apiBase, bifrostErr := provider.getCopilotAuth(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -253,6 +336,30 @@ func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	)
 }
 
+// chatStreamViaResponses streams a chat completion request through Copilot's
+// native /responses endpoint, converting each responses stream chunk back to the
+// chat-completion shape before the caller's post-hook runs so the client still
+// receives chat-completion chunks.
+func (provider *CopilotProvider) chatStreamViaResponses(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	responsesRequest := request.ToResponsesRequest()
+	if responsesRequest == nil {
+		return nil, providerUtils.NewBifrostOperationError("copilot: failed to convert chat completion request to responses request for /responses fallback", nil)
+	}
+
+	chatPostHookRunner := func(hookCtx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil && result.ResponsesStreamResponse != nil {
+			if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+				result = &schemas.BifrostResponse{ChatResponse: converted}
+			}
+		}
+		return postHookRunner(hookCtx, result, bifrostErr)
+	}
+
+	// Call the native /responses stream directly (not provider.ResponsesStream)
+	// to avoid any chance of mutual recursion between the two fallback directions.
+	return provider.responsesStreamNative(ctx, chatPostHookRunner, postHookSpanFinalizer, key, responsesRequest)
+}
+
 // setChatChunkObject ensures every streamed chat chunk carries the OpenAI-shape
 // "chat.completion.chunk" object marker. Copilot's upstream SSE chunks omit the
 // `object` field, so without this normalization downstream consumers (and the
@@ -265,8 +372,59 @@ func setChatChunkObject(resp *schemas.BifrostChatResponse) *schemas.BifrostChatR
 }
 
 // Responses performs a responses request to the Copilot API.
+//
+// Copilot enforces per-model endpoint access: newer models (e.g. gpt-5.x) are
+// only reachable via the modern /responses endpoint, while others are served
+// via /chat/completions. We therefore try the native /responses endpoint first
+// (the forward-looking standard) and transparently fall back to the
+// chat-completions translation when, and only when, the upstream rejects the
+// model as not served on /responses. Models observed to be unsupported on
+// /responses are cached so later requests skip the failed native attempt.
 func (provider *CopilotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if provider.isResponsesUnsupported(request.Model) {
+		return provider.responsesViaChat(ctx, key, request)
+	}
+
+	response, err := provider.responsesNative(ctx, key, request)
+	if err != nil && responsesUnsupportedByModel(err) {
+		provider.markResponsesUnsupported(request.Model, err)
+		return provider.responsesViaChat(ctx, key, request)
+	}
+	return response, err
+}
+
+// responsesNative issues a request against Copilot's native /responses endpoint.
+func (provider *CopilotProvider) responsesNative(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	tm := provider.getOrCreateTokenManager(key)
+	token, apiBase, bifrostErr := tm.getToken()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		apiBase+providerUtils.GetPathFromContext(ctx, "/responses"),
+		request,
+		copilotKey(key, token),
+		provider.mergedExtraHeaders(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		provider.logger,
+	)
+}
+
+// responsesViaChat satisfies a Responses request by translating it to a chat
+// completion against Copilot's /chat/completions endpoint and converting the
+// result back to the Responses shape. Legacy path for models not served on the
+// native /responses endpoint.
+func (provider *CopilotProvider) responsesViaChat(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// Call the native /chat/completions endpoint directly (not provider.ChatCompletion)
+	// to avoid any chance of mutual recursion between the two fallback directions.
+	chatResponse, err := provider.chatNative(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -280,10 +438,132 @@ func (provider *CopilotProvider) Responses(ctx *schemas.BifrostContext, key sche
 }
 
 // ResponsesStream performs a streaming responses request to the Copilot API.
+// Mirrors Responses: try the native /responses endpoint first, falling back to
+// the chat-completions translation (and caching the model) when the upstream
+// rejects the model as not served on /responses before any chunks are streamed.
 func (provider *CopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	if provider.isResponsesUnsupported(request.Model) {
+		return provider.responsesStreamViaChat(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+
+	stream, err := provider.responsesStreamNative(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if err != nil && responsesUnsupportedByModel(err) {
+		provider.markResponsesUnsupported(request.Model, err)
+		return provider.responsesStreamViaChat(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+	return stream, err
 }
+
+// responsesStreamNative streams from Copilot's native /responses endpoint.
+func (provider *CopilotProvider) responsesStreamNative(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	authHeader, apiBase, bifrostErr := provider.getCopilotAuth(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openai.HandleOpenAIResponsesStreaming(
+		ctx,
+		provider.streamingClient,
+		apiBase+providerUtils.GetPathFromContext(ctx, "/responses"),
+		request,
+		authHeader,
+		provider.mergedExtraHeaders(),
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
+}
+
+// responsesStreamViaChat streams a Responses request through the legacy
+// chat-completions translation. HandleOpenAIChatCompletionStreaming detects the
+// fallback flag and converts the chat stream chunks back to the Responses shape.
+func (provider *CopilotProvider) responsesStreamViaChat(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	// Call the native /chat/completions stream directly (not provider.ChatCompletionStream)
+	// to avoid any chance of mutual recursion between the two fallback directions.
+	return provider.chatStreamNative(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+}
+
+// isResponsesUnsupported reports whether the model has been cached as
+// unsupported on Copilot's native /responses endpoint.
+func (provider *CopilotProvider) isResponsesUnsupported(model string) bool {
+	_, ok := provider.responsesUnsupportedModels.Load(model)
+	return ok
+}
+
+// markResponsesUnsupported caches a model as unsupported on /responses so future
+// requests bypass the native attempt. Logs the first time a model is demoted.
+func (provider *CopilotProvider) markResponsesUnsupported(model string, err *schemas.BifrostError) {
+	if _, loaded := provider.responsesUnsupportedModels.LoadOrStore(model, struct{}{}); !loaded && provider.logger != nil {
+		status := 0
+		if err != nil && err.StatusCode != nil {
+			status = *err.StatusCode
+		}
+		provider.logger.Debug("copilot: model %s not served on /responses (status %d), routing to /chat/completions for subsequent requests", model, status)
+	}
+}
+
+// isChatUnsupported reports whether the model has been cached as unsupported on
+// Copilot's /chat/completions endpoint.
+func (provider *CopilotProvider) isChatUnsupported(model string) bool {
+	_, ok := provider.chatUnsupportedModels.Load(model)
+	return ok
+}
+
+// markChatUnsupported caches a model as unsupported on /chat/completions so
+// future requests bypass the native attempt. Logs the first time a model is
+// demoted.
+func (provider *CopilotProvider) markChatUnsupported(model string, err *schemas.BifrostError) {
+	if _, loaded := provider.chatUnsupportedModels.LoadOrStore(model, struct{}{}); !loaded && provider.logger != nil {
+		status := 0
+		if err != nil && err.StatusCode != nil {
+			status = *err.StatusCode
+		}
+		provider.logger.Debug("copilot: model %s not served on /chat/completions (status %d), routing to /responses for subsequent requests", model, status)
+	}
+}
+
+// responsesUnsupportedByModel reports whether an error from the native /responses
+// attempt specifically indicates the model is not served on that endpoint, in
+// which case the request should be retried against /chat/completions and the
+// model cached. We match the upstream's specific 400 "<model> does not support /
+// is not supported via Responses API" signal — not a blanket 4xx — so transient
+// or auth failures (401/403/408/429) don't permanently demote a responses-capable
+// model to the chat-completions path.
+func responsesUnsupportedByModel(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil || *err.StatusCode != fasthttp.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.GetErrorString())
+	return strings.Contains(msg, "responses api") &&
+		(strings.Contains(msg, "does not support") || strings.Contains(msg, "not supported"))
+}
+
+// chatUnsupportedByModel reports whether an error from the native
+// /chat/completions attempt specifically indicates the model is not accessible
+// on that endpoint (OpenAI has deprecated /chat/completions for newer models
+// such as gpt-5.5/codex, serving them only via /responses), in which case the
+// request should be retried against /responses and the model cached. We match
+// the upstream's specific 400 "<model> is not accessible via the
+// /chat/completions endpoint" signal — not a blanket 4xx — so genuine client
+// errors (e.g. an unsupported parameter) and transient/auth failures are not
+// misinterpreted as an endpoint-access issue.
+func chatUnsupportedByModel(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil || *err.StatusCode != fasthttp.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.GetErrorString())
+	return strings.Contains(msg, "/chat/completions") && strings.Contains(msg, "not accessible")
+}
+
 
 // TextCompletion is not supported by the Copilot provider.
 func (provider *CopilotProvider) TextCompletion(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
