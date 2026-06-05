@@ -645,7 +645,7 @@ export default function VirtualKeyDetailSheet({
                 {/* Token Limits */}
                 {displayRateLimit.token_max_limit != null ? (
                   <div className="space-y-3 rounded-lg border p-4">
-                    <span className="font-medium">Token Limits</span>
+                    <span className="font-medium text-sm">Token Limits</span>
                     <UsageLine
                       current={displayRateLimit.token_current_usage}
                       max={displayRateLimit.token_max_limit}
@@ -681,7 +681,7 @@ export default function VirtualKeyDetailSheet({
                 {/* Request Limits */}
                 {displayRateLimit.request_max_limit != null ? (
                   <div className="space-y-3 rounded-lg border p-4">
-                    <span className="font-medium">Request Limits</span>
+                    <span className="font-medium text-sm">Request Limits</span>
                     <UsageLine
                       current={displayRateLimit.request_current_usage}
                       max={displayRateLimit.request_max_limit}
