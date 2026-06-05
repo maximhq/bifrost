@@ -132,7 +132,8 @@ func isPublicIP(ip net.IP) bool {
 
 	if addr.IsLoopback() || addr.IsPrivate() || cgnat.Contains(addr) ||
 		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() || addr.IsUnspecified() || addr.IsInterfaceLocalMulticast() {
+		addr.IsMulticast() || addr.IsUnspecified() || addr.IsInterfaceLocalMulticast() ||
+		addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
 		return false
 	}
 
