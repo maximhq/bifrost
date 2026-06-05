@@ -23,7 +23,8 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { CustomersEmptyState } from "./customersEmptyState";
@@ -67,7 +68,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					disabled={!canUpdate}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
-						e.stopPropagation()
+						e.stopPropagation();
 						e.preventDefault();
 						onEdit(customer);
 						setIsOpen(false);
@@ -77,6 +78,20 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Edit className="h-4 w-4" />
 					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
+					<Link
+						to="/workspace/logs"
+						search={{ customer_ids: [customer.id] }}
+						onClick={(e) => {
+							e.stopPropagation();
+							setIsOpen(false);
+						}}
+						onPointerDown={(e) => e.stopPropagation()}
+					>
+						<ScrollText className="h-4 w-4" />
+						View logs
+					</Link>
 				</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
