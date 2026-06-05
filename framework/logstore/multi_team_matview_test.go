@@ -91,6 +91,37 @@ func TestFilterBusinessUnitMatView_CollectsScalarAndArray(t *testing.T) {
 	assert.Equal(t, "BU One", byID["bu-arr1"], "array-only business unit must now appear")
 }
 
+// TestDimensionRankings_ActualVsAttributedTotals pins the semantics of the
+// server-side totals: a request attributed to two teams counts once in
+// TotalActualRequests (COUNT(DISTINCT id)) and twice in
+// TotalAttributedRequests (COUNT(*) over the fan-out), while the per-team
+// rows stay accurate per team.
+func TestDimensionRankings_ActualVsAttributedTotals(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// One request attributed to two teams + one scalar single-team request:
+	// 2 actual requests, 3 attributed team-credits.
+	insertTeamBULog(t, db, now, "u-1", "", "", `["t-a","t-b"]`, `["Team A","Team B"]`, "", "", "", "")
+	insertTeamBULog(t, db, now, "u-1", "t-a", "Team A", "", "", "", "", "", "")
+
+	start := now.Add(-time.Hour)
+	end := now.Add(time.Hour)
+	res, err := store.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionTeam)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(2), res.TotalActualRequests, "actual must count distinct requests, not fan-out rows")
+	assert.Equal(t, int64(3), res.TotalAttributedRequests, "attributed must credit a request once per team it touches")
+
+	requestsByID := make(map[string]int64, len(res.Rankings))
+	for _, r := range res.Rankings {
+		requestsByID[r.ID] = r.TotalRequests
+	}
+	assert.Equal(t, int64(2), requestsByID["t-a"], "t-a is touched by both requests (array + scalar fallback)")
+	assert.Equal(t, int64(1), requestsByID["t-b"], "t-b is touched only by the multi-team request")
+}
+
 // TestFilterTeamMatView_DACScopeAppliesAfterFanout proves the visibility columns
 // (user_id) survive the fan-out: each fanned-out team row carries its source
 // log's user_id, so a QueryScope still both resolves (no "column does not exist")

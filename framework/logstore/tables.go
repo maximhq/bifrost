@@ -156,6 +156,8 @@ type Log struct {
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
 	TeamIDs                 *string   `gorm:"type:text" json:"-"`
 	TeamNames               *string   `gorm:"type:text" json:"-"`
+	CustomerIDs             *string   `gorm:"type:text" json:"-"`
+	CustomerNames           *string   `gorm:"type:text" json:"-"`
 	BusinessUnitIDs         *string   `gorm:"type:text" json:"-"`
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
@@ -255,6 +257,8 @@ type Log struct {
 	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
 	TeamNamesParsed             []string                                `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed           []string                                `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed         []string                                `gorm:"-" json:"customer_names,omitempty"`
 	BusinessUnitIDsParsed       []string                                `gorm:"-" json:"business_unit_ids,omitempty"`
 	BusinessUnitNamesParsed     []string                                `gorm:"-" json:"business_unit_names,omitempty"`
 
@@ -601,6 +605,22 @@ func (l *Log) SerializeFields() error {
 			l.TeamNames = &s
 		}
 	}
+	if len(l.CustomerIDsParsed) > 0 {
+		if data, err := sonic.Marshal(l.CustomerIDsParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.CustomerIDs = &s
+		}
+	}
+	if len(l.CustomerNamesParsed) > 0 {
+		if data, err := sonic.Marshal(l.CustomerNamesParsed); err != nil {
+			return err
+		} else {
+			s := string(data)
+			l.CustomerNames = &s
+		}
+	}
 	if len(l.BusinessUnitIDsParsed) > 0 {
 		if data, err := sonic.Marshal(l.BusinessUnitIDsParsed); err != nil {
 			return err
@@ -862,6 +882,16 @@ func (l *Log) DeserializeFields() error {
 	if l.TeamNames != nil && *l.TeamNames != "" {
 		if err := sonic.Unmarshal([]byte(*l.TeamNames), &l.TeamNamesParsed); err != nil {
 			l.TeamNamesParsed = nil
+		}
+	}
+	if l.CustomerIDs != nil && *l.CustomerIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerIDs), &l.CustomerIDsParsed); err != nil {
+			l.CustomerIDsParsed = nil
+		}
+	}
+	if l.CustomerNames != nil && *l.CustomerNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerNames), &l.CustomerNamesParsed); err != nil {
+			l.CustomerNamesParsed = nil
 		}
 	}
 	if l.BusinessUnitIDs != nil && *l.BusinessUnitIDs != "" {
@@ -1663,6 +1693,13 @@ type DimensionRankingWithTrend struct {
 type DimensionRankingResult struct {
 	Rankings  []DimensionRankingWithTrend `json:"rankings"`
 	Dimension RankingDimension            `json:"dimension"`
+	// TotalActualRequests / TotalAttributedRequests are only set for fan-out
+	// dimensions (team / business unit / customer) on Postgres. Attributed
+	// counts credit a request to every dimension value it touches, so their
+	// sum can exceed the real request count; actual is COUNT(DISTINCT id)
+	// over the same attributed population. Zero/omitted when not computed.
+	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
+	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.

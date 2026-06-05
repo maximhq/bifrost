@@ -345,6 +345,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRecreateFilterTeamBUMatViews(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCustomerArrayColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerArrayGINIndexes(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterCustomersMatView(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
@@ -2179,7 +2188,10 @@ func ensureMultiTeamBusinessUnitGINIndexes(ctx context.Context, conn *sql.Conn) 
 	if err := ensureArrayGINIndex(ctx, conn, "idx_logs_team_ids_gin", "team_ids"); err != nil {
 		return err
 	}
-	return ensureArrayGINIndex(ctx, conn, "idx_logs_business_unit_ids_gin", "business_unit_ids")
+	if err := ensureArrayGINIndex(ctx, conn, "idx_logs_business_unit_ids_gin", "business_unit_ids"); err != nil {
+		return err
+	}
+	return ensureArrayGINIndex(ctx, conn, "idx_logs_customer_ids_gin", "customer_ids")
 }
 
 // migrationAddDashboardEnhancements adds cached_read_tokens column to logs table.
@@ -3503,6 +3515,107 @@ func migrationRecreateFilterTeamBUMatViews(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating filter team/business-unit matviews: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerArrayColumns adds the JSON-array columns capturing the full
+// deduped set of customers a request belongs to (a team can belong to many
+// customers via the enterprise team↔customer M2M). The scalar customer_id remains
+// the primary; these power display, multi-customer filtering (jsonb @> + GIN), and
+// fan-out aggregation, mirroring team_ids / business_unit_ids.
+func migrationAddCustomerArrayColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"customer_ids", "customer_names"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_customer_array_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding customer array columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerArrayGINIndexes registers the GIN index backing multi-customer
+// log filtering. Like the team/BU GIN migration, the build itself is deferred to
+// ensureMultiTeamBusinessUnitGINIndexes (post-startup, background, CONCURRENTLY);
+// this migration exists only to provide a rollback that drops the index. Postgres-only.
+func migrationAddCustomerArrayGINIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_customer_array_gin_indexes_v1",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_customer_ids_gin").Error; err != nil {
+					return fmt.Errorf("failed to drop customer_ids GIN index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while registering customer GIN indexes: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterCustomersMatView drops mv_filter_customers so ensureMatViews
+// recreates it with the multi-value body (scalar customer_id UNION the JSON-array
+// customer_ids), mirroring migrationRecreateFilterTeamBUMatViews. The column shape
+// is unchanged so old replicas reading it during a rolling deploy are unaffected.
+func migrationRecreateFilterCustomersMatView(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_customers_matview_multivalue",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_customers CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop mv_filter_customers: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter customers matview: %s", err.Error())
 	}
 	return nil
 }

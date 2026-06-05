@@ -62,6 +62,12 @@ func TestTeamOrBUFanoutFrom(t *testing.T) {
 	assert.Contains(t, buSQL, "business_unit_ids::jsonb")
 	assert.Contains(t, buSQL, "SELECT l.business_unit_id, COALESCE(l.business_unit_name, '')")
 
+	// Customers fan out too (enterprise team↔customer M2M).
+	custSQL, ok := teamOrBUFanoutFrom("customer_id")
+	require.True(t, ok)
+	assert.Contains(t, custSQL, "jsonb_array_elements_text(l.customer_ids::jsonb) WITH ORDINALITY")
+	assert.Contains(t, custSQL, "SELECT l.customer_id, COALESCE(l.customer_name, '')")
+
 	// Non-fan-out dimensions return false (caller uses the normal scalar path).
 	_, ok = teamOrBUFanoutFrom("user_id")
 	assert.False(t, ok)
@@ -79,4 +85,5 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 
 	assert.False(t, canUseMatViewFilters(SearchFilters{TeamIDs: []string{"t1"}}), "team filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{BusinessUnitIDs: []string{"bu1"}}), "BU filter must force the raw path")
+	assert.False(t, canUseMatViewFilters(SearchFilters{CustomerIDs: []string{"c1"}}), "customer filter must force the raw path")
 }
