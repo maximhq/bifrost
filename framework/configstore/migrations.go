@@ -344,6 +344,19 @@ func sqliteDropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	return nil
 }
 
+// dropColumnSQL returns a dialect-correct `ALTER TABLE ... DROP COLUMN` statement.
+// Postgres supports (and we use) the `IF EXISTS` guard so the drop is a no-op when the
+// column is already gone; SQLite's ALTER TABLE grammar has no `IF EXISTS` clause and
+// errors with `near "EXISTS": syntax error`, so we emit a plain DROP COLUMN there.
+// Callers must still guard the SQLite path with a HasColumn check, since plain DROP
+// COLUMN errors on a missing column.
+func dropColumnSQL(tx *gorm.DB, table, column string) string {
+	if tx.Dialector.Name() == "postgres" {
+		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, column)
+	}
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
+}
+
 func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 	mg := tx.Migrator()
 	if !mg.HasColumn(tableName, "budget_id") {
@@ -3940,27 +3953,59 @@ func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *g
 			for i := range providers {
 				p := &providers[i]
 
-				// Idempotency: skip if a global all-models row already exists for this provider.
-				var existing int64
-				if err := tx.Model(&tables.TableModelConfig{}).
-					Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
-					Count(&existing).Error; err != nil {
-					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
-				}
-				if existing == 0 {
+				// Load any existing global all-models row for this provider. This keeps the
+				// migration idempotent (a re-run skips re-insert) AND lossless: if a wildcard
+				// row already exists - hand-created via the UI, or left by a partial prior run -
+				// we merge the provider's governance into it instead of skipping, so clearing
+				// the provider FKs below can never silently drop budget/rate-limit ownership.
+				// Select only the columns that exist at this point in the migration sequence
+				// (later columns like calendar_aligned do not yet exist).
+				var existing tables.TableModelConfig
+				err := tx.
+					Where("scope = ? AND scope_id IS NULL AND model_name = ? AND provider = ?",
+						tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
+					Select("id", "budget_id", "rate_limit_id").
+					First(&existing).Error
+				switch {
+				case err == gorm.ErrRecordNotFound:
 					providerName := p.Name
-					mc := tables.TableModelConfig{
-						ID:          uuid.NewString(),
-						ModelName:   tables.ModelConfigAllModels,
-						Provider:    &providerName,
-						Scope:       tables.ModelConfigScopeGlobal,
-						BudgetID:    p.BudgetID,
-						RateLimitID: p.RateLimitID,
-						CreatedAt:   now,
-						UpdatedAt:   now,
-					}
-					if err := tx.Create(&mc).Error; err != nil {
+					// Insert via an explicit column map rather than the live TableModelConfig
+					// struct: GORM derives the INSERT column list from today's struct, so a
+					// column added by a *later* migration (e.g. calendar_aligned, added by
+					// add_model_config_calendar_aligned_column further down the sequence) would
+					// otherwise appear in this INSERT before its column exists and fail boot.
+					// The map pins this historical migration to the columns present at this point.
+					if err := tx.Table((tables.TableModelConfig{}).TableName()).Create(map[string]any{
+						"id":            uuid.NewString(),
+						"model_name":    tables.ModelConfigAllModels,
+						"provider":      providerName,
+						"scope":         tables.ModelConfigScopeGlobal,
+						"budget_id":     p.BudgetID,
+						"rate_limit_id": p.RateLimitID,
+						"created_at":    now,
+						"updated_at":    now,
+					}).Error; err != nil {
 						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
+					}
+				case err != nil:
+					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
+				default:
+					// A wildcard row already exists: backfill only the governance slots it lacks,
+					// so we never overwrite values already present. This is commutative and safe
+					// to repeat (a clean re-run finds nothing to fill and writes nothing).
+					updates := map[string]any{}
+					if existing.BudgetID == nil && p.BudgetID != nil {
+						updates["budget_id"] = p.BudgetID
+					}
+					if existing.RateLimitID == nil && p.RateLimitID != nil {
+						updates["rate_limit_id"] = p.RateLimitID
+					}
+					if len(updates) > 0 {
+						updates["updated_at"] = now
+						if err := tx.Table((tables.TableModelConfig{}).TableName()).
+							Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+							return fmt.Errorf("failed to merge provider governance into wildcard model config for provider %q: %w", p.Name, err)
+						}
 					}
 				}
 
@@ -7173,7 +7218,7 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 				// Drop the legacy calendar_aligned column from governance_budgets.
 				// Plain column with no FK references — not a correctness risk if left behind,
 				// but log a warning so it's not invisible.
-				if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned").Error; err != nil {
+				if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 					log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 				}
 			}
@@ -7233,8 +7278,9 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0) // restore default
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -7367,8 +7413,9 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -7460,8 +7507,9 @@ func migrationAddModelConfigBudgetsFKConstraint(ctx context.Context, db *gorm.DB
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -8975,14 +9023,14 @@ func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB)
 		ID: "drop_legacy_calendar_aligned_columns",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Use raw `ALTER TABLE ... DROP COLUMN IF EXISTS` instead of GORM's Migrator.DropColumn,
-			// which on SQLite does a full table rebuild that aborts on pre-existing FK violations;
-			// since these unconstrained boolean columns are safe to leave behind, we log a warning
-			// rather than fail boot.
-			if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN calendar_aligned").Error; err != nil {
+			// Use a raw `ALTER TABLE ... DROP COLUMN` (dialect-aware via dropColumnSQL) instead of
+			// GORM's Migrator.DropColumn, which on SQLite does a full table rebuild that aborts on
+			// pre-existing FK violations; since these unconstrained boolean columns are safe to
+			// leave behind, we log a warning rather than fail boot.
+			if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 			}
-			if err := tx.Exec("ALTER TABLE governance_rate_limits DROP COLUMN calendar_aligned").Error; err != nil {
+			if err := tx.Exec(dropColumnSQL(tx, "governance_rate_limits", "calendar_aligned")).Error; err != nil {
 				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
 			}
 			return nil
@@ -9699,6 +9747,29 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 			return nil
 		},
 	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables: GORM's
+	// CreateConstraint (Customer -> Budgets) rebuilds governance_budgets via DROP+RENAME,
+	// which fails when other tables hold FKs into it and foreign_keys is ON. PRAGMA
+	// foreign_keys cannot change inside a transaction, so disable it on a pinned single
+	// connection before the migrator opens its transaction, then restore it.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
 	}
