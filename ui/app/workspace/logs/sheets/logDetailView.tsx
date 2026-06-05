@@ -2241,7 +2241,7 @@ export function LogDetailView({
 const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<void>) => {
 	try {
 		const isChat = log.object === "chat.completion" || log.object === "chat_completion" || log.object === "chat.completion.chunk";
-		const isResponses = log.object === "response" || log.object === "response.completion.chunk";
+		const isResponses = log.object === "response" || log.object === "response.completion.chunk" || log.object === "compaction";
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
@@ -2281,7 +2281,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (log.object === "audio.transcription" || log.object === "audio.transcription.chunk") {
 				toast.error("Copy request body is not available for transcription requests");
 			} else {
-				toast.error("Copy request body is only available for chat, responses, speech, text completion, and embedding requests");
+				toast.error("Copy request body is only available for chat, responses, compaction, speech, text completion, and embedding requests");
 			}
 			return;
 		}

@@ -98,6 +98,10 @@ func hydrateOpenAIRequestFromLargePayloadMetadata(ctx *fasthttp.RequestCtx, bifr
 		if hasStream && r.Stream == nil {
 			r.Stream = schemas.Ptr(streamRequested)
 		}
+	case *openai.OpenAICompactionRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
 	case *openai.OpenAIEmbeddingRequest:
 		if r.Model == "" {
 			r.Model = metadata.Model
@@ -816,6 +820,58 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type for input tokens")
 			},
 			CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Compaction endpoint (POST /v1/responses/compact)
+	for _, path := range []string{
+		"/v1/responses/compact",
+		"/responses/compact",
+		"/openai/responses/compact",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				hydrateOpenAIRequestFromLargePayloadMetadata(ctx, bifrostCtx, req)
+				schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(ctx), bifrostCtx)
+				if isAzureSDKRequest(ctx) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
+				}
+				return nil
+			},
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CompactionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAICompactionRequest{}
+			},
+			GetRequestModel: func(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+				if r, ok := req.(*openai.OpenAICompactionRequest); ok {
+					return r.Model, nil
+				}
+				return "", nil
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if r, ok := req.(*openai.OpenAICompactionRequest); ok {
+					return &schemas.BifrostRequest{
+						CompactionRequest: r.ToBifrostCompactionRequest(ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid compaction request type")
+			},
+			CompactionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCompactionResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil

@@ -154,6 +154,7 @@ const (
 	RerankRequest                RequestType = "rerank"
 	OCRRequest                   RequestType = "ocr"
 	CountTokensRequest           RequestType = "count_tokens"
+	CompactionRequest            RequestType = "compaction"
 	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	PassthroughRequest           RequestType = "passthrough"
 	PassthroughStreamRequest     RequestType = "passthrough_stream"
@@ -447,6 +448,7 @@ type BifrostRequest struct {
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
 	CountTokensRequest           *BifrostResponsesRequest
+	CompactionRequest            *BifrostCompactionRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
 	OCRRequest                   *BifrostOCRRequest
@@ -502,6 +504,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ResponsesRequest.Provider, br.ResponsesRequest.Model, br.ResponsesRequest.Fallbacks
 	case br.CountTokensRequest != nil:
 		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
+	case br.CompactionRequest != nil:
+		return br.CompactionRequest.Provider, br.CompactionRequest.Model, br.CompactionRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.RerankRequest != nil:
@@ -643,6 +647,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ResponsesRequest.Provider = provider
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Provider = provider
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
 	case br.RerankRequest != nil:
@@ -694,6 +700,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ResponsesRequest.Model = model
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Model = model
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
 	case br.RerankRequest != nil:
@@ -747,6 +755,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ResponsesRequest.Fallbacks = fallbacks
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Fallbacks = fallbacks
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.RerankRequest != nil:
@@ -778,6 +788,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ResponsesRequest.RawRequestBody = rawRequestBody
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.RawRequestBody = rawRequestBody
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.RerankRequest != nil:
@@ -935,6 +947,7 @@ type BifrostResponse struct {
 	ResponsesResponse             *BifrostResponsesResponse
 	ResponsesStreamResponse       *BifrostResponsesStreamResponse
 	CountTokensResponse           *BifrostCountTokensResponse
+	CompactionResponse            *BifrostCompactionResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	RerankResponse                *BifrostRerankResponse
 	OCRResponse                   *BifrostOCRResponse
@@ -990,6 +1003,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesStreamResponse.ExtraFields
 	case r.CountTokensResponse != nil:
 		return &r.CountTokensResponse.ExtraFields
+	case r.CompactionResponse != nil:
+		return &r.CompactionResponse.ExtraFields
 	case r.EmbeddingResponse != nil:
 		return &r.EmbeddingResponse.ExtraFields
 	case r.RerankResponse != nil:
@@ -1115,6 +1130,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.CountTokensResponse.ExtraFields.Provider = provider
 		r.CountTokensResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.CountTokensResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CompactionResponse != nil:
+		r.CompactionResponse.ExtraFields.RequestType = requestType
+		r.CompactionResponse.ExtraFields.Provider = provider
+		r.CompactionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CompactionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.EmbeddingResponse != nil:
 		r.EmbeddingResponse.ExtraFields.RequestType = requestType
 		r.EmbeddingResponse.ExtraFields.Provider = provider

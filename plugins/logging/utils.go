@@ -568,6 +568,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	if request.CountTokensRequest != nil && len(request.CountTokensRequest.Input) > 0 {
 		return []schemas.ChatMessage{}, request.CountTokensRequest.Input
 	}
+	if request.CompactionRequest != nil && len(request.CompactionRequest.Input) > 0 {
+		return []schemas.ChatMessage{}, request.CompactionRequest.Input
+	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }
 

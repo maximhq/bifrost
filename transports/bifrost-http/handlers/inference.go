@@ -197,6 +197,17 @@ var responsesParamsKnownFields = map[string]bool{
 	"truncation":             true,
 }
 
+var compactionParamsKnownFields = map[string]bool{
+	"model":                  true,
+	"input":                  true,
+	"fallbacks":              true,
+	"instructions":           true,
+	"previous_response_id":   true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"service_tier":           true,
+}
+
 var embeddingParamsKnownFields = map[string]bool{
 	"model":           true,
 	"input":           true,
@@ -514,6 +525,17 @@ type ResponsesRequest struct {
 	*schemas.ResponsesParameters
 }
 
+// CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
+type CompactionHTTPRequest struct {
+	Input                ResponsesRequestInput       `json:"input"`
+	Instructions         *string                     `json:"instructions,omitempty"`
+	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
+	BifrostParams
+}
+
 // EmbeddingRequest is a bifrost embedding request
 type EmbeddingRequest struct {
 	Input *schemas.EmbeddingInput `json:"input"`
@@ -674,6 +696,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
 	"/v1/images/generations":     schemas.ImageGenerationRequest,
 	"/v1/responses/input_tokens": schemas.CountTokensRequest,
+	"/v1/responses/compact":      schemas.CompactionRequest,
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
@@ -719,6 +742,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
 	r.POST("/v1/responses/input_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/responses/compact", lib.ChainMiddlewares(h.compaction, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
@@ -1499,6 +1523,72 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 
 	forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, response)
+}
+
+// prepareCompactionRequest prepares a BifrostCompactionRequest from the HTTP request body
+func prepareCompactionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*CompactionHTTPRequest, *schemas.BifrostCompactionRequest, error) {
+	req, base, err := prepareRequest[CompactionHTTPRequest](ctx, config, compactionParamsKnownFields)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil && req.PreviousResponseID == nil {
+		return nil, nil, fmt.Errorf("input or previous_response_id is required for compaction")
+	}
+
+	input := req.Input.ResponsesRequestInputArray
+	if input == nil && req.Input.ResponsesRequestInputStr != nil {
+		input = []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: req.Input.ResponsesRequestInputStr},
+			},
+		}
+	}
+
+	return req, &schemas.BifrostCompactionRequest{
+		Provider:             base.Provider,
+		Model:                base.ModelName,
+		Input:                input,
+		Instructions:         req.Instructions,
+		PreviousResponseID:   req.PreviousResponseID,
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		ServiceTier:          req.ServiceTier,
+		Fallbacks:            base.Fallbacks,
+		ExtraParams:          base.ExtraParams,
+	}, nil
+}
+
+// compaction handles POST /v1/responses/compact - Compact a conversation context window
+func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
+	_, bifrostCompactionReq, err := prepareCompactionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	response, bifrostErr := h.client.CompactionRequest(bifrostCtx, bifrostCompactionReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if response != nil && response.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
+	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
