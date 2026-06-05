@@ -305,7 +305,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("to_tsvector('simple', content_summary) @@ plainto_tsquery('simple', ?)", filters.ContentSearch)
+			// Must match the idx_logs_content_summary_fts expression exactly (incl. the
+			// left() cap) so the planner uses the GIN expression index.
+			baseQuery = baseQuery.Where(fmt.Sprintf("to_tsvector('simple', left(content_summary, %d)) @@ plainto_tsquery('simple', ?)", ftsInputCharLimit), filters.ContentSearch)
 		} else {
 			baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
 		}
@@ -3589,7 +3591,12 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 		// Search in both arguments and result fields
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("(to_tsvector('simple', arguments) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', result) @@ plainto_tsquery('simple', ?))", filters.ContentSearch, filters.ContentSearch)
+			// Must match idx_mcp_logs_arguments_fts / idx_mcp_logs_result_fts expressions
+			// exactly (incl. the left() cap) so the planner uses the GIN expression indexes.
+			baseQuery = baseQuery.Where(
+				fmt.Sprintf("(to_tsvector('simple', left(arguments, %d)) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', left(result, %d)) @@ plainto_tsquery('simple', ?))", ftsInputCharLimit, ftsInputCharLimit),
+				filters.ContentSearch, filters.ContentSearch,
+			)
 		} else {
 			search := "%" + filters.ContentSearch + "%"
 			baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", search, search)

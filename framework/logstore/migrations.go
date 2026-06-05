@@ -2396,6 +2396,13 @@ type performanceIndexDef struct {
 	sql   string
 }
 
+// ftsInputCharLimit is the maximum number of characters fed to to_tsvector via left().
+// It must be low enough that even worst-case multi-byte / high-lexeme content keeps
+// the tsvector output under Postgres's 1,048,575-byte hard limit. The same constant
+// must be used in both the index expression and the query predicate so the planner
+// recognises the expression match and uses the GIN index.
+const ftsInputCharLimit = 250000
+
 // performanceIndexes is the set of full-text and GIN indexes built by ensurePerformanceIndexes.
 // Each statement uses CREATE INDEX CONCURRENTLY to avoid blocking writes.
 var performanceIndexes = []performanceIndexDef{
@@ -2508,17 +2515,19 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
 		// left() caps input characters to stay within to_tsvector's 1MB output limit.
-		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, 800000))) WHERE content_summary IS NOT NULL",
+		// Use ftsInputCharLimit: even worst-case UTF-8 / high-lexeme content stays
+		// well under the 1,048,575-byte tsvector limit.
+		sql: fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, %d))) WHERE content_summary IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_arguments_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, 800000))) WHERE arguments IS NOT NULL",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, %d))) WHERE arguments IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_result_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, 800000))) WHERE result IS NOT NULL",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, %d))) WHERE result IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "logs",
