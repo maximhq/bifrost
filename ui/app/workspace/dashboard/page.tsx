@@ -210,6 +210,7 @@ export default function DashboardPage() {
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const appRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
 	const allRefs = [
 		overviewRef,
@@ -221,6 +222,7 @@ export default function DashboardPage() {
 		buRankingsRef,
 		userRankingsRef,
 		virtualKeyRankingsRef,
+		appRankingsRef,
 	];
 
 	const getDashboardData = useCallback((): DashboardData => {
@@ -243,6 +245,7 @@ export default function DashboardPage() {
 			buRankingsData: null,
 			userRankingsData: null,
 			virtualKeyRankingsData: null,
+			appRankingsData: null,
 			mcpHistogramData: null,
 			mcpCostData: null,
 			mcpTopToolsData: null,
@@ -304,7 +307,10 @@ export default function DashboardPage() {
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
-	const handleProviderThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ provider_throughput_chart: type }), [setUrlState]);
+	const handleProviderThroughputChartToggle = useCallback(
+		(type: ChartType) => setUrlState({ provider_throughput_chart: type }),
+		[setUrlState],
+	);
 	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
 	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
@@ -556,9 +562,11 @@ export default function DashboardPage() {
 								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
 									BU Rankings
 								</TabsTrigger>
+								<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+									App Rankings
+								</TabsTrigger>
 							</TabsList>
 						</div>
-
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-overview">

@@ -202,6 +202,7 @@ export interface DashboardData {
 	buRankingsData: DimensionRankingsResponse | null;
 	userRankingsData: DimensionRankingsResponse | null;
 	virtualKeyRankingsData: DimensionRankingsResponse | null;
+	appRankingsData: DimensionRankingsResponse | null;
 	// MCP
 	mcpHistogramData: MCPHistogramResponse | null;
 	mcpCostData: MCPCostHistogramResponse | null;
@@ -217,6 +218,7 @@ export type DashboardTab =
 	| "bu-rankings"
 	| "user-rankings"
 	| "virtual-key-rankings"
+	| "app-rankings"
 	| "mcp";
 
 export type ExportTab = DashboardTab | "all";
@@ -284,6 +286,10 @@ export function getCSVSections(data: DashboardData, tab: ExportTab): { name: str
 
 	if (tab === "all" || tab === "virtual-key-rankings") {
 		sections.push({ name: "virtual-key-rankings", csv: dimensionRankingsToCSV(data.virtualKeyRankingsData, "Virtual Key") });
+	}
+
+	if (tab === "all" || tab === "app-rankings") {
+		sections.push({ name: "app-rankings", csv: dimensionRankingsToCSV(data.appRankingsData, "App") });
 	}
 
 	if (tab === "all" || tab === "mcp") {
