@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -2210,6 +2211,14 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 	if req.Metadata != nil && req.Metadata.UserID != nil {
 		params.User = req.Metadata.UserID
+		key := strings.TrimSpace(*req.Metadata.UserID)
+		if key != "" {
+			if len(key) > 64 {
+				sum := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+				key = sum
+			}
+			params.PromptCacheKey = &key
+		}
 	}
 	if req.ContextManagement != nil {
 		params.ExtraParams["context_management"] = req.ContextManagement
