@@ -107,6 +107,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 					<ToolNamesFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
 					{/* Rest closed unless they have active filters */}
 					<ServersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
@@ -187,14 +188,16 @@ function CheckboxFilterItem({
 	checked,
 	onCheckedChange,
 	labelClassName,
+	testId,
 }: {
 	label: string;
 	checked: boolean;
 	onCheckedChange: (checked: boolean) => void;
 	labelClassName?: string;
+	testId?: string;
 }) {
 	return (
-		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm">
+		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm" data-testid={testId}>
 			<Checkbox checked={checked} onCheckedChange={onCheckedChange} />
 			<TruncatedLabel className={labelClassName}>{label}</TruncatedLabel>
 		</label>
@@ -220,6 +223,8 @@ function SearchableCheckboxList({
 	onToggle,
 	placeholder = "Search...",
 	inputRef,
+	testIdPrefix,
+	normalizeTestIdKey = false,
 	allowCustom = false,
 	onSearch,
 	fetching,
@@ -229,6 +234,11 @@ function SearchableCheckboxList({
 	onToggle: (key: string) => void;
 	placeholder?: string;
 	inputRef?: Ref<HTMLInputElement>;
+	testIdPrefix?: string;
+	// When true, item keys are slugified before composing the per-row data-testid
+	// (e.g. "Claude Desktop" -> "claude-desktop"). Use for free-form keys like app
+	// names so E2E selectors stay space/case-stable; leave off for already-safe keys.
+	normalizeTestIdKey?: boolean;
 	allowCustom?: boolean;
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
@@ -274,10 +284,21 @@ function SearchableCheckboxList({
 					}}
 					placeholder={placeholder}
 					className="h-8 border-0 pl-8 text-xs"
+					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
 				/>
 			</div>
 			{filtered.map((item) => (
-				<CheckboxFilterItem key={item.key} label={item.label} checked={isSelected(item.key)} onCheckedChange={() => onToggle(item.key)} />
+				<CheckboxFilterItem
+					key={item.key}
+					label={item.label}
+					checked={isSelected(item.key)}
+					onCheckedChange={() => onToggle(item.key)}
+					testId={
+						testIdPrefix
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
+							: undefined
+					}
+				/>
 			))}
 			{filtered.length === 0 && !showAddCustom && (
 				<div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>
@@ -287,6 +308,7 @@ function SearchableCheckboxList({
 					type="button"
 					onClick={commitCustom}
 					className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left text-sm"
+					data-testid={testIdPrefix ? `${testIdPrefix}-add-custom` : undefined}
 				>
 					<Plus className="text-muted-foreground size-3.5 shrink-0" />
 					<span className="truncate">
@@ -407,6 +429,45 @@ function ServersFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 				}}
 				onSearch={setSearchQuery}
 				fetching={isFetching}
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// AppFilter
+// ---------------------------------------------------------------------------
+
+function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.apps || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetMCPLogsFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
+	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
+	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+
+	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
+
+	const selectedSet = new Set(filters.apps || []);
+
+	return (
+		<FilterSection title="App" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search apps"
+				items={items}
+				isSelected={(appName) => selectedSet.has(appName)}
+				onToggle={(appName) => {
+					const current = filters.apps || [];
+					const next = current.includes(appName) ? current.filter((app) => app !== appName) : [...current, appName];
+					onFiltersChange({ ...filters, apps: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="mcp-app-filter"
+				normalizeTestIdKey
 			/>
 		</FilterSection>
 	);
