@@ -322,18 +322,28 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<FormItem>
 										<FormLabel>Model Name</FormLabel>
 										<FormControl>
-											<div data-testid="model-limit-model-select">
-												<ModelMultiselect
-													provider={form.watch("provider") || undefined}
-													value={field.value}
-													onChange={field.onChange}
-													placeholder="Search for a model..."
-													isSingleSelect
-													loadModelsOnEmptyProvider="base_models"
-													allowAllOption
-													disabled={isEditing}
-												/>
-											</div>
+											{isEditing ? (
+												<Select value={field.value} disabled>
+													<SelectTrigger className="w-full" data-testid="model-limit-model-select">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value={field.value}>{field.value === "*" ? "All Models" : field.value}</SelectItem>
+													</SelectContent>
+												</Select>
+											) : (
+												<div data-testid="model-limit-model-select">
+													<ModelMultiselect
+														provider={form.watch("provider") || undefined}
+														value={field.value}
+														onChange={field.onChange}
+														placeholder="Search for a model..."
+														isSingleSelect
+														loadModelsOnEmptyProvider="base_models"
+														allowAllOption
+													/>
+												</div>
+											)}
 										</FormControl>
 										<FormMessage />
 									</FormItem>
