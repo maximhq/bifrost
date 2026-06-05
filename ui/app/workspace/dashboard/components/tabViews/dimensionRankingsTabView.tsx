@@ -40,6 +40,14 @@ export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandl
 			[data, dataKey, loadData],
 		);
 
-		return <DimensionRankingsTab data={data ?? null} loading={loading} dimensionLabel={dimensionLabel} testIdPrefix={testIdPrefix} />;
+		return (
+			<DimensionRankingsTab
+				data={data ?? null}
+				loading={loading}
+				dimensionLabel={dimensionLabel}
+				testIdPrefix={testIdPrefix}
+				attributed={dimension === "team" || dimension === "business_unit"}
+			/>
+		);
 	},
 );
