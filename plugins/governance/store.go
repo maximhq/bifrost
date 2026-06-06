@@ -172,6 +172,7 @@ type GovernanceStore interface {
 	CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	DeleteUserGovernanceInMemory(ctx context.Context, userID string)
+	CreateUserNameInMemory(ctx context.Context, userID string, userName string)
 	// User-level governance checks (enterprise-only)
 	CheckUserBudget(ctx context.Context, userID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error)
 	CheckUserRateLimit(ctx context.Context, userID string, request *EvaluationRequest, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
@@ -3296,6 +3297,11 @@ func (gs *LocalGovernanceStore) GetUserGovernance(ctx context.Context, userID st
 
 // CreateUserGovernanceInMemory adds user governance data to the in-memory store (enterprise-only)
 func (gs *LocalGovernanceStore) CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
+	// NoOp
+	// Available in enterprise
+}
+
+func (gs *LocalGovernanceStore) CreateUserNameInMemory(ctx context.Context, userID string, userName string) {
 	// NoOp
 	// Available in enterprise
 }
