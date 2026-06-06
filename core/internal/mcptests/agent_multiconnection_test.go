@@ -112,8 +112,8 @@ func TestAgent_MultiConnection_MixedPermissions(t *testing.T) {
 
 	// Turn 1: LLM calls mixed permission tools
 	mocker.AddChatResponse(CreateAgentTurnWithToolCalls(
-		GetSampleEchoToolCall("call-1", "test"), // Auto-execute
-		GetSampleCalculatorToolCall("call-2", "add", 5, 3),                                                // Needs approval
+		GetSampleEchoToolCall("call-1", "test"),                                                  // Auto-execute
+		GetSampleCalculatorToolCall("call-2", "add", 5, 3),                                       // Needs approval
 		CreateSTDIOToolCall("call-3", "GoTestServer", "uuid_generate", map[string]interface{}{}), // Needs approval
 	))
 

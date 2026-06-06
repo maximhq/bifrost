@@ -597,8 +597,8 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 		// Some turns include tool calls (with varying key orderings), others are plain chat.
 		// This simulates a real Claude Code session.
 		type turn struct {
-			name     string
-			query    string
+			name  string
+			query string
 			// If non-nil, these are tool call + result messages to inject before the query
 			// (simulating the assistant calling tools in the previous turn)
 			toolExchange []schemas.ResponsesMessage
@@ -619,10 +619,10 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 				toolExchange: []schemas.ResponsesMessage{
 					// 2 more tool calls with different key orderings
 					// Keys: unit, location (non-alphabetical)
-				makeToolCall("call_weather_tokyo", "weather", `{"unit":"celsius","location":"Tokyo"}`, false),
-				makeToolCall("call_weather_sydney", "weather", `{"location":"Sydney","unit":"celsius"}`, false),
-				makeToolResult("call_weather_tokyo", `{"temperature":25,"condition":"sunny"}`, false),
-				makeToolResult("call_weather_sydney", `{"temperature":22,"condition":"clear"}`, false),
+					makeToolCall("call_weather_tokyo", "weather", `{"unit":"celsius","location":"Tokyo"}`, false),
+					makeToolCall("call_weather_sydney", "weather", `{"location":"Sydney","unit":"celsius"}`, false),
+					makeToolResult("call_weather_tokyo", `{"temperature":25,"condition":"sunny"}`, false),
+					makeToolResult("call_weather_sydney", `{"temperature":22,"condition":"clear"}`, false),
 				},
 			},
 			{
@@ -634,8 +634,8 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 				query: "What's the weather in Berlin?",
 				toolExchange: []schemas.ResponsesMessage{
 					// Single tool call with keys in non-alphabetical order
-				makeToolCall("call_weather_berlin", "weather", `{"unit":"celsius","location":"Berlin"}`, false),
-				makeToolResult("call_weather_berlin", `{"temperature":8,"condition":"overcast"}`, false),
+					makeToolCall("call_weather_berlin", "weather", `{"unit":"celsius","location":"Berlin"}`, false),
+					makeToolResult("call_weather_berlin", `{"temperature":8,"condition":"overcast"}`, false),
 				},
 			},
 			{
@@ -651,10 +651,10 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 				query: "Check Paris and Rome too.",
 				toolExchange: []schemas.ResponsesMessage{
 					// Keys: location, unit vs unit, location (mixed ordering)
-				makeToolCall("call_weather_paris", "weather", `{"location":"Paris","unit":"celsius"}`, false),
-				makeToolCall("call_weather_rome", "weather", `{"unit":"celsius","location":"Rome"}`, false),
-				makeToolResult("call_weather_paris", `{"temperature":15,"condition":"light rain"}`, false),
-				makeToolResult("call_weather_rome", `{"temperature":20,"condition":"partly sunny"}`, false),
+					makeToolCall("call_weather_paris", "weather", `{"location":"Paris","unit":"celsius"}`, false),
+					makeToolCall("call_weather_rome", "weather", `{"unit":"celsius","location":"Rome"}`, false),
+					makeToolResult("call_weather_paris", `{"temperature":15,"condition":"light rain"}`, false),
+					makeToolResult("call_weather_rome", `{"temperature":20,"condition":"partly sunny"}`, false),
 				},
 			},
 			{
@@ -708,77 +708,77 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 					conversationHistory = append(conversationHistory, turn.toolExchange...)
 				}
 
-			// Build full input: conversation history + current user query
-			input := make([]schemas.ResponsesMessage, len(conversationHistory)+1)
-			copy(input, conversationHistory)
-			input[len(input)-1] = makeUserMsg(turn.query)
+				// Build full input: conversation history + current user query
+				input := make([]schemas.ResponsesMessage, len(conversationHistory)+1)
+				copy(input, conversationHistory)
+				input[len(input)-1] = makeUserMsg(turn.query)
 
-			// Advance the cache checkpoint so that cache_read grows with each turn.
-			// For providers with explicit caching (Anthropic, Vertex, Bedrock), place
-			// cache_control on the penultimate message to expand the cached prefix.
-			// For providers with automatic caching (OpenAI), skip this entirely —
-			// adding cache_control expands ContentStr to ContentBlocks which changes
-			// the serialization format and breaks prefix matching across turns.
-			if testConfig.Provider != schemas.OpenAI && len(input) >= 2 {
-				cacheTargetIdx := len(input) - 2 // default: penultimate
-				for j := len(input) - 2; j >= 0; j-- {
-					jType := schemas.ResponsesMessageTypeMessage
-					if input[j].Type != nil {
-						jType = *input[j].Type
-					}
-					if jType == schemas.ResponsesMessageTypeFunctionCall {
-						cacheTargetIdx = j
-						break
-					} else if jType == schemas.ResponsesMessageTypeFunctionCallOutput {
-						continue // skip tool results; keep searching for the last tool call
-					} else {
-						cacheTargetIdx = j // regular message — use it if no tool call found before it
-						break
-					}
-				}
-
-				target := input[cacheTargetIdx] // struct copy; does not alias conversationHistory
-				tType := schemas.ResponsesMessageTypeMessage
-				if target.Type != nil {
-					tType = *target.Type
-				}
-				switch tType {
-				case schemas.ResponsesMessageTypeFunctionCall,
-					schemas.ResponsesMessageTypeFunctionCallOutput:
-					// Message-level CacheControl is forwarded to the tool_use / tool_result block
-					target.CacheControl = cacheControl
-				default:
-					// Regular user/assistant message: set cc on the last content block.
-					// Create new Content objects to avoid mutating the shared pointer from conversationHistory.
-					if target.Content != nil {
-						if target.Content.ContentStr != nil {
-							// Use the correct content block type based on message role:
-							// assistant messages require "output_text", others use "input_text"
-							blockType := schemas.ResponsesInputMessageContentBlockTypeText
-							if target.Role != nil && *target.Role == schemas.ResponsesInputMessageRoleAssistant {
-								blockType = schemas.ResponsesOutputMessageContentTypeText
-							}
-							target.Content = &schemas.ResponsesMessageContent{
-								ContentBlocks: []schemas.ResponsesMessageContentBlock{
-									{
-										Type:         blockType,
-										Text:         target.Content.ContentStr,
-										CacheControl: cacheControl,
-									},
-								},
-							}
-						} else if len(target.Content.ContentBlocks) > 0 {
-							blocks := make([]schemas.ResponsesMessageContentBlock, len(target.Content.ContentBlocks))
-							copy(blocks, target.Content.ContentBlocks)
-							blocks[len(blocks)-1].CacheControl = cacheControl
-							target.Content = &schemas.ResponsesMessageContent{ContentBlocks: blocks}
+				// Advance the cache checkpoint so that cache_read grows with each turn.
+				// For providers with explicit caching (Anthropic, Vertex, Bedrock), place
+				// cache_control on the penultimate message to expand the cached prefix.
+				// For providers with automatic caching (OpenAI), skip this entirely —
+				// adding cache_control expands ContentStr to ContentBlocks which changes
+				// the serialization format and breaks prefix matching across turns.
+				if testConfig.Provider != schemas.OpenAI && len(input) >= 2 {
+					cacheTargetIdx := len(input) - 2 // default: penultimate
+					for j := len(input) - 2; j >= 0; j-- {
+						jType := schemas.ResponsesMessageTypeMessage
+						if input[j].Type != nil {
+							jType = *input[j].Type
+						}
+						if jType == schemas.ResponsesMessageTypeFunctionCall {
+							cacheTargetIdx = j
+							break
+						} else if jType == schemas.ResponsesMessageTypeFunctionCallOutput {
+							continue // skip tool results; keep searching for the last tool call
+						} else {
+							cacheTargetIdx = j // regular message — use it if no tool call found before it
+							break
 						}
 					}
-				}
-				input[cacheTargetIdx] = target
-			}
 
-			req := &schemas.BifrostResponsesRequest{
+					target := input[cacheTargetIdx] // struct copy; does not alias conversationHistory
+					tType := schemas.ResponsesMessageTypeMessage
+					if target.Type != nil {
+						tType = *target.Type
+					}
+					switch tType {
+					case schemas.ResponsesMessageTypeFunctionCall,
+						schemas.ResponsesMessageTypeFunctionCallOutput:
+						// Message-level CacheControl is forwarded to the tool_use / tool_result block
+						target.CacheControl = cacheControl
+					default:
+						// Regular user/assistant message: set cc on the last content block.
+						// Create new Content objects to avoid mutating the shared pointer from conversationHistory.
+						if target.Content != nil {
+							if target.Content.ContentStr != nil {
+								// Use the correct content block type based on message role:
+								// assistant messages require "output_text", others use "input_text"
+								blockType := schemas.ResponsesInputMessageContentBlockTypeText
+								if target.Role != nil && *target.Role == schemas.ResponsesInputMessageRoleAssistant {
+									blockType = schemas.ResponsesOutputMessageContentTypeText
+								}
+								target.Content = &schemas.ResponsesMessageContent{
+									ContentBlocks: []schemas.ResponsesMessageContentBlock{
+										{
+											Type:         blockType,
+											Text:         target.Content.ContentStr,
+											CacheControl: cacheControl,
+										},
+									},
+								}
+							} else if len(target.Content.ContentBlocks) > 0 {
+								blocks := make([]schemas.ResponsesMessageContentBlock, len(target.Content.ContentBlocks))
+								copy(blocks, target.Content.ContentBlocks)
+								blocks[len(blocks)-1].CacheControl = cacheControl
+								target.Content = &schemas.ResponsesMessageContent{ContentBlocks: blocks}
+							}
+						}
+					}
+					input[cacheTargetIdx] = target
+				}
+
+				req := &schemas.BifrostResponsesRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.PromptCachingModel,
 					Input:    input,
@@ -882,11 +882,11 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 
 						switch testConfig.Provider {
 						case schemas.Anthropic, schemas.Vertex:
-					// Verify cache_control markers survived: system block (1) + penultimate message (1) = 2
-					cacheControlCount := strings.Count(rawStr, `"cache_control"`)
-					t.Logf("  %s: found %d cache_control markers in raw request", testConfig.Provider, cacheControlCount)
-					require.GreaterOrEqual(t, cacheControlCount, 2,
-						"Expected at least 2 cache_control markers (system + penultimate), got %d", cacheControlCount)
+							// Verify cache_control markers survived: system block (1) + penultimate message (1) = 2
+							cacheControlCount := strings.Count(rawStr, `"cache_control"`)
+							t.Logf("  %s: found %d cache_control markers in raw request", testConfig.Provider, cacheControlCount)
+							require.GreaterOrEqual(t, cacheControlCount, 2,
+								"Expected at least 2 cache_control markers (system + penultimate), got %d", cacheControlCount)
 
 							// Verify key ordering: call_weather_ny has {"unit":...,"location":...}
 							nyCallIdx := strings.Index(rawStr, `call_weather_ny`)
@@ -903,11 +903,11 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 								"Key order not preserved for call_weather_ny: expected unit before location")
 							t.Logf("  Key order preserved: 'unit' at %d, 'location' at %d", unitIdx, locIdx)
 
-					case schemas.Bedrock:
-						cachePointCount := strings.Count(rawStr, `"cachePoint"`)
-						t.Logf("  Bedrock: found %d cachePoint blocks", cachePointCount)
-						require.GreaterOrEqual(t, cachePointCount, 2,
-							"Expected at least 2 cachePoint blocks (system + last tool_use), got %d", cachePointCount)
+						case schemas.Bedrock:
+							cachePointCount := strings.Count(rawStr, `"cachePoint"`)
+							t.Logf("  Bedrock: found %d cachePoint blocks", cachePointCount)
+							require.GreaterOrEqual(t, cachePointCount, 2,
+								"Expected at least 2 cachePoint blocks (system + last tool_use), got %d", cachePointCount)
 						}
 					}
 				}
@@ -1263,27 +1263,27 @@ func RunPromptCachingMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx co
 					}(),
 				)
 
-			// For turns 2+, verify cache is being used
-			if i >= 1 {
-				var cachedRead int
-				if response.Usage.PromptTokensDetails != nil {
-					cachedRead = response.Usage.PromptTokensDetails.CachedReadTokens
-				}
-				if testConfig.Provider == schemas.OpenAI {
-					// OpenAI uses best-effort automatic caching; individual turns may miss.
-					// Track hits for the aggregate assertion after the loop.
-					if cachedRead > 0 {
-						turnsWithCacheHit++
-						t.Logf("Turn %d: cache HIT confirmed (cached_read_tokens=%d)", i+1, cachedRead)
-					} else {
-						t.Logf("Turn %d: cache MISS (OpenAI best-effort, expected occasionally)", i+1)
+				// For turns 2+, verify cache is being used
+				if i >= 1 {
+					var cachedRead int
+					if response.Usage.PromptTokensDetails != nil {
+						cachedRead = response.Usage.PromptTokensDetails.CachedReadTokens
 					}
-				} else {
-					require.Greater(t, cachedRead, 0,
-						"Turn %d: cached_read_tokens should be > 0 (caching broken)", i+1)
-					t.Logf("Turn %d: cache HIT confirmed (cached_read_tokens=%d)", i+1, cachedRead)
+					if testConfig.Provider == schemas.OpenAI {
+						// OpenAI uses best-effort automatic caching; individual turns may miss.
+						// Track hits for the aggregate assertion after the loop.
+						if cachedRead > 0 {
+							turnsWithCacheHit++
+							t.Logf("Turn %d: cache HIT confirmed (cached_read_tokens=%d)", i+1, cachedRead)
+						} else {
+							t.Logf("Turn %d: cache MISS (OpenAI best-effort, expected occasionally)", i+1)
+						}
+					} else {
+						require.Greater(t, cachedRead, 0,
+							"Turn %d: cached_read_tokens should be > 0 (caching broken)", i+1)
+						t.Logf("Turn %d: cache HIT confirmed (cached_read_tokens=%d)", i+1, cachedRead)
+					}
 				}
-			}
 
 				// Log final turn percentage for observability (no assertion — conversation
 				// growth naturally dilutes the cached prefix percentage)

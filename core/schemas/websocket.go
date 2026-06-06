@@ -34,9 +34,9 @@ type WebSocketResponsesEvent struct {
 
 // WebSocketErrorEvent represents a server-sent error event over WebSocket.
 type WebSocketErrorEvent struct {
-	Type   WebSocketEventType   `json:"type"`
-	Status int                  `json:"status,omitempty"`
-	Error  *WebSocketErrorBody  `json:"error,omitempty"`
+	Type   WebSocketEventType  `json:"type"`
+	Status int                 `json:"status,omitempty"`
+	Error  *WebSocketErrorBody `json:"error,omitempty"`
 }
 
 // WebSocketErrorBody is the error detail within a WebSocketErrorEvent.
@@ -49,9 +49,9 @@ type WebSocketErrorBody struct {
 // WebSocketConfig provides optional tuning for WebSocket gateway features.
 // WebSocket is always enabled. These fields allow overriding the high defaults.
 type WebSocketConfig struct {
-	MaxConnections int           `json:"max_connections_per_user"`
-	TranscriptBufferSize  int           `json:"transcript_buffer_size"`
-	Pool                  *WSPoolConfig `json:"pool,omitempty"`
+	MaxConnections       int           `json:"max_connections_per_user"`
+	TranscriptBufferSize int           `json:"transcript_buffer_size"`
+	Pool                 *WSPoolConfig `json:"pool,omitempty"`
 }
 
 // WSPoolConfig configures the upstream WebSocket connection pool.

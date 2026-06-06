@@ -118,4 +118,3 @@ func TestParseImageVariationFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *
 		order,
 	)
 }
-

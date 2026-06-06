@@ -527,4 +527,3 @@ func TestEnvVar_IsSet(t *testing.T) {
 		})
 	}
 }
-

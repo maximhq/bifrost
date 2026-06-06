@@ -50,7 +50,48 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 	require.True(t, exists)
 	require.NotNil(t, updatedBudget)
 
-	assert.Equal(t, 0.0, updatedBudget.CurrentUsage, "Failed request should not update budget")
+	assert.Equal(t, 25.5, updatedBudget.CurrentUsage, "Failed request with partial usage should update budget")
+}
+
+// TestUsageTracker_UpdateUsage_FailedRequestNoUsage tests that a completely failed request with no usage is ignored
+func TestUsageTracker_UpdateUsage_FailedRequestNoUsage(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	update := &UsageUpdate{
+		VirtualKey: "sk-bf-test",
+		Provider:   schemas.OpenAI,
+		Model:      "gpt-4",
+		Success:    false, // Failed request
+		TokensUsed: 0,
+		Cost:       0.0,
+		RequestID:  "req-124",
+	}
+
+	tracker.UpdateUsage(context.Background(), update)
+
+	// Give time for async processing
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify budget was NOT updated - retrieve from store
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	updatedBudget, exists := budgets["budget1"]
+	require.True(t, exists)
+	require.NotNil(t, updatedBudget)
+
+	assert.Equal(t, 0.0, updatedBudget.CurrentUsage, "Failed request with no usage should NOT update budget")
 }
 
 // TestUsageTracker_UpdateUsage_VirtualKeyNotFound tests handling of missing VK

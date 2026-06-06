@@ -417,9 +417,9 @@ func TestSSEStreamReaderRawAndWrapperMixed(t *testing.T) {
 	}
 
 	go func() {
-		r.Send(bedrockBinary)                       // raw binary passthrough
-		r.Send(preformattedSSE)                     // pre-formatted SSE string
-		r.SendEvent("", []byte(`{"final":true}`))   // wrapper method
+		r.Send(bedrockBinary)                     // raw binary passthrough
+		r.Send(preformattedSSE)                   // pre-formatted SSE string
+		r.SendEvent("", []byte(`{"final":true}`)) // wrapper method
 		r.Done()
 	}()
 

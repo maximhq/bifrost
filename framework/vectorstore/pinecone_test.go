@@ -14,7 +14,7 @@ import (
 const (
 	PineconeTestTimeout          = 30 * time.Second
 	PineconeTestNamespace        = "bifrost-test-namespace"
-	PineconeTestDimension        = 1536 // Matches text-embedding-3-small dimension
+	PineconeTestDimension        = 1536             // Matches text-embedding-3-small dimension
 	PineconeTestDefaultAPIKey    = "pclocal"        // Pinecone Local doesn't validate API keys
 	PineconeTestDefaultIndexHost = "localhost:5081" // Pinecone Local default port
 )

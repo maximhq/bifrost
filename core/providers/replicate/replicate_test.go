@@ -20,13 +20,13 @@ import (
 
 type testLogger struct{}
 
-func (l *testLogger) Debug(string, ...any)                     {}
-func (l *testLogger) Info(string, ...any)                      {}
-func (l *testLogger) Warn(string, ...any)                      {}
-func (l *testLogger) Error(string, ...any)                     {}
-func (l *testLogger) Fatal(string, ...any)                     {}
-func (l *testLogger) SetLevel(schemas.LogLevel)               {}
-func (l *testLogger) SetOutputType(schemas.LoggerOutputType)  {}
+func (l *testLogger) Debug(string, ...any)                   {}
+func (l *testLogger) Info(string, ...any)                    {}
+func (l *testLogger) Warn(string, ...any)                    {}
+func (l *testLogger) Error(string, ...any)                   {}
+func (l *testLogger) Fatal(string, ...any)                   {}
+func (l *testLogger) SetLevel(schemas.LogLevel)              {}
+func (l *testLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (l *testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -59,7 +59,7 @@ func multipartFieldOrderFromRequest(r *http.Request) ([]string, error) {
 
 func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
 	var (
-		order       []string
+		order      []string
 		handlerErr error
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

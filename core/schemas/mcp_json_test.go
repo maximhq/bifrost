@@ -60,4 +60,3 @@ func TestMCPConfigUnmarshalToolSyncIntervalRejectsFractionalNumber(t *testing.T)
 		t.Fatalf("expected fractional-value error, got: %v", err)
 	}
 }
-

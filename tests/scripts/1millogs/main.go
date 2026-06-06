@@ -685,7 +685,7 @@ func generateMCPLog(index int) logstore.MCPToolLog {
 	}
 
 	latency := float64(rand.Intn(2000)+50) / 1000.0 // 50ms to 2050ms
-	cost := float64(rand.Intn(10)+1) * 0.001         // $0.001 to $0.01
+	cost := float64(rand.Intn(10)+1) * 0.001        // $0.001 to $0.01
 
 	log := logstore.MCPToolLog{
 		ID:          fmt.Sprintf("mcp-%d-%d", timestamp.Unix(), index),

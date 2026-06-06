@@ -195,9 +195,9 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 			InputCostPerToken:  &inputCost,
 			OutputCostPerToken: &outputCost,
 		},
-		ContextLength:  capabilityIntPtr(128000),
-		MaxInputTokens:     capabilityIntPtr(64000),
-		MaxOutputTokens:    capabilityIntPtr(16000),
+		ContextLength:   capabilityIntPtr(128000),
+		MaxInputTokens:  capabilityIntPtr(64000),
+		MaxOutputTokens: capabilityIntPtr(16000),
 		Architecture: &schemas.Architecture{
 			Modality: &modality,
 		},

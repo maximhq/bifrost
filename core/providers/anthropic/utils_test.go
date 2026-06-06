@@ -2977,8 +2977,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

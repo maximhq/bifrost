@@ -519,6 +519,10 @@
                 "type": "string",
                 "description": "Associated customer ID"
               },
+              "source_id": {
+                "type": "string",
+                "description": "External source identifier for syncing with external systems"
+              },
               "budget_id": {
                 "type": "string",
                 "description": "Associated budget ID"

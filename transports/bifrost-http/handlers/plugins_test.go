@@ -84,9 +84,9 @@ func TestUpdatePlugin_ConfigMerge(t *testing.T) {
 		"plugins": []any{"logging", "compat"},
 	}
 	existingConfig := map[string]any{
-		"collector_url":    "localhost:4317",
-		"trace_type":       "genai_extension",
-		"protocol":         "grpc",
+		"collector_url":      "localhost:4317",
+		"trace_type":         "genai_extension",
+		"protocol":           "grpc",
 		"plugin_span_filter": spanFilter,
 	}
 

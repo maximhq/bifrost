@@ -250,3 +250,106 @@ func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 		t.Errorf("unexpected error code: %v", err.Error.Code)
 	}
 }
+
+type mockLogger struct{}
+
+func (mockLogger) Debug(msg string, args ...any)                     {}
+func (mockLogger) Info(msg string, args ...any)                      {}
+func (mockLogger) Warn(msg string, args ...any)                      {}
+func (mockLogger) Error(msg string, args ...any)                     {}
+func (mockLogger) Fatal(msg string, args ...any)                     {}
+func (mockLogger) SetLevel(level schemas.LogLevel)                   {}
+func (mockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+func (mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func TestHandleStreamCancellation_WithUsage(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	postHookRunner := func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+	logger := mockLogger{}
+	postHookSpanFinalizer := func(ctx context.Context) {}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     15,
+		CompletionTokens: 25,
+		TotalTokens:      40,
+	}
+
+	HandleStreamCancellation(
+		ctx,
+		postHookRunner,
+		responseChan,
+		logger,
+		postHookSpanFinalizer,
+		[]byte(`{"test": "request"}`),
+		usage,
+	)
+
+	select {
+	case chunk := <-responseChan:
+		if chunk == nil {
+			t.Fatal("expected non-nil chunk")
+		}
+		if chunk.BifrostError == nil {
+			t.Fatal("expected non-nil BifrostError in chunk")
+		}
+		if chunk.BifrostError.ExtraFields.Usage == nil {
+			t.Fatal("expected non-nil Usage in BifrostError extra fields")
+		}
+		gotUsage := chunk.BifrostError.ExtraFields.Usage
+		if gotUsage.PromptTokens != 15 || gotUsage.CompletionTokens != 25 || gotUsage.TotalTokens != 40 {
+			t.Errorf("unexpected usage fields: %+v", gotUsage)
+		}
+	default:
+		t.Fatal("expected a stream chunk on channel")
+	}
+}
+
+func TestHandleStreamTimeout_WithUsage(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	postHookRunner := func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+	logger := mockLogger{}
+	postHookSpanFinalizer := func(ctx context.Context) {}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     30,
+		CompletionTokens: 70,
+		TotalTokens:      100,
+	}
+
+	HandleStreamTimeout(
+		ctx,
+		postHookRunner,
+		responseChan,
+		logger,
+		postHookSpanFinalizer,
+		[]byte(`{"test": "request"}`),
+		usage,
+	)
+
+	select {
+	case chunk := <-responseChan:
+		if chunk == nil {
+			t.Fatal("expected non-nil chunk")
+		}
+		if chunk.BifrostError == nil {
+			t.Fatal("expected non-nil BifrostError in chunk")
+		}
+		if chunk.BifrostError.ExtraFields.Usage == nil {
+			t.Fatal("expected non-nil Usage in BifrostError extra fields")
+		}
+		gotUsage := chunk.BifrostError.ExtraFields.Usage
+		if gotUsage.PromptTokens != 30 || gotUsage.CompletionTokens != 70 || gotUsage.TotalTokens != 100 {
+			t.Errorf("unexpected usage fields: %+v", gotUsage)
+		}
+	default:
+		t.Fatal("expected a stream chunk on channel")
+	}
+}

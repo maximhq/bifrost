@@ -73,14 +73,14 @@ func TestParseTranscriptionFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *t
 	t.Parallel()
 
 	req := &MistralTranscriptionRequest{
-		Model:          "voxtral-mini-latest",
-		File:           createMinimalAudioFile(),
-		Filename:       "sample.wav",
-		Stream:         schemas.Ptr(true),
-		Language:       schemas.Ptr("en"),
-		Prompt:         schemas.Ptr("hello"),
-		ResponseFormat: schemas.Ptr("json"),
-		Temperature:    schemas.Ptr(0.2),
+		Model:                  "voxtral-mini-latest",
+		File:                   createMinimalAudioFile(),
+		Filename:               "sample.wav",
+		Stream:                 schemas.Ptr(true),
+		Language:               schemas.Ptr("en"),
+		Prompt:                 schemas.Ptr("hello"),
+		ResponseFormat:         schemas.Ptr("json"),
+		Temperature:            schemas.Ptr(0.2),
 		TimestampGranularities: []string{"word", "segment"},
 	}
 

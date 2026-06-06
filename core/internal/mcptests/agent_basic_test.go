@@ -196,7 +196,7 @@ func TestAgent_BasicLoop_ResponsesFormat(t *testing.T) {
 			CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{
 				{
 					CallID:    schemas.Ptr("call-1"),
-					Name: schemas.Ptr("bifrostInternal-echo"),
+					Name:      schemas.Ptr("bifrostInternal-echo"),
 					Arguments: schemas.Ptr(`{"message": "testing responses format"}`),
 				},
 			}),

@@ -157,17 +157,17 @@ func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesR
 	if raw == "" {
 		return nil
 	}
-	var usage struct {
+	var responseUsage struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	}
-	if err := sonic.UnmarshalString(raw, &usage); err != nil {
+	if err := sonic.UnmarshalString(raw, &responseUsage); err != nil {
 		return nil
 	}
 	return &schemas.ResponsesResponseUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+		InputTokens:  responseUsage.InputTokens,
+		OutputTokens: responseUsage.OutputTokens,
+		TotalTokens:  responseUsage.InputTokens + responseUsage.OutputTokens,
 	}
 }
 
@@ -676,12 +676,14 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
+
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -721,7 +723,7 @@ func HandleAnthropicChatCompletionStreaming(
 		var modelName string
 		var finishReason *string
 
-		usage := &schemas.BifrostLLMUsage{}
+		usage = &schemas.BifrostLLMUsage{}
 
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string
@@ -1152,12 +1154,13 @@ func HandleAnthropicResponsesStream(
 
 	// Start streaming in a goroutine
 	go func() {
+		usage := &schemas.BifrostLLMUsage{}
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, usage)
 			}
 			close(responseChan)
 		}()
@@ -1194,7 +1197,7 @@ func HandleAnthropicResponsesStream(
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
-		usage := &schemas.ResponsesResponseUsage{}
+		responseUsage := &schemas.ResponsesResponseUsage{}
 
 		// Create stream state for stateful conversions
 		streamState := acquireAnthropicResponsesStreamState()
@@ -1254,42 +1257,43 @@ func HandleAnthropicResponsesStream(
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
 				// then add up all tokens
-				if usageToProcess.InputTokens > usage.InputTokens {
-					usage.InputTokens = usageToProcess.InputTokens
+				if usageToProcess.InputTokens > responseUsage.InputTokens {
+					responseUsage.InputTokens = usageToProcess.InputTokens
 				}
-				if usageToProcess.OutputTokens > usage.OutputTokens {
-					usage.OutputTokens = usageToProcess.OutputTokens
+				if usageToProcess.OutputTokens > responseUsage.OutputTokens {
+					responseUsage.OutputTokens = usageToProcess.OutputTokens
 				}
-				calculatedTotal := usage.InputTokens + usage.OutputTokens
+				calculatedTotal := responseUsage.InputTokens + responseUsage.OutputTokens
 				if calculatedTotal > usage.TotalTokens {
 					usage.TotalTokens = calculatedTotal
 				}
+				responseUsage.TotalTokens = calculatedTotal
 				// Handle cached tokens if present
 				if usageToProcess.CacheReadInputTokens > 0 {
-					if usage.InputTokensDetails == nil {
-						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+					if responseUsage.InputTokensDetails == nil {
+						responseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 					}
-					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-						usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+					if usageToProcess.CacheReadInputTokens > responseUsage.InputTokensDetails.CachedReadTokens {
+						responseUsage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
 					}
 				}
 				// Handle cached tokens if present
 				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.InputTokensDetails == nil {
-						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+					if responseUsage.InputTokensDetails == nil {
+						responseUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 					}
-					if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-						usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+					if usageToProcess.CacheCreationInputTokens > responseUsage.InputTokensDetails.CachedWriteTokens {
+						responseUsage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
 					}
 					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
-						if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-							usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+						if responseUsage.InputTokensDetails.CachedWriteTokenDetails == nil {
+							responseUsage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
 						}
-						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
-							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+							responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
 						}
-						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
-							usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+							responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
 						}
 					}
 				}
@@ -1356,11 +1360,12 @@ func HandleAnthropicResponsesStream(
 						if response.Response == nil {
 							response.Response = &schemas.BifrostResponsesResponse{}
 						}
-						if usage.InputTokensDetails != nil {
-							usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
-							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
+						if responseUsage.InputTokensDetails != nil {
+							responseUsage.InputTokens = responseUsage.InputTokens + responseUsage.InputTokensDetails.CachedReadTokens + responseUsage.InputTokensDetails.CachedWriteTokens
+							usage.TotalTokens = usage.TotalTokens + responseUsage.InputTokensDetails.CachedReadTokens + responseUsage.InputTokensDetails.CachedWriteTokens
 						}
-						response.Response.Usage = usage
+						responseUsage.TotalTokens = responseUsage.InputTokens + responseUsage.OutputTokens
+						response.Response.Usage = responseUsage
 						// Set raw request if enabled
 						if sendBackRawRequest {
 							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)

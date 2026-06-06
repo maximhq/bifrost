@@ -55,7 +55,7 @@ func http_intercept(inputPtr, inputLen uint32) uint64 {
 	output := HTTPInterceptOutput{
 		Context:     input.Context,
 		Request:     input.Request,
-		HasResponse: false,		
+		HasResponse: false,
 		Error:       "",
 	}
 

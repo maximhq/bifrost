@@ -106,10 +106,9 @@ func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 	}
 
 	return &schemas.BifrostEmbeddingResponse{
-		Object: "list",
-		Data:   embeddings,
-		Usage:  usage,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		Object:      "list",
+		Data:        embeddings,
+		Usage:       usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 }

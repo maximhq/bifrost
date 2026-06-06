@@ -1708,4 +1708,5 @@ type BifrostErrorExtraFields struct {
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
+	Usage                     *BifrostLLMUsage      `json:"usage,omitempty"`
 }

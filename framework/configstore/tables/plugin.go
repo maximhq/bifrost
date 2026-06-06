@@ -24,7 +24,7 @@ type TablePlugin struct {
 	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
 
 	Placement *schemas.PluginPlacement `gorm:"column:placement;type:varchar(20);null" json:"placement,omitempty"`
-	Order     *int    `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
+	Order     *int                     `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

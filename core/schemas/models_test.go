@@ -93,7 +93,7 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 		StatusCode:     &statusCode,
 		Error:          &ErrorField{Message: "unauthorized"},
 		ExtraFields: BifrostErrorExtraFields{
-			Provider:       "openai",
+			Provider:               "openai",
 			OriginalModelRequested: "gpt-4",
 		},
 	}

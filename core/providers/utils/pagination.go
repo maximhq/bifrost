@@ -117,4 +117,3 @@ func (h *SerialListHelper) HasMoreKeys() bool {
 	}
 	return currentKeyIndex < len(h.Keys)-1
 }
-

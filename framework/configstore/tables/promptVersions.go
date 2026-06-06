@@ -12,19 +12,19 @@ import (
 // TablePromptVersion represents an immutable version of a prompt
 // Once created, a version cannot be modified - to make changes, create a new version
 type TablePromptVersion struct {
-	ID               uint         `gorm:"primaryKey;autoIncrement" json:"id"`
-	PromptID         string       `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_prompt_version" json:"prompt_id"`
-	Prompt           *TablePrompt `gorm:"foreignKey:PromptID" json:"prompt,omitempty"`
-	VersionNumber    int          `gorm:"not null;uniqueIndex:idx_prompt_version" json:"version_number"`
-	CommitMessage    string       `gorm:"type:text" json:"commit_message"`
-	ModelParamsJSON  *string      `gorm:"type:text;column:model_params_json" json:"-"`
-	ModelParams      ModelParams  `gorm:"-" json:"model_params"`
-	Provider         string       `gorm:"type:varchar(100)" json:"provider"`
-	Model            string       `gorm:"type:varchar(100)" json:"model"`
-	VariablesJSON    *string         `gorm:"type:text;column:variables_json" json:"-"`
-	Variables        PromptVariables `gorm:"-" json:"variables,omitempty"` // {key: value} map for Jinja2 variables
-	IsLatest         bool            `gorm:"not null;default:false" json:"is_latest"`
-	CreatedAt        time.Time    `gorm:"not null" json:"created_at"`
+	ID              uint            `gorm:"primaryKey;autoIncrement" json:"id"`
+	PromptID        string          `gorm:"type:varchar(36);not null;index;uniqueIndex:idx_prompt_version" json:"prompt_id"`
+	Prompt          *TablePrompt    `gorm:"foreignKey:PromptID" json:"prompt,omitempty"`
+	VersionNumber   int             `gorm:"not null;uniqueIndex:idx_prompt_version" json:"version_number"`
+	CommitMessage   string          `gorm:"type:text" json:"commit_message"`
+	ModelParamsJSON *string         `gorm:"type:text;column:model_params_json" json:"-"`
+	ModelParams     ModelParams     `gorm:"-" json:"model_params"`
+	Provider        string          `gorm:"type:varchar(100)" json:"provider"`
+	Model           string          `gorm:"type:varchar(100)" json:"model"`
+	VariablesJSON   *string         `gorm:"type:text;column:variables_json" json:"-"`
+	Variables       PromptVariables `gorm:"-" json:"variables,omitempty"` // {key: value} map for Jinja2 variables
+	IsLatest        bool            `gorm:"not null;default:false" json:"is_latest"`
+	CreatedAt       time.Time       `gorm:"not null" json:"created_at"`
 	// No UpdatedAt - versions are immutable
 
 	// Relationships

@@ -64,12 +64,13 @@ func StreamPassthrough(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		llmUsage := &schemas.BifrostLLMUsage{}
 		defer EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				HandleStreamCancellation(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
+				HandleStreamCancellation(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody, llmUsage)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
+				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody, llmUsage)
 			}
 			close(ch)
 		}()
@@ -90,6 +91,9 @@ func StreamPassthrough(
 			if success && params.Observe != nil && (params.HasUsage == nil || params.HasUsage(payload)) {
 				if u := params.Observe(payload); u != nil {
 					usage = u
+					if u.LLMUsage != nil {
+						*llmUsage = *u.LLMUsage
+					}
 				}
 			}
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)

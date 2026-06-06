@@ -286,7 +286,7 @@ func TestPlugin_MultiplePlugins(t *testing.T) {
 
 	// Setup Bifrost with multiple plugins in pipeline
 	bifrost, err := core.Init(context.Background(), schemas.BifrostConfig{
-		Account:    &testAccount{},
+		Account: &testAccount{},
 		MCPPlugins: []schemas.MCPPlugin{
 			loggingPlugin,
 			modifyPlugin,
