@@ -188,7 +188,6 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
-
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -3933,6 +3932,15 @@ func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error
 // (scope='global', provider=<name>, model_name='*') "all models on this provider" rows,
 // reusing the same budget/rate-limit rows. It then NULLs the provider FKs so the old
 // provider-governance enforcement path goes inert (single source of truth = model_configs).
+//
+// If a user-created (global, provider, '*') row already occupies the wildcard slot,
+// the provider's own budget/rate-limit links are dropped by the detach without being
+// folded anywhere. For exactly those providers the stranded rows are snapshotted into
+// governance_provider_budgets_backup / governance_provider_rate_limits_backup
+// (data-only copies keyed by provider_name) — the support-facing record from which
+// that governance can be restored on request. The tables are only created when such
+// a conflict actually occurs, and a backup failure is logged and skipped rather than
+// failing the migration.
 func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "migrate_provider_governance_to_model_configs",
@@ -3987,24 +3995,64 @@ func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *g
 					}).Error; err != nil {
 						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
 					}
-				case err != nil:
-					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
-				default:
-					// A wildcard row already exists: backfill only the governance slots it lacks,
-					// so we never overwrite values already present. This is commutative and safe
-					// to repeat (a clean re-run finds nothing to fill and writes nothing).
-					updates := map[string]any{}
-					if existing.BudgetID == nil && p.BudgetID != nil {
-						updates["budget_id"] = p.BudgetID
-					}
-					if existing.RateLimitID == nil && p.RateLimitID != nil {
-						updates["rate_limit_id"] = p.RateLimitID
-					}
-					if len(updates) > 0 {
-						updates["updated_at"] = now
-						if err := tx.Table((tables.TableModelConfig{}).TableName()).
-							Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-							return fmt.Errorf("failed to merge provider governance into wildcard model config for provider %q: %w", p.Name, err)
+				} else {
+					// Conflict: a user-created wildcard row already occupies this provider's
+					// (global, '*') slot, so the provider's own governance is not folded
+					// anywhere and the detach below would strand it. Snapshot the stranded
+					// rows into backup tables so support can restore them on request.
+					//
+					// A backup failure must never block the migration. The statements run
+					// inside a savepoint so a failed one can be rolled back without
+					// aborting the surrounding transaction, then logged and skipped.
+					const backupSavepoint = "sp_provider_gov_backup"
+					if spErr := tx.SavePoint(backupSavepoint).Error; spErr != nil {
+						log.Printf("[configstore] could not create savepoint for governance backup of provider %q (skipping backup): %v", p.Name, spErr)
+					} else if backupErr := func() error {
+						if p.BudgetID != nil {
+							if err := tx.Exec(`
+								CREATE TABLE IF NOT EXISTS governance_provider_budgets_backup AS
+								SELECT p.name AS provider_name, b.*
+								FROM config_providers p
+								INNER JOIN governance_budgets b ON b.id = p.budget_id
+								WHERE 1 = 0
+							`).Error; err != nil {
+								return fmt.Errorf("failed to create provider budgets backup table: %w", err)
+							}
+							if err := tx.Exec(`
+								INSERT INTO governance_provider_budgets_backup
+								SELECT p.name AS provider_name, b.*
+								FROM config_providers p
+								INNER JOIN governance_budgets b ON b.id = p.budget_id
+								WHERE p.name = ?
+							`, p.Name).Error; err != nil {
+								return fmt.Errorf("failed to back up budget: %w", err)
+							}
+						}
+						if p.RateLimitID != nil {
+							if err := tx.Exec(`
+								CREATE TABLE IF NOT EXISTS governance_provider_rate_limits_backup AS
+								SELECT p.name AS provider_name, rl.*
+								FROM config_providers p
+								INNER JOIN governance_rate_limits rl ON rl.id = p.rate_limit_id
+								WHERE 1 = 0
+							`).Error; err != nil {
+								return fmt.Errorf("failed to create provider rate limits backup table: %w", err)
+							}
+							if err := tx.Exec(`
+								INSERT INTO governance_provider_rate_limits_backup
+								SELECT p.name AS provider_name, rl.*
+								FROM config_providers p
+								INNER JOIN governance_rate_limits rl ON rl.id = p.rate_limit_id
+								WHERE p.name = ?
+							`, p.Name).Error; err != nil {
+								return fmt.Errorf("failed to back up rate limit: %w", err)
+							}
+						}
+						return nil
+					}(); backupErr != nil {
+						log.Printf("[configstore] failed to back up stranded governance for provider %q (continuing without backup): %v", p.Name, backupErr)
+						if rbErr := tx.RollbackTo(backupSavepoint).Error; rbErr != nil {
+							log.Printf("[configstore] could not roll back governance backup savepoint for provider %q: %v", p.Name, rbErr)
 						}
 					}
 				}

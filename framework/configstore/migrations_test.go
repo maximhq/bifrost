@@ -2547,4 +2547,119 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
 		Count(&count).Error)
 	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+
+	// No conflict occurred, so the backup tables must not be created.
+	assert.False(t, db.Migrator().HasTable("governance_provider_budgets_backup"), "budget backup table should only exist on conflict")
+	assert.False(t, db.Migrator().HasTable("governance_provider_rate_limits_backup"), "rate limit backup table should only exist on conflict")
+}
+
+// TestMigrationMigrateProviderGovernanceToModelConfigsConflictBackup verifies that when a
+// user-created (global, provider, '*') row already occupies the wildcard slot, the provider's
+// own governance rows are snapshotted into the backup tables before the FKs are cleared, and
+// the pre-existing wildcard row is left untouched.
+func TestMigrationMigrateProviderGovernanceToModelConfigsConflictBackup(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableProvider{}, &tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{},
+	))
+
+	now := time.Now()
+	// Provider governance (would be stranded by the detach without the backup).
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-provider", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl-provider", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", BudgetID: schemas.Ptr("b-provider"), RateLimitID: schemas.Ptr("rl-provider"), CreatedAt: now, UpdatedAt: now}).Error)
+	// Pre-existing user-created wildcard row with its own (different) budget.
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-wildcard", MaxLimit: 50, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-wildcard", ModelName: tables.ModelConfigAllModels, Provider: schemas.Ptr("openai"),
+		Scope: tables.ModelConfigScopeGlobal, BudgetID: schemas.Ptr("b-wildcard"), CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+
+	// The pre-existing wildcard row is untouched.
+	var mc tables.TableModelConfig
+	require.NoError(t, db.Where("id = ?", "mc-wildcard").First(&mc).Error)
+	require.NotNil(t, mc.BudgetID)
+	assert.Equal(t, "b-wildcard", *mc.BudgetID)
+	assert.Nil(t, mc.RateLimitID)
+
+	// Provider governance FKs are cleared.
+	var prov tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&prov).Error)
+	assert.Nil(t, prov.BudgetID)
+	assert.Nil(t, prov.RateLimitID)
+
+	// The stranded governance rows were snapshotted into the backup tables.
+	var budgetBackup struct {
+		ProviderName string
+		ID           string
+		MaxLimit     float64
+	}
+	require.NoError(t, db.Table("governance_provider_budgets_backup").
+		Select("provider_name, id, max_limit").Where("provider_name = ?", "openai").
+		Scan(&budgetBackup).Error)
+	assert.Equal(t, "b-provider", budgetBackup.ID)
+	assert.Equal(t, float64(100), budgetBackup.MaxLimit)
+
+	var rlBackup struct {
+		ProviderName string
+		ID           string
+	}
+	require.NoError(t, db.Table("governance_provider_rate_limits_backup").
+		Select("provider_name, id").Where("provider_name = ?", "openai").
+		Scan(&rlBackup).Error)
+	assert.Equal(t, "rl-provider", rlBackup.ID)
+
+	// Idempotency: re-run must not duplicate backup rows (the provider's FKs are
+	// already cleared, so it no longer matches the governance query).
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+	var backupCount int64
+	require.NoError(t, db.Table("governance_provider_budgets_backup").Count(&backupCount).Error)
+	assert.Equal(t, int64(1), backupCount, "re-run must not duplicate budget backup rows")
+	require.NoError(t, db.Table("governance_provider_rate_limits_backup").Count(&backupCount).Error)
+	assert.Equal(t, int64(1), backupCount, "re-run must not duplicate rate limit backup rows")
+}
+
+// TestMigrationMigrateProviderGovernanceToModelConfigsBackupFailureNonBlocking verifies that
+// a failing governance backup is logged and skipped (rolled back to its savepoint) rather
+// than failing the migration: the provider FKs are still cleared and the pre-existing
+// wildcard row stays untouched.
+func TestMigrationMigrateProviderGovernanceToModelConfigsBackupFailureNonBlocking(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableProvider{}, &tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{},
+	))
+
+	now := time.Now()
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-provider", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", BudgetID: schemas.Ptr("b-provider"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-wildcard", MaxLimit: 50, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-wildcard", ModelName: tables.ModelConfigAllModels, Provider: schemas.Ptr("openai"),
+		Scope: tables.ModelConfigScopeGlobal, BudgetID: schemas.Ptr("b-wildcard"), CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	// Sabotage the backup: a pre-existing table with an incompatible shape makes the
+	// CREATE TABLE IF NOT EXISTS a no-op and the INSERT ... SELECT fail.
+	require.NoError(t, db.Exec(`CREATE TABLE governance_provider_budgets_backup (bogus TEXT)`).Error)
+
+	// The migration must still succeed.
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+
+	// Provider FKs are cleared and the wildcard row is untouched despite the failed backup.
+	var prov tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&prov).Error)
+	assert.Nil(t, prov.BudgetID)
+	var mc tables.TableModelConfig
+	require.NoError(t, db.Where("id = ?", "mc-wildcard").First(&mc).Error)
+	require.NotNil(t, mc.BudgetID)
+	assert.Equal(t, "b-wildcard", *mc.BudgetID)
+
+	// The sabotaged table received no rows (the savepoint rollback discarded the attempt).
+	var backupCount int64
+	require.NoError(t, db.Table("governance_provider_budgets_backup").Count(&backupCount).Error)
+	assert.Equal(t, int64(0), backupCount)
 }
