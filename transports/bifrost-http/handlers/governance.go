@@ -1171,7 +1171,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
-		isActive = bifrost.Ptr(true)
+		isActive = new(true)
 	}
 	// Fetch providers from DB to ensure up-to-date data in cluster mode.
 	providerSet := map[schemas.ModelProvider]struct{}{}
