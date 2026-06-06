@@ -1,5 +1,5 @@
 // Package e2eseed creates deterministic OSS fixtures for API and DAC tests.
-package e2eseed
+package seed
 
 import (
 	"context"

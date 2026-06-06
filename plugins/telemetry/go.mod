@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/telemetry
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/bytedance/sonic v1.15.1
