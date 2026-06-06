@@ -261,6 +261,8 @@ export interface GetVirtualKeysParams {
 	customer_id?: string;
 	team_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
+	exclude_assigned_virtual_keys?: boolean;
+	for_user_assignment?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
