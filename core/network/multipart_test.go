@@ -220,7 +220,7 @@ func TestWriteMultipartField(t *testing.T) {
 		}
 	})
 
-	t.Run("writes []string as JSON array", func(t *testing.T) {
+	t.Run("writes []string as multiple values", func(t *testing.T) {
 		var buf bytes.Buffer
 		writer := multipart.NewWriter(&buf)
 		if err := WriteMultipartField(writer, "tags", []string{"a", "b"}); err != nil {
@@ -231,13 +231,9 @@ func TestWriteMultipartField(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse error: %v", err)
 		}
-		val, ok := parsed["tags"].(string)
+		arr, ok := parsed["tags"].([]string)
 		if !ok {
 			t.Fatalf("tags not a string, got %T", parsed["tags"])
-		}
-		var arr []string
-		if err := sonic.UnmarshalString(val, &arr); err != nil {
-			t.Fatalf("failed to unmarshal tags JSON: %v", err)
 		}
 		if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
 			t.Errorf("tags = %v, want [a b]", arr)

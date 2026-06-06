@@ -1435,6 +1435,13 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		transcriptionParams.ResponseFormat = &responseFormatValues[0]
 	}
+	var fallbacks []schemas.Fallback
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		fallbacks, err = parseFallbacks(fallbackValues)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	if transcriptionParams.ExtraParams == nil {
 		transcriptionParams.ExtraParams = make(map[string]interface{})
 	}
@@ -1448,10 +1455,11 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 		stream = true
 	}
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
-		Model:    modelName,
-		Provider: schemas.ModelProvider(provider),
-		Input:    transcriptionInput,
-		Params:   transcriptionParams,
+		Model:     modelName,
+		Provider:  provider,
+		Input:     transcriptionInput,
+		Params:    transcriptionParams,
+		Fallbacks: fallbacks,
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
