@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/andybalholm/brotli v1.2.1
