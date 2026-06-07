@@ -954,6 +954,14 @@
                     "type": "integer",
                     "description": "Associate this budget to a virtual key provider config (mutually exclusive with virtual_key_id and team_id)"
                   },
+                  "model_config_id": {
+                    "type": "string",
+                    "description": "Associate this budget to a model config (mutually exclusive with the other owner IDs)"
+                  },
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Associate this budget to a customer (mutually exclusive with the other owner IDs)"
+                  },
                   "team_id": {
                     "type": "string",
                     "description": "Associate this budget to a team (mutually exclusive with virtual_key_id and provider_config_id)"
@@ -1362,6 +1370,11 @@
                   "scope_id": {
                     "type": "string",
                     "description": "Target entity ID — required when scope is \"virtual_key\""
+                  },
+                  "calendar_aligned": {
+                    "type": "boolean",
+                    "description": "Snap this config's budget reset windows to calendar boundaries rather than rolling windows; virtual_key-scoped configs inherit the virtual key's setting",
+                    "default": false
                   },
                   "budget_id": {
                     "type": "string"
@@ -4496,7 +4509,6 @@
                     "description": "Azure API version"
                   }
                 },
-                "required": ["endpoint"],
                 "dependentRequired": {
                   "client_id": ["client_secret", "tenant_id"],
                   "client_secret": ["client_id", "tenant_id"],

@@ -608,7 +608,9 @@ done
 echo ""
 echo "  Checking OTel plugin properties (Gap 3)..."
 for prop in headers tls_ca_cert insecure; do
-  check_property_exists "otel.config.$prop" ".properties.bifrost.properties.plugins.properties.otel.properties.config.properties.${prop}" "$HELM_SCHEMA"
+  # otel.config is an anyOf wrapper over otelProfileConfig / otelProfilesConfig,
+  # so these fields live in the resolved $defs.otelProfileConfig, not inline under config.
+  check_property_exists "otel.config.$prop" ".\"\$defs\".otelProfileConfig.properties.${prop}" "$HELM_SCHEMA"
 done
 
 # Gap 4: Governance plugin config properties
