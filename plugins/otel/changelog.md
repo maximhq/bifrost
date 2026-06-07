@@ -1,3 +1,1 @@
-- feat: `disable_content_logging` option to drop message/tool content from exported spans (#4064)
-- feat: `request_headers` pattern capture with wildcard support (#4012)
-- feat: multiple OTel collectors support (#3894)
+- chore: upgraded core to v1.5.18 and framework to v1.3.18

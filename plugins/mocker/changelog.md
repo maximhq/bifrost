@@ -1,1 +1,1 @@
-- chore: upgraded core to v1.5.17 and framework to v1.3.17
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
