@@ -15988,6 +15988,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"updated_at":         true,
 		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
 		"provider_config_id": true, // Internal DB FK for multi-budget ownership
+		"customer_id":        true, // Internal DB FK for multi-budget ownership
+		"model_config_id":    true, // Internal DB FK for multi-budget ownership
 	},
 	"tables.TableRateLimit": {
 		"config_hash": true,
@@ -16073,6 +16075,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+		"roles":          true, // Enterprise feature; not in OSS GovernanceConfig
 	},
 	"governance.teams": {
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget

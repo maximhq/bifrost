@@ -266,8 +266,8 @@ result = main()
 // 5. temperature → auto-executes
 // 6. uuid_generate → requires approval (Non-CodeMode)
 // 7. Agent returns with:
-//    - Content: Results from auto-executed tools (temperature)
-//    - ToolCalls: Tools awaiting approval (uuid_generate)
+//   - Content: Results from auto-executed tools (temperature)
+//   - ToolCalls: Tools awaiting approval (uuid_generate)
 func TestCodeMode_Agent_MixedCodeModeWithApproval(t *testing.T) {
 	t.Parallel()
 
@@ -476,14 +476,15 @@ func TestCodeMode_Agent_CodeModeInCode_NonCodeModeDirect(t *testing.T) {
 // Flow:
 // 1. LLM returns 4 tools simultaneously
 // 2. Agent evaluates each:
-//    - get_temperature (CodeMode + auto) ✅ Execute
-//    - echo (CodeMode + NOT auto) ⏸️ Requires approval
-//    - uuid_generate (Non-CodeMode + auto) ✅ Execute
-//    - hash (Non-CodeMode + NOT auto) ⏸️ Requires approval
+//   - get_temperature (CodeMode + auto) ✅ Execute
+//   - echo (CodeMode + NOT auto) ⏸️ Requires approval
+//   - uuid_generate (Non-CodeMode + auto) ✅ Execute
+//   - hash (Non-CodeMode + NOT auto) ⏸️ Requires approval
+//
 // 3. Agent executes 2 auto tools
 // 4. Agent returns with:
-//    - Content: Results from 2 auto-executed tools
-//    - ToolCalls: 2 tools awaiting approval
+//   - Content: Results from 2 auto-executed tools
+//   - ToolCalls: 2 tools awaiting approval
 func TestCodeMode_Agent_PartialApprovalMixed(t *testing.T) {
 	t.Parallel()
 
@@ -521,9 +522,9 @@ func TestCodeMode_Agent_PartialApprovalMixed(t *testing.T) {
 	// Turn 1: Returns 4 tools - mix of auto/non-auto, CodeMode/Non-CodeMode
 	mocker.AddChatResponse(CreateDynamicChatResponse(func(history []schemas.ChatMessage) *schemas.BifrostChatResponse {
 		return CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{
-			CreateToolCall("call-1", "get_temperature", map[string]interface{}{"location": "Tokyo"}),  // CodeMode, auto ✅
-			CreateToolCall("call-2", "echo", map[string]interface{}{"text": "test"}),                  // CodeMode, NOT auto ⏸️
-			CreateToolCall("call-3", "uuid_generate", map[string]interface{}{}),                       // Non-CodeMode, auto ✅
+			CreateToolCall("call-1", "get_temperature", map[string]interface{}{"location": "Tokyo"}),         // CodeMode, auto ✅
+			CreateToolCall("call-2", "echo", map[string]interface{}{"text": "test"}),                         // CodeMode, NOT auto ⏸️
+			CreateToolCall("call-3", "uuid_generate", map[string]interface{}{}),                              // Non-CodeMode, auto ✅
 			CreateToolCall("call-4", "hash", map[string]interface{}{"input": "test", "algorithm": "sha256"}), // Non-CodeMode, NOT auto ⏸️
 		})
 	}))

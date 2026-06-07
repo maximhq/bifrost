@@ -24,6 +24,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
+
 import {
   calculateUsagePercentage,
   formatCurrency,
@@ -132,20 +133,24 @@ export default function VirtualKeyDetailSheet({
     (displayRateLimit?.token_current_usage &&
       displayRateLimit?.token_max_limit &&
       displayRateLimit.token_current_usage >=
-      displayRateLimit.token_max_limit) ||
+        displayRateLimit.token_max_limit) ||
     (displayRateLimit?.request_current_usage &&
       displayRateLimit?.request_max_limit &&
       displayRateLimit.request_current_usage >=
-      displayRateLimit.request_max_limit);
+        displayRateLimit.request_max_limit);
 
   return (
     <Sheet open onOpenChange={onClose}>
       <SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
-        <SheetHeader className="flex flex-row items-center justify-between px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
+        <SheetHeader
+          className="flex flex-row items-center justify-between px-0 py-4"
+          headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8"
+        >
           <div className="flex flex-col items-start">
             <SheetTitle>{virtualKey.name}</SheetTitle>
             <SheetDescription>
-              {virtualKey.description || "Virtual key details and usage information"}
+              {virtualKey.description ||
+                "Virtual key details and usage information"}
             </SheetDescription>
           </div>
           <SheetNavigationButtons
@@ -247,7 +252,7 @@ export default function VirtualKeyDetailSheet({
 
             <div className="space-y-3">
               {!virtualKey.provider_configs ||
-                virtualKey.provider_configs.length === 0 ? (
+              virtualKey.provider_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No providers configured (deny-by-default)
                 </span>
@@ -527,7 +532,7 @@ export default function VirtualKeyDetailSheet({
 
             <div className="space-y-3">
               {!virtualKey.mcp_configs ||
-                virtualKey.mcp_configs.length === 0 ? (
+              virtualKey.mcp_configs.length === 0 ? (
                 <span className="text-muted-foreground text-sm">
                   No MCP clients configured (deny-by-default)
                 </span>

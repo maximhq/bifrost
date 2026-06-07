@@ -80,4 +80,3 @@ func AddSpanEvent(ctx context.Context, store *TraceStore, spanID string, event s
 	}
 	span.AddEvent(event)
 }
-

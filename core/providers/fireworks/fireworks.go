@@ -80,7 +80,6 @@ func (provider *FireworksProvider) ListModels(ctx *schemas.BifrostContext, keys 
 	)
 }
 
-
 // TextCompletion performs a text completion request to the Fireworks AI API.
 func (provider *FireworksProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionRequest(

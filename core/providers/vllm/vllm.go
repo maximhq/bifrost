@@ -530,12 +530,14 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Start streaming in a goroutine
 		go func() {
+			usage := &schemas.BifrostLLMUsage{}
+
 			defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 			defer func() {
 				if ctx.Err() == context.Canceled {
-					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+					providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 				} else if ctx.Err() == context.DeadlineExceeded {
-					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+					providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, usage)
 				}
 				close(responseChan)
 			}()
@@ -616,6 +618,17 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					response.ExtraFields.RawResponse = jsonData
+				}
+				if response.Usage != nil {
+					if response.Usage.InputTokens != nil {
+						usage.PromptTokens = *response.Usage.InputTokens
+					}
+					if response.Usage.OutputTokens != nil {
+						usage.CompletionTokens = *response.Usage.OutputTokens
+					}
+					if response.Usage.TotalTokens != nil {
+						usage.TotalTokens = *response.Usage.TotalTokens
+					}
 				}
 				if response.Usage != nil || response.Type == schemas.TranscriptionStreamResponseTypeDone {
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()

@@ -333,6 +333,9 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 // It supports HTTP, SOCKS5, and environment-based proxy configurations.
 // Returns the configured client or the original client if proxy configuration is invalid.
 func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *fasthttp.Client {
+	if logger == nil {
+		logger = getLogger()
+	}
 	if proxyConfig == nil {
 		return client
 	}
@@ -451,6 +454,9 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	if logger == nil {
+		logger = getLogger()
+	}
 	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromEnv() && networkConfig.CACertPEM.GetValue() == "" {
 		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.EnvVar)
 		logger.Error(errMsg)
@@ -2388,6 +2394,7 @@ func HandleStreamCancellation(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 	jsonBody []byte,
+	usage *schemas.BifrostLLMUsage,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2408,6 +2415,8 @@ func HandleStreamCancellation(
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	cancelErr.ExtraFields.Usage = usage // append usage to passed error
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
 }
@@ -2427,6 +2436,7 @@ func HandleStreamTimeout(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 	jsonBody []byte,
+	usage *schemas.BifrostLLMUsage,
 ) {
 	// Check if already handled (StreamEndIndicator already set)
 	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
@@ -2447,6 +2457,7 @@ func HandleStreamTimeout(
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	timeoutErr.ExtraFields.Usage = usage // append usage to passed error
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
 }

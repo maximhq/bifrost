@@ -279,12 +279,11 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 	}
 
 	bifrostResponse := &schemas.BifrostChatResponse{
-		ID:      response.ID,
-		Model:   model,
-		Object:  response.Object,
-		Created: response.Created,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		ID:            response.ID,
+		Model:         model,
+		Object:        response.Object,
+		Created:       response.Created,
+		ExtraFields:   schemas.BifrostResponseExtraFields{},
 		SearchResults: response.SearchResults,
 		Videos:        response.Videos,
 		Citations:     response.Citations,
