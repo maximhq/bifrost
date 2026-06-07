@@ -205,6 +205,9 @@ false
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
+{{- if .Values.bifrost.envLabel }}
+{{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}

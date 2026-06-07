@@ -173,11 +173,8 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
-	if envLabel := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); envLabel != "" {
-		if len(envLabel) > 10 {
-			envLabel = envLabel[:10]
-		}
-		mapConfig["env_label"] = envLabel
+	if h.store.EnvLabel != "" {
+		mapConfig["env_label"] = h.store.EnvLabel
 	}
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil

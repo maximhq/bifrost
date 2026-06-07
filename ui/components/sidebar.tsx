@@ -429,7 +429,12 @@ const SidebarItemView = ({
             </div>
             {item.subItems?.map((subItem) => {
               const baseHref = getSidebarItemHref(subItem);
-              const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
+              const href = preserveTimeFilters(
+                baseHref,
+                subItem.url,
+                pathname,
+                search,
+              );
               const isSubItemActive = subItem.queryParam
                 ? pathname === subItem.url
                 : isRouteMatch(subItem.url);
@@ -492,7 +497,12 @@ const SidebarItemView = ({
         <SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
           {item.subItems?.map((subItem: SidebarItem) => {
             const baseHref = getSidebarItemHref(subItem);
-            const subItemHref = preserveTimeFilters(baseHref, subItem.url, pathname, search);
+            const subItemHref = preserveTimeFilters(
+              baseHref,
+              subItem.url,
+              pathname,
+              search,
+            );
             // For query param based subitems, check if tab matches
             const isSubItemActive = subItem.queryParam
               ? pathname === subItem.url
@@ -694,7 +704,10 @@ export default function AppSidebar() {
     RbacOperation.View,
   );
   const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
-  const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+  const hasFeatureFlagsAccess = useRbac(
+    RbacResource.FeatureFlags,
+    RbacOperation.View,
+  );
   const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
   const hasPromptRepositoryAccess = useRbac(
     RbacResource.PromptRepository,
@@ -835,13 +848,13 @@ export default function AppSidebar() {
             description: "Tool Groups",
             hasAccess: hasMCPToolGroupsAccess,
           },
-					{
-						title: "Auth Sessions",
-						url: "/workspace/mcp-sessions",
-						icon: KeyRound,
-						description: "Per-user OAuth sessions",
-						hasAccess: hasMCPGatewayAccess,
-					},
+          {
+            title: "Auth Sessions",
+            url: "/workspace/mcp-sessions",
+            icon: KeyRound,
+            description: "Per-user OAuth sessions",
+            hasAccess: hasMCPGatewayAccess,
+          },
           {
             title: "MCP Settings",
             url: "/workspace/mcp-settings",

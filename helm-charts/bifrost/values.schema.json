@@ -232,6 +232,11 @@
           "type": "string",
           "enum": ["json", "text"]
         },
+        "envLabel": {
+          "type": "string",
+          "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
+          "maxLength": 10
+        },
         "encryptionKey": {
           "type": "string",
           "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."

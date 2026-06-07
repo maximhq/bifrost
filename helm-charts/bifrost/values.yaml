@@ -167,6 +167,7 @@ bifrost:
   host: 0.0.0.0
   logLevel: info
   logStyle: json
+  # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
   # Encryption key for sensitive data
   # Can be set as a secret or environment variable
