@@ -181,10 +181,10 @@ github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/
 github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
-github.com/maximhq/bifrost/core v1.5.17 h1:i/ICXsOLdyOoo4zX9EdC6i6N2t5QbF9JzGaVEVoZQG8=
-github.com/maximhq/bifrost/core v1.5.17/go.mod h1:7vry9xB5kmjT3smAVVQ2+mtfTmmeSN+7N1b8r1buaTI=
-github.com/maximhq/bifrost/framework v1.3.17 h1:YiM1fNepsv7rlatSnbOKc3+zpXU6GXsnlKFNaYuyalQ=
-github.com/maximhq/bifrost/framework v1.3.17/go.mod h1:4XWjidq2NFvGIY4q/9FyYwx9WLIzqqwzfXKg8mciU7c=
+github.com/maximhq/bifrost/core v1.5.18 h1:f1lX3sPesKTScUJHv+K9tWpd1wLLjd7CAzJY0BpbAaE=
+github.com/maximhq/bifrost/core v1.5.18/go.mod h1:7vry9xB5kmjT3smAVVQ2+mtfTmmeSN+7N1b8r1buaTI=
+github.com/maximhq/bifrost/framework v1.3.18 h1:74f7Do5cSsjvqqBKq/s1OMSebt/7VUNf/Wosa37X8Wc=
+github.com/maximhq/bifrost/framework v1.3.18/go.mod h1:8L+vIF+0zFixHsmS1GZF+WbZZu0GBSKsGhnbBbTYIJw=
 github.com/maximhq/bifrost/plugins/mocker v1.5.3 h1:PuQShiJS6jbI1S0XAnwtB9dfiYC+TSbxbjJ1FWOb2aE=
 github.com/maximhq/bifrost/plugins/mocker v1.5.3/go.mod h1:Ob9R3faldCd1EnTfuPqkLK4CbjA1nLe4e2/Onf/Kk7E=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
