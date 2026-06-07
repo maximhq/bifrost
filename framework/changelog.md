@@ -1,2 +1,0 @@
-- fix: wildcard (`*`) allow-lists now resolve to allow-all for catalog-opaque providers (custom providers without list-models, keyless self-hosted vLLM/Ollama/SGL) via the new shared `IsCatalogOpaqueProvider` helper (#4124)
-- chore: upgraded core to v1.5.18
