@@ -1479,17 +1479,69 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
-	// Drop the index using FT.DROPINDEX
-	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace).Err(); err != nil {
+	// Drop the index AND its documents using FT.DROPINDEX ... DD. Without DD,
+	// only the index definition is removed while the underlying hashes (keyed
+	// by the "<namespace>:" prefix this index owns) survive - so recreating the
+	// namespace re-indexes the stale documents. DD deletes exactly the documents
+	// matching this index's prefix, keeping DeleteNamespace consistent with the
+	// collection-deleting semantics of the other vector store backends.
+	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err(); err != nil {
 		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
 		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
 			s.deleteNamespaceFieldTypes(namespace)
-			return nil // Index doesn't exist, nothing to drop
+			// The index is gone, so FT.DROPINDEX ... DD could not reach any
+			// documents. Hashes written under the "<namespace>:" prefix by a
+			// prior run (e.g. one that dropped the index without DD) may still
+			// linger; sweep them directly so a recreated namespace starts empty.
+			return s.deleteNamespaceKeys(ctx, namespace)
 		}
 		return fmt.Errorf("failed to drop semantic index %s: %w", namespace, err)
 	}
 
 	s.deleteNamespaceFieldTypes(namespace)
+	return nil
+}
+
+// deleteNamespaceKeys removes every hash stored under the "<namespace>:" prefix.
+//
+// It is the fallback path for DeleteNamespace when the search index no longer
+// exists: the normal path relies on FT.DROPINDEX ... DD to delete the indexed
+// documents, but with no index present that command cannot reach them, leaving
+// orphaned hashes that would be re-indexed (and surface as stale cache hits)
+// the next time the namespace is created. On a Redis Cluster the work is fanned
+// out across every master so all hash slots are covered; on a single node it
+// runs directly against the client.
+func (s *RedisStore) deleteNamespaceKeys(ctx context.Context, namespace string) error {
+	if clusterClient, ok := s.client.(*redis.ClusterClient); ok {
+		return clusterClient.ForEachMaster(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+			return s.deleteNamespaceKeysSingle(ctx, nodeClient, namespace)
+		})
+	}
+	return s.deleteNamespaceKeysSingle(ctx, s.client, namespace)
+}
+
+// deleteNamespaceKeysSingle SCANs a single Redis node for keys matching the
+// "<namespace>:*" pattern and DELs them in cursor-sized batches until the scan
+// cursor wraps to 0. It operates on one node only; callers handle cluster
+// fan-out. A missing key set is not an error - the loop simply deletes nothing.
+func (s *RedisStore) deleteNamespaceKeysSingle(ctx context.Context, client redis.Cmdable, namespace string) error {
+	pattern := buildKey(namespace, "*")
+	var scanCursor uint64
+	for {
+		keys, nextCursor, err := client.Scan(ctx, scanCursor, pattern, BatchLimit).Result()
+		if err != nil {
+			return fmt.Errorf("failed to scan keys for namespace %s: %w", namespace, err)
+		}
+		if len(keys) > 0 {
+			if err := client.Del(ctx, keys...).Err(); err != nil {
+				return fmt.Errorf("failed to delete keys for namespace %s: %w", namespace, err)
+			}
+		}
+		scanCursor = nextCursor
+		if scanCursor == 0 {
+			break
+		}
+	}
 	return nil
 }
 

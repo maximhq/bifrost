@@ -18,6 +18,7 @@ import (
 var localSchemaCandidates = []string{
 	"config.schema.json",            // running from transports/
 	"../config.schema.json",         // running from transports/bifrost-http/
+	"../../config.schema.json",      // running from transports/bifrost-http/lib/
 	"transports/config.schema.json", // running from repo root
 }
 

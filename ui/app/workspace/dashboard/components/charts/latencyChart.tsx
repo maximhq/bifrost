@@ -162,7 +162,7 @@ function LatencyChartImpl({ data, chartType, startTime, endTime }: LatencyChartP
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip />} />
+						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 						{/* Render P99 first (behind), then overlay in descending order so Avg is in front */}
 						<Area
 							isAnimationActive={false}

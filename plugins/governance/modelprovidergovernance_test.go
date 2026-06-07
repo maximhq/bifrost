@@ -218,6 +218,74 @@ func TestStore_CheckModelBudget_ModelOnly_Exceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// buildModelConfigMultiBudget builds a global model config owning multiple budgets
+// (via TableBudget.ModelConfigID), for multi-budget enforcement tests.
+func buildModelConfigMultiBudget(id, model string, provider *string, budgets []*configstoreTables.TableBudget) *configstoreTables.TableModelConfig {
+	mc := &configstoreTables.TableModelConfig{
+		ID:        id,
+		ModelName: model,
+		Provider:  provider,
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+	}
+	for _, b := range budgets {
+		b.ModelConfigID = &mc.ID
+		mc.Budgets = append(mc.Budgets, *b)
+	}
+	return mc
+}
+
+func TestStore_CheckModelBudget_MultiBudget_OneExceededBlocks(t *testing.T) {
+	logger := NewMockLogger()
+	within := buildBudget("b-day", 100.0, "1d")             // plenty of headroom
+	exceeded := buildBudgetWithUsage("b-hour", 10.0, 10.0, "1h") // at limit
+	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{within, exceeded})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*within, *exceeded},
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "the exceeded budget among several on one config must block")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+func TestStore_CheckModelBudget_MultiBudget_AllWithinPasses(t *testing.T) {
+	logger := NewMockLogger()
+	b1 := buildBudget("b-day", 100.0, "1d")
+	b2 := buildBudget("b-hour", 10.0, "1h")
+	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{b1, b2})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*b1, *b2},
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err, "all budgets within limit should pass")
+}
+
+func TestStore_UpdateModelBudgetUsage_MultiBudget_BumpsAll(t *testing.T) {
+	logger := NewMockLogger()
+	b1 := buildBudget("b-day", 100.0, "1d")
+	b2 := buildBudget("b-hour", 50.0, "1h")
+	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{b1, b2})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*b1, *b2},
+	}, nil)
+	require.NoError(t, err)
+
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", schemas.OpenAI, 7.5)
+	require.NoError(t, err)
+
+	for _, id := range []string{"b-day", "b-hour"} {
+		b := store.LoadBudget(context.Background(), id)
+		require.NotNil(t, b, "budget %s should be loadable", id)
+		assert.InDelta(t, 7.5, b.CurrentUsage, 0.001, "every budget on the config must be bumped (budget %s)", id)
+	}
+}
+
 func TestStore_CheckModelBudget_ModelWithProvider_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
@@ -2100,3 +2168,312 @@ func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	_, err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil)
 	assert.Error(t, err, "Direct match should still work without catalog")
 }
+
+// ============================================================================
+// Store Tests - All-models ("*") wildcard tier (provider-level governance)
+// ============================================================================
+
+// TestStore_CheckModelBudget_AllModelsOnProvider_Exceeded verifies that an all-models
+// wildcard config (provider=openai, model_name="*") — the migrated provider-level budget —
+// applies to ANY model on that provider.
+func TestStore_CheckModelBudget_AllModelsOnProvider_Exceeded(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// A request for an arbitrary OpenAI model must be caught by the "*:openai" config.
+	_, err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "all-models budget for the provider should apply to any model on it")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestStore_CheckModelBudget_AllModelsOnProvider_OtherProviderPasses confirms the wildcard
+// is provider-scoped: it must NOT affect a different provider.
+func TestStore_CheckModelBudget_AllModelsOnProvider_OtherProviderPasses(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}, nil)
+	assert.NoError(t, err, "an OpenAI all-models budget must not affect an Anthropic request")
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+// TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard verifies usage recording reaches
+// the all-models wildcard config (record-then-check loop for provider-level governance).
+func TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000000, 0) // 100-token cap
+	providerStr := "openai"
+	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	// Within limit initially.
+	decision, err := store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision)
+
+	// Record usage for a (different) model on the provider — must bump the "*:openai" config.
+	require.NoError(t, store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4o", schemas.OpenAI, 150, true, true))
+
+	// Now the all-models rate limit trips for any model on the provider.
+	decision, err = store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "gpt-4o-mini", Provider: schemas.OpenAI}, nil, nil)
+	assert.Error(t, err)
+	assert.Equal(t, DecisionTokenLimited, decision)
+}
+
+// ============================================================================
+// Store Tests - Per-VK-Scoped Model Budget / Rate Limit
+// ============================================================================
+
+func TestStore_CheckVirtualKeyScopedModelBudget_NilVK(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckScopedModelBudget(context.Background(), "", "", &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+func TestStore_CheckVirtualKeyScopedModelBudget_NoConfig(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+func TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	budget := buildBudget("b1", 100.0, "1h")
+	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err, "Should allow when per-VK model budget is within limit")
+}
+
+func TestStore_CheckVirtualKeyScopedModelBudget_Exceeded(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // At limit
+	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "Should reject when per-VK model budget is exceeded")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+func TestStore_CheckVirtualKeyScopedModelBudget_OnlyAppliesToMatchingVK(t *testing.T) {
+	logger := NewMockLogger()
+	ownerVK := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	otherVK := buildVirtualKey("vk2", "vk2-value", "vk2", true)
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
+	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, ownerVK.ID, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// A request made with a DIFFERENT virtual key must not be affected by vk1's scoped config.
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, otherVK.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+func TestStore_CheckVirtualKeyScopedModelBudget_IgnoresGlobalConfig(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	// A GLOBAL (scope defaults to global) model config that is exceeded. The per-VK scoped
+	// check must ignore it — global is enforced separately by EvaluateModelAndProviderRequest,
+	// so the scoped path must not double-count it.
+	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h")
+	globalMC := buildModelConfig("mc-global", "gpt-4", nil, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*globalMC},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.NoError(t, err, "Scoped check must not pick up the global config")
+	assert.Equal(t, DecisionAllow, decision)
+
+	// Sanity: the global model check DOES still catch the exceeded global budget.
+	_, gErr := store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, gErr, "Global model check should catch the exceeded global budget")
+}
+
+func TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // tokens at max
+	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
+	assert.Error(t, err, "Should reject when per-VK model token limit is exceeded")
+	assert.Equal(t, DecisionTokenLimited, decision)
+}
+
+func TestStore_CheckVirtualKeyScopedModelRateLimit_WithinLimit(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 100, 1000, 10) // well within limits
+	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+}
+
+// TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips reproduces the reported bug:
+// recording usage against a per-VK scoped model config must increment the scoped counter so a
+// subsequent check trips. (The original bug only wired the check, not the usage recording.)
+func TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000000, 0) // 100 token cap, request cap effectively unlimited
+	mc := buildVKScopedModelConfig("mc1", "claude-opus-4-7", nil, vk.ID, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	req := &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}
+
+	// Initially within limit.
+	decision, err := store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision)
+
+	// Record usage above the limit (what the tracker does post-response). Provider differs from
+	// the config's (which is all-providers), exercising the model-only scoped lookup.
+	require.NoError(t, store.UpdateScopedModelRateLimitUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 150, true, true))
+
+	// Now the scoped check must trip.
+	decision, err = store.CheckScopedModelRateLimit(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil, nil)
+	assert.Error(t, err)
+	assert.Equal(t, DecisionTokenLimited, decision)
+}
+
+func TestStore_VirtualKeyScopedModel_RecordThenCheck_BudgetTrips(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	budget := buildBudget("b1", 10.0, "1h") // $10 cap, 0 usage
+	mc := buildVKScopedModelConfig("mc1", "claude-opus-4-7", nil, vk.ID, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	req := &EvaluationRequest{Model: "claude-opus-4-7", Provider: schemas.Anthropic}
+
+	decision, err := store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision)
+
+	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 15.0))
+
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, req, nil)
+	assert.Error(t, err, "scoped budget should trip once usage exceeds the cap")
+}
+
+// TestStore_VKGovernanceBudget_NoDoubleCount is the double-count guard: after the cutover a
+// VK's budget lives only on its VK-scoped all-models wildcard model config (vk.Budgets is
+// empty). The tracker invokes both the scoped-model path and the VK hierarchy path on every
+// request; only the scoped path may charge the budget — never both.
+func TestStore_VKGovernanceBudget_NoDoubleCount(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	budget := buildBudget("vkb", 100.0, "1h")
+	// Owned by the VK-scoped all-models wildcard (provider=nil), not by the VK directly.
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Mirror tracker.UpdateUsage: scoped-model path + hierarchy path, same request/cost.
+	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "gpt-4", schemas.OpenAI, 10.0))
+	require.NoError(t, store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 10.0))
+
+	b := store.LoadBudget(context.Background(), "vkb")
+	require.NotNil(t, b)
+	assert.InDelta(t, 10.0, b.CurrentUsage, 0.001, "VK governance budget must be charged exactly once (no hierarchy+scoped double count)")
+}
+
+// TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks exercises the
+// scope-chain path that production VK governance flows through after cutover, with multiple
+// budgets on one VK-scoped wildcard config.
+func TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
+	within := buildBudget("b-day", 100.0, "1d")
+	exceeded := buildBudgetWithUsage("b-hour", 10.0, 10.0, "1h")
+	mcID := "mc-vk-multi"
+	mc := &configstoreTables.TableModelConfig{
+		ID:        mcID,
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &vk.ID,
+	}
+	for _, b := range []*configstoreTables.TableBudget{within, exceeded} {
+		b.ModelConfigID = &mcID
+		mc.Budgets = append(mc.Budgets, *b)
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*within, *exceeded},
+	}, nil)
+	require.NoError(t, err)
+
+	_, err = store.CheckScopedModelBudget(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, &EvaluationRequest{Model: "gpt-4", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "an exceeded budget among several on a VK-scoped config must block")
+}
+

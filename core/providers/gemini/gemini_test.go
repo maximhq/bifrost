@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/stretchr/testify/assert"
@@ -430,6 +431,180 @@ func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
 	var decoded gemini.Part
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 	assert.Equal(t, []byte("skip_thought_signature_validator"), decoded.ThoughtSignature)
+}
+
+func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "numeric constraints",
+			body: `{
+				"contents": [{"role": "user", "parts": [{"text": "Search docs"}]}],
+				"tools": [{
+					"functionDeclarations": [{
+						"name": "exa_web_search_exa",
+						"description": "Search project docs",
+						"parameters": {
+							"type": "object",
+							"minProperties": 1,
+							"maxProperties": 3,
+							"properties": {
+								"query": {"type": "string", "description": "Search query", "minLength": 1, "maxLength": 100},
+								"tags": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5}
+							},
+							"required": ["query"]
+						}
+					}]
+				}]
+			}`,
+		},
+		{
+			name: "quoted constraints",
+			body: `{
+				"contents": [{"role": "user", "parts": [{"text": "Search docs"}]}],
+				"tools": [{
+					"functionDeclarations": [{
+						"name": "exa_web_search_exa",
+						"description": "Search project docs",
+						"parameters": {
+							"type": "object",
+							"minProperties": "1",
+							"maxProperties": "3",
+							"properties": {
+								"query": {"type": "string", "description": "Search query", "minLength": "1", "maxLength": "100"},
+								"tags": {"type": "array", "items": {"type": "string"}, "minItems": "1", "maxItems": "5"}
+							},
+							"required": ["query"]
+						}
+					}]
+				}]
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tt.body), &req))
+			require.Len(t, req.Tools, 1)
+			require.Len(t, req.Tools[0].FunctionDeclarations, 1)
+
+			params := req.Tools[0].FunctionDeclarations[0].Parameters
+			require.NotNil(t, params)
+			require.NotNil(t, params.MinProperties)
+			require.NotNil(t, params.MaxProperties)
+			assert.Equal(t, int64(1), *params.MinProperties)
+			assert.Equal(t, int64(3), *params.MaxProperties)
+
+			query := params.Properties["query"]
+			require.NotNil(t, query)
+			require.NotNil(t, query.MinLength)
+			require.NotNil(t, query.MaxLength)
+			assert.Equal(t, int64(1), *query.MinLength)
+			assert.Equal(t, int64(100), *query.MaxLength)
+
+			tags := params.Properties["tags"]
+			require.NotNil(t, tags)
+			require.NotNil(t, tags.MinItems)
+			require.NotNil(t, tags.MaxItems)
+			assert.Equal(t, int64(1), *tags.MinItems)
+			assert.Equal(t, int64(5), *tags.MaxItems)
+		})
+	}
+
+	t.Run("invalid string constraint", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		err := sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "minLength": "many"}
+						}
+					}
+				}]
+			}]
+		}`), &req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid schema integer constraint")
+	})
+
+	t.Run("max int64 numeric constraint", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "maxLength": 9223372036854775807}
+						}
+					}
+				}]
+			}]
+		}`), &req))
+
+		query := req.Tools[0].FunctionDeclarations[0].Parameters.Properties["query"]
+		require.NotNil(t, query.MaxLength)
+		assert.Equal(t, int64(9223372036854775807), *query.MaxLength)
+	})
+
+	t.Run("null constraint remains unset", func(t *testing.T) {
+		var req gemini.GeminiGenerationRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{
+			"tools": [{
+				"functionDeclarations": [{
+					"name": "exa_web_search_exa",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"query": {"type": "string", "minLength": null}
+						}
+					}
+				}]
+			}]
+		}`), &req))
+
+		query := req.Tools[0].FunctionDeclarations[0].Parameters.Properties["query"]
+		assert.Nil(t, query.MinLength)
+	})
+
+	invalidConstraints := []struct {
+		name       string
+		constraint string
+	}{
+		{name: "float", constraint: `1.5`},
+		{name: "bool", constraint: `true`},
+		{name: "object", constraint: `{}`},
+		{name: "array", constraint: `[]`},
+		{name: "overflow string", constraint: `"9223372036854775808"`},
+	}
+
+	for _, tt := range invalidConstraints {
+		t.Run("invalid "+tt.name+" constraint", func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			err := sonic.Unmarshal([]byte(`{
+				"tools": [{
+					"functionDeclarations": [{
+						"name": "exa_web_search_exa",
+						"parameters": {
+							"type": "object",
+							"properties": {
+								"query": {"type": "string", "minLength": `+tt.constraint+`}
+							}
+						}
+					}]
+				}]
+			}`), &req)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		})
+	}
 }
 
 // parseToolParams parses fd.ParametersJSONSchema (raw JSON Schema passthrough) into a

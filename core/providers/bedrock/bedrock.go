@@ -135,7 +135,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
-	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient)
+	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig.AllowPrivateNetwork)
 	mantleFasthttpClient = providerUtils.ConfigureTLS(mantleFasthttpClient, config.NetworkConfig, logger)
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 
@@ -3678,6 +3678,11 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	}
 
 	return response, nil
+}
+
+// Compaction is not supported by the Bedrock provider.
+func (provider *BedrockProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Bedrock provider.

@@ -2901,6 +2901,78 @@ This document is used to verify that the AI can read and understand text documen
         print(f"  Received {chunk_count} chunks, total content length: {len(content)}")
         print("✓ Passthrough streaming test passed!")
 
+    def test_53_openai_prompt_cache_key_from_metadata_user_id(self, test_config):
+        """Test Case 53: OpenAI prompt_cache_key derived from Anthropic metadata.user_id
+
+        When an Anthropic-format request carries metadata.user_id, Bifrost sets
+        prompt_cache_key on the outgoing OpenAI request so each user gets an
+        isolated cache bucket. The second request with the same prefix and same
+        user_id should hit OpenAI's automatic prompt cache, confirmed by
+        cache_read_input_tokens > 0 in the response usage.
+
+        OpenAI caches prompts automatically once the prefix exceeds 1024 tokens,
+        so the system message here is intentionally large.
+        """
+        _ = test_config
+        client = get_provider_anthropic_client("openai")
+        model = "openai/gpt-5.5"
+        user_id = "bifrost-test-cache-user"
+
+        # Must exceed OpenAI's 1024-token minimum for automatic prompt caching
+        system = f"You are a legal document analysis assistant.\n\n{PROMPT_CACHING_LARGE_CONTEXT}"
+
+        print(f"\n=== Testing OpenAI prompt_cache_key from metadata.user_id ===")
+        print(f"First request: populating cache bucket for user '{user_id}'...")
+
+        response1 = client.messages.create(
+            model=model,
+            system=system,
+            messages=[{"role": "user", "content": "Summarize the indemnification clauses."}],
+            max_tokens=256,
+            metadata={"user_id": user_id},
+        )
+
+        assert response1 is not None, "First response should not be None"
+        assert hasattr(response1, "usage"), "First response should have usage"
+        print(
+            f"  input_tokens: {response1.usage.input_tokens}, "
+            f"cache_read: {getattr(response1.usage, 'cache_read_input_tokens', 0)}, "
+            f"cache_write: {getattr(response1.usage, 'cache_creation_input_tokens', 0)}"
+        )
+
+        # OpenAI writes the prompt cache asynchronously after returning the response.
+        # A short wait ensures the cache entry is ready before the second request.
+        time.sleep(10)
+
+        print(f"\nSecond request: should hit cache for user '{user_id}'...")
+
+        response2 = client.messages.create(
+            model=model,
+            system=system,
+            messages=[{"role": "user", "content": "What are the governing law provisions?"}],
+            max_tokens=256,
+            metadata={"user_id": user_id},
+        )
+
+        assert response2 is not None, "Second response should not be None"
+        assert hasattr(response2, "usage"), "Second response should have usage"
+
+        cache_read_tokens = getattr(response2.usage, "cache_read_input_tokens", 0)
+        print(
+            f"  input_tokens: {response2.usage.input_tokens}, "
+            f"cache_read: {cache_read_tokens}, "
+            f"cache_write: {getattr(response2.usage, 'cache_creation_input_tokens', 0)}"
+        )
+
+        assert cache_read_tokens > 0, (
+            f"Second request should hit OpenAI prompt cache (cache_read_input_tokens > 0), "
+            f"got {cache_read_tokens}. Check that the system prompt exceeds 1024 tokens "
+            f"and that prompt_cache_key is being set from metadata.user_id."
+        )
+
+        print(f"✓ OpenAI prompt cache hit: {cache_read_tokens} cached tokens read")
+        print(f"✓ prompt_cache_key correctly derived from metadata.user_id")
+
 
 # Additional helper functions specific to Anthropic
 def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:

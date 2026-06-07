@@ -9,16 +9,17 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
-	RequestID  string           // Request ID for the trace
-	TraceID    string           // Unique identifier for this trace
-	ParentID   string           // Parent trace ID from incoming W3C traceparent header
-	RootSpan   *Span            // The root span of this trace
-	Spans      []*Span          // All spans in this trace
-	StartTime  time.Time        // When the trace started
-	EndTime    time.Time        // When the trace completed
-	Attributes map[string]any   // Additional attributes for the trace
-	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
-	mu         sync.Mutex       // Mutex for thread-safe span operations
+	RequestID      string            // Request ID for the trace
+	TraceID        string            // Unique identifier for this trace
+	ParentID       string            // Parent trace ID from incoming W3C traceparent header
+	RootSpan       *Span             // The root span of this trace
+	Spans          []*Span           // All spans in this trace
+	StartTime      time.Time         // When the trace started
+	EndTime        time.Time         // When the trace completed
+	Attributes     map[string]any    // Additional attributes for the trace
+	RequestHeaders map[string]string // Lowercased request headers, populated only when a connector opts in
+	PluginLogs     []PluginLogEntry  // Plugin log entries accumulated during request processing
+	mu             sync.Mutex        // Mutex for thread-safe span operations
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -54,6 +55,13 @@ func (t *Trace) SetRequestID(requestID string) {
 	t.RequestID = requestID
 }
 
+// SetRequestHeaders sets the captured request headers for the trace.
+func (t *Trace) SetRequestHeaders(headers map[string]string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RequestHeaders = headers
+}
+
 // Reset clears the trace for reuse from pool
 func (t *Trace) Reset() {
 	t.mu.Lock()
@@ -69,6 +77,7 @@ func (t *Trace) Reset() {
 	t.StartTime = time.Time{}
 	t.EndTime = time.Time{}
 	t.Attributes = nil
+	t.RequestHeaders = nil
 	for i := range t.PluginLogs {
 		t.PluginLogs[i] = PluginLogEntry{}
 	}
@@ -223,20 +232,20 @@ const (
 	// AttrEmbeddingsDimensionCount is the OTel spec key for embedding dimensions
 	// (Bifrost historically emitted AttrDimensions = gen_ai.request.dimensions).
 	AttrEmbeddingsDimensionCount = "gen_ai.embeddings.dimension.count"
-	AttrSeed             = "gen_ai.request.seed"
-	AttrSuffix           = "gen_ai.request.suffix"
-	AttrDimensions       = "gen_ai.request.dimensions"      // legacy: replaced by AttrEmbeddingsDimensionCount
-	AttrEncodingFormat   = "gen_ai.request.encoding_format" // legacy: singular form; replaced by AttrEncodingFormats (string[])
-	AttrEncodingFormats  = "gen_ai.request.encoding_formats"
-	AttrLanguage         = "gen_ai.request.language"
-	AttrPrompt           = "gen_ai.request.prompt"
-	AttrResponseFormat   = "gen_ai.request.response_format"
-	AttrFormat           = "gen_ai.request.format"
-	AttrVoice            = "gen_ai.request.voice"
-	AttrMultiVoiceConfig = "gen_ai.request.multi_voice_config"
-	AttrInstructions     = "gen_ai.request.instructions"
-	AttrSpeed            = "gen_ai.request.speed"
-	AttrMessageCount     = "gen_ai.request.message_count"
+	AttrSeed                     = "gen_ai.request.seed"
+	AttrSuffix                   = "gen_ai.request.suffix"
+	AttrDimensions               = "gen_ai.request.dimensions"      // legacy: replaced by AttrEmbeddingsDimensionCount
+	AttrEncodingFormat           = "gen_ai.request.encoding_format" // legacy: singular form; replaced by AttrEncodingFormats (string[])
+	AttrEncodingFormats          = "gen_ai.request.encoding_formats"
+	AttrLanguage                 = "gen_ai.request.language"
+	AttrPrompt                   = "gen_ai.request.prompt"
+	AttrResponseFormat           = "gen_ai.request.response_format"
+	AttrFormat                   = "gen_ai.request.format"
+	AttrVoice                    = "gen_ai.request.voice"
+	AttrMultiVoiceConfig         = "gen_ai.request.multi_voice_config"
+	AttrInstructions             = "gen_ai.request.instructions"
+	AttrSpeed                    = "gen_ai.request.speed"
+	AttrMessageCount             = "gen_ai.request.message_count"
 
 	// Response Attributes
 	AttrResponseID       = "gen_ai.response.id"
@@ -419,11 +428,11 @@ const (
 	AttrOutputTokenDetailsSearch       = "gen_ai.usage.output_token_details.num_search_queries"
 
 	// Tool execution attributes (OTel GenAI spec) used on MCP tool spans.
-	AttrToolName            = "gen_ai.tool.name"
-	AttrToolCallID          = "gen_ai.tool.call.id"
-	AttrToolCallArguments   = "gen_ai.tool.call.arguments"
-	AttrToolCallResult      = "gen_ai.tool.call.result"
-	AttrToolType            = "gen_ai.tool.type"
+	AttrToolName          = "gen_ai.tool.name"
+	AttrToolCallID        = "gen_ai.tool.call.id"
+	AttrToolCallArguments = "gen_ai.tool.call.arguments"
+	AttrToolCallResult    = "gen_ai.tool.call.result"
+	AttrToolType          = "gen_ai.tool.type"
 
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
@@ -436,20 +445,20 @@ const (
 	// The corresponding legacy gen_ai.* emissions are tagged "// legacy:" at their
 	// call sites and will be removed once dashboards migrate over.
 	// =====================================================================
-	AttrBifrostProviderName       = "bifrost.provider.name"
-	AttrBifrostRequestID          = "bifrost.request.id"
-	AttrBifrostVirtualKeyID       = "bifrost.virtual_key.id"
-	AttrBifrostVirtualKeyName     = "bifrost.virtual_key.name"
-	AttrBifrostSelectedKeyID      = "bifrost.selected_key.id"
-	AttrBifrostSelectedKeyName    = "bifrost.selected_key.name"
-	AttrBifrostRoutingRuleID      = "bifrost.routing_rule.id"
-	AttrBifrostRoutingRuleName    = "bifrost.routing_rule.name"
-	AttrBifrostTeamID             = "bifrost.team.id"
-	AttrBifrostTeamName           = "bifrost.team.name"
-	AttrBifrostCustomerID         = "bifrost.customer.id"
-	AttrBifrostCustomerName       = "bifrost.customer.name"
-	AttrBifrostRetries            = "bifrost.retries"
-	AttrBifrostFallbackIndex      = "bifrost.fallback_index"
+	AttrBifrostProviderName        = "bifrost.provider.name"
+	AttrBifrostRequestID           = "bifrost.request.id"
+	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
+	AttrBifrostVirtualKeyName      = "bifrost.virtual_key.name"
+	AttrBifrostSelectedKeyID       = "bifrost.selected_key.id"
+	AttrBifrostSelectedKeyName     = "bifrost.selected_key.name"
+	AttrBifrostRoutingRuleID       = "bifrost.routing_rule.id"
+	AttrBifrostRoutingRuleName     = "bifrost.routing_rule.name"
+	AttrBifrostTeamID              = "bifrost.team.id"
+	AttrBifrostTeamName            = "bifrost.team.name"
+	AttrBifrostCustomerID          = "bifrost.customer.id"
+	AttrBifrostCustomerName        = "bifrost.customer.name"
+	AttrBifrostRetries             = "bifrost.retries"
+	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy

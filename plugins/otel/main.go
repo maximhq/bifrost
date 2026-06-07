@@ -4,8 +4,11 @@ package otel
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -30,20 +33,13 @@ type TraceType string
 // TraceTypeGenAIExtension is the type of trace to use for the OTEL collector
 const TraceTypeGenAIExtension TraceType = "genai_extension"
 
-// TraceTypeVercel is the type of trace to use for the OTEL collector
-const TraceTypeVercel TraceType = "vercel"
-
-// TraceTypeOpenInference is the type of trace to use for the OTEL collector
-const TraceTypeOpenInference TraceType = "open_inference"
-
 // Protocol is the protocol to use for the OTEL collector
 type Protocol string
 
-// ProtocolHTTP is the default protocol
-const ProtocolHTTP Protocol = "http"
-
-// ProtocolGRPC is the second protocol
-const ProtocolGRPC Protocol = "grpc"
+const (
+	ProtocolHTTP Protocol = "http" // default
+	ProtocolGRPC Protocol = "grpc"
+)
 
 // PluginSpanFilterMode controls whether the plugins list is an allowlist or denylist.
 type PluginSpanFilterMode string
@@ -60,82 +56,240 @@ type PluginSpanFilter struct {
 	Plugins []string             `json:"plugins"`
 }
 
-type Config struct {
-	ServiceName  string                     `json:"service_name"`
-	CollectorURL *schemas.EnvVar            `json:"collector_url"`
-	Headers      map[string]*schemas.EnvVar `json:"headers"`
-	TraceType    TraceType                  `json:"trace_type"`
-	Protocol     Protocol                   `json:"protocol"`
-	TLSCACert    string                     `json:"tls_ca_cert"`
-	Insecure     bool                       `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+// Profile is a single OTEL export target: a collector endpoint and an optional
+// metrics-push destination. A Config holds one or more profiles; each profile gets
+// its own trace client and (when enabled) metrics exporter at runtime.
+//
+// Headers are plain strings using the "env.VAR_NAME" convention; they are resolved
+// against the environment at Init time via injectEnvToHeaders.
+type Profile struct {
+	// Enabled gates whether this profile exports anything. The plugin itself is always on;
+	// a disabled profile builds no trace client or metrics exporter, so no traces/metrics
+	// are sent for it. Defaults to true when omitted.
+	Enabled      bool              `json:"enabled"`
+	ServiceName  string            `json:"service_name"`
+	CollectorURL *schemas.EnvVar   `json:"collector_url"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	TraceType    TraceType         `json:"trace_type"`
+	Protocol     Protocol          `json:"protocol"`
+	TLSCACert    string            `json:"tls_ca_cert,omitempty"`
+	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// Metrics push configuration
 	MetricsEnabled      bool            `json:"metrics_enabled"`
-	MetricsEndpoint     *schemas.EnvVar `json:"metrics_endpoint"`
-	MetricsPushInterval int             `json:"metrics_push_interval"` // in seconds, default 15
+	MetricsEndpoint     *schemas.EnvVar `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval int             `json:"metrics_push_interval,omitempty"` // in seconds, default 15
 
-	// PluginSpanFilter is the DB-stored fallback when otel_plugin_span_filter is absent in config.json.
-	// The top-level config.json field takes precedence and is passed via Init's pluginSpanFilter param.
+	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
+	// or "*") whose captured values are attached to the root span as attributes.
+	RequestHeaders []string `json:"request_headers,omitempty"`
+
+	// DisableContentLogging controls whether message content is exported to the OTEL collector.
+	// When true, only metadata (model, tokens, latency, etc.) is exported; input/output message
+	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
+	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
+}
+
+// UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
+// Specifically, Insecure defaults to true when the key is omitted so http://
+// collectors work out-of-the-box without forcing users to set it explicitly.
+func (p *Profile) UnmarshalJSON(data []byte) error {
+	type alias Profile
+	aux := struct {
+		Enabled  *bool `json:"enabled"`
+		Insecure *bool `json:"insecure"`
+		*alias
+	}{
+		alias: (*alias)(p),
+	}
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.Insecure == nil {
+		p.Insecure = true
+	} else {
+		p.Insecure = *aux.Insecure
+	}
+	if aux.Enabled == nil {
+		p.Enabled = true
+	} else {
+		p.Enabled = *aux.Enabled
+	}
+	return nil
+}
+
+// Config is the OTEL plugin configuration: a set of export profiles plus a single
+// shared span filter. It accepts two JSON shapes (see UnmarshalJSON):
+//   - the canonical wrapper {"profiles": [ ... ], "plugin_span_filter": { ... }}
+//   - a legacy single profile object, which is normalized into a one-element Profiles slice.
+type Config struct {
+	Profiles []*Profile `json:"profiles"`
+
+	// PluginSpanFilter is a single policy applied across every profile. In a legacy
+	// single-object config it is read from the object; in a profiles wrapper it is read
+	// from the top-level field (or hoisted from the first profile that carries one).
 	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
 }
 
-// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
-// ("env.VAR_NAME" or the literal value) for database/config-file persistence.
-// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
-func (c *Config) MarshalForStorage() ([]byte, error) {
-	type alias struct {
-		ServiceName         string            `json:"service_name"`
-		CollectorURL        string            `json:"collector_url"`
-		Headers             map[string]string `json:"headers,omitempty"`
-		TraceType           TraceType         `json:"trace_type"`
-		Protocol            Protocol          `json:"protocol"`
-		TLSCACert           string            `json:"tls_ca_cert,omitempty"`
-		Insecure            bool              `json:"insecure"`
-		MetricsEnabled      bool              `json:"metrics_enabled"`
-		MetricsEndpoint     string            `json:"metrics_endpoint,omitempty"`
-		MetricsPushInterval int               `json:"metrics_push_interval,omitempty"`
-		PluginSpanFilter    *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
-	}
-	a := alias{
-		ServiceName:         c.ServiceName,
-		CollectorURL:        schemas.EnvVarAsString(c.CollectorURL),
-		TraceType:           c.TraceType,
-		Protocol:            c.Protocol,
-		TLSCACert:           c.TLSCACert,
-		Insecure:            c.Insecure,
-		MetricsEnabled:      c.MetricsEnabled,
-		MetricsEndpoint:     schemas.EnvVarAsString(c.MetricsEndpoint),
-		MetricsPushInterval: c.MetricsPushInterval,
-		PluginSpanFilter:    c.PluginSpanFilter,
-	}
-	if c.Headers != nil {
-		a.Headers = make(map[string]string, len(c.Headers))
-		for k, v := range c.Headers {
-			a.Headers[k] = schemas.EnvVarAsString(v)
+// UnmarshalJSON normalizes both supported config shapes into Profiles. A wrapper object
+// (one with a "profiles" key) is read directly; any other object is treated as a single
+// legacy profile, with its plugin_span_filter hoisted to the shared Config level.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	// Canonical wrapper shape.
+	if node, err := sonic.Get(data, "profiles"); err == nil && node.Exists() {
+		type wrapper Config
+		var w wrapper
+		if err := sonic.Unmarshal(data, &w); err != nil {
+			return err
 		}
+		*c = Config(w)
+		// Allow plugin_span_filter to live on the first profile too; hoist it if the
+		// top-level field was omitted.
+		if c.PluginSpanFilter == nil {
+			c.PluginSpanFilter = hoistSpanFilter(data)
+		}
+		return nil
 	}
-	return sonic.Marshal(a)
+
+	// Legacy single-object shape: the whole object is one profile.
+	var prof Profile
+	if err := sonic.Unmarshal(data, &prof); err != nil {
+		return err
+	}
+	c.Profiles = []*Profile{&prof}
+	c.PluginSpanFilter = spanFilterFrom(data)
+	return nil
 }
 
-// Redacted returns a copy of the config with sensitive EnvVar fields redacted for API responses.
+// spanFilterCarrier captures only the plugin_span_filter field from a config or profile object.
+type spanFilterCarrier struct {
+	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+}
+
+// spanFilterFrom extracts a top-level plugin_span_filter from a JSON object, or nil.
+func spanFilterFrom(data []byte) *PluginSpanFilter {
+	var c spanFilterCarrier
+	if err := sonic.Unmarshal(data, &c); err != nil {
+		return nil
+	}
+	return c.PluginSpanFilter
+}
+
+// hoistSpanFilter returns the first plugin_span_filter found among the profiles of a
+// wrapper-shaped config, used as a fallback when the top-level field is absent.
+func hoistSpanFilter(data []byte) *PluginSpanFilter {
+	var w struct {
+		Profiles []spanFilterCarrier `json:"profiles"`
+	}
+	if err := sonic.Unmarshal(data, &w); err != nil {
+		return nil
+	}
+	for _, p := range w.Profiles {
+		if p.PluginSpanFilter != nil {
+			return p.PluginSpanFilter
+		}
+	}
+	return nil
+}
+
+// profileForStorage is the persisted form of a single profile: *EnvVar fields are
+// flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
+// persistence.
+type profileForStorage struct {
+	Enabled               bool              `json:"enabled"`
+	ServiceName           string            `json:"service_name"`
+	CollectorURL          string            `json:"collector_url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	TraceType             TraceType         `json:"trace_type"`
+	Protocol              Protocol          `json:"protocol"`
+	TLSCACert             string            `json:"tls_ca_cert,omitempty"`
+	Insecure              bool              `json:"insecure"`
+	MetricsEnabled        bool              `json:"metrics_enabled"`
+	MetricsEndpoint       string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval   int               `json:"metrics_push_interval,omitempty"`
+	RequestHeaders        []string          `json:"request_headers,omitempty"`
+	DisableContentLogging bool              `json:"disable_content_logging,omitempty"`
+}
+
+// configForStorage is the persisted wrapper shape.
+type configForStorage struct {
+	Profiles         []profileForStorage `json:"profiles"`
+	PluginSpanFilter *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
+}
+
+// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// ("env.VAR_NAME" or the literal value) for database/config-file persistence. Output is
+// always the canonical {"profiles": [...]} wrapper regardless of the input shape.
+// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+func (c *Config) MarshalForStorage() ([]byte, error) {
+	out := configForStorage{
+		Profiles:         make([]profileForStorage, 0, len(c.Profiles)),
+		PluginSpanFilter: c.PluginSpanFilter,
+	}
+	for _, p := range c.Profiles {
+		if p == nil {
+			continue
+		}
+		out.Profiles = append(out.Profiles, profileForStorage{
+			Enabled:               p.Enabled,
+			ServiceName:           p.ServiceName,
+			CollectorURL:          schemas.EnvVarAsString(p.CollectorURL),
+			Headers:               p.Headers,
+			TraceType:             p.TraceType,
+			Protocol:              p.Protocol,
+			TLSCACert:             p.TLSCACert,
+			Insecure:              p.Insecure,
+			MetricsEnabled:        p.MetricsEnabled,
+			MetricsEndpoint:       schemas.EnvVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:   p.MetricsPushInterval,
+			RequestHeaders:        p.RequestHeaders,
+			DisableContentLogging: p.DisableContentLogging,
+		})
+	}
+	return sonic.Marshal(out)
+}
+
+// Redacted returns a copy of the config with sensitive fields redacted for API responses.
 // URLs (CollectorURL, MetricsEndpoint) are not secrets and are returned unchanged so the UI
 // can display and re-submit them without failing URL validation. For env var references on
 // those fields, only the resolved value is hidden; the env_var name is preserved.
-// Header values may carry auth tokens and are masked.
+// Header values may carry auth tokens, so literal values are masked while "env." references
+// are preserved.
 func (c *Config) Redacted() *Config {
 	if c == nil {
 		return nil
 	}
-	redacted := *c
-	redacted.CollectorURL = hideResolvedEnvValue(c.CollectorURL)
-	redacted.MetricsEndpoint = hideResolvedEnvValue(c.MetricsEndpoint)
-	if c.Headers != nil {
-		redacted.Headers = make(map[string]*schemas.EnvVar, len(c.Headers))
-		for k, v := range c.Headers {
-			redacted.Headers[k] = v.Redacted()
+	redacted := &Config{PluginSpanFilter: c.PluginSpanFilter}
+	if c.Profiles != nil {
+		redacted.Profiles = make([]*Profile, 0, len(c.Profiles))
+		for _, p := range c.Profiles {
+			if p == nil {
+				redacted.Profiles = append(redacted.Profiles, nil)
+				continue
+			}
+			rp := *p
+			rp.CollectorURL = hideResolvedEnvValue(p.CollectorURL)
+			rp.MetricsEndpoint = hideResolvedEnvValue(p.MetricsEndpoint)
+			if p.Headers != nil {
+				rp.Headers = make(map[string]string, len(p.Headers))
+				for k, v := range p.Headers {
+					rp.Headers[k] = redactHeaderValue(v)
+				}
+			}
+			redacted.Profiles = append(redacted.Profiles, &rp)
 		}
 	}
-	return &redacted
+	return redacted
+}
+
+// redactHeaderValue masks a plain-string header value for API responses. "env." references
+// are returned unchanged (they are not secrets), while literal values are masked using the
+// same scheme as EnvVar.Redacted so the API surface stays consistent.
+func redactHeaderValue(v string) string {
+	if strings.HasPrefix(v, "env.") {
+		return v
+	}
+	return schemas.EnvVarAsString(schemas.NewEnvVar(v).Redacted())
 }
 
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
@@ -149,52 +303,36 @@ func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
 	return v.Redacted()
 }
 
-// UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
-// Specifically, Insecure defaults to true when the key is omitted so http://
-// collectors work out-of-the-box without forcing users to set it explicitly.
-func (c *Config) UnmarshalJSON(data []byte) error {
-	type alias Config
-	aux := struct {
-		Insecure *bool `json:"insecure"`
-		*alias
-	}{
-		alias: (*alias)(c),
-	}
-	if err := sonic.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	if aux.Insecure == nil {
-		c.Insecure = true
-	} else {
-		c.Insecure = *aux.Insecure
-	}
-	return nil
+// otelTarget is the runtime state for a single configured profile: one trace client
+// plus an optional metrics exporter, along with the per-profile identity (service name)
+// used when converting traces for this destination.
+type otelTarget struct {
+	serviceName           string
+	url                   string
+	traceType             TraceType
+	client                OtelClient
+	metricsExporter       *MetricsExporter
+	requestHeaders        []string
+	disableContentLogging bool
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
 // It implements the ObservabilityPlugin interface to receive completed traces
-// from the tracing middleware and forward them to an OTEL collector.
+// from the tracing middleware and forward them to one or more OTEL collectors.
 type OtelPlugin struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	serviceName string
-	url         string
-	headers     map[string]string
-	traceType   TraceType
-	protocol    Protocol
+	// targets holds one runtime per configured profile. Each completed trace is exported
+	// to every target's collector, and metrics are recorded against every target's exporter.
+	targets []*otelTarget
 
 	bifrostVersion string
 
 	attributesFromEnvironment []*commonpb.KeyValue
 	instanceAttrs             []*commonpb.KeyValue // machine ID + pod labels, added only to root spans
 
-	client OtelClient
-
 	pricingManager *modelcatalog.ModelCatalog
-
-	// Metrics push support
-	metricsExporter *MetricsExporter
 
 	pluginSpanFilter *PluginSpanFilter
 }
@@ -208,7 +346,9 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if pricingManager == nil {
 		logger.Warn("otel plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
-	var err error
+	if len(config.Profiles) == 0 {
+		return nil, fmt.Errorf("at least one otel profile is required")
+	}
 	if config.PluginSpanFilter != nil {
 		switch config.PluginSpanFilter.Mode {
 		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
@@ -216,9 +356,6 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
 				config.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
 		}
-	}
-	if config.ServiceName == "" {
-		config.ServiceName = "bifrost"
 	}
 	// Loading attributes from environment
 	attributesFromEnvironment := make([]*commonpb.KeyValue, 0)
@@ -248,11 +385,6 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	}
 	// Preparing the plugin
 	p := &OtelPlugin{
-		serviceName:               config.ServiceName,
-		url:                       config.CollectorURL.GetValue(),
-		traceType:                 config.TraceType,
-		headers:                   resolveHeaders(config.Headers),
-		protocol:                  config.Protocol,
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
@@ -260,54 +392,104 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pluginSpanFilter:          config.PluginSpanFilter,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
-	if config.Protocol == ProtocolGRPC {
-		p.client, err = NewOtelClientGRPC(config.CollectorURL.GetValue(), p.headers, config.TLSCACert, config.Insecure)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if config.Protocol == ProtocolHTTP {
-		p.client, err = NewOtelClientHTTP(config.CollectorURL.GetValue(), p.headers, config.TLSCACert, config.Insecure)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if p.client == nil {
-		return nil, fmt.Errorf("otel client is not initialized. invalid protocol type")
-	}
 
-	// Initialize metrics exporter if enabled
-	if config.MetricsEnabled {
-		if config.MetricsEndpoint.GetValue() == "" {
-			return nil, fmt.Errorf("metrics_endpoint is required when metrics_enabled is true")
+	for i, profile := range config.Profiles {
+		// A disabled profile exports nothing — skip building its client/exporter entirely.
+		if profile != nil && !profile.Enabled {
+			logger.Info("OTEL profile %d is disabled, skipping", i)
+			continue
 		}
-		pushInterval := config.MetricsPushInterval
-		if pushInterval <= 0 {
-			pushInterval = 15 // default 15 seconds
-		} else if pushInterval > 300 {
-			return nil, fmt.Errorf("metrics_push_interval must be between 1 and 300 seconds, got %d", pushInterval)
-		}
-		metricsConfig := &MetricsConfig{
-			ServiceName:  config.ServiceName,
-			Endpoint:     config.MetricsEndpoint.GetValue(),
-			Headers:      p.headers,
-			Protocol:     config.Protocol,
-			TLSCACert:    config.TLSCACert,
-			Insecure:     config.Insecure,
-			PushInterval: pushInterval,
-		}
-		p.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
+		target, err := p.buildTarget(i, profile)
 		if err != nil {
-			// Clean up trace client if metrics exporter fails
-			if p.client != nil {
-				p.client.Close()
-			}
-			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
+			// Tear down any targets already initialized so we don't leak clients/exporters.
+			_ = p.Cleanup()
+			return nil, err
 		}
-		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint.GetValue(), pushInterval)
+		p.targets = append(p.targets, target)
 	}
 
 	return p, nil
+}
+
+// buildTarget constructs the runtime for a single profile: it resolves headers, validates
+// the protocol, opens the trace client, and (when enabled) starts the metrics exporter.
+func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, error) {
+	if profile == nil {
+		return nil, fmt.Errorf("profile %d is nil", index)
+	}
+	if profile.CollectorURL == nil || profile.CollectorURL.GetValue() == "" {
+		return nil, fmt.Errorf("profile %d: collector url is required", index)
+	}
+
+	serviceName := profile.ServiceName
+	if serviceName == "" {
+		serviceName = "bifrost"
+	}
+
+	// Copy headers before resolving so the stored config is never mutated, then resolve
+	// any "env." references against the environment (errors if a referenced var is unset).
+	headers := make(map[string]string, len(profile.Headers))
+	maps.Copy(headers, profile.Headers)
+	if err := injectEnvToHeaders(headers); err != nil {
+		return nil, fmt.Errorf("profile %d: %w", index, err)
+	}
+
+	url := profile.CollectorURL.GetValue()
+	target := &otelTarget{
+		serviceName:           serviceName,
+		url:                   url,
+		traceType:             profile.TraceType,
+		requestHeaders:        slices.Clone(profile.RequestHeaders),
+		disableContentLogging: profile.DisableContentLogging,
+	}
+
+	var err error
+	switch profile.Protocol {
+	case ProtocolGRPC:
+		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
+	case ProtocolHTTP:
+		target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure)
+	default:
+		return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("profile %d: %w", index, err)
+	}
+
+	// Initialize metrics exporter if enabled
+	if profile.MetricsEnabled {
+		if profile.MetricsEndpoint.GetValue() == "" {
+			target.client.Close()
+			return nil, fmt.Errorf("profile %d: metrics_endpoint is required when metrics_enabled is true", index)
+		}
+		pushInterval := profile.MetricsPushInterval
+		if pushInterval <= 0 {
+			pushInterval = 15 // default 15 seconds
+		} else if pushInterval > 300 {
+			target.client.Close()
+			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
+		}
+		metricsConfig := &MetricsConfig{
+			ServiceName:  serviceName,
+			Endpoint:     profile.MetricsEndpoint.GetValue(),
+			Headers:      headers,
+			Protocol:     profile.Protocol,
+			TLSCACert:    profile.TLSCACert,
+			Insecure:     profile.Insecure,
+			PushInterval: pushInterval,
+		}
+		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
+		if err != nil {
+			// Clean up trace client if metrics exporter fails
+			if target.client != nil {
+				target.client.Close()
+			}
+			return nil, fmt.Errorf("profile %d: failed to initialize metrics exporter: %w", index, err)
+		}
+		logger.Info("OTEL metrics push enabled for profile %d, pushing to %s every %d seconds", index, profile.MetricsEndpoint.GetValue(), pushInterval)
+	}
+
+	return target, nil
 }
 
 // GetName function for the OTEL plugin
@@ -372,50 +554,6 @@ func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, r
 	return chunk, nil
 }
 
-// ValidateConfig function for the OTEL plugin
-func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
-	var otelConfig Config
-	// Checking if its a string, then we will JSON parse and confirm
-	if configStr, ok := config.(string); ok {
-		if err := sonic.Unmarshal([]byte(configStr), &otelConfig); err != nil {
-			return nil, err
-		}
-	}
-	// Checking if its a map[string]any, then we will JSON parse and confirm
-	if configMap, ok := config.(map[string]any); ok {
-		configString, err := sonic.Marshal(configMap)
-		if err != nil {
-			return nil, err
-		}
-		if err := sonic.Unmarshal([]byte(configString), &otelConfig); err != nil {
-			return nil, err
-		}
-	}
-	// Checking if its a Config, then we will confirm
-	if config, ok := config.(*Config); ok {
-		otelConfig = *config
-	}
-	// Validating fields
-	if otelConfig.CollectorURL == nil || otelConfig.CollectorURL.GetValue() == "" {
-		return nil, fmt.Errorf("collector url is required")
-	}
-	if otelConfig.TraceType == "" {
-		return nil, fmt.Errorf("trace type is required")
-	}
-	if otelConfig.Protocol == "" {
-		return nil, fmt.Errorf("protocol is required")
-	}
-	if otelConfig.PluginSpanFilter != nil {
-		switch otelConfig.PluginSpanFilter.Mode {
-		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
-		default:
-			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
-				otelConfig.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
-		}
-	}
-	return &otelConfig, nil
-}
-
 // PreLLMHook is a no-op - tracing is handled via the Inject method.
 // The OTEL plugin receives completed traces from TracingMiddleware.
 func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -431,7 +569,7 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 // This is the ONLY place RecordCacheHit is called — do not also emit it from
 // recordMetricsFromTrace, or cache hits will double-count.
 func (p *OtelPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if p.metricsExporter == nil || resp == nil {
+	if resp == nil || !p.anyMetricsEnabled() {
 		return resp, bifrostErr, nil
 	}
 	extra := resp.GetExtraFields()
@@ -449,9 +587,23 @@ func (p *OtelPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.Bifr
 	// cache hit has no span to read.
 	attrs := append(buildContextAttrs(ctx, resp, bifrostErr), attribute.String("cache_type", cacheType))
 
-	p.metricsExporter.RecordCacheHit(ctx, attrs...)
+	for _, t := range p.targets {
+		if t.metricsExporter != nil {
+			t.metricsExporter.RecordCacheHit(ctx, attrs...)
+		}
+	}
 
 	return resp, bifrostErr, nil
+}
+
+// anyMetricsEnabled reports whether at least one profile has a metrics exporter running.
+func (p *OtelPlugin) anyMetricsEnabled() bool {
+	for _, t := range p.targets {
+		if t.metricsExporter != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Inject receives a completed trace and sends it to the OTEL collector.
@@ -462,20 +614,49 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
 	}
-	// Emit trace to collector if client is initialized
-	if p.client != nil {
-		// Convert schemas.Trace to OTEL ResourceSpan
-		resourceSpan := p.convertTraceToResourceSpan(trace)
-		// Emit to collector
-		if err := p.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
-			logger.Error("failed to emit trace %s: %v", trace.TraceID, err)
+	// Emit the trace to every configured profile's collector, and record metrics against
+	// each profile's exporter. Conversion is per-target because the resource service name
+	// differs per profile; everything else (filter, instance attrs) is shared.
+	var wg sync.WaitGroup
+	for _, t := range p.targets {
+		wg.Add(1)
+		go func(t *otelTarget) {
+			defer wg.Done()
+			if t.client != nil {
+				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging)
+				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
+					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
+				}
+			}
+			if t.metricsExporter != nil {
+				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
+			}
+		}(t)
+	}
+	wg.Wait()
+	return nil
+}
+
+// RequestHeaderPatterns returns the deduplicated union of request-header name patterns
+// across all enabled profiles. The tracing middleware uses this to capture matching
+// headers onto the trace; each profile filters to its own subset at conversion time.
+func (p *OtelPlugin) RequestHeaderPatterns() []string {
+	seen := make(map[string]struct{})
+	var patterns []string
+	for _, t := range p.targets {
+		for _, h := range t.requestHeaders {
+			normalized := strings.ToLower(strings.TrimSpace(h))
+			if normalized == "" {
+				continue
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			patterns = append(patterns, normalized)
 		}
 	}
-	// Record metrics if metrics exporter is enabled
-	if p.metricsExporter != nil {
-		p.recordMetricsFromTrace(ctx, trace)
-	}
-	return nil
+	return patterns
 }
 
 // Helper functions for type-safe attribute extraction from trace spans
@@ -574,8 +755,8 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 // per llm.call/retry span so fallback attempts and failed retries are counted with
 // their own provider/model/fallback_index labels. Per-trace metrics (tokens, cost,
 // TTFT) are recorded once, keyed off the final (latest) attempt span.
-func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.Trace) {
-	if trace == nil || p.metricsExporter == nil {
+func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
 		return
 	}
 
@@ -587,17 +768,17 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 
 		spanAttrs := buildSpanAttrs(span)
 
-		p.metricsExporter.RecordUpstreamRequest(ctx, spanAttrs...)
+		exporter.RecordUpstreamRequest(ctx, spanAttrs...)
 
 		if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
 			latencySeconds := span.EndTime.Sub(span.StartTime).Seconds()
-			p.metricsExporter.RecordUpstreamLatency(ctx, latencySeconds, spanAttrs...)
+			exporter.RecordUpstreamLatency(ctx, latencySeconds, spanAttrs...)
 		}
 
 		if span.Status == schemas.SpanStatusError {
-			p.metricsExporter.RecordErrorRequest(ctx, spanAttrs...)
+			exporter.RecordErrorRequest(ctx, spanAttrs...)
 		} else {
-			p.metricsExporter.RecordSuccessRequest(ctx, spanAttrs...)
+			exporter.RecordSuccessRequest(ctx, spanAttrs...)
 		}
 
 		if finalSpan == nil || span.EndTime.After(finalSpan.EndTime) {
@@ -618,7 +799,7 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 	// Record retries used for this request. Read off the final span (the last attempt's
 	// attempt index) so the value is "total retries used", matching the Prometheus side.
 	retries := getIntAttr(attrs, schemas.AttrNumberOfRetries)
-	p.metricsExporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
+	exporter.RecordRequestRetries(ctx, float64(retries), otelAttrs...)
 
 	// Record token usage - try both naming conventions
 	inputTokens := getIntAttr(attrs, schemas.AttrPromptTokens)
@@ -626,7 +807,7 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 		inputTokens = getIntAttr(attrs, schemas.AttrInputTokens)
 	}
 	if inputTokens > 0 {
-		p.metricsExporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
+		exporter.RecordInputTokens(ctx, int64(inputTokens), otelAttrs...)
 	}
 
 	outputTokens := getIntAttr(attrs, schemas.AttrCompletionTokens)
@@ -634,20 +815,20 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 		outputTokens = getIntAttr(attrs, schemas.AttrOutputTokens)
 	}
 	if outputTokens > 0 {
-		p.metricsExporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
+		exporter.RecordOutputTokens(ctx, int64(outputTokens), otelAttrs...)
 	}
 
 	// Record cost if available
 	cost := getFloat64Attr(attrs, schemas.AttrUsageCost)
 	if cost > 0 {
-		p.metricsExporter.RecordCost(ctx, cost, otelAttrs...)
+		exporter.RecordCost(ctx, cost, otelAttrs...)
 	}
 
 	// Record streaming latency metrics if available
 	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstToken)
 	if ttft > 0 {
 		// Convert from nanoseconds to seconds if needed (check the unit)
-		p.metricsExporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
+		exporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
 	}
 
 	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the
@@ -657,59 +838,59 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 	// API-family-specific keys that are mutually exclusive per request, so a fallback read
 	// covers both.
 	if n := getIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
-		p.metricsExporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
+		exporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
 	}
 	if n := getIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
-		p.metricsExporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
+		exporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
 	}
 	cacheWrite5m := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
 	if cacheWrite5m == 0 {
 		cacheWrite5m = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
 	}
 	if cacheWrite5m > 0 {
-		p.metricsExporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
+		exporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
 	}
 	cacheWrite1h := getIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
 	if cacheWrite1h == 0 {
 		cacheWrite1h = getIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
 	}
 	if cacheWrite1h > 0 {
-		p.metricsExporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)
+		exporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)
 	}
 }
 
-// Cleanup function for the OTEL plugin
+// Cleanup function for the OTEL plugin. It shuts down every profile's metrics exporter
+// and closes every trace client, returning the first client-close error encountered.
 func (p *OtelPlugin) Cleanup() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	// Shutdown metrics exporter first
-	if p.metricsExporter != nil {
-		if err := p.metricsExporter.Shutdown(context.Background()); err != nil {
-			logger.Error("failed to shutdown metrics exporter: %v", err)
+	var firstErr error
+	for _, t := range p.targets {
+		// Shutdown metrics exporter first
+		if t.metricsExporter != nil {
+			if err := t.metricsExporter.Shutdown(context.Background()); err != nil {
+				logger.Error("failed to shutdown metrics exporter: %v", err)
+			}
+		}
+		if t.client != nil {
+			if err := t.client.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	if p.client != nil {
-		return p.client.Close()
+	return firstErr
+}
+
+// GetMetricsExporter returns the first profile's metrics exporter for external use
+// (e.g., by the telemetry plugin). Returns nil if no profile has metrics enabled.
+func (p *OtelPlugin) GetMetricsExporter() *MetricsExporter {
+	for _, t := range p.targets {
+		if t.metricsExporter != nil {
+			return t.metricsExporter
+		}
 	}
 	return nil
-}
-
-// GetMetricsExporter returns the metrics exporter for external use (e.g., by telemetry plugin)
-func (p *OtelPlugin) GetMetricsExporter() *MetricsExporter {
-	return p.metricsExporter
-}
-
-// resolveHeaders converts a map of EnvVar header values to plain strings for use in HTTP/gRPC clients.
-func resolveHeaders(in map[string]*schemas.EnvVar) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v.GetValue()
-	}
-	return out
 }
 
 // firstNonEmpty returns the first non-empty string from the provided values.
