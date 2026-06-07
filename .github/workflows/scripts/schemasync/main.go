@@ -101,6 +101,9 @@ var ignoreGoFields = map[string]string{
 	// created_by_user_id is DB ownership metadata set by the API/session layer,
 	// never authored in config.json.
 	"/properties/governance/properties/virtual_keys/items|created_by_user_id": "DB ownership metadata; set by API/session layer, not authored in config.json",
+	// scope_name is a non-persisted (gorm:"-"), API-only display label populated by the
+	// HTTP layer on read (the scope target's human-readable name); never config.json input.
+	"/properties/governance/properties/model_configs/items|scope_name": "response-only; populated on GET as the scope target's display name, not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

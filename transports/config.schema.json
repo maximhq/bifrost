@@ -385,6 +385,14 @@
                 "type": "integer",
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               },
+              "model_config_id": {
+                "type": "string",
+                "description": "ID of the model config this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
+              "customer_id": {
+                "type": "string",
+                "description": "ID of the customer this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
               "team_id": {
                 "type": "string",
                 "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
@@ -764,6 +772,11 @@
               "scope_id": {
                 "type": "string",
                 "description": "Target entity ID for non-global scopes (e.g. virtual key ID). Required when scope != \"global\""
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap this config's budget resets to calendar boundaries (e.g. a monthly budget resets on the 1st) rather than rolling windows. For virtual_key-scoped configs it inherits the virtual key's setting.",
+                "default": false
               },
               "budget_id": {
                 "type": "string",
