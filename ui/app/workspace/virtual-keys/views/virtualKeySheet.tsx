@@ -852,21 +852,25 @@ export default function VirtualKeySheet({
           provider_configs: normalizedProviderConfigs,
           mcp_configs: data.mcpConfigs,
           team_id:
-            data.entityType === "team" &&
-              data.teamId &&
-              data.teamId.trim() !== ""
-              ? data.teamId
-              : data.entityType === "none"
-                ? null
-                : undefined,
+            assignedUsers.length > 0
+              ? undefined
+              : data.entityType === "team" &&
+                  data.teamId &&
+                  data.teamId.trim() !== ""
+                ? data.teamId
+                : data.entityType === "none"
+                  ? null
+                  : undefined,
           customer_id:
-            data.entityType === "customer" &&
-              data.customerId &&
-              data.customerId.trim() !== ""
-              ? data.customerId
-              : data.entityType === "none"
-                ? null
-                : undefined,
+            assignedUsers.length > 0
+              ? undefined
+              : data.entityType === "customer" &&
+                  data.customerId &&
+                  data.customerId.trim() !== ""
+                ? data.customerId
+                : data.entityType === "none"
+                  ? null
+                  : undefined,
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
@@ -2412,12 +2416,18 @@ export default function VirtualKeySheet({
                                     ]);
                                   }
                                 }}
-                                disabled={isTeamLocked}
+                                disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
                                 disableSearch
                                 hideClear
                                 className="h-9"
                               />
-                              <FormMessage />
+                              {isEditing && assignedUsers.length > 0 ? (
+                                <p className="text-muted-foreground text-xs">
+                                  This key is assigned to a user. Detach the user first to change the assignment type.
+                                </p>
+                              ) : (
+                                <FormMessage />
+                              )}
                             </FormItem>
                           )}
                         />
@@ -2454,7 +2464,7 @@ export default function VirtualKeySheet({
                                       }
                                     }}
                                     placeholder="Select a team"
-                                    disabled={isTeamLocked}
+                                    disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
                                     emptyMessage="No teams found."
                                     className="h-9"
                                   />
@@ -2484,6 +2494,7 @@ export default function VirtualKeySheet({
                                       field.onChange(val ?? "")
                                     }
                                     placeholder="Select a customer"
+                                    disabled={isEditing && assignedUsers.length > 0}
                                     emptyMessage="No customers found."
                                     className="h-9"
                                   />

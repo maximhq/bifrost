@@ -1,0 +1,3 @@
+- fix: track both virtual-key and user usage scopes by default; skip virtual-key usage only when `BifrostContextKeySkipVirtualKeyUsageTracking` is set, preventing dropped VK accounting under user attribution (#4123)
+- fix: honor wildcard allow-lists for catalog-opaque providers via `IsCatalogOpaqueProvider` (#4124)
+- chore: upgraded core to v1.5.18 and framework to v1.3.18

@@ -1,0 +1,1 @@
+- feat: added `BifrostContextKeySkipVirtualKeyUsageTracking` context key so callers can skip virtual-key usage tracking while preserving virtual-key auth and attribution (#4123)
