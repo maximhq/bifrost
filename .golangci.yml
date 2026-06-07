@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - forbidigo
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  forbidigo:
+    analyze-types: true
+    forbid:
+      - pattern: '^json\.Marshal$'
+        msg: "use schemas.MarshalSorted instead - see feedback_json_handling.md"
+      - pattern: '^json\.MarshalIndent$'
+        msg: "use schemas.MarshalSorted instead - see feedback_json_handling.md"
+
+issues:
+  exclude-rules:
+    # forbidigo (json.Marshal ban) is scoped to core/ and framework/ only;
+    # plugins, transports, cli, tests intentionally retain raw json.Marshal.
+    - path: '^(plugins|transports|cli|tests|ui|cmd)/'
+      linters: [forbidigo]
+    - path: '_test\.go$'
+      linters: [forbidigo]

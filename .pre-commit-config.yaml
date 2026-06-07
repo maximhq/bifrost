@@ -29,3 +29,10 @@ repos:
   rev: v2.17.2
   hooks:
   - id: pylint
+- repo: local
+  hooks:
+  - id: bifrostlint-go-filenames
+    name: bifrostlint - go filenames have no underscores except _test.go
+    language: system
+    entry: bash -c 'failed=0; for f in "$@"; do base=$(basename "$f" .go); case "$f" in *_test.go) continue;; esac; case "$base" in *_*) echo "$f: underscores not allowed in Go filenames (see AGENTS.md Code Style)"; failed=1;; esac; done; exit $failed' --
+    types: [go]

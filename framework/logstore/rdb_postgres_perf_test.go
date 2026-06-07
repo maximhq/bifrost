@@ -102,6 +102,7 @@ func TestEnsureMatViewsRebuildsBadSameNameIndex(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, db.Exec("DROP INDEX IF EXISTS mv_logs_hourly_uniq").Error)
+	// bifrostlint:ignore sqlconcurrent test fixture - deliberately creates a bad index to verify rebuild logic
 	require.NoError(t, db.Exec("CREATE INDEX mv_logs_hourly_uniq ON mv_logs_hourly(hour)").Error)
 	require.False(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "same-name non-unique index should not be considered ready")
 
