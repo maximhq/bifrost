@@ -1517,10 +1517,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
-	// Always process usage tracking (with or without virtual key)
-	// When user auth is present, skip VK usage tracking to avoid double-counting
+	// Always process usage tracking. When both virtual key and user are present,
+	// track both scopes; callers that intentionally want user-only accounting can
+	// set BifrostContextKeySkipVirtualKeyUsageTracking.
 	effectiveVK := virtualKey
-	if userID != "" {
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		effectiveVK = ""
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
@@ -1659,10 +1660,8 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
-	// When user auth is present, skip VK usage tracking to avoid double-counting
-	if userID != "" {
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		virtualKey = ""
 	}
 
