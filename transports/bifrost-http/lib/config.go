@@ -844,16 +844,17 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 11. Encryption sync
 	syncEncryption(ctx, config)
 	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
+	truncateLabel := func(s string) string {
+		r := []rune(s)
+		if len(r) > 10 {
+			return string(r[:10])
+		}
+		return s
+	}
 	if label := strings.TrimSpace(configData.EnvLabel); label != "" {
-		if len(label) > 10 {
-			label = label[:10]
-		}
-		config.EnvLabel = label
+		config.EnvLabel = truncateLabel(label)
 	} else if label := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); label != "" {
-		if len(label) > 10 {
-			label = label[:10]
-		}
-		config.EnvLabel = label
+		config.EnvLabel = truncateLabel(label)
 	}
 	// 13. WebSocket defaults
 	if configData.WebSocket != nil {

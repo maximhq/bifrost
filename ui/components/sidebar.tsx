@@ -48,6 +48,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sidebar,
   SidebarContent,
@@ -1505,10 +1506,12 @@ export default function AppSidebar() {
           </div>
           {/* Collapsed: dot indicator */}
           <div className="hidden justify-center group-data-[collapsible=icon]:flex">
-            <div
-              className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400"
-              title={envLabel}
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
+              </TooltipTrigger>
+              <TooltipContent side="right">{envLabel}</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       )}
