@@ -197,6 +197,12 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			logger.Info("logstore: metadata GIN index is ready")
 		}
 
+		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+		} else {
+			logger.Info("logstore: team/business-unit GIN indexes are ready")
+		}
+
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
 		} else {

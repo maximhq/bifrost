@@ -135,6 +135,7 @@ type ProviderFeatureSupport struct {
 	FileSearch             bool // file_search server tool (OpenAI-only)
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
+	Diagnostics            bool // diagnostics request field — undocumented Claude Code session-continuity field (diagnostics.previous_message_id); not in the public Messages API reference, so treated as Claude API only and stripped elsewhere (fail-closed). Azure rejects it; Bedrock/Vertex undocumented.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -153,6 +154,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
 		ServiceTier: true,
+		Diagnostics: true, // Claude Code talks to the direct API and sends diagnostics.previous_message_id; only this provider keeps it.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,

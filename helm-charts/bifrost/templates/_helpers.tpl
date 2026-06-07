@@ -446,6 +446,18 @@ false
 {{- end }}
 {{- $_ := set $governance "business_units" $businessUnits }}
 {{- end }}
+{{- if .Values.bifrost.governance.roles }}
+{{- $roles := list }}
+{{- range .Values.bifrost.governance.roles }}
+{{- $role := dict "name" .name }}
+{{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
+{{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
+{{- $roles = append $roles $role }}
+{{- end }}
+{{- $_ := set $governance "roles" $roles }}
+{{- end }}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
@@ -497,7 +509,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -1117,6 +1129,12 @@ false
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
+{{- if hasKey $inputConfig "profiles" }}
+{{- $_ := set $otelConfig "profiles" $inputConfig.profiles }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- else }}
 {{- if $inputConfig.service_name }}
 {{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
 {{- end }}
@@ -1146,6 +1164,10 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
 {{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
@@ -1343,14 +1365,44 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate OTEL plugin when enabled */}}
 {{- if .Values.bifrost.plugins.otel.enabled }}
-{{- if not .Values.bifrost.plugins.otel.config.collector_url }}
+{{- $otelInputConfig := .Values.bifrost.plugins.otel.config | default dict }}
+{{- if hasKey $otelInputConfig "profiles" }}
+{{- if not $otelInputConfig.profiles }}
+{{- fail "ERROR: bifrost.plugins.otel.config.profiles must contain at least one profile when OTEL plugin is enabled." }}
+{{- end }}
+{{- range $idx, $profile := $otelInputConfig.profiles }}
+{{- $profileEnabled := true }}
+{{- if hasKey $profile "enabled" }}
+{{- $profileEnabled = $profile.enabled }}
+{{- end }}
+{{- if $profileEnabled }}
+{{- if not $profile.collector_url }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required for enabled OTEL profiles." $idx) }}
+{{- end }}
+{{- if not $profile.trace_type }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required. Supported values: genai_extension, vercel, open_inference" $idx) }}
+{{- end }}
+{{- if not $profile.protocol }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].protocol is required. Supported values: http, grpc" $idx) }}
+{{- end }}
+{{- if and $profile.metrics_enabled (not $profile.metrics_endpoint) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].metrics_endpoint is required when metrics_enabled is true." $idx) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- else }}
+{{- if not $otelInputConfig.collector_url }}
 {{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.trace_type }}
+{{- if not $otelInputConfig.trace_type }}
 {{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported values: genai_extension, vercel, open_inference" }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.protocol }}
+{{- if not $otelInputConfig.protocol }}
 {{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- end }}
+{{- if and $otelInputConfig.metrics_enabled (not $otelInputConfig.metrics_endpoint) }}
+{{- fail "ERROR: bifrost.plugins.otel.config.metrics_endpoint is required when metrics_enabled is true." }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -1576,6 +1628,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $vk.name }}
 {{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].name is required for virtual key '%s'." $idx $vk.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance roles */}}
+{{- if .Values.bifrost.governance.roles }}
+{{- range $idx, $role := .Values.bifrost.governance.roles }}
+{{- if not $role.name }}
+{{- fail (printf "ERROR: bifrost.governance.roles[%d].name is required." $idx) }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -1,5 +1,4 @@
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
-import { formatCompactNumber } from "@/lib/utils/numbers";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -31,6 +30,7 @@ import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingE
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -40,7 +40,7 @@ import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
-import LogChatMessageView from "../views/logChatMessageView";
+import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
 import OCRView from "../views/ocrView";
 import PluginLogsView from "../views/pluginLogsView";
@@ -421,7 +421,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 										className={cn(
 											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
 											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 										)}
 									>
 										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
@@ -542,18 +542,18 @@ export function LogDetailView({
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const passthroughParams = isPassthrough
 		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-			})
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
 		: null;
 
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch {}
+		} catch { }
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -570,7 +570,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch {}
+		} catch { }
 		return 0;
 	})();
 
@@ -658,9 +658,18 @@ export function LogDetailView({
 								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 							</Badge>
 							{log.routing_rule && (
-								<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-									rule: {log.routing_rule.name}
-								</Badge>
+								<Link
+									to="/workspace/logs"
+									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									data-testid="logdetails-header-routing-rule-link"
+								>
+									<Badge
+										variant="outline"
+										className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline"
+									>
+										rule: {log.routing_rule.name}
+									</Badge>
+								</Link>
 							)}
 							{log.metadata?.isAsyncRequest ? (
 								<Badge variant="outline" className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200">
@@ -722,13 +731,27 @@ export function LogDetailView({
 						{log.routing_rule && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
-								<span className="text-foreground truncate text-[13px] font-medium">&ldquo;{log.routing_rule.name}&rdquo;</span>
+								<Link
+									to="/workspace/logs"
+									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+									data-testid="logdetails-header-rule-link"
+								>
+									&ldquo;{log.routing_rule.name}&rdquo;
+								</Link>
 							</div>
 						)}
 						{log.selected_key && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
-								<code className="text-foreground truncate font-mono text-[13px]">{log.selected_key.name}</code>
+								<Link
+									to="/workspace/logs"
+									search={{ selected_key_ids: [log.selected_key_id] }}
+									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+									data-testid="logdetails-header-selected-key-link"
+								>
+									{log.selected_key.name}
+								</Link>
 							</div>
 						)}
 					</div>
@@ -770,11 +793,10 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
-										log.token_usage.completion_tokens_details?.reasoning_tokens
-											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-											: ""
-									}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+									: ""
+								}`
 								: "—"
 						}
 						hasRightBorder
@@ -896,7 +918,7 @@ export function LogDetailView({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<code
-														className="text-primary hover:text-primary/80 block min-w-0 cursor-pointer font-normal break-all underline-offset-2 hover:underline"
+														className="block min-w-0 cursor-pointer font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
@@ -910,68 +932,116 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
+							{log.selected_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Selected Key"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={{ selected_key_ids: [log.selected_key_id] }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-selected-key-link"
+										>
+											{log.selected_key.name}
+										</Link>
+									}
+								/>
+							)}
 							{(log.selected_prompt_id || log.selected_prompt_name || log.selected_prompt_version) && (
 								<LogEntryDetailsView
 									className="w-full"
 									label="Selected Prompt"
 									value={
-										<span className="break-words">
-											{selectedPromptDisplayName}
-											{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
-											{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
-										</span>
+										<Link
+											to="/workspace/prompt-repo"
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-selected-prompt-link"
+										>
+											<span className="break-words">
+												{selectedPromptDisplayName}
+												{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
+												{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
+											</span>
+										</Link>
 									}
 								/>
 							)}
 							{log.number_of_retries > 0 && (
 								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
 							)}
-							{log.team_id && (
+							{(log.team_ids?.length || log.team_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Team"
+									label={(log.team_ids?.length ?? 0) > 1 ? "Teams" : "Team"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ team_ids: [log.team_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-team-link"
-										>
-											{log.team_name || log.team_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.team_ids?.length
+												? log.team_ids.map((id, i) => ({ id, name: log.team_names?.[i] || id }))
+												: [{ id: log.team_id!, name: log.team_name || log.team_id! }]
+											).map((t, i, arr) => (
+												<Link
+													key={t.id}
+													to="/workspace/logs"
+													search={{ team_ids: [t.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid={`logdetails-team-link-${t.id}`}
+												>
+													{t.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
-							{log.customer_id && (
+							{(log.customer_ids?.length || log.customer_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Customer"
+									label={(log.customer_ids?.length ?? 0) > 1 ? "Customers" : "Customer"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ customer_ids: [log.customer_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-customer-link"
-										>
-											{log.customer_name || log.customer_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.customer_ids?.length
+												? log.customer_ids.map((id, i) => ({ id, name: log.customer_names?.[i] || id }))
+												: [{ id: log.customer_id!, name: log.customer_name || log.customer_id! }]
+											).map((c, i, arr) => (
+												<Link
+													key={c.id}
+													to="/workspace/logs"
+													search={{ customer_ids: [c.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid={`logdetails-customer-link-${c.id}`}
+												>
+													{c.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
-							{log.business_unit_id && (
+							{(log.business_unit_ids?.length || log.business_unit_id) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Business Unit"
+									label={(log.business_unit_ids?.length ?? 0) > 1 ? "Business Units" : "Business Unit"}
 									value={
-										<Link
-											to="/workspace/logs"
-											search={{ business_unit_ids: [log.business_unit_id] }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-business-unit-link"
-										>
-											{log.business_unit_name || log.business_unit_id}
-										</Link>
+										<span className="inline-flex flex-wrap gap-x-1">
+											{(log.business_unit_ids?.length
+												? log.business_unit_ids.map((id, i) => ({ id, name: log.business_unit_names?.[i] || id }))
+												: [{ id: log.business_unit_id!, name: log.business_unit_name || log.business_unit_id! }]
+											).map((b, i, arr) => (
+												<Link
+													key={b.id}
+													to="/workspace/logs"
+													search={{ business_unit_ids: [b.id] }}
+													className="text-blue-600 hover:underline dark:text-blue-400"
+													data-testid={`logdetails-business-unit-link-${b.id}`}
+												>
+													{b.name}
+													{i < arr.length - 1 ? "," : ""}
+												</Link>
+											))}
+										</span>
 									}
 								/>
 							)}
@@ -985,7 +1055,7 @@ export function LogDetailView({
 												<Link
 													to="/workspace/logs"
 													search={{ user_ids: [log.user_id] }}
-													className={`text-primary hover:text-primary/80 block min-w-0 cursor-pointer text-sm font-normal break-all underline-offset-2 hover:underline${log.user_name ? "" : " font-mono"}`}
+													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
 													{log.user_name || log.user_id}
@@ -997,7 +1067,22 @@ export function LogDetailView({
 								/>
 							)}
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
-							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
+							{log.virtual_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Virtual Key"
+									value={
+										<Link
+											to="/workspace/governance/virtual-keys"
+											search={{ selected_vk: log.virtual_key.id }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-virtual-key-link"
+										>
+											{log.virtual_key.name}
+										</Link>
+									}
+								/>
+							)}
 							{log.routing_engines_used && log.routing_engines_used.length > 0 && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1019,7 +1104,22 @@ export function LogDetailView({
 									}
 								/>
 							)}
-							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
+							{log.routing_rule && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Routing Rule"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={{ routing_rule_ids: [log.routing_rule.id] }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="logdetails-routing-rule-link"
+										>
+											{log.routing_rule.name}
+										</Link>
+									}
+								/>
+							)}
 
 							{(log.params as any)?.audio && (
 								<>
@@ -1626,11 +1726,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-											if (!m) return false;
-											const mainRole = ((m.role as string) || "user") as MessageRole;
-											const hasReasoning = !!extractChatReasoning(m);
-											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-										})
+										if (!m) return false;
+										const mainRole = ((m.role as string) || "user") as MessageRole;
+										const hasReasoning = !!extractChatReasoning(m);
+										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+									})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
@@ -1706,6 +1806,17 @@ export function LogDetailView({
 															if (!src) return null;
 															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
 														})}
+												{text &&
+													Array.isArray(message.content) &&
+													(message.content as ContentBlock[])
+														.filter((b) => b.type === "file" && b.file)
+														.map((b, i) => (
+															<LogChatFileBlockView
+																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																block={b}
+																className="mt-2"
+															/>
+														))}
 												{hasToolCalls && text ? (
 													<div className="text-muted-foreground mt-2 text-[11px]">
 														{message
@@ -2230,7 +2341,7 @@ export function LogDetailView({
 const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<void>) => {
 	try {
 		const isChat = log.object === "chat.completion" || log.object === "chat_completion" || log.object === "chat.completion.chunk";
-		const isResponses = log.object === "response" || log.object === "response.completion.chunk";
+		const isResponses = log.object === "response" || log.object === "response.completion.chunk" || log.object === "compaction";
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
@@ -2270,7 +2381,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (log.object === "audio.transcription" || log.object === "audio.transcription.chunk") {
 				toast.error("Copy request body is not available for transcription requests");
 			} else {
-				toast.error("Copy request body is only available for chat, responses, speech, text completion, and embedding requests");
+				toast.error("Copy request body is only available for chat, responses, compaction, speech, text completion, and embedding requests");
 			}
 			return;
 		}

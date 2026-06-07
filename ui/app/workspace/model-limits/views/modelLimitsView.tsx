@@ -1,4 +1,4 @@
-import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
+import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useState } from "react";
@@ -12,20 +12,26 @@ export default function ModelLimitsView() {
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const [search, setSearch] = useState("");
+	const [scope, setScope] = useState("");
+	const [provider, setProvider] = useState("");
 	const [offset, setOffset] = useState(0);
 
 	const debouncedSearch = useDebouncedValue(search, 300);
 
-	// Reset to first page when search changes
+	// Reset to first page when any filter changes
 	useEffect(() => {
 		setOffset(0);
-	}, [debouncedSearch]);
+	}, [debouncedSearch, scope, provider]);
+
+	const { data: providers } = useGetProvidersQuery();
 
 	const { data: modelConfigsData, error: modelConfigsError } = useGetModelConfigsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
 			search: debouncedSearch || undefined,
+			scope: scope || undefined,
+			provider: provider || undefined,
 		},
 		{
 			skip: !hasGovernanceAccess,
@@ -53,9 +59,14 @@ export default function ModelLimitsView() {
 			<ModelLimitsTable
 				modelConfigs={modelConfigsData?.model_configs || []}
 				totalCount={modelConfigsData?.total_count || 0}
+				providers={providers ?? []}
 				search={search}
 				debouncedSearch={debouncedSearch}
 				onSearchChange={setSearch}
+				scope={scope}
+				onScopeChange={setScope}
+				provider={provider}
+				onProviderChange={setProvider}
 				offset={offset}
 				limit={PAGE_SIZE}
 				onOffsetChange={setOffset}

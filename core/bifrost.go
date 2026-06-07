@@ -458,6 +458,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
+	providerKeys = filterProvidersByContext(ctx, providerKeys)
 
 	startTime := time.Now()
 
@@ -601,6 +602,35 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
+	if ctx == nil {
+		return providerKeys
+	}
+
+	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	if rawAvailableProviders == nil {
+		return providerKeys
+	}
+
+	availableProviders, ok := rawAvailableProviders.([]schemas.ModelProvider)
+	if !ok {
+		return []schemas.ModelProvider{}
+	}
+
+	if len(availableProviders) == 0 || len(providerKeys) == 0 {
+		return []schemas.ModelProvider{}
+	}
+
+	filteredProviders := make([]schemas.ModelProvider, 0, len(providerKeys))
+	for _, providerKey := range providerKeys {
+		if slices.Contains(availableProviders, providerKey) {
+			filteredProviders = append(filteredProviders, providerKey)
+		}
+	}
+
+	return filteredProviders
 }
 
 // TextCompletionRequest sends a text completion request to the specified provider.
@@ -919,6 +949,49 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	}
 
 	return response.CountTokensResponse, nil
+}
+
+// CompactionRequest compacts a conversation context window via providers that implement
+// the OpenAI-compatible /v1/responses/compact flow (OpenAI, Azure OpenAI, xAI).
+// Providers without compaction support return an unsupported-operation error.
+func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "compaction request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CompactionRequest,
+			},
+		}
+	}
+
+	if len(req.Input) == 0 && req.PreviousResponseID == nil && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for compaction request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.CompactionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CompactionRequest
+	bifrostReq.CompactionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CompactionResponse, nil
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
@@ -4486,6 +4559,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
+	if req.CompactionRequest != nil {
+		tmp := *req.CompactionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CompactionRequest = &tmp
+	}
+
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
@@ -6192,6 +6272,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.CountTokensResponse = countTokensResponse
+	case schemas.CompactionRequest:
+		compactionResponse, bifrostError := provider.Compaction(req.Context, key, req.BifrostRequest.CompactionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CompactionResponse = compactionResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -6447,6 +6533,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		if passthroughResponse != nil {
+			passthroughResponse.Path = req.BifrostRequest.PassthroughRequest.Path
 		}
 		response.PassthroughResponse = passthroughResponse
 	default:
@@ -7180,6 +7269,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
+	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.OCRRequest = nil

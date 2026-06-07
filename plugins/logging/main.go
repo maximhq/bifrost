@@ -463,15 +463,17 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 
 	var metadata map[string]any
 
-	// Check configured logging headers
+	// Check configured logging headers (supports wildcard patterns like "x-custom-*")
 	if p.loggingHeaders != nil {
 		for _, h := range *p.loggingHeaders {
-			key := strings.ToLower(h)
-			if val, ok := allHeaders[key]; ok {
-				if metadata == nil {
-					metadata = make(map[string]any)
+			pattern := strings.ToLower(strings.TrimSpace(h))
+			for hKey, hVal := range allHeaders {
+				if schemas.MatchHeaderPattern(hKey, pattern) {
+					if metadata == nil {
+						metadata = make(map[string]any)
+					}
+					metadata[hKey] = hVal
 				}
-				metadata[key] = val
 			}
 		}
 	}
@@ -675,6 +677,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				Method:   req.PassthroughRequest.Method,
 				Path:     req.PassthroughRequest.Path,
 				RawQuery: req.PassthroughRequest.RawQuery,
+				Model:    req.PassthroughRequest.Model,
 			}
 			if len(req.PassthroughRequest.Body) > 0 {
 				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
@@ -916,6 +919,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if rateLimitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok && len(rateLimitIDs) > 0 {
 		entry.RateLimitIDsParsed = rateLimitIDs
 	}
+	if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
+		entry.TeamIDsParsed = teamIDs
+	}
+	if teamNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamNames).([]string); ok && len(teamNames) > 0 {
+		entry.TeamNamesParsed = teamNames
+	}
+	if buIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitIDs).([]string); ok && len(buIDs) > 0 {
+		entry.BusinessUnitIDsParsed = buIDs
+	}
+	if buNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitNames).([]string); ok && len(buNames) > 0 {
+		entry.BusinessUnitNamesParsed = buNames
+	}
+	if customerIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerIDs).([]string); ok && len(customerIDs) > 0 {
+		entry.CustomerIDsParsed = customerIDs
+	}
+	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
+		entry.CustomerNamesParsed = customerNames
+	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
@@ -1045,6 +1066,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
 				entry.Status = "error"
+			}
+			// Compute cost for streaming passthrough using StreamUsage set by the accumulator.
+			if entry.Cost == nil && p.pricingManager != nil && result.PassthroughResponse.PassthroughUsage != nil {
+				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+					entry.Cost = &cost
+				}
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)

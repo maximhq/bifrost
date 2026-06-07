@@ -1510,6 +1510,225 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
+func TestCoerceLegacyBudget(t *testing.T) {
+	existing := &configstoreTables.TableBudget{ID: "bud-1", MaxLimit: 50, ResetDuration: "1d"}
+
+	tests := []struct {
+		name     string
+		req      *UpdateBudgetRequest
+		existing *configstoreTables.TableBudget
+		// nil wantResult means coerce returns nil (no actionable change)
+		wantNil    bool
+		wantEmpty  bool // non-nil but empty slice (removal)
+		wantID     string
+		wantLimit  float64
+		wantPeriod string
+	}{
+		{
+			name:      "empty object → removal, returns empty slice",
+			req:       &UpdateBudgetRequest{},
+			existing:  nil,
+			wantEmpty: true,
+		},
+		{
+			name:      "both fields set, no existing → new budget entry, no ID",
+			req:       &UpdateBudgetRequest{MaxLimit: schemas.Ptr(100.0), ResetDuration: schemas.Ptr("1w")},
+			existing:  nil,
+			wantLimit: 100,
+			wantPeriod: "1w",
+		},
+		{
+			name:       "update max_limit only, existing budget → merges ID and reset_duration",
+			req:        &UpdateBudgetRequest{MaxLimit: schemas.Ptr(200.0)},
+			existing:   existing,
+			wantID:     "bud-1",
+			wantLimit:  200,
+			wantPeriod: "1d",
+		},
+		{
+			name:       "update reset_duration only, existing budget → merges ID and max_limit",
+			req:        &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1w")},
+			existing:   existing,
+			wantID:     "bud-1",
+			wantLimit:  50,
+			wantPeriod: "1w",
+		},
+		{
+			name:     "max_limit only, no existing → cannot build valid budget, returns nil",
+			req:      &UpdateBudgetRequest{MaxLimit: schemas.Ptr(100.0)},
+			existing: nil,
+			wantNil:  true,
+		},
+		{
+			name:     "reset_duration only, no existing → cannot build valid budget, returns nil",
+			req:      &UpdateBudgetRequest{ResetDuration: schemas.Ptr("1d")},
+			existing: nil,
+			wantNil:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := coerceLegacyBudget(tt.req, tt.existing)
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if tt.wantEmpty {
+				if len(*got) != 0 {
+					t.Fatalf("expected empty slice, got %+v", *got)
+				}
+				return
+			}
+			if len(*got) != 1 {
+				t.Fatalf("expected 1-element slice, got %d elements", len(*got))
+			}
+			b := (*got)[0]
+			if b.ID != tt.wantID {
+				t.Errorf("ID = %q, want %q", b.ID, tt.wantID)
+			}
+			if b.MaxLimit != tt.wantLimit {
+				t.Errorf("MaxLimit = %v, want %v", b.MaxLimit, tt.wantLimit)
+			}
+			if b.ResetDuration != tt.wantPeriod {
+				t.Errorf("ResetDuration = %q, want %q", b.ResetDuration, tt.wantPeriod)
+			}
+		})
+	}
+}
+
+func TestModelConfigToProviderGovernanceNewFields(t *testing.T) {
+	provider := "openai"
+	base := configstoreTables.TableModelConfig{
+		Scope:     configstoreTables.ModelConfigScopeGlobal,
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Provider:  &provider,
+	}
+
+	t.Run("nil mc returns false", func(t *testing.T) {
+		if _, ok := modelConfigToProviderGovernance(nil); ok {
+			t.Fatal("expected false for nil mc")
+		}
+	})
+
+	t.Run("wrong scope returns false", func(t *testing.T) {
+		mc := base
+		mc.Scope = "virtual_key"
+		if _, ok := modelConfigToProviderGovernance(&mc); ok {
+			t.Fatal("expected false for non-global scope")
+		}
+	})
+
+	t.Run("no budgets: Budget nil, Budgets empty, CalendarAligned false", func(t *testing.T) {
+		mc := base
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget != nil {
+			t.Errorf("Budget should be nil, got %+v", r.Budget)
+		}
+		if len(r.Budgets) != 0 {
+			t.Errorf("Budgets should be empty, got %+v", r.Budgets)
+		}
+		if r.CalendarAligned {
+			t.Error("CalendarAligned should be false")
+		}
+	})
+
+	t.Run("single budget: Budget points to first, Budgets has one entry", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{{ID: "b1", MaxLimit: 100, ResetDuration: "1d"}}
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget == nil || r.Budget.ID != "b1" {
+			t.Errorf("Budget = %+v, want ID=b1", r.Budget)
+		}
+		if len(r.Budgets) != 1 || r.Budgets[0].ID != "b1" {
+			t.Errorf("Budgets = %+v, want 1 entry with ID=b1", r.Budgets)
+		}
+	})
+
+	t.Run("multiple budgets: Budget is first, Budgets contains all", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{
+			{ID: "b1", MaxLimit: 100, ResetDuration: "1d"},
+			{ID: "b2", MaxLimit: 500, ResetDuration: "1w"},
+		}
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if r.Budget == nil || r.Budget.ID != "b1" {
+			t.Errorf("Budget should point to first budget, got %+v", r.Budget)
+		}
+		if len(r.Budgets) != 2 {
+			t.Fatalf("Budgets len = %d, want 2", len(r.Budgets))
+		}
+		if r.Budgets[0].ID != "b1" || r.Budgets[1].ID != "b2" {
+			t.Errorf("Budgets = %+v", r.Budgets)
+		}
+	})
+
+	t.Run("calendar_aligned is propagated", func(t *testing.T) {
+		mc := base
+		mc.CalendarAligned = true
+		r, ok := modelConfigToProviderGovernance(&mc)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if !r.CalendarAligned {
+			t.Error("CalendarAligned should be true")
+		}
+	})
+
+	t.Run("Budgets slice is a copy, not a reference to mc.Budgets", func(t *testing.T) {
+		mc := base
+		mc.Budgets = []configstoreTables.TableBudget{{ID: "b1", MaxLimit: 100, ResetDuration: "1d"}}
+		r, _ := modelConfigToProviderGovernance(&mc)
+		r.Budgets[0].MaxLimit = 999
+		if mc.Budgets[0].MaxLimit == 999 {
+			t.Error("mutating response Budgets should not affect the original mc")
+		}
+	})
+}
+
+func TestUpdateProviderGovernance_BudgetMutualExclusion(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("provider_name", "openai")
+	ctx.Request.SetBodyString(`{
+		"budget":  {"max_limit": 100, "reset_duration": "1d"},
+		"budgets": [{"max_limit": 100, "reset_duration": "1d"}]
+	}`)
+
+	h.updateProviderGovernance(ctx)
+
+	if ctx.Response.StatusCode() != 400 {
+		t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var resp struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse error response: %v", err)
+	}
+	if !strings.Contains(resp.Error.Message, "budget") {
+		t.Errorf("error message should mention 'budget', got: %q", resp.Error.Message)
+	}
+}
+
 func TestValidateRoutingFallbacks(t *testing.T) {
 
 	tests := []struct {
@@ -1536,5 +1755,260 @@ func TestValidateRoutingFallbacks(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+// --- customer calendar_aligned handler tests ---
+
+type mockCustomerStore struct {
+	configstore.ConfigStore
+	customers      map[string]*configstoreTables.TableCustomer
+	createdBudgets []*configstoreTables.TableBudget
+	updatedBudgets []*configstoreTables.TableBudget
+	updatedRLs     []*configstoreTables.TableRateLimit
+}
+
+func newMockCustomerStore() *mockCustomerStore {
+	return &mockCustomerStore{customers: make(map[string]*configstoreTables.TableCustomer)}
+}
+
+func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
+	return fn(nil)
+}
+func (m *mockCustomerStore) GetCustomer(_ context.Context, id string) (*configstoreTables.TableCustomer, error) {
+	c, ok := m.customers[id]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	clone := *c
+	if len(c.Budgets) > 0 {
+		clonedBudgets := make([]configstoreTables.TableBudget, len(c.Budgets))
+		copy(clonedBudgets, c.Budgets)
+		clone.Budgets = clonedBudgets
+	}
+	if c.RateLimit != nil {
+		rl := *c.RateLimit
+		clone.RateLimit = &rl
+	}
+	return &clone, nil
+}
+func (m *mockCustomerStore) CreateCustomer(_ context.Context, customer *configstoreTables.TableCustomer, _ ...*gorm.DB) error {
+	m.customers[customer.ID] = customer
+	return nil
+}
+func (m *mockCustomerStore) UpdateCustomer(_ context.Context, customer *configstoreTables.TableCustomer, _ ...*gorm.DB) error {
+	m.customers[customer.ID] = customer
+	return nil
+}
+func (m *mockCustomerStore) CreateBudget(_ context.Context, budget *configstoreTables.TableBudget, _ ...*gorm.DB) error {
+	m.createdBudgets = append(m.createdBudgets, budget)
+	return nil
+}
+func (m *mockCustomerStore) UpdateBudget(_ context.Context, budget *configstoreTables.TableBudget, _ ...*gorm.DB) error {
+	m.updatedBudgets = append(m.updatedBudgets, budget)
+	return nil
+}
+func (m *mockCustomerStore) CreateRateLimit(_ context.Context, rl *configstoreTables.TableRateLimit, _ ...*gorm.DB) error {
+	return nil
+}
+func (m *mockCustomerStore) UpdateRateLimit(_ context.Context, rl *configstoreTables.TableRateLimit, _ ...*gorm.DB) error {
+	m.updatedRLs = append(m.updatedRLs, rl)
+	return nil
+}
+func (m *mockCustomerStore) DeleteBudget(_ context.Context, _ string, _ ...*gorm.DB) error { return nil }
+
+type mockCustomerGovernanceManager struct {
+	GovernanceManager
+}
+
+func (m *mockCustomerGovernanceManager) ReloadCustomer(_ context.Context, _ string) (*configstoreTables.TableCustomer, error) {
+	return nil, nil
+}
+
+// TestCreateCustomer_CalendarAligned_SnapsBudgetLastReset verifies that when
+// calendar_aligned=true is set on create, the budget's LastReset is snapped to
+// the calendar period start rather than time.Now().
+func TestCreateCustomer_CalendarAligned_SnapsBudgetLastReset(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{
+		"name":             "ACME",
+		"calendar_aligned": true,
+		"budget": map[string]any{
+			"max_limit":      100.0,
+			"reset_duration": "1M",
+		},
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+
+	before := time.Now()
+	h.createCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(store.createdBudgets) != 1 {
+		t.Fatalf("expected 1 created budget, got %d", len(store.createdBudgets))
+	}
+	b := store.createdBudgets[0]
+	// Calendar-aligned LastReset must be at the start of the calendar period,
+	// which is always <= the beginning of the test, never a rolling time.Now().
+	if b.LastReset.After(before) {
+		t.Errorf("calendar-aligned budget LastReset %v should not be after test start %v (expected period start)", b.LastReset, before)
+	}
+	// Confirm the stored customer has CalendarAligned=true.
+	var created *configstoreTables.TableCustomer
+	for _, c := range store.customers {
+		created = c
+	}
+	if created == nil || !created.CalendarAligned {
+		t.Errorf("stored customer should have CalendarAligned=true")
+	}
+}
+
+// TestCreateCustomer_CalendarAligned_False verifies that when calendar_aligned is
+// not set, budget LastReset is a rolling time.Now() (not at a period boundary).
+func TestCreateCustomer_CalendarAligned_False(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "Globex",
+		"budget": map[string]any{
+			"max_limit":      50.0,
+			"reset_duration": "1M",
+		},
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+
+	before := time.Now()
+	h.createCustomer(ctx)
+	after := time.Now()
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(store.createdBudgets) != 1 {
+		t.Fatalf("expected 1 created budget, got %d", len(store.createdBudgets))
+	}
+	b := store.createdBudgets[0]
+	// Rolling LastReset should be within the test window.
+	if b.LastReset.Before(before) || b.LastReset.After(after) {
+		t.Errorf("non-calendar-aligned budget LastReset %v should be between %v and %v", b.LastReset, before, after)
+	}
+}
+
+// TestUpdateCustomer_CalendarAligned_SnapsExistingBudget verifies that toggling
+// calendar_aligned from false to true snaps the existing budget's LastReset to the
+// start of the current calendar period and resets CurrentUsage.
+func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+
+	budgetID := "bud-snap"
+	budgetID2 := "bud-snap-2"
+	oldLastReset := time.Now().AddDate(0, -1, 0) // 1 month ago
+	store.customers["cust-snap"] = &configstoreTables.TableCustomer{
+		ID:              "cust-snap",
+		Name:            "Initech",
+		CalendarAligned: false,
+		Budgets: []configstoreTables.TableBudget{
+			{
+				ID:            budgetID,
+				MaxLimit:      200.0,
+				ResetDuration: "1M",
+				LastReset:     oldLastReset,
+				CurrentUsage:  99.0,
+			},
+			{
+				ID:            budgetID2,
+				MaxLimit:      500.0,
+				ResetDuration: "1Y",
+				LastReset:     oldLastReset,
+				CurrentUsage:  150.0,
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-snap")
+
+	snapBefore := time.Now()
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	// UpdateBudget must have been called once per budget (both snap).
+	if len(store.updatedBudgets) != 2 {
+		t.Fatalf("expected 2 UpdateBudget calls for snap, got %d", len(store.updatedBudgets))
+	}
+	snappedIDs := make(map[string]bool, 2)
+	for _, snapped := range store.updatedBudgets {
+		snappedIDs[snapped.ID] = true
+		if snapped.LastReset.Equal(oldLastReset) {
+			t.Errorf("budget %s LastReset was not snapped: still equals old value", snapped.ID)
+		}
+		if snapped.LastReset.After(snapBefore) {
+			t.Errorf("budget %s snapped LastReset %v should be at the period start, not time.Now()", snapped.ID, snapped.LastReset)
+		}
+		if snapped.CurrentUsage != 0 {
+			t.Errorf("budget %s expected CurrentUsage reset to 0, got %v", snapped.ID, snapped.CurrentUsage)
+		}
+	}
+	if !snappedIDs[budgetID] || !snappedIDs[budgetID2] {
+		t.Errorf("expected both %q and %q to be snapped, got IDs: %v", budgetID, budgetID2, snappedIDs)
+	}
+}
+
+// TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled verifies that if
+// calendar_aligned is already true, no snap/UpdateBudget call occurs on update.
+func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+
+	store.customers["cust-already"] = &configstoreTables.TableCustomer{
+		ID:              "cust-already",
+		Name:            "Umbrella",
+		CalendarAligned: true, // already enabled
+		Budgets: []configstoreTables.TableBudget{
+			{
+				ID:            "bud-already-1",
+				MaxLimit:      300.0,
+				ResetDuration: "1M",
+				LastReset:     time.Now().AddDate(0, -1, 0),
+				CurrentUsage:  42.0,
+			},
+			{
+				ID:            "bud-already-2",
+				MaxLimit:      800.0,
+				ResetDuration: "1Y",
+				LastReset:     time.Now().AddDate(-1, 0, 0),
+				CurrentUsage:  10.0,
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-already")
+
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(store.updatedBudgets) != 0 {
+		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
 	}
 }

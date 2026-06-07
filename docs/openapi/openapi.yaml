@@ -177,6 +177,8 @@ paths:
     $ref: './paths/inference/videos.yaml#/video-remix'
   /v1/responses/input_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+  /v1/responses/compact:
+    $ref: './paths/inference/compaction.yaml#/compact'
   /v1/batches:
     $ref: './paths/inference/batches.yaml#/batches'
   /v1/batches/{batch_id}:
@@ -278,6 +280,10 @@ paths:
     $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
   /openai/v1/responses/input_tokens:
     $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+
+  # Context Compaction
+  /openai/v1/responses/compact:
+    $ref: './paths/integrations/openai/compaction.yaml#/compact'
 
   # Embeddings
   /openai/v1/embeddings:
@@ -818,6 +824,18 @@ paths:
   /api/governance/customers/{customer_id}:
     $ref: './paths/management/governance.yaml#/customers-by-id'
 
+  # Governance - Business Units (Enterprise)
+  /api/governance/business-units:
+    $ref: './paths/management/businessunits.yaml#/business-units'
+  /api/governance/business-units/{id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-by-id'
+  /api/governance/business-units/{id}/teams:
+    $ref: './paths/management/businessunits.yaml#/business-units-teams'
+  /api/governance/business-units/{id}/teams/{team_id}:
+    $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
+  /api/governance/business-units/{id}/governance:
+    $ref: './paths/management/businessunits.yaml#/business-units-governance'
+
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
     $ref: './paths/management/governance.yaml#/budgets'
@@ -1002,6 +1020,12 @@ components:
       description: |
         Bearer token authentication. Use your provider API key or Bifrost authentication token.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    ManagementBearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Management API authentication for `/api/*` endpoints. Use the `Authorization` header with `Bearer <API key>`.
+        Virtual keys, dashboard/user/session tokens, and `x-api-key` headers are not supported on management APIs.
     BasicAuth:
       type: http
       scheme: basic
@@ -1021,6 +1045,15 @@ components:
       description: |
         API key authentication via the `x-api-key` header.
         Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: token
+      description: |
+        Dashboard session authentication via the HTTPOnly `token` cookie that is
+        set by `POST /api/session/login`. Used by the Bifrost UI for same-origin
+        requests in place of an `Authorization` header. Accepted on session
+        endpoints (`logout`, `ws-ticket`) as an alternative to the management API key.
 
   parameters:
     AsyncJobId:

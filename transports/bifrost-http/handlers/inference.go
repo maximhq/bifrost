@@ -197,6 +197,17 @@ var responsesParamsKnownFields = map[string]bool{
 	"truncation":             true,
 }
 
+var compactionParamsKnownFields = map[string]bool{
+	"model":                  true,
+	"input":                  true,
+	"fallbacks":              true,
+	"instructions":           true,
+	"previous_response_id":   true,
+	"prompt_cache_key":       true,
+	"prompt_cache_retention": true,
+	"service_tier":           true,
+}
+
 var embeddingParamsKnownFields = map[string]bool{
 	"model":           true,
 	"input":           true,
@@ -514,6 +525,17 @@ type ResponsesRequest struct {
 	*schemas.ResponsesParameters
 }
 
+// CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
+type CompactionHTTPRequest struct {
+	Input                ResponsesRequestInput       `json:"input"`
+	Instructions         *string                     `json:"instructions,omitempty"`
+	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
+	BifrostParams
+}
+
 // EmbeddingRequest is a bifrost embedding request
 type EmbeddingRequest struct {
 	Input *schemas.EmbeddingInput `json:"input"`
@@ -674,6 +696,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
 	"/v1/images/generations":     schemas.ImageGenerationRequest,
 	"/v1/responses/input_tokens": schemas.CountTokensRequest,
+	"/v1/responses/compact":      schemas.CompactionRequest,
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
@@ -719,6 +742,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
 	r.POST("/v1/responses/input_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/responses/compact", lib.ChainMiddlewares(h.compaction, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
@@ -1423,11 +1447,16 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
 		stream = true
 	}
+	fallbacks, err := parseFallbacks(form.Value["fallbacks"])
+	if err != nil {
+		return nil, false, err
+	}
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
-		Model:    modelName,
-		Provider: schemas.ModelProvider(provider),
-		Input:    transcriptionInput,
-		Params:   transcriptionParams,
+		Model:     modelName,
+		Provider:  schemas.ModelProvider(provider),
+		Input:     transcriptionInput,
+		Params:    transcriptionParams,
+		Fallbacks: fallbacks,
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
@@ -1496,6 +1525,72 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 
 	forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, response)
+}
+
+// prepareCompactionRequest prepares a BifrostCompactionRequest from the HTTP request body
+func prepareCompactionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*CompactionHTTPRequest, *schemas.BifrostCompactionRequest, error) {
+	req, base, err := prepareRequest[CompactionHTTPRequest](ctx, config, compactionParamsKnownFields)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil && req.PreviousResponseID == nil {
+		return nil, nil, fmt.Errorf("input or previous_response_id is required for compaction")
+	}
+
+	input := req.Input.ResponsesRequestInputArray
+	if input == nil && req.Input.ResponsesRequestInputStr != nil {
+		input = []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: req.Input.ResponsesRequestInputStr},
+			},
+		}
+	}
+
+	return req, &schemas.BifrostCompactionRequest{
+		Provider:             base.Provider,
+		Model:                base.ModelName,
+		Input:                input,
+		Instructions:         req.Instructions,
+		PreviousResponseID:   req.PreviousResponseID,
+		PromptCacheKey:       req.PromptCacheKey,
+		PromptCacheRetention: req.PromptCacheRetention,
+		ServiceTier:          req.ServiceTier,
+		Fallbacks:            base.Fallbacks,
+		ExtraParams:          base.ExtraParams,
+	}, nil
+}
+
+// compaction handles POST /v1/responses/compact - Compact a conversation context window
+func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
+	_, bifrostCompactionReq, err := prepareCompactionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	response, bifrostErr := h.client.CompactionRequest(bifrostCtx, bifrostCompactionReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if response != nil && response.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
+	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
@@ -2631,6 +2726,25 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// resolveBatchProvider resolves the provider (and optional model) for a batch
+// create request. Per the OpenAI spec, model is optional on POST /v1/batches —
+// it lives inside each JSONL request body. When model is present it is parsed
+// via resolveModelAndProvider; when absent the provider is taken from the
+// ?provider= query param or x-model-provider header (same as fileUpload).
+func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string) (schemas.ModelProvider, string, error) {
+	if model != "" {
+		return resolveModelAndProvider(ctx, config, model)
+	}
+	p := string(ctx.QueryArgs().Peek("provider"))
+	if p == "" {
+		p = string(ctx.Request.Header.Peek("x-model-provider"))
+	}
+	if p == "" {
+		return "", "", fmt.Errorf("provider query parameter or x-model-provider header is required when model is not specified")
+	}
+	return schemas.ModelProvider(p), "", nil
+}
+
 // batchCreate handles POST /v1/batches - Create a new batch job
 func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var req BatchCreateRequest
@@ -2639,7 +2753,10 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	provider, modelName, err := resolveModelAndProvider(ctx, h.config, req.Model)
+	// model is optional on POST /v1/batches per the OpenAI spec — the model lives
+	// inside each JSONL request body. When omitted, resolve the provider from the
+	// x-model-provider header or ?provider= query param (same as fileUpload).
+	provider, modelName, err := resolveBatchProvider(ctx, h.config, req.Model)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2990,15 +3107,18 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 // fileList handles GET /v1/files - List files
 func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
-	// Get provider from query parameters
-	provider := string(ctx.QueryArgs().Peek("x-model-provider"))
+	// Get provider from query parameters or header; accept both ?provider= and
+	// ?x-model-provider= for consistency with other file endpoints (#3963).
+	provider := string(ctx.QueryArgs().Peek("provider"))
 	if provider == "" {
-		// Try to get from header
+		provider = string(ctx.QueryArgs().Peek("x-model-provider"))
+	}
+	if provider == "" {
 		provider = string(ctx.Request.Header.Peek("x-model-provider"))
-		if provider == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "x-model-provider query parameter or x-model-provider header is required")
-			return
-		}
+	}
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
+		return
 	}
 
 	// Parse optional parameters

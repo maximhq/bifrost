@@ -685,6 +685,194 @@ CustomerResponse:
     customer:
       $ref: '#/Customer'
 
+# Business Units (Enterprise)
+
+BusinessUnit:
+  type: object
+  description: Business unit configuration with governance association
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    source_id:
+      type: string
+      description: External source identifier (e.g. from SCIM provisioning)
+    profile:
+      type: object
+      additionalProperties: true
+      nullable: true
+    config:
+      type: object
+      additionalProperties: true
+      nullable: true
+    claims:
+      type: object
+      additionalProperties: true
+      nullable: true
+    budget_id:
+      type: string
+    rate_limit_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    config_hash:
+      type: string
+    created_by_user_id:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+BusinessUnitListItem:
+  type: object
+  description: Business unit summary as returned in list responses
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ListBusinessUnitsResponse:
+  type: object
+  description: Paginated list of business units
+  required:
+    - business_units
+    - total
+    - page
+    - limit
+  properties:
+    business_units:
+      type: array
+      items:
+        $ref: '#/BusinessUnitListItem'
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+BusinessUnitDetailResponse:
+  type: object
+  description: Single business unit with governance and team count
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    team_count:
+      type: integer
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateBusinessUnitRequest:
+  type: object
+  description: Create business unit request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+BusinessUnitMutationResponse:
+  type: object
+  description: Response for business unit create/update operations
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+AssignTeamToBusinessUnitRequest:
+  type: object
+  description: Request to assign a team to a business unit
+  required:
+    - team_id
+  properties:
+    team_id:
+      type: string
+
+BusinessUnitTeamsResponse:
+  type: object
+  description: Paginated list of teams assigned to a business unit
+  required:
+    - teams
+    - total
+    - page
+    - limit
+  properties:
+    teams:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+
+CreateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Create business unit governance request. The business unit is identified by
+    the {id} path parameter. At least one of budget or rate_limit is required.
+  anyOf:
+    - required: [budget]
+    - required: [rate_limit]
+  properties:
+    budget:
+      $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+
+UpdateBusinessUnitGovernanceRequest:
+  type: object
+  description: |
+    Update business unit governance request. Passing an empty budget or rate_limit
+    object removes that governance component.
+  properties:
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+
+BusinessUnitGovernanceResponse:
+  type: object
+  description: Business unit governance operation response
+  properties:
+    message:
+      type: string
+    business_unit:
+      $ref: '#/BusinessUnit'
+
 TableKey:
   type: object
   description: Table key configuration
@@ -999,13 +1187,35 @@ ModelConfig:
       description: Unique identifier for the model config
     model_name:
       type: string
-      description: Name of the model
+      description: Name of the model. Use `*` to match all models.
     provider:
       type: string
       description: Provider name (optional - applies to all providers if not specified)
+    scope:
+      type: string
+      description: Scope where this limit applies. `global` covers all traffic; `virtual_key` scopes to a single virtual key; `user` scopes to a single user (Enterprise only).
+      enum: [global, virtual_key, user]
+      default: global
+    scope_id:
+      type: string
+      nullable: true
+      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+    scope_name:
+      type: string
+      nullable: true
+      description: Resolved human-readable name of the scope target (read-only, set by server).
+    calendar_aligned:
+      type: boolean
+      description: When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).
+      default: false
+    budgets:
+      type: array
+      description: Budget configurations for this model limit. Each entry must have a unique reset_duration.
+      items:
+        $ref: '#/Budget'
     budget:
       $ref: '#/Budget'
-      description: Budget configuration for this model
+      description: "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
     rate_limit:
       $ref: '#/RateLimit'
       description: Rate limit configuration for this model
@@ -1035,9 +1245,9 @@ ListModelConfigsResponse:
       type: array
       items:
         $ref: '#/ModelConfig'
-    count:
+    total_count:
       type: integer
-      description: Number of model configs returned
+      description: Total number of model configs matching the filter (used for pagination)
 
 CreateModelConfigRequest:
   type: object
@@ -1047,20 +1257,30 @@ CreateModelConfigRequest:
   properties:
     model_name:
       type: string
-      description: Name of the model (required)
+      description: Name of the model (required). Use `*` to match all models.
     provider:
       type: string
       description: Provider name (optional - applies to all providers if not specified)
-    budget:
-      $ref: '#/CreateBudgetRequest'
-      description: Budget configuration
+    scope:
+      type: string
+      description: Scope where this limit applies. Defaults to `global`.
+      enum: [global, virtual_key, user]
+      default: global
+    scope_id:
+      type: string
+      description: ID of the scope target (e.g. virtual key ID or user ID). Required when scope is not `global`.
+    budgets:
+      type: array
+      description: Budget lines for this limit. Each entry must have a unique reset_duration.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/CreateRateLimitRequest'
       description: Rate limit configuration
 
 UpdateModelConfigRequest:
   type: object
-  description: Request to update an existing model config
+  description: Request to update an existing model config. Scope and scope_id are identity fields and cannot be changed.
   properties:
     model_name:
       type: string
@@ -1068,9 +1288,11 @@ UpdateModelConfigRequest:
     provider:
       type: string
       description: Provider name
-    budget:
-      $ref: '#/UpdateBudgetRequest'
-      description: Budget configuration
+    budgets:
+      type: array
+      description: Full desired set of budgets (reconciled server-side). Send an empty array to remove all budgets.
+      items:
+        $ref: '#/CreateBudgetRequest'
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
@@ -1098,12 +1320,21 @@ ProviderGovernanceResponse:
     provider:
       type: string
       description: Provider name
+    budgets:
+      type: array
+      description: Budget configurations for this provider. Each entry has a unique reset_duration.
+      items:
+        $ref: '#/Budget'
     budget:
       $ref: '#/Budget'
-      description: Budget configuration
+      description: "Deprecated: use `budgets`. Returns the first budget for backward compatibility."
     rate_limit:
       $ref: '#/RateLimit'
       description: Rate limit configuration
+    calendar_aligned:
+      type: boolean
+      description: When true, all budgets reset at clean calendar boundaries (midnight UTC for day, Monday for week, 1st for month, Jan 1 for year).
+      default: false
 
 ListProviderGovernanceResponse:
   type: object
@@ -1121,12 +1352,25 @@ UpdateProviderGovernanceRequest:
   type: object
   description: Request to update provider governance settings
   properties:
+    budgets:
+      type: array
+      nullable: true
+      description: >
+        Full desired set of budgets. Pointer-to-slice semantics apply:
+        omitting the field leaves budgets unchanged; sending an empty array `[]` removes all budgets;
+        sending a non-empty array replaces all existing budgets with the provided set.
+      items:
+        $ref: '#/CreateBudgetRequest'
     budget:
       $ref: '#/UpdateBudgetRequest'
-      description: Budget configuration
+      description: "Deprecated: use `budgets`."
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+    calendar_aligned:
+      type: boolean
+      nullable: true
+      description: When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged.
 
 # Pricing Overrides
 

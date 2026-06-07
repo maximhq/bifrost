@@ -45,7 +45,7 @@
 		"@tanstack/react-router": "1.168.10",
 		"@tanstack/react-table": "8.21.3",
 		"@xyflow/react": "12.10.1",
-		"axios": "1.15.2",
+		"axios": "1.16.1",
 		"canvas-confetti": "1.9.3",
 		"class-variance-authority": "0.7.1",
 		"clsx": "2.1.1",
@@ -68,7 +68,7 @@
 		"react-resizable-panels": "4.5.3",
 		"react-select": "5.10.2",
 		"react-textarea-autosize": "8.5.9",
-		"recharts": "3.1.2",
+		"recharts": "3.8.1",
 		"shiki": "3.23.0",
 		"sonner": "2.0.7",
 		"streamdown": "2.3.0",
@@ -84,7 +84,7 @@
 		"@tanstack/router-plugin": "1.167.12",
 		"@types/canvas-confetti": "1.9.0",
 		"@types/lodash.isequal": "4.5.8",
-		"@types/node": "20",
+		"@types/node": "20.19.39",
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
 		"@vitejs/plugin-react": "6.0.1",
@@ -95,7 +95,7 @@
 		"vite": "8.0.7",
 		"vite-plugin-checker": "0.12.0",
 		"vite-plugin-monaco-editor": "1.1.0",
-		"vitest": "4.0.18"
+		"vitest": "4.1.6"
 	},
 	"overrides": {
 		"dompurify": "3.4.0",

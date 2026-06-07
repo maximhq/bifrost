@@ -47,8 +47,55 @@ func TestStaleConnectionRetryIfErr(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			name:      "retries on wrapped io.EOF",
+			err:       fmt.Errorf("read response: %w", io.EOF),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			name:      "retries on unexpected EOF",
+			err:       io.ErrUnexpectedEOF,
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			name:      "retries on wrapped unexpected EOF",
+			err:       fmt.Errorf("read response: %w", io.ErrUnexpectedEOF),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
 			name:      "retries on broken pipe (write to closed connection)",
 			err:       fmt.Errorf("write tcp 10.0.0.1:53374->10.0.0.2:30000: write: broken pipe"),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			name:      "retries on use of closed network connection",
+			err:       fmt.Errorf("read tcp 10.0.0.1:53374->10.0.0.2:443: use of closed network connection"),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			name:      "retries on server closed connection",
+			err:       fmt.Errorf("server closed connection before returning the first response byte"),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
+			// fasthttp.ErrConnectionClosed is treated as retryable: it means the server
+			// closed an idle keep-alive connection before sending any response byte (a
+			// stale connection). In fasthttp v1.68.0 the callback actually receives raw
+			// io.EOF — the sentinel is only produced AFTER the retry loop (client.go:1413) —
+			// but we match it explicitly to stay correct if a future version surfaces it.
+			name:      "retries on fasthttp.ErrConnectionClosed sentinel",
+			err:       fasthttp.ErrConnectionClosed,
 			attempts:  1,
 			wantReset: true,
 			wantRetry: true,
@@ -411,7 +458,7 @@ func TestMaxConnWaitTimeoutAlignedWithReadTimeout(t *testing.T) {
 	defer server.Close()
 
 	client := &fasthttp.Client{
-		MaxConnsPerHost:    1,              // Only 1 connection allowed — second request must wait
+		MaxConnsPerHost:    1,               // Only 1 connection allowed — second request must wait
 		MaxConnWaitTimeout: 2 * time.Second, // Wait up to 2s for a free connection slot
 		ReadTimeout:        5 * time.Second,
 		WriteTimeout:       5 * time.Second,
