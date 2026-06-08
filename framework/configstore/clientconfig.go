@@ -982,9 +982,22 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 	// Hash Name
 	hash.Write([]byte(c.Name))
 
-	// Hash BudgetID
+	// Collect budget IDs from both sources so config-file context (BudgetID) and
+	// DB context (Budgets) produce the same hash for the same logical state.
+	seen := make(map[string]bool, len(c.Budgets)+1)
 	if c.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *c.BudgetID))
+		seen[*c.BudgetID] = true
+	}
+	for _, b := range c.Budgets {
+		seen[b.ID] = true
+	}
+	budgetIDs := make([]string, 0, len(seen))
+	for id := range seen {
+		budgetIDs = append(budgetIDs, id)
+	}
+	sort.Strings(budgetIDs)
+	for _, id := range budgetIDs {
+		hash.Write([]byte("budgetID:" + id))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -1068,12 +1081,25 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 // This is used to detect changes to model configs between config.json and database.
 // Skips: CreatedAt, UpdatedAt, and relationship objects (dynamic fields)
 func GenerateModelConfigHash(m tables.TableModelConfig) (string, error) {
+	// Normalize an empty scope to "global" so a config.json entry that omits scope
+	// hashes identically to the defaulted DB row.
+	scope := m.Scope
+	if scope == "" {
+		scope = tables.ModelConfigScopeGlobal
+	}
 	hash := sha256.New()
 	writeHashField(hash, "id", m.ID)
 	writeHashField(hash, "model_name", m.ModelName)
 	writeHashField(hash, "provider", derefStr(m.Provider))
+	writeHashField(hash, "scope", scope)
+	writeHashField(hash, "scope_id", derefStr(m.ScopeID))
 	writeHashField(hash, "budget_id", derefStr(m.BudgetID))
 	writeHashField(hash, "rate_limit_id", derefStr(m.RateLimitID))
+	sortedBudgetIDs := append([]string(nil), m.BudgetIDs...)
+	sort.Strings(sortedBudgetIDs)
+	for _, id := range sortedBudgetIDs {
+		writeHashField(hash, "budget_ids", id)
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

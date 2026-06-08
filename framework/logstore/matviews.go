@@ -37,6 +37,7 @@ SELECT
     COALESCE(team_id, '') AS team_id,
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(alias, '') AS alias,
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -51,7 +52,7 @@ SELECT
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
 WHERE status IN ('success', 'error')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 `
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
@@ -59,7 +60,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -78,6 +79,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"team_id",
 	"customer_id",
 	"business_unit_id",
+	"alias",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -116,12 +118,38 @@ const filterDataMatViewWindow = "30 days"
 //   - requiredColumns: resolved column aliases used by repairMatViewShapes
 //     to detect drifted matviews. Declared explicitly (not parsed from
 //     selectExpr) so SQL fragments like COALESCE(...) cannot poison the check.
+//   - bodyOverride:    when set, replaces the whole `SELECT DISTINCT ... FROM
+//     logs WHERE ...` body (selectExpr/whereExpr are ignored). Used by the
+//     multi-valued team / business-unit views, which must union the scalar
+//     column with the JSON-array column rather than read a single column.
 type filterMatViewDef struct {
 	name            string
 	selectExpr      string
 	whereExpr       string
 	uniqueIdx       string
 	requiredColumns []string
+	bodyOverride    string
+}
+
+// multiValueFilterMatViewBody builds the SELECT body for a filter matview whose
+// dimension is single-valued on the scalar column (old / pre-migration rows and
+// the VK-team path) and multi-valued on the JSON-array column (the enterprise
+// user/AP path). It reuses teamOrBUFanoutFrom — the same fan-out the ranking /
+// histogram readers use — so a team / business unit that only ever appears in
+// the JSON array still surfaces in the filter dropdown. The fanned-out
+// dim_id/dim_name become the dropdown id/name; the visibility columns
+// (user_id, team_id, virtual_key_id) come from the original log row (exposed via
+// l.* by the fan-out subquery) so DAC scope still applies. idCol is the scalar
+// id column ("team_id" / "business_unit_id").
+func multiValueFilterMatViewBody(idCol string) string {
+	from, _ := teamOrBUFanoutFrom(idCol)
+	return fmt.Sprintf(
+		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+
+			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, "+
+			"COALESCE(virtual_key_id, '') AS virtual_key_id "+
+			"FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
+		from, filterDataMatViewWindow,
+	)
 }
 
 // scopeProjection is the per-row visibility columns appended to every
@@ -202,33 +230,36 @@ var filterMatViews = []filterMatViewDef{
 	},
 	{
 		name: "mv_filter_teams",
-		// team_id is exposed as "id" for the dropdown and also as the scope
-		// column for uniform DAC predicates.
-		selectExpr: "team_id AS id, team_name AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
-		whereExpr:       "team_id IS NOT NULL AND team_id != '' AND team_name IS NOT NULL AND team_name != ''",
+		// A request can belong to one team (scalar team_id) or many (JSON-array
+		// team_ids, enterprise user/AP path). bodyOverride unions both so every
+		// team shows in the dropdown, not just the scalar primary. team_id is
+		// exposed as the dropdown "id" and the original row's team_id is kept as
+		// the scope column for uniform DAC predicates.
+		bodyOverride:    multiValueFilterMatViewBody("team_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:            "mv_filter_customers",
-		selectExpr:      "customer_id AS id, customer_name AS name, " + scopeProjection,
-		whereExpr:       "customer_id IS NOT NULL AND customer_id != '' AND customer_name IS NOT NULL AND customer_name != ''",
+		name: "mv_filter_customers",
+		// A request can carry one customer (scalar customer_id) or many (JSON-array
+		// customer_ids, enterprise team↔customer M2M). bodyOverride unions both so
+		// every customer shows in the dropdown, not just the scalar primary.
+		bodyOverride:    multiValueFilterMatViewBody("customer_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:       "mv_filter_users",
-		selectExpr: "user_id AS id, user_name AS name, " + scopeProjection,
-		whereExpr:  "user_id IS NOT NULL AND user_id != '' AND user_name IS NOT NULL AND user_name != ''",
+		name:            "mv_filter_users",
+		selectExpr:      "user_id AS id, user_name AS name, " + scopeProjection,
+		whereExpr:       "user_id IS NOT NULL AND user_id != '' AND user_name IS NOT NULL AND user_name != ''",
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:            "mv_filter_business_units",
-		selectExpr:      "business_unit_id AS id, business_unit_name AS name, " + scopeProjection,
-		whereExpr:       "business_unit_id IS NOT NULL AND business_unit_id != '' AND business_unit_name IS NOT NULL AND business_unit_name != ''",
+		name: "mv_filter_business_units",
+		// Same scalar-or-JSON-array union as mv_filter_teams: a request can carry
+		// one business unit (scalar) or many (JSON-array business_unit_ids).
+		bodyOverride:    multiValueFilterMatViewBody("business_unit_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
@@ -242,11 +273,14 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
 	{"team_id", "team_name"}:                   "mv_filter_teams",
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
-	{"user_id", "user_name"}:                    "mv_filter_users",
+	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
+	if v.bodyOverride != "" {
+		return fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s", v.name, v.bodyOverride)
+	}
 	return fmt.Sprintf(
 		"CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS SELECT DISTINCT %s FROM logs WHERE timestamp >= NOW() - INTERVAL '%s' AND (%s)",
 		v.name, v.selectExpr, filterDataMatViewWindow, v.whereExpr,
@@ -736,7 +770,10 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
-		len(f.CacheHitTypes) == 0
+		len(f.CacheHitTypes) == 0 &&
+		len(f.TeamIDs) == 0 &&
+		len(f.BusinessUnitIDs) == 0 &&
+		len(f.CustomerIDs) == 0
 }
 
 // canUseMatView checks both that materialized views are ready (created and
@@ -806,6 +843,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.Models) > 0 {
 		q = q.Where("model IN ?", f.Models)
+	}
+	if len(f.Aliases) > 0 {
+		q = q.Where("alias IN ?", f.Aliases)
 	}
 	if len(f.Status) > 0 {
 		q = q.Where("status IN ?", f.Status)
@@ -1738,10 +1778,10 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	}
 
 	type row struct {
-		ID         string  `gorm:"column:id"`
-		Total      int64   `gorm:"column:total"`
-		TotalTkns  int64   `gorm:"column:total_tkns"`
-		TotalCost  float64 `gorm:"column:total_cost"`
+		ID        string  `gorm:"column:id"`
+		Total     int64   `gorm:"column:total"`
+		TotalTkns int64   `gorm:"column:total_tkns"`
+		TotalCost float64 `gorm:"column:total_cost"`
 	}
 
 	var results []row

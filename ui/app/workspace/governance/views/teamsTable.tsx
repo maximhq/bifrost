@@ -22,7 +22,8 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
@@ -78,6 +79,12 @@ function TeamActionsMenu({
 					>
 						<Edit className="h-4 w-4" />
 						Edit
+					</DropdownMenuItem>
+					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
+						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
+							<ScrollText className="h-4 w-4" />
+							View logs
+						</Link>
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"

@@ -119,7 +119,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					<div>
 						<h2 className="text-lg font-semibold">Models</h2>
 						<p className="text-muted-foreground text-sm">
-							Attach descriptions and tags to specific models. Editorial — decoupled from pricing sync.
+							Attach descriptions and tags to specific models.
 						</p>
 					</div>
 				</div>

@@ -165,10 +165,12 @@ func Init(
 		routingChainMaxDepth = &defaultDepth
 	}
 
+	newStoreStart := time.Now()
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
+	logger.Info("[startup-timing] NewLocalGovernanceStore took %v", time.Since(newStoreStart))
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
@@ -186,10 +188,12 @@ func Init(
 		} else {
 			// Acquire the lock
 			lockAcquired := true
+			lockWaitStart := time.Now()
 			if err := lock.LockWithRetry(ctx, 10); err != nil {
 				logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
 				lockAcquired = false
 			}
+			logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
 			// Only run startup resets if we successfully acquired the lock
 			if lockAcquired {
 				defer func() {
@@ -197,10 +201,12 @@ func Init(
 						logger.Warn("failed to release governance startup reset lock: %v", err)
 					}
 				}()
+				resetStart := time.Now()
 				if err := tracker.PerformStartupResets(ctx); err != nil {
 					logger.Warn("startup reset failed: %v", err)
 					// Continue initialization even if startup reset fails (non-critical)
 				}
+				logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
 			}
 		}
 	}
@@ -755,6 +761,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Get provider configs for this virtual key
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
 		// No provider configs, continue without modification
 		return body, nil
@@ -818,9 +825,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	var allowedProviders []string
+	allowedModelProviders := make([]schemas.ModelProvider, 0, len(allowedProviderConfigs))
 	for _, pc := range allowedProviderConfigs {
 		allowedProviders = append(allowedProviders, pc.Provider)
+		allowedModelProviders = append(allowedModelProviders, schemas.ModelProvider(pc.Provider))
 	}
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, allowedModelProviders)
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
 
@@ -1192,8 +1202,8 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		} else {
 			// VK was provided but does not exist in the store — reject regardless of mandatory setting
 			return nil, &schemas.BifrostError{
-				Type:       bifrost.Ptr("virtual_key_not_found"),
-				StatusCode: bifrost.Ptr(401),
+				Type:       new("virtual_key_not_found"),
+				StatusCode: new(401),
 				Error: &schemas.ErrorField{
 					Message: "virtual key not found. The provided virtual key does not exist or has been revoked.",
 				},
@@ -1507,10 +1517,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
-	// Always process usage tracking (with or without virtual key)
-	// When user auth is present, skip VK usage tracking to avoid double-counting
+	// Always process usage tracking. When both virtual key and user are present,
+	// track both scopes; callers that intentionally want user-only accounting can
+	// set BifrostContextKeySkipVirtualKeyUsageTracking.
 	effectiveVK := virtualKey
-	if userID != "" {
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		effectiveVK = ""
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
@@ -1520,7 +1531,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
 		// attribute cost/tokens to the correct governance entities.
-		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, provider, requestedModel)
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
 		if len(budgetIDs) > 0 {
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
 		}
@@ -1649,10 +1660,8 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
-	// When user auth is present, skip VK usage tracking to avoid double-counting
-	if userID != "" {
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		virtualKey = ""
 	}
 
@@ -1819,8 +1828,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
 			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
 				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
+			case result.PassthroughResponse != nil:
+				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+					tokensUsed = su.LLMUsage.TotalTokens
+				}
 			}
 		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			VirtualKey:   virtualKey,
@@ -1833,7 +1847,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0,
+			HasUsageData: tokensUsed > 0 || cost > 0,
 		}
 
 		// Queue usage update asynchronously using tracker

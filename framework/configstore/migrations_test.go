@@ -2336,6 +2336,72 @@ func TestMigrationAddTeamBudgetsToBudgetsTable_DropsLegacyBudgetColumnAndBackfil
 	assertNoCorruptedFKReferences(t, db)
 }
 
+// After the full migration chain, deleting a model config row must cascade-delete
+// its model_config_id-owned budgets at the DB level (foreign_keys on) — no
+// application code involved. Regression guard for migrationAddModelConfigBudgetsFKConstraint.
+func TestMigrationAddModelConfigBudgetsFKConstraint_CascadesOnDelete(t *testing.T) {
+	ctx := context.Background()
+	n := time.Now().UnixNano() + testDBCounter
+	testDBCounter++
+	// Shared-cache so the pool sees one DB; _foreign_keys=on so the cascade is enforced
+	// (mirrors the production DSN in sqlite.go).
+	dsn := fmt.Sprintf("file:fkcascade_%d?mode=memory&cache=shared&_foreign_keys=on", n)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, triggerMigrations(ctx, db))
+
+	require.True(t, db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets"),
+		"model_config -> budgets FK should exist after the migration chain")
+
+	now := time.Now()
+	mc := tables.TableModelConfig{ID: "mc-cascade", ModelName: "gpt-4", Scope: tables.ModelConfigScopeGlobal, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&mc).Error)
+	b := tables.TableBudget{ID: "b-cascade", MaxLimit: 10, ResetDuration: "1h", LastReset: now, ModelConfigID: &mc.ID, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&b).Error)
+
+	// Delete the model config DIRECTLY, bypassing application-level cleanup.
+	require.NoError(t, db.Exec("DELETE FROM governance_model_configs WHERE id = ?", mc.ID).Error)
+
+	var cnt int64
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-cascade").Count(&cnt).Error)
+	assert.Equal(t, int64(0), cnt, "owned budget should be cascade-deleted with its model config")
+}
+
+// The migration must pre-clean budgets whose model_config_id already references a
+// missing config (existing orphans) — otherwise the FK creation would fail on a DB
+// that already has the leak. Valid budgets must be retained.
+func TestMigrationAddModelConfigBudgetsFKConstraint_PreCleansOrphans(t *testing.T) {
+	ctx := context.Background()
+	n := time.Now().UnixNano() + testDBCounter
+	testDBCounter++
+	// foreign_keys OFF (default) so we can plant an orphan and drop the auto-created FK
+	// to reproduce the production "column present, constraint missing" starting state.
+	dsn := fmt.Sprintf("file:fkpreclean_%d?mode=memory&cache=shared", n)
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{}))
+	if db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+		require.NoError(t, db.Migrator().DropConstraint(&tables.TableModelConfig{}, "Budgets"))
+	}
+
+	now := time.Now()
+	live := tables.TableModelConfig{ID: "mc-live", ModelName: "gpt-4", Scope: tables.ModelConfigScopeGlobal, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, db.Create(&live).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-live", MaxLimit: 1, ResetDuration: "1h", LastReset: now, ModelConfigID: &live.ID, CreatedAt: now, UpdatedAt: now}).Error)
+	ghost := "mc-ghost"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b-orphan", MaxLimit: 1, ResetDuration: "1h", LastReset: now, ModelConfigID: &ghost, CreatedAt: now, UpdatedAt: now}).Error)
+
+	require.NoError(t, migrationAddModelConfigBudgetsFKConstraint(ctx, db))
+
+	var orphan, liveB int64
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-orphan").Count(&orphan).Error)
+	require.NoError(t, db.Model(&tables.TableBudget{}).Where("id = ?", "b-live").Count(&liveB).Error)
+	assert.Equal(t, int64(0), orphan, "orphaned model-config budget should be pre-cleaned by the migration")
+	assert.Equal(t, int64(1), liveB, "valid model-config budget must be retained")
+	assert.True(t, db.Migrator().HasConstraint(&tables.TableModelConfig{}, "Budgets"),
+		"FK constraint should exist after the migration")
+}
+
 // migration is part of the startup chain so a fresh DB emerges with
 // calendar_aligned on its current owners — the virtual key and the team —
 // and the legacy per-budget / per-rate-limit columns cleaned up.
@@ -2381,3 +2447,104 @@ func assertNoCorruptedFKReferences(t *testing.T, db *gorm.DB) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestMigrationAddModelConfigScopeColumns verifies the existing-install transition:
+// adding scope/scope_id columns, backfilling existing rows to "global", and swapping the
+// (model_name, provider) unique index for the composite (scope, scope_id, model_name, provider) one.
+func TestMigrationAddModelConfigScopeColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create the OLD governance_model_configs schema: no scope/scope_id columns,
+	// with a unique index on (model_name, provider).
+	require.NoError(t, db.Exec(`
+		CREATE TABLE governance_model_configs (
+			id varchar(255) PRIMARY KEY,
+			model_name varchar(255) NOT NULL,
+			provider varchar(50),
+			budget_id varchar(255),
+			rate_limit_id varchar(255),
+			config_hash varchar(255),
+			created_at datetime NOT NULL,
+			updated_at datetime NOT NULL
+		)
+	`).Error)
+	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_model_provider ON governance_model_configs (model_name, provider)`).Error)
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`
+		INSERT INTO governance_model_configs (id, model_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+	`, "mc-existing", "gpt-4", now, now).Error)
+
+	mc := &tables.TableModelConfig{}
+
+	// Pre-migration state.
+	assert.False(t, db.Migrator().HasColumn(mc, "scope"), "scope column should not exist yet")
+	assert.False(t, db.Migrator().HasColumn(mc, "scope_id"), "scope_id column should not exist yet")
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_provider"), "old index should exist before migration")
+
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+
+	// Post-migration state.
+	assert.True(t, db.Migrator().HasColumn(mc, "scope"), "scope column should exist after migration")
+	assert.True(t, db.Migrator().HasColumn(mc, "scope_id"), "scope_id column should exist after migration")
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"), "new composite index should exist after migration")
+	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"), "old index should be dropped after migration")
+
+	// Existing row should be backfilled to the global scope.
+	var scope string
+	require.NoError(t, db.Table("governance_model_configs").Select("scope").Where("id = ?", "mc-existing").Scan(&scope).Error)
+	assert.Equal(t, tables.ModelConfigScopeGlobal, scope, "existing row should be backfilled to the global scope")
+
+	// Global-scope rows must have NULL scope_id for the composite unique index to work correctly.
+	var scopeID *string
+	require.NoError(t, db.Table("governance_model_configs").Select("scope_id").Where("id = ?", "mc-existing").Scan(&scopeID).Error)
+	assert.Nil(t, scopeID, "global scope rows must have NULL scope_id")
+
+	// Idempotency: running again must be a no-op (no error, state unchanged).
+	require.NoError(t, migrationAddModelConfigScopeColumns(ctx, db))
+	assert.True(t, db.Migrator().HasColumn(mc, "scope"))
+	assert.True(t, db.Migrator().HasIndex(mc, "idx_model_scope_provider"))
+	assert.False(t, db.Migrator().HasIndex(mc, "idx_model_provider"))
+}
+
+// TestMigrationMigrateProviderGovernanceToModelConfigs verifies provider-level governance is
+// folded into a (global, provider, '*') model_config reusing the same budget/rate-limit rows,
+// and the provider FKs are cleared. Idempotent on re-run.
+func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableProvider{}, &tables.TableModelConfig{}, &tables.TableBudget{}, &tables.TableRateLimit{},
+	))
+
+	now := time.Now()
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "b1", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl1", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", BudgetID: schemas.Ptr("b1"), RateLimitID: schemas.Ptr("rl1"), CreatedAt: now, UpdatedAt: now}).Error)
+
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+
+	// A (global, openai, '*') model config now exists reusing the same budget/rate-limit IDs.
+	var mc tables.TableModelConfig
+	require.NoError(t, db.Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").First(&mc).Error)
+	require.NotNil(t, mc.BudgetID)
+	assert.Equal(t, "b1", *mc.BudgetID)
+	require.NotNil(t, mc.RateLimitID)
+	assert.Equal(t, "rl1", *mc.RateLimitID)
+
+	// Provider governance FKs are cleared (old path now inert).
+	var prov tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&prov).Error)
+	assert.Nil(t, prov.BudgetID, "provider budget_id should be cleared")
+	assert.Nil(t, prov.RateLimitID, "provider rate_limit_id should be cleared")
+
+	// Idempotency: re-run creates no duplicate wildcard row.
+	require.NoError(t, migrationMigrateProviderGovernanceToModelConfigs(ctx, db))
+	var count int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).
+		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
+		Count(&count).Error)
+	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+}

@@ -142,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -156,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
@@ -510,6 +518,12 @@ export interface LogEntry {
 	customer_id?: string;
 	business_unit_id?: string;
 	business_unit_name?: string;
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
@@ -1194,6 +1208,8 @@ export interface DimensionRankingEntry {
 export interface DimensionRankingsResponse {
 	rankings: DimensionRankingEntry[];
 	dimension: RankingDimension;
+	total_actual_requests?: number; // shows the actual request count for units that can have multiple child entities
+	total_attributed_requests?: number; // shows the request count attributed to all entities for units that can have multiple child entities
 }
 
 // Date utility functions for URL state management

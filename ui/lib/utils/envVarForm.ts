@@ -26,6 +26,28 @@ export const toEnvVarMapFormValue = (map?: Record<string, string | EnvVar>): Rec
 	return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, toEnvVarFormValue(v)]));
 };
 
+// toEnvRefString flattens an EnvVar form value to its persisted string form:
+// the "env.VAR" reference when sourced from the environment, otherwise the literal value.
+export const toEnvRefString = (field?: EnvVar): string => {
+	if (!field) return "";
+	if (field.from_env) return (field.env_var || "").trim();
+	return (field.value || "").trim();
+};
+
+// toHeaderStringMap converts a map of EnvVar header values into the plain-string map the
+// OTEL backend expects (Profile.Headers is map[string]string using the "env.VAR" convention).
+// Empty entries are dropped.
+export const toHeaderStringMap = (headers?: Record<string, EnvVar>): Record<string, string> => {
+	if (!headers) return {};
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(headers)) {
+		const key = k.trim();
+		const value = toEnvRefString(v);
+		if (key && value) out[key] = value;
+	}
+	return out;
+};
+
 export const toOptionalEnvVarPayload = (field?: { value?: string; env_var?: string; from_env?: boolean }) => {
 	const envVar = field?.env_var?.trim();
 	const value = field?.value?.trim();

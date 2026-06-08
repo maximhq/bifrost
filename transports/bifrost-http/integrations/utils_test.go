@@ -60,13 +60,66 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 		},
 	}
 
-	err := router.extractAndParseFallbacks(geminiReq, bifrostReq)
+	err := router.extractAndParseFallbacks(newTestBifrostContext(), geminiReq, bifrostReq)
 
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq.ResponsesRequest)
 	require.Len(t, bifrostReq.ResponsesRequest.Fallbacks, 1)
 	assert.Equal(t, schemas.Vertex, bifrostReq.ResponsesRequest.Fallbacks[0].Provider)
 	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.ResponsesRequest.Fallbacks[0].Model)
+}
+
+func TestExtractAndParseFallbacks_FiltersByAvailableProviders(t *testing.T) {
+	router := newTestGenericRouter()
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{
+			"azure/claude-opus-4-8",
+			"bedrock/claude-opus-4-8",
+			"vertex/claude-opus-4-8",
+		},
+	}
+	bifrostReq := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3-flash-preview",
+		},
+	}
+	ctx := newTestBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Azure})
+
+	err := router.extractAndParseFallbacks(ctx, geminiReq, bifrostReq)
+
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.ResponsesRequest)
+	require.Len(t, bifrostReq.ResponsesRequest.Fallbacks, 1)
+	assert.Equal(t, schemas.Azure, bifrostReq.ResponsesRequest.Fallbacks[0].Provider)
+	assert.Equal(t, "claude-opus-4-8", bifrostReq.ResponsesRequest.Fallbacks[0].Model)
+}
+
+func TestExtractAndParseFallbacks_ClearsDisallowedPreparsedFallbacks(t *testing.T) {
+	router := newTestGenericRouter()
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"bedrock/claude-opus-4-8"},
+	}
+	bifrostReq := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3-flash-preview",
+			Fallbacks: []schemas.Fallback{
+				{Provider: schemas.Bedrock, Model: "claude-opus-4-8"},
+			},
+		},
+	}
+	ctx := newTestBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Azure})
+
+	err := router.extractAndParseFallbacks(ctx, geminiReq, bifrostReq)
+
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.ResponsesRequest)
+	require.Empty(t, bifrostReq.ResponsesRequest.Fallbacks)
 }
 
 // TestSendStreamError_PropagatesProviderStatusCode verifies that sendStreamError

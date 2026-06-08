@@ -250,19 +250,16 @@ func (mc *ModelCatalog) loadModelParametersFromDatabase(ctx context.Context) (in
 func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	// IMPORTANT: scheduling model
 	//
-	// The sync worker wakes on a fixed ticker (syncWorkerTickerPeriod = 1h).
-	// On each wake it calls checkAndSyncPricing, which checks:
+	// The sync worker wakes on a fixed ticker (syncWorkerTickerPeriod). On each
+	// wake it checks:
 	//
 	//   time.Since(lastSyncTimestamp) >= pricingSyncInterval
 	//
-	// This means:
-	//   • pricingSyncInterval defines the *minimum elapsed time* between syncs.
-	//   • The actual sync frequency = max(syncWorkerTickerPeriod, pricingSyncInterval).
-	//   • Setting pricingSyncInterval < 1h does NOT increase sync frequency —
-	//     the hourly ticker is the hard lower bound on check granularity.
-	//
-	// Design rationale: avoids high-frequency polling while allowing operators to
-	// tune how stale pricing data can get (e.g., 1h vs 24h vs 7d).
+	// pricingSyncInterval defines the minimum elapsed time between syncs. The
+	// ticker period is the check granularity and must stay well below the
+	// minimum supported pricingSyncInterval, otherwise ticker drift (the few
+	// seconds a sync takes to complete) pushes the next check just under the
+	// threshold and the effective cadence doubles.
 	mc.syncTicker = time.NewTicker(syncWorkerTickerPeriod)
 	mc.wg.Add(1)
 	go mc.syncWorker(ctx)

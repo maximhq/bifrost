@@ -336,6 +336,24 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRecreateFilterUsersMatView(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMultiTeamBusinessUnitColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMultiTeamBusinessUnitGINIndexes(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterTeamBUMatViews(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerArrayColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerArrayGINIndexes(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateFilterCustomersMatView(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
@@ -2005,6 +2023,38 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddMultiTeamBusinessUnitGINIndexes registers the GIN indexes backing
+// multi-team / multi-BU log filtering. Like migrationAddMetadataGINIndex, the
+// build itself is deferred to ensureMultiTeamBusinessUnitGINIndexes (post-startup,
+// background, CONCURRENTLY); this migration exists only to provide a rollback that
+// drops the indexes. Postgres-only.
+func migrationAddMultiTeamBusinessUnitGINIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_multi_team_bu_gin_indexes_v1",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_team_ids_gin").Error; err != nil {
+					return fmt.Errorf("failed to drop team_ids GIN index: %w", err)
+				}
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_business_unit_ids_gin").Error; err != nil {
+					return fmt.Errorf("failed to drop business_unit_ids GIN index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while registering multi team/BU GIN indexes: %s", err.Error())
+	}
+	return nil
+}
+
 // ensureMetadataGINIndex checks whether idx_logs_metadata_gin exists and is valid.
 // If the index is missing or was left in an INVALID state by a previously interrupted
 // CREATE INDEX CONCURRENTLY, it drops the remnant and rebuilds the index synchronously.
@@ -2086,6 +2136,62 @@ func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
 		FROM batch
 		WHERE logs.ctid = batch.ctid
 	`)
+}
+
+// ensureArrayGINIndex builds a partial jsonb_path_ops GIN index on a JSON-array
+// text column (e.g. team_ids) so `column::jsonb @> '[...]'` containment filters
+// are indexed. Mirrors ensureMetadataGINIndex's lifecycle: tolerates an INVALID
+// remnant from an interrupted build and builds CONCURRENTLY so writers are not
+// blocked. No data cleanup is needed — the log writer only ever stores a valid
+// JSON array or NULL in these columns. indexName/column are internal constants
+// (not user input), so identifier interpolation is safe. Postgres-only.
+func ensureArrayGINIndex(ctx context.Context, conn *sql.Conn, indexName, column string) error {
+	var indexValid bool
+	if err := conn.QueryRowContext(ctx, `
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = 'logs' AND ic.relname = $1
+	`, indexName).Scan(&indexValid); err != nil {
+		return fmt.Errorf("failed to query GIN index validity for %s: %w", indexName, err)
+	}
+	if indexValid {
+		return nil
+	}
+
+	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
+	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+indexName); err != nil {
+		return fmt.Errorf("failed to drop invalid GIN index %s: %w", indexName, err)
+	}
+
+	// Non-fatal tuning to speed up the build.
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	// jsonb_path_ops supports @> (containment) and is ~3x smaller than the default
+	// opclass. The partial predicate matches the IS JSON ARRAY guard the filter
+	// query adds (rdb.go), so the planner uses this index.
+	stmt := fmt.Sprintf(
+		"CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON logs USING gin ((%s::jsonb) jsonb_path_ops) WHERE %s IS NOT NULL AND %s IS JSON ARRAY",
+		indexName, column, column, column,
+	)
+	if _, err := conn.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("failed to create GIN index %s: %w", indexName, err)
+	}
+	return nil
+}
+
+// ensureMultiTeamBusinessUnitGINIndexes builds the GIN indexes backing multi-team
+// and multi-BU log filtering (team_ids / business_unit_ids).
+func ensureMultiTeamBusinessUnitGINIndexes(ctx context.Context, conn *sql.Conn) error {
+	if err := ensureArrayGINIndex(ctx, conn, "idx_logs_team_ids_gin", "team_ids"); err != nil {
+		return err
+	}
+	if err := ensureArrayGINIndex(ctx, conn, "idx_logs_business_unit_ids_gin", "business_unit_ids"); err != nil {
+		return err
+	}
+	return ensureArrayGINIndex(ctx, conn, "idx_logs_customer_ids_gin", "customer_ids")
 }
 
 // migrationAddDashboardEnhancements adds cached_read_tokens column to logs table.
@@ -2290,6 +2396,13 @@ type performanceIndexDef struct {
 	sql   string
 }
 
+// ftsInputCharLimit is the maximum number of characters fed to to_tsvector via left().
+// It must be low enough that even worst-case multi-byte / high-lexeme content keeps
+// the tsvector output under Postgres's 1,048,575-byte hard limit. The same constant
+// must be used in both the index expression and the query predicate so the planner
+// recognises the expression match and uses the GIN index.
+const ftsInputCharLimit = 250000
+
 // performanceIndexes is the set of full-text and GIN indexes built by ensurePerformanceIndexes.
 // Each statement uses CREATE INDEX CONCURRENTLY to avoid blocking writes.
 var performanceIndexes = []performanceIndexDef{
@@ -2402,17 +2515,19 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
 		// left() caps input characters to stay within to_tsvector's 1MB output limit.
-		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, 800000))) WHERE content_summary IS NOT NULL",
+		// Use ftsInputCharLimit: even worst-case UTF-8 / high-lexeme content stays
+		// well under the 1,048,575-byte tsvector limit.
+		sql: fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, %d))) WHERE content_summary IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_arguments_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, 800000))) WHERE arguments IS NOT NULL",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, %d))) WHERE arguments IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_result_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, 800000))) WHERE result IS NOT NULL",
+		sql:   fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, %d))) WHERE result IS NOT NULL", ftsInputCharLimit),
 	},
 	{
 		table: "logs",
@@ -2833,6 +2948,50 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB) erro
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding governance context columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMultiTeamBusinessUnitColumns adds the JSON-array columns capturing
+// the full deduped set of teams / business units a request belongs to (enterprise
+// user/AP path). The scalar team_id/business_unit_id remain the primary; these
+// power display, multi-team filtering (jsonb @> + GIN), and fan-out aggregation.
+func migrationAddMultiTeamBusinessUnitColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"team_ids", "team_names", "business_unit_ids", "business_unit_names"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_multi_team_business_unit_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding multi team/business-unit columns: %s", err.Error())
 	}
 	return nil
 }
@@ -3330,6 +3489,142 @@ func migrationRecreateFilterUsersMatView(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating filter users matview: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterTeamBUMatViews drops mv_filter_teams and
+// mv_filter_business_units so ensureMatViews recreates them with the multi-value
+// body (scalar column UNION the JSON-array column). Required because
+// repairMatViewShapes only detects drift by column presence, and the column
+// shape (id, name, user_id, team_id, virtual_key_id) is unchanged — only the
+// SELECT body changed — so the views would otherwise keep their old scalar-only
+// definition. Recreated views keep identical columns, so old replicas reading
+// them during a rolling deploy are unaffected (no legacyMatViewNames dance).
+func migrationRecreateFilterTeamBUMatViews(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_team_bu_matviews_multivalue",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, view := range []string{"mv_filter_teams", "mv_filter_business_units"} {
+				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
+					return fmt.Errorf("failed to drop %s: %w", view, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter team/business-unit matviews: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerArrayColumns adds the JSON-array columns capturing the full
+// deduped set of customers a request belongs to (a team can belong to many
+// customers via the enterprise team↔customer M2M). The scalar customer_id remains
+// the primary; these power display, multi-customer filtering (jsonb @> + GIN), and
+// fan-out aggregation, mirroring team_ids / business_unit_ids.
+func migrationAddCustomerArrayColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"customer_ids", "customer_names"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_customer_array_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding customer array columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerArrayGINIndexes registers the GIN index backing multi-customer
+// log filtering. Like the team/BU GIN migration, the build itself is deferred to
+// ensureMultiTeamBusinessUnitGINIndexes (post-startup, background, CONCURRENTLY);
+// this migration exists only to provide a rollback that drops the index. Postgres-only.
+func migrationAddCustomerArrayGINIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_customer_array_gin_indexes_v1",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_customer_ids_gin").Error; err != nil {
+					return fmt.Errorf("failed to drop customer_ids GIN index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while registering customer GIN indexes: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateFilterCustomersMatView drops mv_filter_customers so ensureMatViews
+// recreates it with the multi-value body (scalar customer_id UNION the JSON-array
+// customer_ids), mirroring migrationRecreateFilterTeamBUMatViews. The column shape
+// is unchanged so old replicas reading it during a rolling deploy are unaffected.
+func migrationRecreateFilterCustomersMatView(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_filter_customers_matview_multivalue",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_filter_customers CASCADE").Error; err != nil {
+				return fmt.Errorf("failed to drop mv_filter_customers: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating filter customers matview: %s", err.Error())
 	}
 	return nil
 }

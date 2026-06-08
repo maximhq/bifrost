@@ -90,6 +90,7 @@ export const DefaultNetworkConfig = {
 	stream_idle_timeout_in_seconds: 60,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
+	allow_private_network: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {
