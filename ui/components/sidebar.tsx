@@ -349,6 +349,7 @@ const SidebarItemView = ({
         tooltip={isSidebarCollapsed ? undefined : item.title}
         className={buttonClassName}
         onClick={handleClick}
+        data-testid={`sidebar-item-btn-${slug(item.title)}`}
       >
         {innerContent}
       </SidebarMenuButton>
@@ -543,6 +544,7 @@ const SidebarItemView = ({
                 {subItem.hasAccess === false ? (
                   <SidebarMenuSubButton
                     data-nav-url={subItemHref}
+                    data-testid={`sidebar-subitem-disabled-${slug(subItem.title)}`}
                     className={subItemClassName}
                   >
                     {subInner}
@@ -553,6 +555,7 @@ const SidebarItemView = ({
                       to={subItemHref as any}
                       preload="intent"
                       data-nav-url={subItemHref}
+                      data-testid={`sidebar-subitem-link-${slug(subItem.title)}`}
                     >
                       {subInner}
                     </Link>

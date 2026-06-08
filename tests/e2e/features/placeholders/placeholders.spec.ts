@@ -21,12 +21,22 @@ test.describe('Placeholder and Enterprise Pages', () => {
     await page.goto('/workspace/alerting/rules')
     await page.waitForLoadState('networkidle')
     await expect(page.getByText('Unlock alerting rules for proactive monitoring')).toBeVisible()
+    const readMore = page.getByRole('button', { name: /Read more/i })
+    await expect(readMore).toBeVisible()
+    const [popup] = await Promise.all([page.waitForEvent('popup'), readMore.click()])
+    await expect(popup).toHaveURL(/^https:\/\/docs\.getbifrost\.ai\/enterprise\/alerting(\?|$)/)
+    await popup.close()
   })
 
   test('should load alerting history page', async ({ page }) => {
     await page.goto('/workspace/alerting/history')
     await page.waitForLoadState('networkidle')
     await expect(page.getByText('Unlock alerting history for proactive monitoring')).toBeVisible()
+    const readMore = page.getByRole('button', { name: /Read more/i })
+    await expect(readMore).toBeVisible()
+    const [popup] = await Promise.all([page.waitForEvent('popup'), readMore.click()])
+    await expect(popup).toHaveURL(/^https:\/\/docs\.getbifrost\.ai\/enterprise\/alerting(\?|$)/)
+    await popup.close()
   })
 
   test('should load guardrails page', async ({ page }) => {
