@@ -818,7 +818,13 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 	byKey := make(map[string]*configstoreTables.TableModelConfig)
 	add := func(provider *string) {
 		mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &vk.ID, configstoreTables.ModelConfigAllModels, provider)
-		if err == nil && mc != nil {
+		if err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				logger.Error("failed to get model config for VK governance hydration: %v", err)
+			}
+			return
+		}
+		if mc != nil {
 			byKey[vkModelConfigIndexKey(vk.ID, provider)] = mc
 		}
 	}
@@ -1807,6 +1813,7 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
 	}
+	h.hydrateVKGovernance(ctx, preloadedVk)
 	return preloadedVk, nil
 }
 
@@ -4489,6 +4496,8 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual key")
 		return
 	}
+
+	h.hydrateVKGovernance(ctx, vk)
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
