@@ -15,6 +15,10 @@ description: "Enterprise v1.4.7 changelog - 2026-06-07"
   v1.4.7 has a known issue where <code>/virtua-key/quota</code> was not sending back budgets. This is fixed in v1.4.8.
 </Warning>
 
+<Note>
+  **Private Network Access** — To connect to a provider on a private network (e.g. a local vLLM or Ollama instance), set `allow_private_network: true` in the provider's `network_config`. This allows connections to RFC 1918 ranges (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`). Link-local addresses (`169.254.x.x`) remain blocked regardless of this setting. See [Provider Configuration](/quickstart/gateway/provider-configuration#private-network-access) for details.
+</Note>
+
 ## Changelog
 
 A governance and organizational-hierarchy release on `transports/v1.5.10`. The headline work is a full **customer -> team -> business unit** model with end-to-end usage and budget tracking, a rebuilt **DAC + RBAC** layer backed by a virtual-key mapping table, and a more robust **access profile** lifecycle.
