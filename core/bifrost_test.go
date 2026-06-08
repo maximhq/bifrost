@@ -983,6 +983,62 @@ func TestListAllModels_ReturnsFastProviderWhenAnotherProviderIsSlow(t *testing.T
 	}
 }
 
+func TestListAllModels_AllowsEmptyProviderInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	provider := schemas.ModelProvider("empty-custom")
+	account.SetProviderConfig(provider, &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		},
+	})
+	account.SetKeysForProvider(provider, []schemas.Key{
+		{
+			ID:     "empty-key",
+			Value:  *schemas.NewEnvVar("sk-empty"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 100,
+		},
+	})
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer bifrost.Shutdown()
+
+	response, bifrostErr := bifrost.ListAllModels(nil, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("ListAllModels returned error for empty inventory: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected empty response, got nil")
+	}
+	if len(response.Data) != 0 {
+		t.Fatalf("expected no models, got %#v", response.Data)
+	}
+	if len(response.KeyStatuses) != 1 || response.KeyStatuses[0].Status != schemas.KeyStatusSuccess {
+		t.Fatalf("expected one successful key status, got %#v", response.KeyStatuses)
+	}
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex

@@ -49,6 +49,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const listModelsWatchdogGracePeriod = 100 * time.Millisecond
+
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
 type ChannelMessage struct {
@@ -486,7 +488,12 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		providerDone := make(chan struct{})
 
 		go func(providerKey schemas.ModelProvider, providerTimeout time.Duration, done chan<- struct{}) {
-			defer close(done)
+			doneClosed := false
+			defer func() {
+				if !doneClosed {
+					close(done)
+				}
+			}()
 			providerCtx, cancelProviderCtx := schemas.NewBifrostContextWithTimeout(ctx, providerTimeout)
 			defer cancelProviderCtx()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
@@ -566,6 +573,8 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				providerRequest.PageToken = response.NextPageToken
 			}
 
+			close(done)
+			doneClosed = true
 			results <- providerResult{
 				provider:    providerKey,
 				models:      providerModels,
@@ -575,11 +584,23 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		}(providerKey, providerTimeout, providerDone)
 
 		go func(providerKey schemas.ModelProvider, timeout time.Duration, done <-chan struct{}) {
-			timer := time.NewTimer(timeout)
-			defer timer.Stop()
+			timer := time.NewTimer(timeout + listModelsWatchdogGracePeriod)
+			defer func() {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}()
 
 			select {
 			case <-timer.C:
+				select {
+				case <-done:
+					return
+				default:
+				}
 				timeoutErr := listModelsProviderTimeoutError(providerKey, timeout)
 				results <- providerResult{
 					provider: providerKey,
@@ -633,15 +654,6 @@ collectResults:
 		}
 		seenProviders[result.provider] = struct{}{}
 
-		if len(result.models) == 0 && len(result.keyStatuses) == 0 && result.err == nil {
-			result.err = listModelsNilResponseError(result.provider)
-			result.keyStatuses = []schemas.KeyStatus{{
-				Provider: result.provider,
-				Status:   schemas.KeyStatusListModelsFailed,
-				Error:    result.err,
-			}}
-		}
-
 		if len(result.models) > 0 {
 			allModels = append(allModels, result.models...)
 		}
@@ -657,14 +669,18 @@ collectResults:
 		if _, seen := seenProviders[providerKey]; seen {
 			continue
 		}
-		timeoutErr := listModelsProviderTimeoutError(providerKey, bifrost.listModelsTimeoutForProvider(providerKey))
+		providerTimeout := bifrost.listModelsTimeoutForProvider(providerKey)
+		providerErr := listModelsProviderTimeoutError(providerKey, providerTimeout)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			providerErr = listModelsContextError(providerKey, ctx.Err(), providerTimeout)
+		}
 		allKeyStatuses = append(allKeyStatuses, schemas.KeyStatus{
 			Provider: providerKey,
 			Status:   schemas.KeyStatusListModelsFailed,
-			Error:    timeoutErr,
+			Error:    providerErr,
 		})
 		if firstError == nil {
-			firstError = timeoutErr
+			firstError = providerErr
 		}
 	}
 
