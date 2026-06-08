@@ -202,6 +202,9 @@ false
 
 {{- define "bifrost.config" -}}
 {{- $config := dict "$schema" "https://www.getbifrost.ai/schema" }}
+{{- if .Values.bifrost.sourceOfTruth }}
+{{- $_ := set $config "source_of_truth" .Values.bifrost.sourceOfTruth }}
+{{- end }}
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
@@ -1162,6 +1165,9 @@ false
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $otelConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1302,6 +1308,13 @@ Validation template - validates required fields from config.schema.json
 Call this template at the beginning of deployment/stateful templates
 */}}
 {{- define "bifrost.validate" -}}
+
+{{/* Validate bifrost.sourceOfTruth enum */}}
+{{- if .Values.bifrost.sourceOfTruth }}
+{{- if and (ne .Values.bifrost.sourceOfTruth "split") (ne .Values.bifrost.sourceOfTruth "config.json") }}
+{{- fail (printf "ERROR: bifrost.sourceOfTruth must be 'split' or 'config.json', got: %s" .Values.bifrost.sourceOfTruth) }}
+{{- end }}
+{{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (lt (int .Values.bifrost.plugins.telemetry.version) 1) }}

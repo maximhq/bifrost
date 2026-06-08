@@ -168,6 +168,12 @@ bifrost:
   logLevel: info
   logStyle: json
 
+  # Controls how config.json is reconciled with the database on startup.
+  # "split" (default): existing merge behavior — file and DB rows coexist.
+  # "config.json": sections explicitly present in the file are authoritative;
+  #   database-only rows for those sections are pruned on startup.
+  # sourceOfTruth: "config.json"
+
   # Encryption key for sensitive data
   # Can be set as a secret or environment variable
   encryptionKey: ""
@@ -289,6 +295,10 @@ bifrost:
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
+    #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
+    #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
+    #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
     #     beta_header_overrides:                         # Override Anthropic beta header support (optional)
     #       redact-thinking-: true                       # Enable/disable specific beta headers by prefix
     #   # Concurrency configuration (optional)
@@ -466,22 +476,40 @@ bifrost:
       enabled: false
       version: 1
       config:
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "include"           # "include" or "exclude"
+        #   plugins: ["maxim", "otel"]
+        #
+        # Multi-profile shape (use profiles OR the flat single-profile fields below, not both):
+        # profiles:
+        #   - service_name: "bifrost"
+        #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        #     protocol: "grpc"        # http | grpc
+        #     metrics_enabled: false
+        #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        #     metrics_push_interval: 15 # Push interval in seconds (1-300)
+        #     headers: {}
+        #     tls_ca_cert: ""         # Path to TLS CA certificate file
+        #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
+        #     disable_content_logging: false
+        #
+        # Single-profile shape:
         service_name: "bifrost"
-        collector_url: ""
-        trace_type: "genai_extension"
-        protocol: "grpc"
+        collector_url: ""             # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        protocol: "grpc"              # http | grpc
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15 # Push interval in seconds (1-300)
-        # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
+        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        # Custom headers for the collector (supports env.VAR_NAME prefix)
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
-
     datadog:
       enabled: false
       version: 1
@@ -538,7 +566,7 @@ bifrost:
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
     roles: []
-      # - name: "data-analyst"
+      # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
       #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
       #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
