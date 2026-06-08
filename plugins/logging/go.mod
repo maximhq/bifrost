@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/bytedance/sonic v1.15.1
+	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.5.20
 	github.com/maximhq/bifrost/framework v1.3.20
 )
@@ -84,7 +85,6 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect

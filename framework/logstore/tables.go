@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -122,6 +123,28 @@ type SearchStats struct {
 	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
 	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
 	SemanticCacheHits         *int64  `json:"semantic_cache_hits,omitempty"`           // Number of semantic (fuzzy) cache hits
+}
+
+// UserAgentMapping stores a custom rule for mapping User-Agent values to app labels.
+type UserAgentMapping struct {
+	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	Pattern   string    `gorm:"type:varchar(512);not null" json:"pattern"`
+	MatchType string    `gorm:"type:varchar(32);not null;index" json:"match_type"`
+	App       string    `gorm:"type:varchar(128);not null;index" json:"app"`
+	Logo      []byte    `gorm:"type:bytea" json:"logo,omitempty"`
+	LogoMime  *string   `gorm:"type:varchar(128)" json:"logo_mime,omitempty"`
+	IsActive  bool      `gorm:"default:true;index" json:"is_active"`
+	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// BeforeCreate enforces a non-empty primary key before insert, guarding against
+// callers that bypass the plugin layer's UUID assignment.
+func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
+	if strings.TrimSpace(u.ID) == "" {
+		return errors.New("id is required")
+	}
+	return nil
 }
 
 // Log represents a complete log entry for a request/response cycle

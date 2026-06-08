@@ -17,6 +17,7 @@ import {
 	useGetLogsHistogramQuery,
 	useGetLogsQuery,
 	useGetLogsStatsQuery,
+	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
 import { useLazyGetLogByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/logsApi";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
@@ -82,6 +83,8 @@ export default function LogsPage() {
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			routing_rule_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			routing_engine_used: parseAsArrayOf(parseAsString).withDefault([]),
+			apps: parseAsArrayOf(parseAsString).withDefault([]),
+			user_agents: parseAsArrayOf(parseAsString).withDefault([]),
 			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
@@ -125,6 +128,8 @@ export default function LogsPage() {
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
 			routing_engine_used: urlState.routing_engine_used,
+			apps: urlState.apps,
+			user_agents: urlState.user_agents,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
@@ -161,6 +166,8 @@ export default function LogsPage() {
 			urlState.virtual_key_ids,
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
+			urlState.apps,
+			urlState.user_agents,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
@@ -211,6 +218,8 @@ export default function LogsPage() {
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
+				apps: newFilters.apps || [],
+				user_agents: newFilters.user_agents || [],
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
@@ -463,7 +472,21 @@ export default function LogsPage() {
 		return Object.keys(filterData.metadata_keys).sort();
 	}, [filterData?.metadata_keys]);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
+	const columns = useMemo(
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
