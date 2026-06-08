@@ -585,6 +585,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.11",
               "changelogs/v1.5.10",
               "changelogs/v1.5.9",
               "changelogs/v1.5.8",
