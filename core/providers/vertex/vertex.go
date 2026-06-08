@@ -2623,34 +2623,680 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 	return out
 }
 
-// BatchCreate is not supported by Vertex AI provider.
+// BatchCreate creates a Vertex AI batch prediction job.
+//
+// Input modes (mutually exclusive, mirroring the Gemini provider):
+//   - InputFileID: a gs:// URI of an existing Vertex-format JSONL file.
+//   - Requests: inline items converted to JSONL and uploaded to GCS via FileUpload.
+//
+// The output destination is taken from the typed output_folder.url (a gs:// prefix).
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
+	if request.Model == nil || *request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Vertex batch API", nil)
+	}
+	hasFileInput := request.InputFileID != ""
+	hasInlineRequests := len(request.Requests) > 0
+	if hasFileInput && hasInlineRequests {
+		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
+	}
+	if !hasFileInput && !hasInlineRequests {
+		return nil, providerUtils.NewBifrostOperationError("either input_file_id (gs:// JSONL URI) or requests is required for Vertex batch API", nil)
+	}
+
+	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
+
+	// Output destination is the typed output_folder.url (a gs:// prefix). Vertex writes
+	// results into its own subdirectory under this prefix.
+	outputURI := ""
+	if request.OutputFolder != nil {
+		outputURI = strings.TrimSpace(request.OutputFolder.URL)
+	}
+	if outputURI == "" {
+		return nil, providerUtils.NewBifrostOperationError("output_folder.url (gs:// prefix) is required for Vertex batch API", nil)
+	}
+
+	jobName := fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
+	if request.DisplayName != nil && *request.DisplayName != "" {
+		jobName = *request.DisplayName
+	} else if request.Metadata != nil {
+		// Back-compat: OpenAI-compatible clients may pass the job name via metadata.
+		if name, ok := request.Metadata["job_name"]; ok && name != "" {
+			jobName = name
+		}
+	}
+
+	// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
+	inputFileID := request.InputFileID
+	if inputFileID == "" {
+		jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
+		}
+		outBucket, outKey, parseErr := parseGCSURI(outputURI)
+		if parseErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+		}
+		// Place the input alongside the output directory (sibling, not child) so the
+		// generated JSONL does not live inside the directory Vertex writes results to.
+		inputPrefix := "vertex-batches-input"
+		if trimmed := strings.Trim(outKey, "/"); trimmed != "" {
+			if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
+				inputPrefix = trimmed[:idx] + "/input"
+			} else {
+				inputPrefix = "input"
+			}
+		}
+		uploadResp, uploadErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+			Provider:    schemas.Vertex,
+			File:        jsonlData,
+			Filename:    jobName + "-input.jsonl",
+			Purpose:     schemas.FilePurposeBatch,
+			ContentType: schemas.Ptr("application/jsonl"),
+			StorageConfig: &schemas.FileStorageConfig{
+				GCS: &schemas.GCSStorageConfig{Bucket: outBucket, Prefix: inputPrefix},
+			},
+		})
+		if uploadErr != nil {
+			return nil, uploadErr
+		}
+		inputFileID = uploadResp.ID
+	}
+
+	jsonData, bodyErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToVertexBatchCreateRequest(request, jobName, inputFileID, outputURI), nil
+		},
+	)
+	if bodyErr != nil {
+		return nil, bodyErr
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(baseURL + "/batchPredictionJobs")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+	req.SetBody(jsonData)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	var created VertexBatchPredictionJob
+	rawRequest, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &created, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if parseErr != nil {
+		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	result := &schemas.BifrostBatchCreateResponse{
+		ID:          created.Name,
+		Object:      "batch",
+		InputFileID: inputFileID,
+		Status:      vertexJobStateToBatchStatus(created.State),
+		CreatedAt:   gcsParseTime(created.CreateTime),
+		Metadata:    request.Metadata,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}
+	if created.DisplayName != "" {
+		result.DisplayName = schemas.Ptr(created.DisplayName)
+	}
+	if sendBackRawRequest {
+		result.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		result.ExtraFields.RawResponse = rawResponse
+	}
+	return result, nil
 }
 
-// BatchList is not supported by Vertex AI provider.
-func (provider *VertexProvider) BatchList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
+// BatchList lists Vertex AI batch prediction jobs across all keys, paginating one key
+// at a time. Each Vertex key carries its own project/region, and batch jobs are scoped to
+// that project/region, so the serial helper walks every key (exhausting all of its pages
+// before advancing) to avoid hiding jobs created under any key but the first.
+func (provider *VertexProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchList", nil)
+	}
+
+	// The OpenAI-compatible /v1/batches route feeds the cursor back via After.
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		// All keys exhausted.
+		return &schemas.BifrostBatchListResponse{
+			Object: "list",
+			Data:   []schemas.BifrostBatchRetrieveResponse{},
+		}, nil
+	}
+
+	// Query the current key with its native Vertex page token.
+	modifiedRequest := *request
+	if nativeCursor != "" {
+		modifiedRequest.PageToken = &nativeCursor
+	} else {
+		modifiedRequest.PageToken = nil
+	}
+
+	resp, latency, bifrostErr := provider.batchListByKey(ctx, key, &modifiedRequest)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	nativeNextCursor := ""
+	if resp.NextCursor != nil {
+		nativeNextCursor = *resp.NextCursor
+	}
+	nextCursor, hasMore := helper.BuildNextCursor(resp.HasMore, nativeNextCursor)
+
+	resp.HasMore = hasMore
+	if nextCursor != "" {
+		resp.NextCursor = &nextCursor
+	} else {
+		resp.NextCursor = nil
+	}
+	resp.ExtraFields.Latency = latency.Milliseconds()
+	return resp, nil
 }
 
-// BatchRetrieve is not supported by Vertex AI provider.
-func (provider *VertexProvider) BatchRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
+// batchListByKey lists batch prediction jobs for a single Vertex key/project/region.
+// The native Vertex page token (if any) is taken from request.PageToken; the returned
+// NextCursor carries Vertex's nextPageToken verbatim for the caller to re-encode.
+func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, time.Duration, *schemas.BifrostError) {
+	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
+	if cfgErr != nil {
+		return nil, 0, cfgErr
+	}
+
+	params := url.Values{}
+	pageSize := request.PageSize
+	if pageSize <= 0 {
+		pageSize = request.Limit
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	params.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	if request.PageToken != nil && *request.PageToken != "" {
+		params.Set("pageToken", *request.PageToken)
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, 0, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(baseURL + "/batchPredictionJobs?" + params.Encode())
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, 0, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// GET request: no request body, so raw request capture is skipped by HandleProviderResponse.
+	var listResp VertexBatchJobListResponse
+	_, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &listResp, nil, false, sendBackRawResponse)
+	if parseErr != nil {
+		return nil, 0, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(listResp.BatchPredictionJobs))
+	for i := range listResp.BatchPredictionJobs {
+		data = append(data, vertexBatchJobToBifrost(&listResp.BatchPredictionJobs[i]))
+	}
+
+	var nextCursor *string
+	if listResp.NextPageToken != "" {
+		nextCursor = &listResp.NextPageToken
+	}
+
+	result := &schemas.BifrostBatchListResponse{
+		Object:     "list",
+		Data:       data,
+		HasMore:    listResp.NextPageToken != "",
+		NextCursor: nextCursor,
+	}
+	if sendBackRawResponse {
+		result.ExtraFields.RawResponse = rawResponse
+	}
+	return result, time.Since(startTime), nil
 }
 
-// BatchCancel is not supported by Vertex AI provider.
-func (provider *VertexProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+// BatchRetrieve fetches a Vertex AI batch prediction job by ID (bare or full resource name).
+func (provider *VertexProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchRetrieve", nil)
+	}
+
+	// A job ID is scoped to the project/region of the key that created it, so try each key
+	// until one resolves the job; return the last error only if all keys fail.
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		startTime := time.Now()
+		job, rawResponse, bifrostErr := provider.vertexGetBatchJob(ctx, key, request.BatchID)
+		if bifrostErr != nil {
+			lastErr = bifrostErr
+			continue
+		}
+
+		result := vertexBatchJobToBifrost(job)
+		result.ExtraFields = schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			result.ExtraFields.RawResponse = rawResponse
+		}
+		return &result, nil
+	}
+
+	return nil, lastErr
 }
 
-// BatchDelete is not supported by Vertex AI provider.
-func (provider *VertexProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+// vertexGetBatchJob fetches a BatchPredictionJob resource. The returned rawResponse is
+// the raw response payload when raw-response capture is enabled (nil otherwise); it is a
+// GET, so there is no raw request to capture.
+func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, key schemas.Key, batchID string) (*VertexBatchPredictionJob, interface{}, *schemas.BifrostError) {
+	jobURL, cfgErr := vertexBatchJobURL(key, batchID)
+	if cfgErr != nil {
+		return nil, nil, cfgErr
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(jobURL)
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	var job VertexBatchPredictionJob
+	_, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &job, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if parseErr != nil {
+		return nil, nil, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	return &job, rawResponse, nil
 }
 
-// BatchResults is not supported by Vertex AI provider.
-func (provider *VertexProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
+// BatchCancel cancels a running Vertex AI batch prediction job.
+func (provider *VertexProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchCancel", nil)
+	}
+
+	// A job ID is scoped to the project/region of the key that created it, so try each key
+	// until the cancel succeeds; return the last error only if all keys fail.
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, bifrostErr := provider.batchCancelByKey(ctx, key, request)
+		if bifrostErr == nil {
+			return resp, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
+}
+
+// batchCancelByKey cancels a batch prediction job using a single Vertex key.
+func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	jobURL, cfgErr := vertexBatchJobURL(key, request.BatchID)
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(jobURL + ":cancel")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	return &schemas.BifrostBatchCancelResponse{
+		ID:           vertexBatchJobIDFromName(request.BatchID),
+		Object:       "batch",
+		Status:       schemas.BatchStatusCancelling,
+		CancellingAt: schemas.Ptr(startTime.Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// BatchDelete deletes a finished Vertex AI batch prediction job.
+func (provider *VertexProvider) BatchDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchDelete", nil)
+	}
+
+	// A job ID is scoped to the project/region of the key that created it, so try each key
+	// until the delete succeeds; return the last error only if all keys fail.
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, bifrostErr := provider.batchDeleteByKey(ctx, key, request)
+		if bifrostErr == nil {
+			return resp, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
+}
+
+// batchDeleteByKey deletes a batch prediction job using a single Vertex key.
+func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	jobURL, cfgErr := vertexBatchJobURL(key, request.BatchID)
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(jobURL)
+	req.Header.SetMethod(http.MethodDelete)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	startTime := time.Now()
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		}
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	return &schemas.BifrostBatchDeleteResponse{
+		ID:     vertexBatchJobIDFromName(request.BatchID),
+		Object: "batch",
+		Status: schemas.BatchStatusDeleted,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// BatchResults reads the predictions-*.jsonl files a finished job wrote to its GCS
+// output directory and maps each line to a Bifrost batch result item. The custom_id
+// is recovered from the echoed request labels.
+func (provider *VertexProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchResults", nil)
+	}
+
+	// A job ID is scoped to the project/region of the key that created it, so try each key
+	// until one resolves the job and reads its results; return the last error if all fail.
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		resp, bifrostErr := provider.batchResultsByKey(ctx, key, request)
+		if bifrostErr == nil {
+			return resp, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
+}
+
+// batchResultsByKey reads a finished job's GCS output using a single Vertex key.
+func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	startTime := time.Now()
+	job, _, bifrostErr := provider.vertexGetBatchJob(ctx, key, request.BatchID)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if job.OutputInfo == nil || job.OutputInfo.GcsOutputDirectory == "" {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("batch output is not available yet (job state: %s)", job.State), nil)
+	}
+
+	bucket, dirKey, parseErr := parseGCSURI(job.OutputInfo.GcsOutputDirectory)
+	if parseErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+	}
+
+	authHeader, authErr := gcsGetAuthHeader(key)
+	if authErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+	}
+
+	objects, listErr := provider.gcsListAllObjects(ctx, authHeader, bucket, strings.Trim(dirKey, "/")+"/")
+	if listErr != nil {
+		return nil, listErr
+	}
+
+	results := []schemas.BatchResultItem{}
+	for _, obj := range objects {
+		name := obj.Name
+		if idx := strings.LastIndexByte(name, '/'); idx >= 0 {
+			name = name[idx+1:]
+		}
+		if !strings.HasPrefix(name, "predictions") {
+			continue
+		}
+
+		content, downloadErr := provider.gcsDownloadObject(ctx, authHeader, bucket, obj.Name)
+		if downloadErr != nil {
+			return nil, downloadErr
+		}
+
+		for _, rawLine := range bytes.Split(content, []byte("\n")) {
+			if len(bytes.TrimSpace(rawLine)) == 0 {
+				continue
+			}
+			var line VertexBatchOutputLine
+			if err := sonic.Unmarshal(rawLine, &line); err != nil {
+				continue // skip malformed lines rather than failing the whole result set
+			}
+			item := schemas.BatchResultItem{
+				CustomID: line.Request.Labels[vertexBatchCustomIDLabel],
+			}
+			if line.Response != nil {
+				item.Response = &schemas.BatchResultResponse{
+					StatusCode: 200,
+					Body:       line.Response,
+				}
+			} else {
+				item.Error = &schemas.BatchResultError{Message: line.Status}
+			}
+			results = append(results, item)
+		}
+	}
+
+	return &schemas.BifrostBatchResultsResponse{
+		BatchID: request.BatchID,
+		Results: results,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: time.Since(startTime).Milliseconds(),
+		},
+	}, nil
+}
+
+// gcsListAllObjects lists every object under a prefix, following pagination.
+func (provider *VertexProvider) gcsListAllObjects(ctx *schemas.BifrostContext, authHeader, bucket, prefix string) ([]gcsObjectMetadata, *schemas.BifrostError) {
+	var objects []gcsObjectMetadata
+	pageToken := ""
+	for {
+		params := url.Values{}
+		params.Set("prefix", prefix)
+		params.Set("maxResults", "1000")
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		req.SetRequestURI(fmt.Sprintf("%s/b/%s/o?%s", gcsStorageBase, url.PathEscape(bucket), params.Encode()))
+		req.Header.SetMethod(http.MethodGet)
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.Header.Set("Authorization", authHeader)
+
+		_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			wait()
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			return nil, bifrostErr
+		}
+
+		statusCode := resp.StatusCode()
+		var listResp gcsObjectListResponse
+		var unmarshalErr error
+		if statusCode == fasthttp.StatusOK {
+			unmarshalErr = sonic.Unmarshal(resp.Body(), &listResp)
+		}
+		var apiErr *schemas.BifrostError
+		if statusCode != fasthttp.StatusOK {
+			apiErr = parseGCSAPIError(resp.Body(), statusCode, "list")
+		}
+		wait()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		if unmarshalErr != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to parse GCS list response", unmarshalErr)
+		}
+
+		objects = append(objects, listResp.Items...)
+		if listResp.NextPageToken == "" {
+			return objects, nil
+		}
+		pageToken = listResp.NextPageToken
+	}
+}
+
+// gcsDownloadObject downloads the raw bytes of a GCS object.
+func (provider *VertexProvider) gcsDownloadObject(ctx *schemas.BifrostContext, authHeader, bucket, objectKey string) ([]byte, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s?alt=media", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+	}
+
+	content := make([]byte, len(resp.Body()))
+	copy(content, resp.Body())
+	return content, nil
 }
 
 const (
@@ -2879,7 +3525,8 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 		StorageBackend: schemas.FileStorageGCS,
 		StorageURI:     gcsURI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: time.Since(startTime).Milliseconds(),
+			Latency:                 time.Since(startTime).Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}, nil
 }
@@ -2943,7 +3590,8 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 		StorageURI:     gcsURI,
 		UploadURL:      &sessionURL,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: time.Since(startTime).Milliseconds(),
+			Latency:                 time.Since(startTime).Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}, nil
 }

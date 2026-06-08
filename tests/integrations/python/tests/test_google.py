@@ -109,17 +109,34 @@ from .utils.common import (
     get_api_key,
     get_provider_voice,
     get_provider_voices,
+    # Vertex batch GCS utilities
+    get_vertex_batch_dest_uri,
+    get_vertex_project,
+    get_vertex_location,
+    get_bifrost_base_url,
+    is_vertex_gcs_configured,
+    skip_if_no_vertex_gcs,
+    skip_if_no_vertex_native_batch,
+    stage_vertex_batch_input,
     skip_if_no_api_key,
 )
-from .utils.config_loader import get_model
+from .utils.config_loader import get_config, get_model
 from .utils.parametrize import (
     format_provider_model,
     get_cross_provider_params_for_scenario,
 )
 
 
-def get_provider_google_client(provider: str = "gemini", passthrough: bool = False):
-    """Create Google GenAI client with x-model-provider header for given provider"""
+def get_provider_google_client(
+    provider: str = "gemini",
+    passthrough: bool = False,
+    extra_headers: Dict[str, str] | None = None,
+):
+    """Create Google GenAI client with x-model-provider header for given provider.
+
+    extra_headers: optional additional HTTP headers forwarded on every request
+    (e.g. to carry provider-specific routing/config the SDK doesn't model natively).
+    """
     from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
@@ -135,8 +152,11 @@ def get_provider_google_client(provider: str = "gemini", passthrough: bool = Fal
     }
 
     # Add base URL support, timeout, and x-model-provider header through HttpOptions
+    headers = {"x-model-provider": provider}
+    if extra_headers:
+        headers.update(extra_headers)
     http_options_kwargs = {
-        "headers": {"x-model-provider": provider},
+        "headers": headers,
     }
     if base_url:
         http_options_kwargs["base_url"] = base_url
@@ -146,6 +166,58 @@ def get_provider_google_client(provider: str = "gemini", passthrough: bool = Fal
     client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
 
     return genai.Client(**client_kwargs)
+
+
+def get_vertex_job_service_client():
+    """Build a native Vertex AI JobServiceClient pointed at the Bifrost gateway.
+
+    Vertex batch prediction is a Vertex-native (aiplatform) API — not the Gemini
+    Developer batches surface — so these tests use the aiplatform gapic
+    JobServiceClient with the regional batchPredictionJobs methods, routed through
+    Bifrost via the gateway base URL. Auth is anonymous because Bifrost injects the
+    real Vertex credentials from its key config; Bifrost detects Vertex routing from
+    the /projects/{p}/locations/{l}/... request path.
+    """
+    from google.cloud import aiplatform
+    from google.api_core.client_options import ClientOptions
+    from google.auth.credentials import AnonymousCredentials
+
+    # Route through Bifrost's genai integration (the Vertex batch routes are mounted
+    # under the /genai prefix alongside the other GenAI endpoints).
+    api_endpoint = get_bifrost_base_url().rstrip("/") + "/genai"
+    return aiplatform.gapic.JobServiceClient(
+        client_options=ClientOptions(api_endpoint=api_endpoint),
+        transport="rest",
+        credentials=AnonymousCredentials(),
+    )
+
+
+def build_vertex_batch_prediction_job(
+    display_name: str,
+    model: str,
+    gcs_source_uri: str,
+    gcs_destination_output_uri_prefix: str,
+) -> Dict[str, Any]:
+    """Build a native Vertex BatchPredictionJob request body (jsonl GCS in/out).
+
+    Mirrors the official aiplatform create_batch_prediction_job sample. Gemini
+    publisher models do not require dedicated_resources/machine_spec, so those are
+    omitted (they apply to custom-trained models).
+    """
+    if "/" not in model:
+        model = "publishers/google/models/" + model
+    return {
+        "display_name": display_name,
+        "model": model,
+        "input_config": {
+            "instances_format": "jsonl",
+            "gcs_source": {"uris": [gcs_source_uri]},
+        },
+        "output_config": {
+            "predictions_format": "jsonl",
+            "gcs_destination": {"output_uri_prefix": gcs_destination_output_uri_prefix},
+        },
+    }
 
 
 @pytest.fixture
@@ -3045,6 +3117,187 @@ Joe: Pretty good, thanks for asking."""
                     print(f"Cleanup: Deleted file {uploaded_file.name}")
                 except Exception as e:
                     print(f"Cleanup warning: Failed to delete file: {e}")
+
+    # =========================================================================
+    # VERTEX AI BATCH API TEST CASES (native aiplatform JobServiceClient)
+    #
+    # Vertex batch prediction is a Vertex-native (aiplatform) API, distinct from
+    # the Gemini Developer batches surface. These tests use the aiplatform gapic
+    # JobServiceClient with the regional batchPredictionJobs methods, routed
+    # through Bifrost. Inputs/outputs live in GCS (instances_format /
+    # predictions_format = jsonl). Requires VERTEX_PROJECT_ID + VERTEX_GCS_BUCKET
+    # (and ADC for staging the input object); otherwise the tests skip.
+    # =========================================================================
+
+    @staticmethod
+    def _vertex_parent():
+        return f"projects/{get_vertex_project()}/locations/{get_vertex_location()}"
+
+    @staticmethod
+    def _cleanup_vertex_job(client, job_name):
+        """Best-effort cancel + delete of a native Vertex batch prediction job."""
+        if not job_name:
+            return
+        try:
+            client.cancel_batch_prediction_job(name=job_name)
+        except Exception as e:
+            print(f"Cleanup info: Could not cancel job: {e}")
+        try:
+            client.delete_batch_prediction_job(name=job_name)
+        except Exception as e:
+            print(f"Cleanup info: Could not delete job: {e}")
+
+    def test_vertex_batch_create(self, test_config):
+        """Vertex Batch: create a batch prediction job (jsonl GCS in/out)."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=2)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-create",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            assert job.name, "Created job should have a resource name"
+            print(f"Success: Created Vertex batch job {job.name}, state: {job.state.name}")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_get(self, test_config):
+        """Vertex Batch: retrieve a batch prediction job by name."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_retrieve")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-get",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            retrieved = client.get_batch_prediction_job(name=job.name)
+            assert retrieved.name == job.name, (
+                f"Retrieved job name should match: expected {job.name}, got {retrieved.name}"
+            )
+            print(f"Success: Retrieved Vertex batch job {retrieved.name}, state: {retrieved.state.name}")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_list(self, test_config):
+        """Vertex Batch: list batch prediction jobs for the project/location."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-list",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            found = any(
+                listed.name == job.name
+                for listed in client.list_batch_prediction_jobs(parent=self._vertex_parent())
+            )
+            assert found, f"Created job {job.name} should appear in the listing"
+            print(f"Success: Found created Vertex batch job {job.name} in listing")
+        finally:
+            self._cleanup_vertex_job(client, job.name if job else None)
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_cancel(self, test_config):
+        """Vertex Batch: cancel a running batch prediction job."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_cancel")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=2)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-cancel",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = None
+        try:
+            job = client.create_batch_prediction_job(
+                parent=self._vertex_parent(), batch_prediction_job=body
+            )
+            client.cancel_batch_prediction_job(name=job.name)
+
+            retrieved = client.get_batch_prediction_job(name=job.name)
+            assert retrieved.state.name in ("JOB_STATE_CANCELLING", "JOB_STATE_CANCELLED"), (
+                f"Job state should be cancelling/cancelled, got {retrieved.state.name}"
+            )
+            print(f"Success: Cancelled Vertex batch job {job.name}, state: {retrieved.state.name}")
+        finally:
+            # Already cancelled above; just delete.
+            if job:
+                try:
+                    client.delete_batch_prediction_job(name=job.name)
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete job: {e}")
+
+    @skip_if_no_api_key("vertex")
+    def test_vertex_batch_delete(self, test_config):
+        """Vertex Batch: delete a batch prediction job."""
+        skip_if_no_vertex_native_batch()
+        client = get_vertex_job_service_client()
+        model = get_config().get_provider_model("vertex", "batch_create")
+
+        gcs_source_uri = stage_vertex_batch_input(
+            create_google_batch_json_content(model=model, num_requests=1)
+        )
+        body = build_vertex_batch_prediction_job(
+            display_name="bifrost-vertex-batch-delete",
+            model=model,
+            gcs_source_uri=gcs_source_uri,
+            gcs_destination_output_uri_prefix=get_vertex_batch_dest_uri(),
+        )
+
+        job = client.create_batch_prediction_job(
+            parent=self._vertex_parent(), batch_prediction_job=body
+        )
+        # Cancel first so the job is deletable, then delete (returns an LRO).
+        try:
+            client.cancel_batch_prediction_job(name=job.name)
+        except Exception as e:
+            print(f"Info: Could not cancel before delete: {e}")
+        client.delete_batch_prediction_job(name=job.name)
+        print(f"Success: Deleted Vertex batch job {job.name}")
 
     # =========================================================================
     # INPUT TOKENS / TOKEN COUNTING TEST CASES
