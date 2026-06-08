@@ -1,2 +1,0 @@
-- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
-- feat: add `EnvVar` support for `PushGatewayURL` and `BasicAuth` (username/password); implements `ConfigMarshallerPlugin` (#3651)

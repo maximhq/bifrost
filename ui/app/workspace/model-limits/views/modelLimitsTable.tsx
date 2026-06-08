@@ -15,19 +15,27 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationLabels } from "@/lib/constants/governance";
+import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getErrorMessage, useDeleteModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
+import { ModelProvider } from "@/lib/types/config";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
+import { getScopeLabel } from "@/lib/utils/labels";
+import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+// Side-effect import: pull in downstream scope registrations (enterprise
+// "user" deep-link, etc.). No-op for OSS builds.
+import "@enterprise/lib/registrations/modelLimitScopes";
+import { useNavigate } from "@tanstack/react-router";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -104,9 +112,14 @@ function ModelLimitActionsMenu({
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
 	totalCount: number;
+	providers: ModelProvider[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
+	scope: string;
+	onScopeChange: (value: string) => void;
+	provider: string;
+	onProviderChange: (value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -115,13 +128,19 @@ interface ModelLimitsTableProps {
 export default function ModelLimitsTable({
 	modelConfigs,
 	totalCount,
+	providers,
 	search,
 	debouncedSearch,
 	onSearchChange,
+	scope,
+	onScopeChange,
+	provider,
+	onProviderChange,
 	offset,
 	limit,
 	onOffsetChange,
 }: ModelLimitsTableProps) {
+	const navigate = useNavigate();
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
 	const [deleteModelConfigId, setDeleteModelConfigId] = useState<string | null>(null);
@@ -167,7 +186,7 @@ export default function ModelLimitsTable({
 		setEditingModelConfigId(null);
 	};
 
-	const hasActiveFilters = debouncedSearch;
+	const hasActiveFilters = debouncedSearch || scope || provider;
 
 	// True empty state: no model limits at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -225,9 +244,9 @@ export default function ModelLimitsTable({
 					</Button>
 				</div>
 
-				{/* Toolbar: Search */}
-				<div className="flex items-center gap-3">
-					<div className="relative max-w-sm flex-1">
+				{/* Toolbar: Search + Filters */}
+				<div className="flex flex-wrap items-center gap-3">
+					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search model limits by model name"
@@ -238,6 +257,48 @@ export default function ModelLimitsTable({
 							data-testid="model-limits-search-input"
 						/>
 					</div>
+
+					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
+						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-scope">
+							<SelectValue placeholder="All Scopes" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Scopes</SelectItem>
+							{getModelLimitScopes().map((o) => (
+								<SelectItem key={o.value} value={o.value}>
+									{o.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					<Select value={provider || "all"} onValueChange={(v) => onProviderChange(v === "all" ? "" : v)}>
+						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-provider">
+							<SelectValue placeholder="All Providers" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Providers</SelectItem>
+							{(providers ?? []).map((p) => (
+								<SelectItem key={p.name} value={p.name}>
+									<div className="flex items-center gap-2">
+										<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
+										<span>{ProviderLabels[p.name as ProviderName] || p.name}</span>
+									</div>
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+
+					{hasActiveFilters && (
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => { onSearchChange(""); onScopeChange(""); onProviderChange(""); }}
+							data-testid="model-limits-filter-clear"
+						>
+							Clear filters
+						</Button>
+					)}
 				</div>
 
 				<div className="rounded-sm border" data-testid="model-limits-table">
@@ -246,6 +307,8 @@ export default function ModelLimitsTable({
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="font-medium">Model</TableHead>
 								<TableHead className="font-medium">Provider</TableHead>
+								<TableHead className="font-medium">Scope</TableHead>
+								<TableHead className="font-medium">Scope Target</TableHead>
 								<TableHead className="font-medium">Budget</TableHead>
 								<TableHead className="font-medium">Rate Limit</TableHead>
 								<TableHead className="w-[100px]"></TableHead>
@@ -254,14 +317,15 @@ export default function ModelLimitsTable({
 						<TableBody>
 							{modelConfigs.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={5} className="h-24 text-center">
+									<TableCell colSpan={7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching model limits found.</span>
 									</TableCell>
 								</TableRow>
 							) : (
 								modelConfigs.map((config) => {
-									const isBudgetExhausted =
-										config.budget?.max_limit && config.budget.max_limit > 0 && config.budget.current_usage >= config.budget.max_limit;
+									// Model configs can own multiple budgets; show all (like the VK table).
+									const budgets = config.budgets ?? (config.budget ? [config.budget] : []);
+									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 									const isRateLimitExhausted =
 										(config.rate_limit?.token_max_limit &&
 											config.rate_limit.token_max_limit > 0 &&
@@ -272,10 +336,6 @@ export default function ModelLimitsTable({
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
 									// Compute safe percentages to avoid division by zero
-									const budgetPercentage =
-										config.budget?.max_limit && config.budget.max_limit > 0
-											? Math.min((config.budget.current_usage / config.budget.max_limit) * 100, 100)
-											: 0;
 									const tokenPercentage =
 										config.rate_limit?.token_max_limit && config.rate_limit.token_max_limit > 0
 											? Math.min((config.rate_limit.token_current_usage / config.rate_limit.token_max_limit) * 100, 100)
@@ -293,7 +353,9 @@ export default function ModelLimitsTable({
 										>
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
-													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
+													<span className="truncate font-mono text-sm font-medium">
+														{config.model_name === "*" ? "All Models" : config.model_name}
+													</span>
 													{isExhausted && (
 														<Badge variant="destructive" className="w-fit text-xs">
 															Limit Reached
@@ -311,41 +373,52 @@ export default function ModelLimitsTable({
 													<span className="text-muted-foreground text-sm">All Providers</span>
 												)}
 											</TableCell>
-											<TableCell className="min-w-[180px]">
-												{config.budget ? (
+											<TableCell>
+												<Badge variant="secondary">{getScopeLabel(config.scope ?? "global")}</Badge>
+											</TableCell>
+											<TableCell>
+												{config.scope !== "global" && config.scope_id && config.scope_name ? (
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(config.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(config.budget.reset_duration)}
-																		</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
+																<Badge
+																	variant="secondary"
+																	className="flex max-w-[160px] cursor-pointer items-center gap-1 hover:opacity-80"
+																	data-testid={`model-limit-scope-target-${config.scope_id}`}
+																	onClick={() => {
+																		if (!config.scope_id) return;
+																		const target = getModelLimitScope(config.scope ?? "global")?.buildDeepLink?.(config.scope_id);
+																		if (target) navigate(target as never);
+																	}}
+																>
+																	<span className="truncate">{config.scope_name}</span>
+																	<ArrowUpRight className="h-3 w-3 shrink-0" />
+																</Badge>
 															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(config.budget.reset_duration)}
-																</p>
-															</TooltipContent>
+															<TooltipContent className="max-w-[320px] break-all">{config.scope_name}</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
+												) : (
+													<span className="text-muted-foreground text-sm">—</span>
+												)}
+											</TableCell>
+											<TableCell className="min-w-[180px]">
+												{budgets.length > 0 ? (
+													<div className="flex flex-col gap-1">
+														{budgets.map((b, idx) => (
+															<div key={b.id ?? idx} className="flex flex-col">
+																<span
+																	className={cn("font-mono text-sm", b.max_limit > 0 && b.current_usage >= b.max_limit && "text-red-400")}
+																>
+																	{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																</span>
+																<span className="text-muted-foreground text-xs">
+																	Resets {formatResetDuration(b.reset_duration)}
+																	{config.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																</span>
+															</div>
+														))}
+													</div>
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>
 												)}

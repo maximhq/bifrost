@@ -7,6 +7,8 @@ plugins-builtins:
       Use this to discover which plugins can be enabled without supplying a custom binary.
     tags:
       - Plugins
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Built-in plugin names retrieved successfully
@@ -34,6 +36,8 @@ plugins:
       The `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).
     tags:
       - Plugins
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -56,6 +60,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Plugin created successfully
@@ -92,6 +98,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -132,6 +140,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin updated successfully
@@ -163,6 +173,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin deleted successfully

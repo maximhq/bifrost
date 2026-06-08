@@ -15,6 +15,41 @@ import (
 	mocker "github.com/maximhq/bifrost/plugins/mocker"
 )
 
+// embeddingThrottle bounds the number of concurrent live embedding calls
+// across every parallel test in the process. The semantic cache plugin embeds
+// each request against real OpenAI for similarity search; with no cap, the
+// burst from many t.Parallel() tests trips OpenAI's embeddings rate limit
+// (429), and each affected test then self-skips via the "upstream request
+// error" guard - silently hiding dozens of tests. A small cap smooths the
+// burst so the test account's retry/backoff (MaxRetries in GetConfigForProvider)
+// can absorb any residual throttling. Override with
+// SEMCACHE_TEST_EMBED_CONCURRENCY; defaults to 2.
+var embeddingThrottle = make(chan struct{}, embeddingConcurrency())
+
+func embeddingConcurrency() int {
+	if v := os.Getenv("SEMCACHE_TEST_EMBED_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
+}
+
+// throttledEmbeddingExecutor wraps an EmbeddingRequestExecutor with the
+// package-level concurrency cap above so embedding bursts stay under the
+// provider's rate limit regardless of the test runner or -parallel setting.
+func throttledEmbeddingExecutor(inner EmbeddingRequestExecutor) EmbeddingRequestExecutor {
+	return func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		select {
+		case embeddingThrottle <- struct{}{}:
+		case <-ctx.Done():
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding throttle wait cancelled: " + ctx.Err().Error()}}
+		}
+		defer func() { <-embeddingThrottle }()
+		return inner(ctx, req)
+	}
+}
+
 // isTransientUpstreamError reports whether a BifrostError reflects a
 // transient upstream condition (timeout, rate-limit, 5xx) where skipping
 // the test is reasonable. All other errors — including missing API keys,
@@ -157,6 +192,25 @@ func getPineconeConfigFromEnv() vectorstore.PineconeConfig {
 	return vectorstore.PineconeConfig{
 		APIKey:    *apiKey,
 		IndexHost: *indexHost,
+	}
+}
+
+// storeConfigForType returns the env-derived connection config for a vector
+// store type. The bool is false for an unrecognized type. Shared by test setup
+// and the TestMain namespace sweep so both stay in lockstep when a new backend
+// is added.
+func storeConfigForType(storeType vectorstore.VectorStoreType) (interface{}, bool) {
+	switch storeType {
+	case vectorstore.VectorStoreTypeWeaviate:
+		return getWeaviateConfigFromEnv(), true
+	case vectorstore.VectorStoreTypeRedis:
+		return getRedisConfigFromEnv(), true
+	case vectorstore.VectorStoreTypeQdrant:
+		return getQdrantConfigFromEnv(), true
+	case vectorstore.VectorStoreTypePinecone:
+		return getPineconeConfigFromEnv(), true
+	default:
+		return nil, false
 	}
 }
 
@@ -463,17 +517,8 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	}
 
 	// Get the appropriate config for the vector store type
-	var storeConfig interface{}
-	switch storeType {
-	case vectorstore.VectorStoreTypeWeaviate:
-		storeConfig = getWeaviateConfigFromEnv()
-	case vectorstore.VectorStoreTypeRedis:
-		storeConfig = getRedisConfigFromEnv()
-	case vectorstore.VectorStoreTypeQdrant:
-		storeConfig = getQdrantConfigFromEnv()
-	case vectorstore.VectorStoreTypePinecone:
-		storeConfig = getPineconeConfigFromEnv()
-	default:
+	storeConfig, ok := storeConfigForType(storeType)
+	if !ok {
 		t.Fatalf("Unsupported vector store type: %s", storeType)
 	}
 
@@ -508,7 +553,7 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	client := getMockedBifrostClient(t, ctx, logger, plugin)
 
 	// Wire the global client as the embedding executor so semantic search works.
-	pluginImpl.SetEmbeddingRequestExecutor(client.EmbeddingRequest)
+	pluginImpl.SetEmbeddingRequestExecutor(throttledEmbeddingExecutor(client.EmbeddingRequest))
 
 	return &TestSetup{
 		Logger: logger,

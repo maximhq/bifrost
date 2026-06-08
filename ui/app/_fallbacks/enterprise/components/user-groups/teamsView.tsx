@@ -1,9 +1,9 @@
 import TeamsTable from "@/app/workspace/governance/views/teamsTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
@@ -93,26 +93,24 @@ export function TeamsView() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl h-[calc(100vh_-_50px)] flex flex-col overflow-y-auto">
-			<TeamsTable
-				teams={teamsData?.teams || []}
-				totalCount={teamsData?.total_count || 0}
-				customers={customersData?.customers || []}
-				virtualKeys={virtualKeysData?.virtual_keys || []}
-				search={urlState.search}
-				debouncedSearch={debouncedSearch}
-				onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 }, { history: "replace" })}
-				offset={urlState.offset}
-				limit={PAGE_SIZE}
-				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
-				selectedTeamId={urlState.selected_team || null}
-				onTeamAdd={() => setUrlState({ selected_team: "new" })}
-				onTeamSelect={(team) => {
-					setUrlState({ selected_team: team?.id ?? null });
-				}}
-				onDialogClose={() => setUrlState({ selected_team: null })}
-				isLoading={isFetching}
-			/>
-		</div>
+		<TeamsTable
+			teams={teamsData?.teams || []}
+			totalCount={teamsData?.total_count || 0}
+			customers={customersData?.customers || []}
+			virtualKeys={virtualKeysData?.virtual_keys || []}
+			search={urlState.search}
+			debouncedSearch={debouncedSearch}
+			onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 }, { history: "replace" })}
+			offset={urlState.offset}
+			limit={PAGE_SIZE}
+			onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
+			selectedTeamId={urlState.selected_team || null}
+			onTeamAdd={() => setUrlState({ selected_team: "new" })}
+			onTeamSelect={(team) => {
+				setUrlState({ selected_team: team?.id ?? null });
+			}}
+			onDialogClose={() => setUrlState({ selected_team: null })}
+			isLoading={isFetching}
+		/>
 	);
 }

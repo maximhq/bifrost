@@ -1,0 +1,87 @@
+---
+title: "v1.5.8"
+description: "v1.5.8 changelog - 2026-06-04"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.8
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.8
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.8
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.8">
+## ✨ Features
+
+- **File Scheme Pricing URLs** — Pricing source URLs now accept the `file://` scheme, allowing custom pricing data to be loaded from the local filesystem for air-gapped and self-hosted deployments (#4045)
+- **Paginated Virtual Keys** — Virtual key fetching is now paginated to handle deployments with very large numbers of keys without loading them all at once (#3957)
+
+## 🐞 Fixed
+
+- **Bedrock Output Assessments** — Corrected the type of `outputAssessments` in Bedrock responses (#4028)
+- **Text Completion Chunk Model** — Added the missing `Model` field to `TextCompletionChunkResponse` (#3970) (thanks [@kuishou68](https://github.com/kuishou68)!)
+- **Orphaned Tool Results** — Orphaned tool results in the OpenAI to Anthropic conversion flow are no longer rejected by the Anthropic API (#3919)
+- **MCP Inline stdio Env** — MCP stdio server configs now accept inline environment variable assignments (#3861) (thanks [@Shushmitaaaa](https://github.com/Shushmitaaaa)!)
+- **Model Pool Pricing Reloads** — Non-pricing model pool entries are preserved across pricing reloads instead of being dropped (#3999)
+
+</Update>
+<Update label="Core" description="1.5.16">
+- feat: file scheme (file://) support for pricing URLs
+- fix: corrected Bedrock outputAssessments type
+- fix: added Model field to TextCompletionChunkResponse (thanks [@kuishou68](https://github.com/kuishou68)!)
+- fix: accept orphaned tool results in OpenAI to Anthropic conversion flow
+- fix(mcp): allow inline stdio env assignments (thanks [@Shushmitaaaa](https://github.com/Shushmitaaaa)!)
+
+</Update>
+<Update label="Framework" description="1.3.16">
+- feat: file scheme (file://) support for pricing URL sync
+- feat: paginated virtual key fetch to handle large numbers of keys
+- fix: preserve non-pricing model pool entries across pricing reloads
+
+</Update>
+<Update label="compat" description="0.1.15">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="governance" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="jsonparser" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="logging" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="maxim" description="1.6.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="mocker" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="otel" description="1.2.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="prompts" description="1.0.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="semanticcache" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>
+<Update label="telemetry" description="1.5.16">
+- chore: upgraded core to v1.5.16 and framework to v1.3.16
+
+</Update>

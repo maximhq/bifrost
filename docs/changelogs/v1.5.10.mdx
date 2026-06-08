@@ -1,0 +1,294 @@
+---
+title: "v1.5.10"
+description: "v1.5.10 changelog - 2026-06-07"
+---
+
+<Tabs>
+  <Tab title="NPX">
+      ```bash 
+      npx -y @maximhq/bifrost --transport-version v1.5.10 
+      ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash 
+    docker pull maximhq/bifrost:v1.5.10 
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.10 
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.10">
+<Note>
+  **Hotfix on [v1.5.9](https://docs.getbifrost.ai/changelogs/v1.5.9).** The key fix corrects wildcard (`*`) allowed-models handling: for providers whose models the catalog cannot enumerate, a wildcard now correctly allows any model instead of rejecting it. This affected keyless self-hosted providers (vLLM/Ollama/SGL) and custom providers without list-models support.
+</Note>
+
+## 🐞 Fixed
+
+- **Virtual Key Usage Tracking Under User Attribution** - Usage is no longer silently dropped from virtual-key accounting whenever a user is attributed on a request. Governance now tracks both the virtual-key and user scopes by default; callers that deliberately want user-only accounting can opt in with the new `bifrost-skip-virtual-key-usage-tracking` context flag (#4123)
+- **Wildcard Allow-Lists for Catalog-Opaque Providers** - A wildcard (`*`) allowed-models list now correctly permits any model for providers whose models the catalog cannot enumerate - custom providers without list-models support, and keyless self-hosted vLLM/Ollama/SGL - instead of incorrectly rejecting them (#4124)
+
+## ⏲️ Rolling back (to 1.5.8)
+
+These are the DB queries you would need to fire if you need to rollback to v1.5.8.
+
+<AccordionGroup>
+  <Accordion title="Single node setup">
+
+```sql
+-- ============================================================
+-- STEP 1: Rollback migrate_virtual_key_governance_to_model_configs
+-- ============================================================
+
+BEGIN;
+
+-- 1A. Restore VK top-level governance (provider IS NULL rows)
+
+UPDATE governance_budgets
+SET virtual_key_id = mc.scope_id,
+    model_config_id = NULL
+FROM governance_model_configs mc
+WHERE governance_budgets.model_config_id = mc.id
+  AND mc.scope = 'virtual_key'
+  AND mc.model_name = '*'
+  AND mc.provider IS NULL
+  AND mc.scope_id IS NOT NULL;
+
+UPDATE governance_virtual_keys
+SET rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'virtual_key'
+  AND mc.scope_id = governance_virtual_keys.id
+  AND mc.model_name = '*'
+  AND mc.provider IS NULL
+  AND mc.rate_limit_id IS NOT NULL;
+
+-- 1B. Restore VK per-provider governance (provider IS NOT NULL rows)
+
+UPDATE governance_budgets
+SET provider_config_id = pc.id,
+    model_config_id = NULL
+FROM governance_model_configs mc
+JOIN governance_virtual_key_provider_configs pc
+  ON pc.virtual_key_id = mc.scope_id AND pc.provider = mc.provider
+WHERE governance_budgets.model_config_id = mc.id
+  AND mc.scope = 'virtual_key'
+  AND mc.model_name = '*'
+  AND mc.provider IS NOT NULL
+  AND mc.scope_id IS NOT NULL;
+
+UPDATE governance_virtual_key_provider_configs
+SET rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'virtual_key'
+  AND mc.scope_id = governance_virtual_key_provider_configs.virtual_key_id
+  AND mc.provider = governance_virtual_key_provider_configs.provider
+  AND mc.model_name = '*'
+  AND mc.rate_limit_id IS NOT NULL;
+
+-- 1C. Delete the VK-scoped wildcard model config rows
+DELETE FROM governance_model_configs
+WHERE scope = 'virtual_key'
+  AND model_name = '*';
+
+-- 1D. Remove the migration record
+DELETE FROM migrations WHERE id = 'migrate_virtual_key_governance_to_model_configs';
+
+COMMIT;
+
+-- ============================================================
+-- STEP 2: Rollback migrate_provider_governance_to_model_configs
+-- ============================================================
+
+BEGIN;
+
+UPDATE config_providers
+SET budget_id = mc.budget_id,
+    rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'global'
+  AND mc.scope_id IS NULL
+  AND mc.model_name = '*'
+  AND mc.provider = config_providers.name;
+
+DELETE FROM governance_model_configs
+WHERE scope = 'global'
+  AND scope_id IS NULL
+  AND model_name = '*'
+  AND provider IS NOT NULL;
+
+DELETE FROM migrations WHERE id = 'migrate_provider_governance_to_model_configs';
+
+COMMIT;
+
+-- ============================================================
+-- STEP 3 (if needed): Rollback add_budget_model_config_id_column
+-- Only if downgrading to a version before this column existed
+-- ============================================================
+
+BEGIN;
+
+UPDATE governance_budgets SET model_config_id = NULL WHERE model_config_id IS NOT NULL;
+
+ALTER TABLE governance_budgets DROP COLUMN model_config_id;
+
+DELETE FROM migrations WHERE id = 'add_budget_model_config_id_column';
+
+COMMIT;
+```
+
+  </Accordion>
+
+  <Accordion title="Multiple nodes">
+
+```sql
+-- ============================================================
+-- PHASE 1: DUAL-WRITE — restore old FKs, keep new rows intact
+-- Safe to run while the current (new) version is serving traffic
+-- ============================================================
+
+BEGIN;
+
+-- 1A. Restore provider-level governance back to config_providers
+UPDATE config_providers
+SET budget_id = mc.budget_id,
+    rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'global'
+  AND mc.scope_id IS NULL
+  AND mc.model_name = '*'
+  AND mc.provider = config_providers.name;
+
+-- 1B. Restore VK top-level budgets back to governance_virtual_keys
+--     (intentionally NOT clearing model_config_id yet — new pods still need it)
+UPDATE governance_budgets
+SET virtual_key_id = mc.scope_id
+FROM governance_model_configs mc
+WHERE governance_budgets.model_config_id = mc.id
+  AND mc.scope = 'virtual_key'
+  AND mc.model_name = '*'
+  AND mc.provider IS NULL
+  AND mc.scope_id IS NOT NULL;
+
+-- Restore VK top-level rate limits
+UPDATE governance_virtual_keys
+SET rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'virtual_key'
+  AND mc.scope_id = governance_virtual_keys.id
+  AND mc.model_name = '*'
+  AND mc.provider IS NULL
+  AND mc.rate_limit_id IS NOT NULL;
+
+-- 1C. Restore VK per-provider budgets back to provider configs
+UPDATE governance_budgets
+SET provider_config_id = pc.id
+FROM governance_model_configs mc
+JOIN governance_virtual_key_provider_configs pc
+  ON pc.virtual_key_id = mc.scope_id AND pc.provider = mc.provider
+WHERE governance_budgets.model_config_id = mc.id
+  AND mc.scope = 'virtual_key'
+  AND mc.model_name = '*'
+  AND mc.provider IS NOT NULL
+  AND mc.scope_id IS NOT NULL;
+
+-- Restore VK per-provider rate limits
+UPDATE governance_virtual_key_provider_configs
+SET rate_limit_id = mc.rate_limit_id
+FROM governance_model_configs mc
+WHERE mc.scope = 'virtual_key'
+  AND mc.scope_id = governance_virtual_key_provider_configs.virtual_key_id
+  AND mc.provider = governance_virtual_key_provider_configs.provider
+  AND mc.model_name = '*'
+  AND mc.rate_limit_id IS NOT NULL;
+
+COMMIT;
+
+
+-- ============================================================
+-- PHASE 2: CLEANUP — remove new-version-only data
+-- Run ONLY after ALL pods are on the old version
+-- ============================================================
+
+BEGIN;
+
+-- Clear model_config_id from budgets (old version doesn't use it)
+UPDATE governance_budgets SET model_config_id = NULL WHERE model_config_id IS NOT NULL;
+
+-- Delete the VK-scoped wildcard model config rows
+DELETE FROM governance_model_configs
+WHERE scope = 'virtual_key'
+  AND model_name = '*';
+
+-- Delete the provider-level wildcard model config rows
+DELETE FROM governance_model_configs
+WHERE scope = 'global'
+  AND scope_id IS NULL
+  AND model_name = '*'
+  AND provider IS NOT NULL;
+
+-- Remove migration records so a future upgrade re-runs them
+DELETE FROM migrations WHERE id = 'migrate_virtual_key_governance_to_model_configs';
+DELETE FROM migrations WHERE id = 'migrate_provider_governance_to_model_configs';
+
+-- Optional: only if the old version predates the model_config_id column
+-- ALTER TABLE governance_budgets DROP COLUMN model_config_id;
+-- DELETE FROM migrations WHERE id = 'add_budget_model_config_id_column';
+
+COMMIT;
+```
+
+  </Accordion>
+</AccordionGroup>
+
+</Update>
+<Update label="Core" description="1.5.18">
+- feat: added `BifrostContextKeySkipVirtualKeyUsageTracking` context key so callers can skip virtual-key usage tracking while preserving virtual-key auth and attribution (#4123)
+
+</Update>
+<Update label="Framework" description="1.3.18">
+- fix: wildcard (`*`) allow-lists now resolve to allow-all for catalog-opaque providers (custom providers without list-models, keyless self-hosted vLLM/Ollama/SGL) via the new shared `IsCatalogOpaqueProvider` helper (#4124)
+- chore: upgraded core to v1.5.18
+
+</Update>
+<Update label="compat" description="0.1.17">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="governance" description="1.5.18">
+- fix: track both virtual-key and user usage scopes by default; skip virtual-key usage only when `BifrostContextKeySkipVirtualKeyUsageTracking` is set, preventing dropped VK accounting under user attribution (#4123)
+- fix: honor wildcard allow-lists for catalog-opaque providers via `IsCatalogOpaqueProvider` (#4124)
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="jsonparser" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="logging" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="maxim" description="1.6.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="mocker" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="otel" description="1.2.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="prompts" description="1.0.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="semanticcache" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="telemetry" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>

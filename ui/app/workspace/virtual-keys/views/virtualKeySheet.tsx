@@ -298,13 +298,13 @@ export default function VirtualKeySheet({
           })),
           rate_limit: config.rate_limit
             ? {
-                token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-                token_reset_duration: config.rate_limit.token_reset_duration,
-                request_max_limit:
-                  config.rate_limit.request_max_limit ?? undefined,
-                request_reset_duration:
-                  config.rate_limit.request_reset_duration,
-              }
+              token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+              token_reset_duration: config.rate_limit.token_reset_duration,
+              request_max_limit:
+                config.rate_limit.request_max_limit ?? undefined,
+              request_reset_duration:
+                config.rate_limit.request_reset_duration,
+            }
             : undefined,
         })) || [],
       mcpConfigs:
@@ -326,10 +326,10 @@ export default function VirtualKeySheet({
       budgets:
         virtualKey?.budgets && virtualKey.budgets.length > 0
           ? virtualKey.budgets.map((b) => ({
-              id: b.id,
-              max_limit: b.max_limit,
-              reset_duration: b.reset_duration ?? "1M",
-            }))
+            id: b.id,
+            max_limit: b.max_limit,
+            reset_duration: b.reset_duration ?? "1M",
+          }))
           : [],
       budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
       tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -840,9 +840,9 @@ export default function VirtualKeySheet({
       // Normalize provider configs to ensure weights are numbers and handle budget/rate limits
       const normalizedProviderConfigs = data.providerConfigs
         ? normalizeProviderConfigs(
-            data.providerConfigs,
-            virtualKey?.provider_configs,
-          )
+          data.providerConfigs,
+          virtualKey?.provider_configs,
+        )
         : [];
       if (isEditing && virtualKey) {
         // Update existing virtual key
@@ -852,21 +852,25 @@ export default function VirtualKeySheet({
           provider_configs: normalizedProviderConfigs,
           mcp_configs: data.mcpConfigs,
           team_id:
-            data.entityType === "team" &&
-            data.teamId &&
-            data.teamId.trim() !== ""
-              ? data.teamId
-              : data.entityType === "none"
-                ? null
-                : undefined,
+            assignedUsers.length > 0
+              ? undefined
+              : data.entityType === "team" &&
+                  data.teamId &&
+                  data.teamId.trim() !== ""
+                ? data.teamId
+                : data.entityType === "none"
+                  ? null
+                  : undefined,
           customer_id:
-            data.entityType === "customer" &&
-            data.customerId &&
-            data.customerId.trim() !== ""
-              ? data.customerId
-              : data.entityType === "none"
-                ? null
-                : undefined,
+            assignedUsers.length > 0
+              ? undefined
+              : data.entityType === "customer" &&
+                  data.customerId &&
+                  data.customerId.trim() !== ""
+                ? data.customerId
+                : data.entityType === "none"
+                  ? null
+                  : undefined,
           is_active: data.isActive,
           calendar_aligned: data.budgetCalendarAligned,
           reset_budget_usage: resetBudgetUsage,
@@ -920,14 +924,14 @@ export default function VirtualKeySheet({
           mcp_configs: data.mcpConfigs,
           team_id:
             data.entityType === "team" &&
-            data.teamId &&
-            data.teamId.trim() !== ""
+              data.teamId &&
+              data.teamId.trim() !== ""
               ? data.teamId
               : undefined,
           customer_id:
             data.entityType === "customer" &&
-            data.customerId &&
-            data.customerId.trim() !== ""
+              data.customerId &&
+              data.customerId.trim() !== ""
               ? data.customerId
               : undefined,
           is_active: data.isActive,
@@ -1002,8 +1006,8 @@ export default function VirtualKeySheet({
         onEscapeKeyDown={() => handleClose()}
       >
         <SheetHeader
-          className="flex flex-col items-start px-8 py-4"
-          headerClassName="mb-0 sticky -top-4 bg-card z-10"
+          className="flex flex-col items-start px-0 py-4"
+          headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8"
         >
           <SheetTitle className="flex items-center gap-2">
             {isEditing ? virtualKey?.name : "Create Virtual Key"}
@@ -1221,7 +1225,7 @@ export default function VirtualKeySheet({
                                     />
                                     {
                                       ProviderLabels[
-                                        provider.name as ProviderName
+                                      provider.name as ProviderName
                                       ]
                                     }
                                   </SelectItem>
@@ -1283,8 +1287,8 @@ export default function VirtualKeySheet({
                                     {providerConfig?.custom_provider_config
                                       ? providerConfig.name
                                       : ProviderLabels[
-                                          config.provider as ProviderName
-                                        ]}
+                                      config.provider as ProviderName
+                                      ]}
                                   </div>
                                   <Button
                                     type="button"
@@ -1348,15 +1352,15 @@ export default function VirtualKeySheet({
                                               config.key_ids || [];
                                             return configKeyIds.includes("*")
                                               ? providerKeys.map(
-                                                  (key) => key.key_id,
-                                                )
+                                                (key) => key.key_id,
+                                              )
                                               : providerKeys
-                                                  .filter((key) =>
-                                                    configKeyIds.includes(
-                                                      key.key_id,
-                                                    ),
-                                                  )
-                                                  .map((key) => key.key_id);
+                                                .filter((key) =>
+                                                  configKeyIds.includes(
+                                                    key.key_id,
+                                                  ),
+                                                )
+                                                .map((key) => key.key_id);
                                           })()}
                                           allowAllOption={true}
                                           value={
@@ -1398,13 +1402,13 @@ export default function VirtualKeySheet({
                                             hasWildcardModels
                                               ? "All models allowed"
                                               : (config.allowed_models || [])
-                                                    .length === 0
+                                                .length === 0
                                                 ? "No models (deny all)"
                                                 : config.provider
                                                   ? ModelPlaceholders[
-                                                      config.provider as keyof typeof ModelPlaceholders
-                                                    ] ||
-                                                    ModelPlaceholders.default
+                                                  config.provider as keyof typeof ModelPlaceholders
+                                                  ] ||
+                                                  ModelPlaceholders.default
                                                   : ModelPlaceholders.default
                                           }
                                           className="min-h-10 max-w-[500px] min-w-[200px]"
@@ -1464,15 +1468,15 @@ export default function VirtualKeySheet({
                                               config.key_ids || [];
                                             return configKeyIds.includes("*")
                                               ? providerKeys.map(
-                                                  (key) => key.key_id,
-                                                )
+                                                (key) => key.key_id,
+                                              )
                                               : providerKeys
-                                                  .filter((key) =>
-                                                    configKeyIds.includes(
-                                                      key.key_id,
-                                                    ),
-                                                  )
-                                                  .map((key) => key.key_id);
+                                                .filter((key) =>
+                                                  configKeyIds.includes(
+                                                    key.key_id,
+                                                  ),
+                                                )
+                                                .map((key) => key.key_id);
                                           })()}
                                           allowAllOption={true}
                                           value={
@@ -1514,9 +1518,9 @@ export default function VirtualKeySheet({
                                             hasWildcardBlocked
                                               ? "All models blocked"
                                               : (
-                                                    config.blacklisted_models ||
-                                                    []
-                                                  ).length === 0
+                                                config.blacklisted_models ||
+                                                []
+                                              ).length === 0
                                                 ? "No models blocked"
                                                 : "Search models..."
                                           }
@@ -1548,34 +1552,34 @@ export default function VirtualKeySheet({
                                       value: key.key_id,
                                       description:
                                         key.models == null ||
-                                        key.models.includes("*")
+                                          key.models.includes("*")
                                           ? "All models"
                                           : key.models
-                                              .filter((m) => m !== "*")
-                                              .join(", ") ||
-                                            "No models (deny all)",
+                                            .filter((m) => m !== "*")
+                                            .join(", ") ||
+                                          "No models (deny all)",
                                       provider: key.provider,
                                     })),
                                   ];
                                   const selectedProviderKeys = hasWildcard
                                     ? [allKeyOptions[0]]
                                     : providerKeys
-                                        .filter((key) =>
-                                          configKeyIds.includes(key.key_id),
-                                        )
-                                        .map((key) => ({
-                                          label: key.name,
-                                          value: key.key_id,
-                                          description:
-                                            key.models == null ||
+                                      .filter((key) =>
+                                        configKeyIds.includes(key.key_id),
+                                      )
+                                      .map((key) => ({
+                                        label: key.name,
+                                        value: key.key_id,
+                                        description:
+                                          key.models == null ||
                                             key.models.includes("*")
-                                              ? "All models"
-                                              : key.models
-                                                  .filter((m) => m !== "*")
-                                                  .join(", ") ||
-                                                "No models (deny all)",
-                                          provider: key.provider,
-                                        }));
+                                            ? "All models"
+                                            : key.models
+                                              .filter((m) => m !== "*")
+                                              .join(", ") ||
+                                            "No models (deny all)",
+                                        provider: key.provider,
+                                      }));
 
                                   return (
                                     <div className="mx-0.5 space-y-2">
@@ -1625,10 +1629,10 @@ export default function VirtualKeySheet({
                                                 className={cn(
                                                   "flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
                                                   optionProps.isFocused &&
-                                                    "bg-accent dark:!bg-card",
+                                                  "bg-accent dark:!bg-card",
                                                   "hover:bg-accent",
                                                   optionProps.isSelected &&
-                                                    "bg-accent dark:!bg-card",
+                                                  "bg-accent dark:!bg-card",
                                                 )}
                                               >
                                                 <span className="text-content-primary grow truncate text-sm">
@@ -1636,13 +1640,13 @@ export default function VirtualKeySheet({
                                                 </span>
                                                 {optionProps.data
                                                   .description && (
-                                                  <span className="text-content-tertiary max-w-[70%] text-sm">
-                                                    {
-                                                      optionProps.data
-                                                        .description
-                                                    }
-                                                  </span>
-                                                )}
+                                                    <span className="text-content-tertiary max-w-[70%] text-sm">
+                                                      {
+                                                        optionProps.data
+                                                          .description
+                                                      }
+                                                    </span>
+                                                  )}
                                               </Option>
                                             );
                                           },
@@ -1706,11 +1710,11 @@ export default function VirtualKeySheet({
                                   lines={
                                     config.budgets && config.budgets.length > 0
                                       ? config.budgets.map((b) => ({
-                                          id: b.id,
-                                          max_limit: b.max_limit,
-                                          reset_duration:
-                                            b.reset_duration || "1M",
-                                        }))
+                                        id: b.id,
+                                        max_limit: b.max_limit,
+                                        reset_duration:
+                                          b.reset_duration || "1M",
+                                      }))
                                       : []
                                   }
                                   onChange={(lines) => {
@@ -1828,283 +1832,283 @@ export default function VirtualKeySheet({
                 {/* MCP Client Configurations */}
                 {((mcpClientsData && mcpClientsData.length > 0) ||
                   (mcpConfigs && mcpConfigs.length > 0)) && (
-                  <div className="mt-6 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Label className="text-sm font-medium">
-                        MCP Client Configurations
-                      </Label>
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span>
-                              <Info className="text-muted-foreground h-3 w-3" />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p>
-                              Configure which MCP clients this virtual key can
-                              use and their allowed tools. Leaving this section
-                              empty blocks all MCP tools. After adding an MCP
-                              client, you must select specific tools or choose{" "}
-                              <span className="font-medium">
-                                Allow All Tools
-                              </span>{" "}
-                              to grant tool access.
-                            </p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    </div>
-
-                    {/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
-                    {(() => {
-                      const defaultMCPClients = mcpClientsData.filter(
-                        (client) =>
-                          client.config.allow_on_all_virtual_keys &&
-                          !mcpConfigs.some(
-                            (config) =>
-                              config.mcp_client_name === client.config.name,
-                          ),
-                      );
-                      return defaultMCPClients.length > 0 ? (
-                        <div className="text-muted-foreground rounded-md border p-3 text-xs">
-                          <div className="flex items-start gap-1.5">
-                            <Info className="mt-0.5 h-3 w-3 shrink-0" />
-                            <span>
-                              The following MCP servers are available to this
-                              key by default with all tools enabled on that
-                              client:{" "}
-                              <span className="text-foreground font-medium">
-                                {defaultMCPClients
-                                  .map((c) => c.config.name)
-                                  .join(", ")}
+                    <div className="mt-6 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-medium">
+                          MCP Client Configurations
+                        </Label>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Info className="text-muted-foreground h-3 w-3" />
                               </span>
-                              . Adding an explicit config for any of them below
-                              will override the all-tools default for this key.
-                            </span>
-                          </div>
-                        </div>
-                      ) : null;
-                    })()}
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>
+                                Configure which MCP clients this virtual key can
+                                use and their allowed tools. Leaving this section
+                                empty blocks all MCP tools. After adding an MCP
+                                client, you must select specific tools or choose{" "}
+                                <span className="font-medium">
+                                  Allow All Tools
+                                </span>{" "}
+                                to grant tool access.
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
 
-                    {/* Add MCP Client Dropdown */}
-                    {mcpClientsData && mcpClientsData.length > 0 && (
-                      <div className="flex gap-2">
-                        <Select
-                          value={selectedMCPClient}
-                          onValueChange={(mcpClientId) => {
-                            handleAddMCPClient(mcpClientId);
-                            setSelectedMCPClient(""); // Reset to placeholder state
-                          }}
-                        >
-                          <SelectTrigger className="flex-1">
-                            <SelectValue placeholder="Select an MCP client to add" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {mcpClientsData.filter(
-                              (client) =>
-                                !mcpConfigs.some(
-                                  (config) =>
-                                    config.mcp_client_name ===
-                                    client.config.name,
-                                ),
-                            ).length > 0 ? (
-                              mcpClientsData
-                                .filter(
-                                  (client) =>
-                                    client.config.name &&
-                                    !mcpConfigs.some(
-                                      (config) =>
-                                        config.mcp_client_name ===
-                                        client.config.name,
-                                    ),
-                                )
-                                .map((client, index) => {
-                                  const client_tools = client.tools || [];
-                                  const totalTools =
-                                    client.config.tools_to_execute?.includes(
-                                      "*",
-                                    )
-                                      ? client_tools.length
-                                      : client_tools.filter((tool) =>
+                      {/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
+                      {(() => {
+                        const defaultMCPClients = mcpClientsData.filter(
+                          (client) =>
+                            client.config.allow_on_all_virtual_keys &&
+                            !mcpConfigs.some(
+                              (config) =>
+                                config.mcp_client_name === client.config.name,
+                            ),
+                        );
+                        return defaultMCPClients.length > 0 ? (
+                          <div className="text-muted-foreground rounded-md border p-3 text-xs">
+                            <div className="flex items-start gap-1.5">
+                              <Info className="mt-0.5 h-3 w-3 shrink-0" />
+                              <span>
+                                The following MCP servers are available to this
+                                key by default with all tools enabled on that
+                                client:{" "}
+                                <span className="text-foreground font-medium">
+                                  {defaultMCPClients
+                                    .map((c) => c.config.name)
+                                    .join(", ")}
+                                </span>
+                                . Adding an explicit config for any of them below
+                                will override the all-tools default for this key.
+                              </span>
+                            </div>
+                          </div>
+                        ) : null;
+                      })()}
+
+                      {/* Add MCP Client Dropdown */}
+                      {mcpClientsData && mcpClientsData.length > 0 && (
+                        <div className="flex gap-2">
+                          <Select
+                            value={selectedMCPClient}
+                            onValueChange={(mcpClientId) => {
+                              handleAddMCPClient(mcpClientId);
+                              setSelectedMCPClient(""); // Reset to placeholder state
+                            }}
+                          >
+                            <SelectTrigger className="flex-1">
+                              <SelectValue placeholder="Select an MCP client to add" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {mcpClientsData.filter(
+                                (client) =>
+                                  !mcpConfigs.some(
+                                    (config) =>
+                                      config.mcp_client_name ===
+                                      client.config.name,
+                                  ),
+                              ).length > 0 ? (
+                                mcpClientsData
+                                  .filter(
+                                    (client) =>
+                                      client.config.name &&
+                                      !mcpConfigs.some(
+                                        (config) =>
+                                          config.mcp_client_name ===
+                                          client.config.name,
+                                      ),
+                                  )
+                                  .map((client, index) => {
+                                    const client_tools = client.tools || [];
+                                    const totalTools =
+                                      client.config.tools_to_execute?.includes(
+                                        "*",
+                                      )
+                                        ? client_tools.length
+                                        : client_tools.filter((tool) =>
                                           client.config.tools_to_execute?.includes(
                                             tool.name,
                                           ),
                                         ).length;
-                                  return (
-                                    <SelectItem
-                                      key={index}
-                                      value={client.config.name}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        {client.config.name}
-                                        <span className="text-muted-foreground text-xs">
-                                          ({totalTools}{" "}
-                                          {totalTools === 1
-                                            ? "enabled tool"
-                                            : "enabled tools"}
-                                          )
-                                        </span>
-                                      </div>
-                                    </SelectItem>
-                                  );
-                                })
-                            ) : (
-                              <div className="text-muted-foreground px-2 py-1.5 text-sm">
-                                All MCP clients configured
-                              </div>
-                            )}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )}
+                                    return (
+                                      <SelectItem
+                                        key={index}
+                                        value={client.config.name}
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          {client.config.name}
+                                          <span className="text-muted-foreground text-xs">
+                                            ({totalTools}{" "}
+                                            {totalTools === 1
+                                              ? "enabled tool"
+                                              : "enabled tools"}
+                                            )
+                                          </span>
+                                        </div>
+                                      </SelectItem>
+                                    );
+                                  })
+                              ) : (
+                                <div className="text-muted-foreground px-2 py-1.5 text-sm">
+                                  All MCP clients configured
+                                </div>
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
 
-                    {/* MCP Configurations Table */}
-                    {mcpConfigs.length > 0 && (
-                      <div className="rounded-md border">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>MCP Client</TableHead>
-                              <TableHead>Allowed Tools</TableHead>
-                              <TableHead className="w-[50px]"></TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {mcpConfigs.map((config, index) => {
-                              const mcpClient = mcpClientsData?.find(
-                                (client) =>
-                                  client.config.name === config.mcp_client_name,
-                              );
+                      {/* MCP Configurations Table */}
+                      {mcpConfigs.length > 0 && (
+                        <div className="rounded-md border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>MCP Client</TableHead>
+                                <TableHead>Allowed Tools</TableHead>
+                                <TableHead className="w-[50px]"></TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {mcpConfigs.map((config, index) => {
+                                const mcpClient = mcpClientsData?.find(
+                                  (client) =>
+                                    client.config.name === config.mcp_client_name,
+                                );
 
-                              // Handle new wildcard semantics for client-level filtering
-                              const clientToolsToExecute =
-                                mcpClient?.config?.tools_to_execute;
-                              let availableTools: any[] = [];
+                                // Handle new wildcard semantics for client-level filtering
+                                const clientToolsToExecute =
+                                  mcpClient?.config?.tools_to_execute;
+                                let availableTools: any[] = [];
 
-                              if (
-                                !clientToolsToExecute ||
-                                clientToolsToExecute.length === 0
-                              ) {
-                                // nil/undefined or empty array - no tools available from client config
-                                availableTools = [];
-                              } else if (clientToolsToExecute.includes("*")) {
-                                // Wildcard - all tools available
-                                availableTools = mcpClient?.tools || [];
-                              } else {
-                                // Specific tools listed
-                                availableTools =
+                                if (
+                                  !clientToolsToExecute ||
+                                  clientToolsToExecute.length === 0
+                                ) {
+                                  // nil/undefined or empty array - no tools available from client config
+                                  availableTools = [];
+                                } else if (clientToolsToExecute.includes("*")) {
+                                  // Wildcard - all tools available
+                                  availableTools = mcpClient?.tools || [];
+                                } else {
+                                  // Specific tools listed
+                                  availableTools =
+                                    (mcpClient?.tools || []).filter((tool) =>
+                                      clientToolsToExecute.includes(tool.name),
+                                    ) || [];
+                                }
+
+                                const enabledToolsByConfig =
                                   (mcpClient?.tools || []).filter((tool) =>
-                                    clientToolsToExecute.includes(tool.name),
+                                    config.tools_to_execute?.includes(tool.name),
                                   ) || [];
-                              }
+                                const selectedTools =
+                                  config.tools_to_execute || [];
 
-                              const enabledToolsByConfig =
-                                (mcpClient?.tools || []).filter((tool) =>
-                                  config.tools_to_execute?.includes(tool.name),
-                                ) || [];
-                              const selectedTools =
-                                config.tools_to_execute || [];
-
-                              return (
-                                <TableRow
-                                  key={`${config.mcp_client_name}-${index}`}
-                                >
-                                  <TableCell className="w-[150px]">
-                                    {config.mcp_client_name}
-                                  </TableCell>
-                                  <TableCell>
-                                    <MultiSelect
-                                      options={[
-                                        {
-                                          label: "Allow All Tools",
-                                          value: "*",
-                                          description:
-                                            "Allow all current and future tools",
-                                        },
-                                        ...[
-                                          ...availableTools,
-                                          ...enabledToolsByConfig,
-                                        ]
-                                          .filter(
-                                            (tool, index, arr) =>
-                                              arr.findIndex(
-                                                (t) => t.name === tool.name,
-                                              ) === index,
-                                          )
-                                          .map((tool) => ({
-                                            label: tool.name,
-                                            value: tool.name,
-                                            description: tool.description,
-                                          })),
-                                      ]}
-                                      defaultValue={selectedTools}
-                                      onValueChange={(tools: string[]) => {
-                                        const hadStar =
-                                          selectedTools.includes("*");
-                                        const hasStar = tools.includes("*");
-                                        if (!hadStar && hasStar) {
-                                          // Just selected "Allow All Tools" — set to ["*"] only
-                                          handleUpdateMCPConfig(
-                                            index,
-                                            "tools_to_execute",
-                                            ["*"],
-                                          );
-                                        } else if (
-                                          hadStar &&
-                                          hasStar &&
-                                          tools.length > 1
-                                        ) {
-                                          // Had "*", still has "*", but user also selected a specific tool — drop "*"
-                                          handleUpdateMCPConfig(
-                                            index,
-                                            "tools_to_execute",
-                                            tools.filter((t) => t !== "*"),
-                                          );
-                                        } else {
-                                          handleUpdateMCPConfig(
-                                            index,
-                                            "tools_to_execute",
-                                            tools,
-                                          );
+                                return (
+                                  <TableRow
+                                    key={`${config.mcp_client_name}-${index}`}
+                                  >
+                                    <TableCell className="w-[150px]">
+                                      {config.mcp_client_name}
+                                    </TableCell>
+                                    <TableCell>
+                                      <MultiSelect
+                                        options={[
+                                          {
+                                            label: "Allow All Tools",
+                                            value: "*",
+                                            description:
+                                              "Allow all current and future tools",
+                                          },
+                                          ...[
+                                            ...availableTools,
+                                            ...enabledToolsByConfig,
+                                          ]
+                                            .filter(
+                                              (tool, index, arr) =>
+                                                arr.findIndex(
+                                                  (t) => t.name === tool.name,
+                                                ) === index,
+                                            )
+                                            .map((tool) => ({
+                                              label: tool.name,
+                                              value: tool.name,
+                                              description: tool.description,
+                                            })),
+                                        ]}
+                                        defaultValue={selectedTools}
+                                        onValueChange={(tools: string[]) => {
+                                          const hadStar =
+                                            selectedTools.includes("*");
+                                          const hasStar = tools.includes("*");
+                                          if (!hadStar && hasStar) {
+                                            // Just selected "Allow All Tools" — set to ["*"] only
+                                            handleUpdateMCPConfig(
+                                              index,
+                                              "tools_to_execute",
+                                              ["*"],
+                                            );
+                                          } else if (
+                                            hadStar &&
+                                            hasStar &&
+                                            tools.length > 1
+                                          ) {
+                                            // Had "*", still has "*", but user also selected a specific tool — drop "*"
+                                            handleUpdateMCPConfig(
+                                              index,
+                                              "tools_to_execute",
+                                              tools.filter((t) => t !== "*"),
+                                            );
+                                          } else {
+                                            handleUpdateMCPConfig(
+                                              index,
+                                              "tools_to_execute",
+                                              tools,
+                                            );
+                                          }
+                                        }}
+                                        placeholder={
+                                          selectedTools.length === 0
+                                            ? "No tools selected"
+                                            : selectedTools.includes("*")
+                                              ? "All tools allowed"
+                                              : "Select tools..."
                                         }
-                                      }}
-                                      placeholder={
-                                        selectedTools.length === 0
-                                          ? "No tools selected"
-                                          : selectedTools.includes("*")
-                                            ? "All tools allowed"
-                                            : "Select tools..."
-                                      }
-                                      variant="inverted"
-                                      className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
-                                      commandClassName="w-full max-w-96"
-                                      modalPopover={true}
-                                      animation={0}
-                                    />
-                                  </TableCell>
-                                  <TableCell>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() =>
-                                        handleRemoveMCPClient(index)
-                                      }
-                                      data-testid={`vk-delete-mcp-${index}`}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              );
-                            })}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    )}
-                  </div>
-                )}
+                                        variant="inverted"
+                                        className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
+                                        commandClassName="w-full max-w-96"
+                                        modalPopover={true}
+                                        animation={0}
+                                      />
+                                    </TableCell>
+                                    <TableCell>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() =>
+                                          handleRemoveMCPClient(index)
+                                        }
+                                        data-testid={`vk-delete-mcp-${index}`}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 <DottedSeparator className="mt-6 mb-5" />
                 {/* Budget Configuration */}
                 <div className="space-y-4">
@@ -2342,19 +2346,19 @@ export default function VirtualKeySheet({
                                   { value: "none", label: "No Assignment" },
                                   ...(teams?.length > 0
                                     ? [
-                                        {
-                                          value: "team",
-                                          label: "Assign to Team",
-                                        },
-                                      ]
+                                      {
+                                        value: "team",
+                                        label: "Assign to Team",
+                                      },
+                                    ]
                                     : []),
                                   ...(customers?.length > 0
                                     ? [
-                                        {
-                                          value: "customer",
-                                          label: "Assign to Customer",
-                                        },
-                                      ]
+                                      {
+                                        value: "customer",
+                                        label: "Assign to Customer",
+                                      },
+                                    ]
                                     : []),
                                 ]}
                                 value={field.value}
@@ -2412,12 +2416,18 @@ export default function VirtualKeySheet({
                                     ]);
                                   }
                                 }}
-                                disabled={isTeamLocked}
+                                disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
                                 disableSearch
                                 hideClear
                                 className="h-9"
                               />
-                              <FormMessage />
+                              {isEditing && assignedUsers.length > 0 ? (
+                                <p className="text-muted-foreground text-xs">
+                                  This key is assigned to a user. Detach the user first to change the assignment type.
+                                </p>
+                              ) : (
+                                <FormMessage />
+                              )}
                             </FormItem>
                           )}
                         />
@@ -2454,7 +2464,7 @@ export default function VirtualKeySheet({
                                       }
                                     }}
                                     placeholder="Select a team"
-                                    disabled={isTeamLocked}
+                                    disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
                                     emptyMessage="No teams found."
                                     className="h-9"
                                   />
@@ -2484,6 +2494,7 @@ export default function VirtualKeySheet({
                                       field.onChange(val ?? "")
                                     }
                                     placeholder="Select a customer"
+                                    disabled={isEditing && assignedUsers.length > 0}
                                     emptyMessage="No customers found."
                                     className="h-9"
                                   />

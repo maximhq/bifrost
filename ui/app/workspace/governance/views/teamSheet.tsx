@@ -395,8 +395,8 @@ export default function TeamSheet({
         onEscapeKeyDown={() => onCancel()}
       >
         <SheetHeader
-          className="flex flex-col items-start px-8 py-4"
-          headerClassName="mb-0 sticky -top-4 bg-card z-10"
+          className="flex flex-col items-start px-0 py-4"
+          headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8"
         >
           <SheetTitle className="flex items-center gap-2">
             {isEditing ? "Edit Team" : "Create Team"}

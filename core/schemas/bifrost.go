@@ -154,6 +154,7 @@ const (
 	RerankRequest                RequestType = "rerank"
 	OCRRequest                   RequestType = "ocr"
 	CountTokensRequest           RequestType = "count_tokens"
+	CompactionRequest            RequestType = "compaction"
 	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	PassthroughRequest           RequestType = "passthrough"
 	PassthroughStreamRequest     RequestType = "passthrough_stream"
@@ -203,29 +204,35 @@ const (
 	MCPContextKeyIncludeClients BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
 	MCPContextKeyIncludeTools   BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"               // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"             // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"     // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"   // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"            // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"          // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"        // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"      // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceBusinessUnitID            BifrostContextKey = "bifrost-governance-business-unit-id"   // string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name" // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"    // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"  // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"          // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"       // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedPromptID                    BifrostContextKey = "bifrost-selected-prompt-id"            // string (id of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"       // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"             // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"          // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"           // time.Duration (per-chunk idle timeout for streaming)
-	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"            // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                 // map[string][]string
-	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                // string
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"              // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"      // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"    // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"             // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"           // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"         // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"       // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceBusinessUnitID            BifrostContextKey = "bifrost-governance-business-unit-id"    // string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name"  // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamIDs                   BifrostContextKey = "bifrost-governance-team-ids"            // []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceTeamNames                 BifrostContextKey = "bifrost-governance-team-names"          // []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceBusinessUnitIDs           BifrostContextKey = "bifrost-governance-business-unit-ids"   // []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceBusinessUnitNames         BifrostContextKey = "bifrost-governance-business-unit-names" // []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceCustomerIDs               BifrostContextKey = "bifrost-governance-customer-ids"        // []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceCustomerNames             BifrostContextKey = "bifrost-governance-customer-names"      // []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"     // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"   // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"           // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"        // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptID                    BifrostContextKey = "bifrost-selected-prompt-id"             // string (id of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"        // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"              // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                 // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
+	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"             // bool (will pass an empty key to the provider)
+	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                  // map[string][]string
+	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                 // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
@@ -237,6 +244,7 @@ const (
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
+	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
@@ -257,6 +265,7 @@ const (
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResolvedProvider                    BifrostContextKey = "bifrost-resolved-provider"                        // ModelProvider (set by routing - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStoreRawRequestResponse             BifrostContextKey = "bifrost-store-raw-request-response"               // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyCaptureRawRequest                   BifrostContextKey = "bifrost-capture-raw-request"                      // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw request bytes
 	BifrostContextKeyCaptureRawResponse                  BifrostContextKey = "bifrost-capture-raw-response"                     // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when providers should capture raw response bytes
@@ -446,6 +455,7 @@ type BifrostRequest struct {
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
 	CountTokensRequest           *BifrostResponsesRequest
+	CompactionRequest            *BifrostCompactionRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
 	OCRRequest                   *BifrostOCRRequest
@@ -501,6 +511,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ResponsesRequest.Provider, br.ResponsesRequest.Model, br.ResponsesRequest.Fallbacks
 	case br.CountTokensRequest != nil:
 		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
+	case br.CompactionRequest != nil:
+		return br.CompactionRequest.Provider, br.CompactionRequest.Model, br.CompactionRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.RerankRequest != nil:
@@ -642,6 +654,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ResponsesRequest.Provider = provider
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Provider = provider
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
 	case br.RerankRequest != nil:
@@ -693,6 +707,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ResponsesRequest.Model = model
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Model = model
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
 	case br.RerankRequest != nil:
@@ -746,6 +762,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ResponsesRequest.Fallbacks = fallbacks
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.Fallbacks = fallbacks
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.RerankRequest != nil:
@@ -777,6 +795,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ResponsesRequest.RawRequestBody = rawRequestBody
 	case br.CountTokensRequest != nil:
 		br.CountTokensRequest.RawRequestBody = rawRequestBody
+	case br.CompactionRequest != nil:
+		br.CompactionRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.RerankRequest != nil:
@@ -934,6 +954,7 @@ type BifrostResponse struct {
 	ResponsesResponse             *BifrostResponsesResponse
 	ResponsesStreamResponse       *BifrostResponsesStreamResponse
 	CountTokensResponse           *BifrostCountTokensResponse
+	CompactionResponse            *BifrostCompactionResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	RerankResponse                *BifrostRerankResponse
 	OCRResponse                   *BifrostOCRResponse
@@ -989,6 +1010,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesStreamResponse.ExtraFields
 	case r.CountTokensResponse != nil:
 		return &r.CountTokensResponse.ExtraFields
+	case r.CompactionResponse != nil:
+		return &r.CompactionResponse.ExtraFields
 	case r.EmbeddingResponse != nil:
 		return &r.EmbeddingResponse.ExtraFields
 	case r.RerankResponse != nil:
@@ -1114,6 +1137,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.CountTokensResponse.ExtraFields.Provider = provider
 		r.CountTokensResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.CountTokensResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CompactionResponse != nil:
+		r.CompactionResponse.ExtraFields.RequestType = requestType
+		r.CompactionResponse.ExtraFields.Provider = provider
+		r.CompactionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CompactionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.EmbeddingResponse != nil:
 		r.EmbeddingResponse.ExtraFields.RequestType = requestType
 		r.EmbeddingResponse.ExtraFields.Provider = provider
@@ -1432,6 +1460,7 @@ type BifrostResponseExtraFields struct {
 	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
 	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath           string             `json:"passthrough_path,omitempty"`             // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -1466,8 +1495,9 @@ type BifrostCacheDebug struct {
 }
 
 const (
-	RequestCancelled = "request_cancelled"
-	RequestTimedOut  = "request_timed_out"
+	RequestCancelled         = "request_cancelled"
+	RequestTimedOut          = "request_timed_out"
+	ProviderConnectionFailed = "provider_connection_failed"
 )
 
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
@@ -1668,15 +1698,15 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider                  ModelProvider              `json:"provider,omitempty"`
-	OriginalModelRequested    string                     `json:"original_model_requested,omitempty"`
-	ResolvedModelUsed         string                     `json:"resolved_model_used,omitempty"`
-	RequestType               RequestType                `json:"request_type,omitempty"`
-	MCPRequestType            MCPRequestType             `json:"mcp_request_type,omitempty"`
-	RawRequest                interface{}                `json:"raw_request,omitempty"`
-	RawResponse               interface{}                `json:"raw_response,omitempty"`
-	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
-	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
-	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
-	MCPAuthRequired           *MCPAuthRequiredError      `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
+	Provider                  ModelProvider         `json:"provider,omitempty"`
+	OriginalModelRequested    string                `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
+	RequestType               RequestType           `json:"request_type,omitempty"`
+	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
+	RawRequest                interface{}           `json:"raw_request,omitempty"`
+	RawResponse               interface{}           `json:"raw_response,omitempty"`
+	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
+	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
+	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 }

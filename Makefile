@@ -66,7 +66,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index
 
 all: help
 
@@ -386,7 +386,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.3-alpine3.23 \
+				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -403,7 +403,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.3-alpine3.23 \
+				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -471,6 +471,25 @@ clean-test-reports: ## Clean test reports only
 	@$(ECHO) "$(YELLOW)Cleaning test reports...$(NC)"
 	@rm -rf $(TEST_REPORTS_DIR)/
 	@$(ECHO) "$(GREEN)Test reports cleaned$(NC)"
+
+helm-index: ## Repackage helm chart, regenerate index.yaml digest, then remove the .tgz
+	@if ! which helm > /dev/null 2>&1; then \
+		$(ECHO) "$(RED)Error: helm not installed$(NC)"; \
+		exit 1; \
+	fi
+	@CHART_VERSION=$$(grep '^version:' helm-charts/bifrost/Chart.yaml | awk '{print $$2}'); \
+	$(ECHO) "$(YELLOW)Packaging helm chart v$$CHART_VERSION...$(NC)"; \
+	cd helm-charts && \
+	helm package bifrost && \
+	$(ECHO) "$(YELLOW)Regenerating index.yaml digest...$(NC)" && \
+	if [ -f index.yaml ]; then \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION --merge index.yaml; \
+	else \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION; \
+	fi && \
+	$(ECHO) "$(YELLOW)Removing bifrost-$$CHART_VERSION.tgz...$(NC)" && \
+	rm -f bifrost-$$CHART_VERSION.tgz && \
+	$(ECHO) "$(GREEN)Helm index updated$(NC)"
 
 generate-html-reports: ## Convert existing XML reports to HTML
 	@if ! which junit-viewer > /dev/null 2>&1; then \
@@ -1567,6 +1586,13 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 			go work use "$$plugin_dir"; \
 		fi; \
 	done
+	@$(ECHO) "$(YELLOW)Adding test command modules...$(NC)"
+	@for cmd_dir in ./tests/cmd/*/; do \
+		if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+			$(ECHO) "  Adding test cmd: $$(basename $$cmd_dir)"; \
+			go work use "$$cmd_dir"; \
+		fi; \
+	done
 	@$(ECHO) "$(YELLOW)Syncing workspace...$(NC)"
 	@go work sync
 	@$(ECHO) "$(GREEN)✓ Go workspace ready with all local modules$(NC)"
@@ -1587,10 +1613,10 @@ work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true
 	@$(ECHO) "$(GREEN)Removed local go.work files$(NC)"
 
-# Module parameter for mod-tidy (all/core/plugins/framework/transport)
+# Module parameter for mod-tidy (all/core/plugins/framework/transport/tests)
 MODULE ?= all
 
-mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport])
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport|tests])
 	@$(ECHO) "$(GREEN)Running go mod tidy...$(NC)"
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
 		$(ECHO) "$(CYAN)Tidying cli...$(NC)"; \
@@ -1614,6 +1640,15 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 			if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
 				plugin_name=$$(basename $$plugin_dir); \
 				cd $$plugin_dir && go mod tidy && cd ../.. && $(ECHO) "$(GREEN)  ✓ plugins/$$plugin_name$(NC)"; \
+			fi; \
+		done; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "tests" ]; then \
+		$(ECHO) "$(CYAN)Tidying test command modules...$(NC)"; \
+		for cmd_dir in ./tests/cmd/*/; do \
+			if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+				cmd_name=$$(basename $$cmd_dir); \
+				cd $$cmd_dir && go mod tidy && cd ../../.. && $(ECHO) "$(GREEN)  ✓ tests/cmd/$$cmd_name$(NC)"; \
 			fi; \
 		done; \
 	fi

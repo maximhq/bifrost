@@ -16,6 +16,12 @@
       "enum": [1, 2],
       "default": 2
     },
+    "source_of_truth": {
+      "type": "string",
+      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched.",
+      "enum": ["split", "config.json"],
+      "default": "split"
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
@@ -379,6 +385,14 @@
                 "type": "integer",
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               },
+              "model_config_id": {
+                "type": "string",
+                "description": "ID of the model config this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
+              "customer_id": {
+                "type": "string",
+                "description": "ID of the customer this budget belongs to (mutually exclusive with the other owner IDs)"
+              },
               "team_id": {
                 "type": "string",
                 "description": "ID of the team this budget belongs to (mutually exclusive with virtual_key_id and provider_config_id)"
@@ -463,16 +477,31 @@
                 "type": "string",
                 "description": "Customer name"
               },
+              "budgets": {
+                "type": "array",
+                "description": "Inline budget configurations for this customer. Each entry must have a unique reset_duration. Mutually exclusive with budget_id.",
+                "items": {
+                  "$ref": "#/$defs/budget_line"
+                }
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Associated budget ID"
+                "description": "Single budget reference (pre-declared in governance.budgets). Deprecated in favour of inline budgets."
               },
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
+                "default": false
               }
             },
             "required": ["id", "name"],
+            "not": {
+              "required": ["budgets", "budget_id"]
+            },
             "additionalProperties": false
           }
         },
@@ -584,6 +613,54 @@
             "additionalProperties": false
           }
         },
+        "roles": {
+          "type": "array",
+          "description": "RBAC role definitions. Roles are created or updated on startup if the config hash changes; system roles and dashboard-created roles are never deleted.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique role name"
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of the role"
+              },
+              "dac": {
+                "type": "string",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "enum": ["own-data", "team-data", "all-data"],
+                "default": "all-data"
+              },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
+              },
+              "permissions": {
+                "type": "array",
+                "description": "List of resource+operation permission pairs to grant to this role",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "Permission resource (e.g. Logs, VirtualKeys, Users, ModelProvider, Metrics, Guardrails, AccessProfiles, MCPToolGroups, Roles, BusinessUnits, AuditLogs, Billing)"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "description": "Permission operation (e.g. View, Create, Update, Delete, Download, RunInference, ManageInference, ViewInference)"
+                    }
+                  },
+                  "required": ["resource", "operation"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+          }
+        },
         "virtual_keys": {
           "type": "array",
           "description": "Virtual key configurations",
@@ -687,9 +764,28 @@
                 "type": "string",
                 "description": "Optional provider name to scope this config"
               },
+              "scope": {
+                "type": "string",
+                "description": "Scope where this config applies: \"global\" (default) or \"virtual_key\"",
+                "default": "global"
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "Target entity ID for non-global scopes (e.g. virtual key ID). Required when scope != \"global\""
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap this config's budget resets to calendar boundaries (e.g. a monthly budget resets on the 1st) rather than rolling windows. For virtual_key-scoped configs it inherits the virtual key's setting.",
+                "default": false
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Budget ID to associate with this model"
+                "description": "Deprecated — single budget reference. Use budget_ids instead."
+              },
+              "budget_ids": {
+                "type": "array",
+                "description": "List of budget IDs (from governance.budgets) to associate with this model config. Supports multiple budgets (e.g. daily + monthly). Replaces budget_id.",
+                "items": { "type": "string" }
               },
               "rate_limit_id": {
                 "type": "string",
@@ -1395,6 +1491,13 @@
                     "log_repo_id": {
                       "type": "string",
                       "description": "Optional default ID for the Maxim logger instance"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and attach as trace tags. Note: * captures all headers including sensitive ones like Authorization."
                     }
                   },
                   "required": ["api_key"],
@@ -1547,94 +1650,11 @@
               "required": ["config"],
               "properties": {
                 "config": {
-                  "type": "object",
-                  "description": "Configuration for the OpenTelemetry plugin",
-                  "properties": {
-                    "service_name": {
-                      "type": "string",
-                      "description": "Service name to be used for tracing",
-                      "default": "bifrost"
-                    },
-                    "collector_url": {
-                      "type": "string",
-                      "description": "URL of the OpenTelemetry collector",
-                      "anyOf": [
-                        {
-                          "format": "uri"
-                        },
-                        {
-                          "pattern": "^[^:\\s]+:\\d+$"
-                        }
-                      ]
-                    },
-                    "trace_type": {
-                      "type": "string",
-                      "description": "Type of trace to use for the OTEL collector",
-                      "enum": ["genai_extension", "vercel", "open_inference"]
-                    },
-                    "protocol": {
-                      "type": "string",
-                      "description": "Protocol to use for the OTEL collector",
-                      "enum": ["http", "grpc"]
-                    },
-                    "metrics_enabled": {
-                      "type": "boolean",
-                      "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
-                      "default": false
-                    },
-                    "metrics_endpoint": {
-                      "type": "string",
-                      "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)",
-                      "anyOf": [
-                        {
-                          "format": "uri"
-                        },
-                        {
-                          "pattern": "^[^:\\s]+:\\d+$"
-                        }
-                      ]
-                    },
-                    "metrics_push_interval": {
-                      "type": "integer",
-                      "description": "Metrics push interval in seconds",
-                      "default": 15,
-                      "minimum": 1,
-                      "maximum": 300
-                    },
-                    "headers": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
-                    },
-                    "tls_ca_cert": {
-                      "type": "string",
-                      "description": "Path to TLS CA certificate file"
-                    },
-                    "insecure": {
-                      "type": "boolean",
-                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
-                    },
-                    "plugin_span_filter": {
-                      "type": "object",
-                      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
-                      "properties": {
-                        "mode": {
-                          "type": "string",
-                          "enum": ["include", "exclude"]
-                        },
-                        "plugins": {
-                          "type": "array",
-                          "items": { "type": "string" }
-                        }
-                      },
-                      "required": ["mode", "plugins"],
-                      "additionalProperties": false
-                    }
-                  },
-                  "required": ["collector_url", "trace_type", "protocol"],
-                  "additionalProperties": false
+                  "anyOf": [
+                    { "$ref": "#/$defs/otel_profile_config" },
+                    { "$ref": "#/$defs/otel_profiles_config" }
+                  ],
+                  "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
                 }
               }
             }
@@ -1724,6 +1744,165 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "otel_endpoint": {
+      "type": "string",
+      "anyOf": [
+        {
+          "format": "uri"
+        },
+        {
+          "pattern": "^[^:\\s]+:\\d+$"
+        },
+        {
+          "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      ]
+    },
+    "otel_plugin_span_filter": {
+      "type": "object",
+      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["include", "exclude"]
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mode", "plugins"],
+      "additionalProperties": false
+    },
+    "otel_profile_config": {
+      "type": "object",
+      "description": "OpenTelemetry export profile. This legacy single-profile shape is still accepted directly as the plugin config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this profile exports traces and metrics",
+          "default": true
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Service name to be used for tracing",
+          "default": "bifrost"
+        },
+        "collector_url": {
+          "$ref": "#/$defs/otel_endpoint",
+          "description": "URL of the OpenTelemetry collector"
+        },
+        "trace_type": {
+          "type": "string",
+          "description": "Type of trace to use for the OTEL collector",
+          "enum": ["genai_extension", "vercel", "open_inference"]
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Protocol to use for the OTEL collector",
+          "enum": ["http", "grpc"]
+        },
+        "metrics_enabled": {
+          "type": "boolean",
+          "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
+          "default": false
+        },
+        "metrics_endpoint": {
+          "$ref": "#/$defs/otel_endpoint",
+          "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
+        },
+        "metrics_push_interval": {
+          "type": "integer",
+          "description": "Metrics push interval in seconds",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 300
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
+        },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "default": false
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "tls_ca_cert": {
+          "type": "string",
+          "description": "Path to TLS CA certificate file"
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
+          "default": true
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otel_plugin_span_filter"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "enabled": {
+                  "const": false
+                }
+              },
+              "required": ["enabled"]
+            }
+          },
+          "then": {
+            "required": ["collector_url", "trace_type", "protocol"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "metrics_enabled": {
+                "const": true
+              }
+            },
+            "required": ["metrics_enabled"]
+          },
+          "then": {
+            "required": ["metrics_endpoint"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "otel_profiles_config": {
+      "type": "object",
+      "description": "OpenTelemetry plugin configuration with one or more export profiles.",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "description": "OpenTelemetry export profiles",
+          "items": {
+            "$ref": "#/$defs/otel_profile_config"
+          },
+          "minItems": 1
+        },
+        "plugin_span_filter": {
+          "$ref": "#/$defs/otel_plugin_span_filter"
+        }
+      },
+      "required": ["profiles"],
+      "additionalProperties": false
+    },
     "feature_flags_config": {
       "type": "object",
       "description": "Boot-time overrides for feature flags. Flags themselves are declared in code via featureflags.Register; this block only sets initial values. Anything set here is rendered as locked in the UI - operators must edit the config (or Helm values) to change it.",
@@ -2082,6 +2261,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -2146,6 +2330,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -2832,7 +3021,13 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -3676,9 +3871,18 @@
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string", "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')" },
-              "value": { "type": "string", "description": "Claim value to match (case-insensitive)" },
-              "role": { "type": "string", "description": "Bifrost role to assign on match" }
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match (case-insensitive)"
+              },
+              "role": {
+                "type": "string",
+                "description": "Bifrost role to assign on match"
+              }
             },
             "required": ["attribute", "value", "role"],
             "additionalProperties": false
@@ -3686,13 +3890,31 @@
         },
         "attributeTeamMappings": {
           "type": "array",
-          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through.",
+          "description": "Attribute -> team mappings (all matches apply). Use value '*' for pass-through. Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "team": { "type": "string" }
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match, or '*' for pass-through"
+              },
+              "team": {
+                "type": "string",
+                "description": "Bifrost team slug to assign"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "team"],
             "additionalProperties": false
@@ -3700,13 +3922,31 @@
         },
         "attributeBusinessUnitMappings": {
           "type": "array",
-          "description": "Attribute -> business-unit mappings (all matches apply).",
+          "description": "Attribute -> business-unit mappings (all matches apply). Add attributeType/attributeValue to enable SCIM provisioning for a mapping.",
           "items": {
             "type": "object",
             "properties": {
-              "attribute": { "type": "string" },
-              "value": { "type": "string" },
-              "business_unit": { "type": "string" }
+              "attribute": {
+                "type": "string",
+                "description": "JWT claim name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Claim value to match"
+              },
+              "business_unit": {
+                "type": "string",
+                "description": "Bifrost business unit slug to assign"
+              },
+              "attributeType": {
+                "type": "string",
+                "enum": ["user", "group"],
+                "description": "SCIM provisioning type: 'user' matches SCIM User attributes, 'group' matches SCIM Group displayName"
+              },
+              "attributeValue": {
+                "type": "string",
+                "description": "SCIM attribute value to match (for attributeType 'user': the SCIM user attribute value; for 'group': the SCIM group displayName, auto-set to 'displayName')"
+              }
             },
             "required": ["attribute", "value", "business_unit"],
             "additionalProperties": false
@@ -4404,7 +4644,8 @@
         "image_variation",
         "image_edit",
         "video_generation",
-        "video_remix"
+        "video_remix",
+        "compaction"
       ]
     },
     "custom_provider_config": {
@@ -4477,6 +4718,9 @@
               "type": "boolean"
             },
             "count_tokens": {
+              "type": "boolean"
+            },
+            "compaction": {
               "type": "boolean"
             },
             "embedding": {

@@ -7,6 +7,8 @@ roles:
     description: Returns all roles visible to the caller, scoped by data access control.
     tags:
       - RBAC
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -31,6 +33,8 @@ roles:
         application/json:
           schema:
             $ref: '../../schemas/management/rbac.yaml#/CreateRoleRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Role created
@@ -55,6 +59,8 @@ roles-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -87,6 +93,8 @@ roles-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/rbac.yaml#/UpdateRoleRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Role updated
@@ -114,6 +122,8 @@ roles-by-id:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Role deleted
@@ -148,6 +158,8 @@ roles-permissions:
         required: true
         schema:
           type: integer
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -180,6 +192,8 @@ roles-permissions:
         application/json:
           schema:
             $ref: '../../schemas/management/rbac.yaml#/UpdateRolePermissionsRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Permissions updated
@@ -201,6 +215,8 @@ resources:
     description: Returns the set of resource names that permissions can target.
     tags:
       - RBAC
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -218,6 +234,8 @@ operations:
     description: Returns the set of operation names that permissions can grant.
     tags:
       - RBAC
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -235,6 +253,8 @@ permissions:
     description: Returns every (resource, operation) pair that can be granted to a role.
     tags:
       - RBAC
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response

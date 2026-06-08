@@ -3427,3 +3427,67 @@ class TestBedrockGuardrail:
             f"  ✓ guardrail trace present — action={action_val!r}, "
             f"keys={list(guardrail_trace.keys())}"
         )
+
+    @skip_if_no_api_key("bedrock")
+    def test_56_outputAssessments_is_map(self, bedrock_client):
+        """Test Case 56: outputAssessments is a map keyed by guardrail ID, not a list.
+
+        Regression for Bifrost 1.4.6: BedrockGuardrailTrace.OutputAssessments was
+        typed as []BedrockGuardrailAssessment.  Bedrock Converse (non-streaming) returns
+        outputAssessments as map[guardrailId][]Assessment, so unmarshalling crashed with:
+            mismatch type []bedrock.BedrockGuardrailAssessment with value object
+        This surfaced as InternalServerError on every guardrailed Converse call with
+        trace:enabled, regardless of whether the guardrail actually intervened.
+
+        Uses a benign prompt so the model actually produces output and Bedrock populates
+        outputAssessments in the trace.  A blocked prompt (guardrail_intervened on input)
+        never reaches the model, so outputAssessments would be absent — masking the bug.
+        """
+        identifier, version = self._get_guardrail_config()
+        model_id = get_model("bedrock", "chat")
+
+        # Benign prompt: model generates output → Bedrock includes outputAssessments in trace.
+        # A blocked prompt never reaches the model, so outputAssessments would be absent
+        # and the type-mismatch regression would go undetected.
+        response = bedrock_client.converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "What is the capital of France?"}],
+                }
+            ],
+            guardrailConfig={
+                "guardrailIdentifier": identifier,
+                "guardrailVersion": version,
+                "trace": "enabled",
+            },
+            inferenceConfig={"maxTokens": 256},
+        )
+
+        assert response is not None, "Response must not be None (was 500 pre-fix)"
+        assert "stopReason" in response, "Response must contain stopReason"
+
+        trace = response.get("trace") or {}
+        guardrail_trace = trace.get("guardrail") or {}
+        output_assessments = guardrail_trace.get("outputAssessments")
+        
+        assert output_assessments is not None, (
+            "trace.guardrail.outputAssessments must be present when trace:enabled and the "
+            "model generates output — its absence means the trace was dropped or the prompt "
+            "was blocked before the model ran"
+        )
+        assert isinstance(output_assessments, dict), (
+            f"outputAssessments must be map[guardrailId][]Assessment, "
+            f"got {type(output_assessments).__name__}"
+        )
+        for key, val in output_assessments.items():
+            assert isinstance(key, str), f"outputAssessments key must be a string, got {type(key)}"
+            assert isinstance(val, list), (
+                f"outputAssessments[{key!r}] must be a list of assessments, got {type(val)}"
+            )
+
+        print(
+            f"  ✓ outputAssessments type correct — stopReason={response['stopReason']}, "
+            f"outputAssessments keys={list(output_assessments.keys())}"
+        )

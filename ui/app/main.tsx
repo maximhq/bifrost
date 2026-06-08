@@ -1,4 +1,4 @@
-import { RouterProvider, createRouter, parseSearchWith } from "@tanstack/react-router";
+import { RouterProvider, createRouter, parseSearchWith, stringifySearchWith } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -23,6 +23,17 @@ function safeJsonParse(value: string): unknown {
 	return value;
 }
 
+// Keep query params compatible with nuqs parsers: primitive strings stay raw
+// (so numeric-looking IDs are not JSON-quoted), while arrays use comma lists.
+function stringifySearchValue(value: unknown): string {
+	if (Array.isArray(value)) return value.map(String).join(",");
+	if (value === null || value === undefined) return "";
+	if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+		return String(value);
+	}
+	return JSON.stringify(value);
+}
+
 const router = createRouter({
 	routeTree,
 	defaultPreload: "intent",
@@ -31,6 +42,7 @@ const router = createRouter({
 	defaultNotFoundComponent: NotFoundComponent,
 	defaultErrorComponent: ErrorComponent,
 	parseSearch: parseSearchWith(safeJsonParse),
+	stringifySearch: stringifySearchWith(stringifySearchValue),
 });
 
 declare module "@tanstack/react-router" {

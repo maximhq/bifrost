@@ -168,6 +168,12 @@ bifrost:
   logLevel: info
   logStyle: json
 
+  # Controls how config.json is reconciled with the database on startup.
+  # "split" (default): existing merge behavior — file and DB rows coexist.
+  # "config.json": sections explicitly present in the file are authoritative;
+  #   database-only rows for those sections are pruned on startup.
+  # sourceOfTruth: "config.json"
+
   # Encryption key for sensitive data
   # Can be set as a secret or environment variable
   encryptionKey: ""
@@ -289,6 +295,10 @@ bifrost:
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
+    #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
+    #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
+    #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
     #     beta_header_overrides:                         # Override Anthropic beta header support (optional)
     #       redact-thinking-: true                       # Enable/disable specific beta headers by prefix
     #   # Concurrency configuration (optional)
@@ -383,6 +393,15 @@ bifrost:
       #   tlsConfig:
       #     insecureSkipVerify: false              # Disable TLS verification (dev/test only — takes priority over caCertPem)
       #     caCertPem: "env.MY_MCP_CA_CERT"       # PEM string or env.VAR_NAME reference
+      #
+      # - name: "example-oauth-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-mcp.corp/mcp"
+      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
+      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
+      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   authType: "oauth"
+      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
@@ -457,20 +476,40 @@ bifrost:
       enabled: false
       version: 1
       config:
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "include"           # "include" or "exclude"
+        #   plugins: ["maxim", "otel"]
+        #
+        # Multi-profile shape (use profiles OR the flat single-profile fields below, not both):
+        # profiles:
+        #   - service_name: "bifrost"
+        #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        #     protocol: "grpc"        # http | grpc
+        #     metrics_enabled: false
+        #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        #     metrics_push_interval: 15 # Push interval in seconds (1-300)
+        #     headers: {}
+        #     tls_ca_cert: ""         # Path to TLS CA certificate file
+        #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
+        #     disable_content_logging: false
+        #
+        # Single-profile shape:
         service_name: "bifrost"
-        collector_url: ""
-        trace_type: "genai_extension"
-        protocol: "grpc"
+        collector_url: ""             # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        trace_type: "genai_extension" # genai_extension | vercel | open_inference
+        protocol: "grpc"              # http | grpc
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15 # Push interval in seconds (1-300)
-        # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
+        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        # Custom headers for the collector (supports env.VAR_NAME prefix)
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
-
+        # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
+        disable_content_logging: false
     datadog:
       enabled: false
       version: 1
@@ -506,8 +545,17 @@ bifrost:
     customers: []
       # - id: "customer-1"
       #   name: "Customer Name"
-      #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
+      #   # Option A: inline multi-budget (each must have a unique reset_duration)
+      #   budgets:
+      #     - id: "budget-monthly"
+      #       max_limit: 500
+      #       reset_duration: "1M"
+      #     - id: "budget-yearly"
+      #       max_limit: 5000
+      #       reset_duration: "1Y"
+      #   # Option B: single budget reference (pre-declared in governance.budgets)
+      #   budget_id: "budget-1"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -517,6 +565,18 @@ bifrost:
       #   profile: {}              # Team profile data
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
+    roles: []
+      # - name: "dataAnalyst"
+      #   description: "Read-only access for data analysts"
+      #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
+      #   permissions:
+      #     - resource: "Logs"
+      #       operation: "View"
+      #     - resource: "Metrics"
+      #       operation: "View"
+      #     - resource: "VirtualKeys"
+      #       operation: "View"
     virtualKeys: []
       # - id: "vk-1"
       #   name: "Virtual Key 1"
@@ -542,8 +602,10 @@ bifrost:
       #       tools_to_execute: ["tool1", "tool2"]
     modelConfigs: []
       # - id: "model-config-1"
-      #   model_name: "gpt-4o"
-      #   provider: "openai"
+      #   model_name: "gpt-4o"       # model name, or "*" for all models
+      #   provider: "openai"          # optional; omit to apply to all providers
+      #   scope: "global"             # "global" (default) or "virtual_key"
+      #   scope_id: ""                # required when scope is "virtual_key" — the virtual key id
       #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
     providers: []
@@ -651,6 +713,18 @@ bifrost:
       #   - attribute: "groups"
       #     value: "*"            # pass-through: every group becomes a team
       #     team: ""              # ignored when value is "*"
+      #   # SCIM provisioning: match by SCIM user attribute
+      #   - attribute: "department"
+      #     value: "engineering"
+      #     team: "eng-team"
+      #     attributeType: "user"     # "user" = SCIM User push, "group" = SCIM Group push
+      #     attributeValue: "engineering"
+      #   # SCIM provisioning: match by SCIM group (displayName)
+      #   - attribute: "groups"
+      #     value: "Engineering"
+      #     team: "eng-team"
+      #     attributeType: "group"
+      #     attributeValue: "displayName"   # always "displayName" for group type
       # attributeBusinessUnitMappings:
       #   - attribute: "department"
       #     value: "platform"

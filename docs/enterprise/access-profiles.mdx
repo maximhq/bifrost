@@ -171,6 +171,12 @@ When you edit an existing profile, the action bar shows **Save** (template-only 
 
 By default, propagation **preserves usage**: existing users keep their accumulated budget and rate-limit counters where the reset durations match.
 
+### Extend individual budgets for a user
+
+Access profile budgets apply uniformly to everyone assigned the template. When you need a one-off override for a specific user — without touching the template for the rest of the role — you can attach an additional per-model budget or rate limit directly to that user via [Model Limits](/features/governance/model-limits).
+
+For example, if Alice is on the Engineering profile but you want to add a separate $20/month cap on Claude Opus just for her, you can create a user-scoped model limit for Alice without changing what the Engineering profile gives everyone else. These limits stack independently alongside the profile budget; both must pass for a request to be allowed, and they are not affected by profile propagation. See [Give one user an individual per-model budget](#give-one-user-an-individual-per-model-budget) for steps for the above.
+
 ### Edit, duplicate, delete
 
 Each row action exposes:
@@ -225,6 +231,28 @@ Profiles can be cloned into new templates, propagated to user copies one field s
 1. Edit the template and replace the MCP tool group reference.
 2. Open the propagate dialog. Check **MCP Tool Groups**, **MCP Servers**, and **MCP Tool Overrides**. Leave budgets and rate limits unchecked.
 3. Click **Propagate**. Budgets and rate limits are not touched; only MCP access changes flow through.
+
+### Give one user an individual per-model budget
+
+1. Navigate to **Budget & Limits → Model Limits** and click **Add Model Limit**.
+2. Select a **Provider** and **Model Name**, set **Scope** to `User`, and pick the target user.
+3. Add one or more budget lines and any rate limits. Click **Create Limit**.
+
+Or via the API:
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "claude-opus-4-8",
+    "provider": "anthropic",
+    "scope": "user",
+    "scope_id": "<user-id>",
+    "budgets": [
+      { "max_limit": 20.00, "reset_duration": "1M" }
+    ]
+  }'
+```
 
 ---
 

@@ -24,13 +24,14 @@ func TestXAI(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:             schemas.XAI,
-		ChatModel:            "grok-4-0709",
-		ReasoningModel:       "grok-3-mini",
-		TextModel:            "grok-3",
-		VisionModel:          "grok-4-1-fast-reasoning",
-		EmbeddingModel:       "", // XAI doesn't support embedding
-		ImageGenerationModel: "grok-imagine-image",
+		Provider:                schemas.XAI,
+		ChatModel:               "grok-4-0709",
+		ReasoningModel:          "grok-3-mini",
+		TextModel:               "grok-3",
+		VisionModel:             "grok-4-1-fast-reasoning",
+		EmbeddingModel:          "", // XAI doesn't support embedding
+		ImageGenerationModel:    "grok-imagine-image",
+		ExternalCompactionModel: "grok-4.3",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
@@ -53,6 +54,7 @@ func TestXAI(t *testing.T) {
 			Reasoning:                  true,
 			Embedding:                  false,
 			ListModels:                 true,
+			ExternalCompaction:         true,
 		},
 	}
 
