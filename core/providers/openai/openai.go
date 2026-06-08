@@ -161,7 +161,7 @@ func ListModelsByKey(
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered, bifrostErr); fallback != nil {
 			fallback.ExtraFields.Latency = latency.Milliseconds()
 			return fallback, nil
 		}
@@ -174,7 +174,7 @@ func ListModelsByKey(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseOpenAIError(resp)
-		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered, bifrostErr); fallback != nil {
 			fallback.ExtraFields.Latency = latency.Milliseconds()
 			fallback.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 			return fallback, nil
@@ -190,7 +190,7 @@ func ListModelsByKey(
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered, bifrostErr); fallback != nil {
 			fallback.ExtraFields.Latency = latency.Milliseconds()
 			fallback.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 			return fallback, nil
@@ -216,7 +216,7 @@ func ListModelsByKey(
 	return response, nil
 }
 
-func configuredListModelsFallback(providerName schemas.ModelProvider, key schemas.Key, unfiltered bool) *schemas.BifrostListModelsResponse {
+func configuredListModelsFallback(providerName schemas.ModelProvider, key schemas.Key, unfiltered bool, upstreamErr *schemas.BifrostError) *schemas.BifrostListModelsResponse {
 	if unfiltered {
 		return nil
 	}
@@ -224,6 +224,16 @@ func configuredListModelsFallback(providerName schemas.ModelProvider, key schema
 	response := (&OpenAIListModelsResponse{}).ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, false)
 	if response == nil || len(response.Data) == 0 {
 		return nil
+	}
+	if upstreamErr != nil {
+		upstreamErr.ExtraFields.Provider = providerName
+		upstreamErr.ExtraFields.RequestType = schemas.ListModelsRequest
+		response.KeyStatuses = []schemas.KeyStatus{{
+			KeyID:    key.ID,
+			Provider: providerName,
+			Status:   schemas.KeyStatusListModelsFailed,
+			Error:    upstreamErr,
+		}}
 	}
 	return response
 }

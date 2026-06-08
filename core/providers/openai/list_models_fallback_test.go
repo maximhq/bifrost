@@ -50,6 +50,55 @@ func TestListModelsByKey_FallsBackToConfiguredModelsOnUpstreamError(t *testing.T
 	}
 }
 
+func TestHandleOpenAIListModelsRequest_FallbackPreservesFailedKeyStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := HandleOpenAIListModelsRequest(
+		ctx,
+		&fasthttp.Client{ReadTimeout: time.Second, WriteTimeout: time.Second},
+		&schemas.BifrostListModelsRequest{Provider: schemas.ModelProvider("bao-qwen")},
+		server.URL,
+		[]schemas.Key{{
+			ID:     "local-key",
+			Models: schemas.WhiteList{"hermes-qwen"},
+			Aliases: schemas.KeyAliases{
+				"hermes-qwen": "Qwen/Qwen3-32B",
+			},
+		}},
+		nil,
+		schemas.ModelProvider("bao-qwen"),
+		false,
+		false,
+	)
+
+	if err != nil {
+		t.Fatalf("HandleOpenAIListModelsRequest returned error: %v", err)
+	}
+	if resp == nil || len(resp.Data) != 1 {
+		t.Fatalf("expected one fallback model, got %#v", resp)
+	}
+	if len(resp.KeyStatuses) != 1 {
+		t.Fatalf("expected one key status, got %#v", resp.KeyStatuses)
+	}
+	status := resp.KeyStatuses[0]
+	if status.KeyID != "local-key" {
+		t.Fatalf("expected key id to be preserved, got %q", status.KeyID)
+	}
+	if status.Provider != schemas.ModelProvider("bao-qwen") {
+		t.Fatalf("expected provider status for bao-qwen, got %q", status.Provider)
+	}
+	if status.Status != schemas.KeyStatusListModelsFailed {
+		t.Fatalf("expected fallback status to reflect upstream failure, got %q", status.Status)
+	}
+	if status.Error == nil || status.Error.StatusCode == nil || *status.Error.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected original upstream 503 error, got %#v", status.Error)
+	}
+}
+
 func TestListModelsByKey_FallsBackToConfiguredAliasesWithWildcardModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
