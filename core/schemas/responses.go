@@ -945,9 +945,15 @@ func isToolSearchItem(t string) bool {
 // UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
 // and defers every other item type to the default struct decoding.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
+	// Clear the receiver first so a reused instance never retains a stale
+	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
+	// non-tool-search payload must not leave preserved bytes that MarshalJSON
+	// would then re-emit.
+	*m = ResponsesMessage{}
 	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
 		mt := ResponsesMessageType(t)
-		*m = ResponsesMessage{Type: &mt, rawToolSearch: append([]byte(nil), data...)}
+		m.Type = &mt
+		m.rawToolSearch = append([]byte(nil), data...)
 		return nil
 	}
 	type alias ResponsesMessage
