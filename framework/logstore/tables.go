@@ -206,7 +206,10 @@ type Log struct {
 	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
+	HasObject               bool      `gorm:"default:false" json:"-"`                      // True when payload is stored in object storage
+	RedactionData           string    `gorm:"-" json:"-"`                                  // Transient guardrail redaction payload consumed by enterprise logstore wrappers
+	RedactionMapping        string    `gorm:"type:text" json:"-"`                          // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
+	HasReversibleRedaction  bool      `gorm:"-" json:"has_reversible_redaction,omitempty"` // Virtual field indicating whether a reversible redaction mapping exists for this log
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
