@@ -1,0 +1,18 @@
+go 1.26.4
+
+use (
+	./cli
+	./core
+	./framework
+	./plugins/compat
+	./plugins/governance
+	./plugins/jsonparser
+	./plugins/logging
+	./plugins/maxim
+	./plugins/mocker
+	./plugins/otel
+	./plugins/prompts
+	./plugins/semanticcache
+	./plugins/telemetry
+	./transports
+)
