@@ -118,7 +118,14 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	}
 
 	// Encrypt proxy config after serialization (only if there's data to encrypt)
-	if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
+	if VaultIsEnabled() && p.ProxyConfigJSON != "" && p.ProxyConfigJSON != "{}" {
+		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ProxyConfigJSON")
+		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
+		if err := vaultString(tx.Statement.Context, path, &p.ProxyConfigJSON); err != nil {
+			return fmt.Errorf("failed to vault proxy config: %w", err)
+		}
+		p.EncryptionStatus = EncryptionStatusVault
+	} else if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
 		encrypted, err := encrypt.Encrypt(p.ProxyConfigJSON)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt proxy config: %w", err)
@@ -156,6 +163,11 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		}
 		p.ProxyConfigJSON = decrypted
 	}
+	if p.EncryptionStatus == EncryptionStatusVault && p.ProxyConfigJSON != "" {
+		if err := resolveVaultString(tx.Statement.Context, &p.ProxyConfigJSON); err != nil {
+			return fmt.Errorf("failed to resolve vault proxy config: %w", err)
+		}
+	}
 	if p.ProxyConfigJSON != "" {
 		var proxyConfig schemas.ProxyConfig
 		if err := json.Unmarshal([]byte(p.ProxyConfigJSON), &proxyConfig); err != nil {
@@ -180,5 +192,16 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.OpenAIConfig = &openaiConfig
 	}
 
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (p *TableProvider) AfterDelete(tx *gorm.DB) error {
+	if p.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "ProxyConfigJSON")
+	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), p.TableName(), p.Name, fieldName)
+	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }
