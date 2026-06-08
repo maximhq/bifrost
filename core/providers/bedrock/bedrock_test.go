@@ -6041,3 +6041,4 @@ func TestBedrockMixedBlockToolResultRoundTrip(t *testing.T) {
 	require.NotNil(t, got.Citations)
 	assert.True(t, got.Citations.Enabled)
 }
+

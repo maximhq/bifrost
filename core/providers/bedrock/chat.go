@@ -68,6 +68,10 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	}
 
+	if !schemas.BedrockModelSupportsCachePoints(bifrostReq.Model) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	}
+
 	return bedrockReq, nil
 }
 

@@ -1,1 +1,3 @@
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+- feat: handle OpenAI Responses API streaming (`ResponsesStreamRequest`) in addition to chat completions (#3749)
+- chore: added `Params` with `json_object` format to the Responses stream end-to-end test (#3761)

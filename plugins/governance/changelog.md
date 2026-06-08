@@ -1,1 +1,3 @@
 - chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+- fix: restore VK blocked models create/edit UI in the provider config sheet (#3750)
+- refactor: use `slices.Contains` for VK blocked-model matching (#3727)

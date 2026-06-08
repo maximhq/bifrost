@@ -66990,7 +66990,8 @@
             "type": "boolean"
           },
           "rate_limit_id": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "budgets": {
             "type": "array",
