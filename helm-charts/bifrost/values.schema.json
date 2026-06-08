@@ -232,6 +232,12 @@
           "type": "string",
           "enum": ["json", "text"]
         },
+        "sourceOfTruth": {
+          "type": "string",
+          "enum": ["split", "config.json"],
+          "default": "split",
+          "description": "Controls how config.json is reconciled with the database on startup. \"split\" (default) preserves existing merge behavior. \"config.json\" makes explicitly-present sections in the file authoritative — database-only rows for those sections are pruned on startup."
+        },
         "encryptionKey": {
           "type": "string",
           "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."
@@ -3461,7 +3467,7 @@
         "insecure": {
           "type": "boolean",
           "description": "Skip TLS verification (ignored if tls_ca_cert is set)",
-          "default": true
+          "default": false
         },
         "disable_content_logging": {
           "type": "boolean",
@@ -4039,6 +4045,11 @@
             "type": "boolean"
           },
           "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        },
+        "allow_private_network": {
+          "type": "boolean",
+          "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
+          "default": false
         }
       },
       "additionalProperties": false
