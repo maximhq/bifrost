@@ -161,6 +161,10 @@ func ListModelsByKey(
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+			fallback.ExtraFields.Latency = latency.Milliseconds()
+			return fallback, nil
+		}
 		return nil, bifrostErr
 	}
 	// Extract provider response headers early so they're available on error paths too
@@ -170,6 +174,11 @@ func ListModelsByKey(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseOpenAIError(resp)
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+			fallback.ExtraFields.Latency = latency.Milliseconds()
+			fallback.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+			return fallback, nil
+		}
 		return nil, bifrostErr
 	}
 
@@ -181,6 +190,11 @@ func ListModelsByKey(
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
+		if fallback := configuredListModelsFallback(providerName, key, unfiltered); fallback != nil {
+			fallback.ExtraFields.Latency = latency.Milliseconds()
+			fallback.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+			return fallback, nil
+		}
 		return nil, bifrostErr
 	}
 
@@ -200,6 +214,18 @@ func ListModelsByKey(
 	}
 
 	return response, nil
+}
+
+func configuredListModelsFallback(providerName schemas.ModelProvider, key schemas.Key, unfiltered bool) *schemas.BifrostListModelsResponse {
+	if unfiltered {
+		return nil
+	}
+
+	response := (&OpenAIListModelsResponse{}).ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, false)
+	if response == nil || len(response.Data) == 0 {
+		return nil
+	}
+	return response
 }
 
 // HandleOpenAIListModelsRequest handles a list models request to OpenAI's API.

@@ -347,7 +347,7 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
 	var result []schemas.Model
 
-	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
+	if !p.Unfiltered && p.AllowedModels.IsRestricted() && !p.AllowedModels.IsEmpty() {
 		// Case A: backfill explicit allowlist entries not yet matched.
 		for _, entry := range p.AllowedModels {
 			if included[strings.ToLower(entry)] {
