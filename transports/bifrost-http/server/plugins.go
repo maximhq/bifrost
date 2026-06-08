@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -265,7 +266,10 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(modelcatalogresolver.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, builtinPlacement, schemas.Ptr(9))
+	// Place it in post_builtin with a max order so it runs after every other routing plugin,
+	// including post_builtin ones like the enterprise load balancer (which would otherwise run
+	// after this builtin and never get a chance to pick the provider first).
+	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
 
 	return nil
 }
