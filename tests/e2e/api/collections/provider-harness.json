@@ -9276,7 +9276,6 @@
                     "messages"
                   ]
                 }
-<<<<<<< HEAD
               }
             },
             {
@@ -9295,8 +9294,6 @@
                 "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}],
                 "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"},
                 "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
-=======
->>>>>>> effe993d3 (tests: add `bedrock_mantle` provider capabilities and Postman environment config (#4739))
               }
             },
             {
@@ -11233,7 +11230,6 @@
                     "completions"
                   ]
                 }
-<<<<<<< HEAD
               }
             },
             {
@@ -11252,8 +11248,6 @@
                 "header": [{"key":"Content-Type","value":"application/json"}],
                 "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"},
                 "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
-=======
->>>>>>> effe993d3 (tests: add `bedrock_mantle` provider capabilities and Postman environment config (#4739))
               }
             },
             {

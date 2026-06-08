@@ -283,6 +283,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_matviews_with_user_agent_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
+	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithAppColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3174,11 +3175,21 @@ func migrationAddUserAgentColumn(ctx context.Context, db *gorm.DB, logger schema
 					return err
 				}
 			}
+			if !migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.CreateTable(&UserAgentMapping{}); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			if migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.DropTable(&UserAgentMapping{}); err != nil {
+					return err
+				}
+			}
 			if migrator.HasColumn(&Log{}, "app") {
 				if err := migrator.DropColumn(&Log{}, "app"); err != nil {
 					return err
@@ -3243,24 +3254,27 @@ func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 	return nil
 }
 
-// migrationRecreateMatViewsWithUserAgentColumn is a marker migration: the actual
-// rebuild of mv_logs_hourly (now grouped by app/user_agent) and the creation of
-// mv_filter_apps/mv_filter_user_agents happen on the next startup via ensureMatViews /
-// repairMatViewShapes, which detect the new required column and drop+recreate the
-// drifted view. The rebuild is intentionally deferred to startup (not done inline
-// here) to avoid heavy AccessExclusiveLock churn during rolling deploys on large
-// logs tables. user_agent cardinality (apps x versions) is small relative to the
-// user_id/customer_id dimensions already in the view, so the grain growth is safe.
-func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	// Materialized views are PostgreSQL-only; skip on other dialects.
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
+// migrationRecreateMatViewsWithAppColumn is a marker migration: the actual
+// rebuild of mv_logs_hourly (now grouped by app, not raw user_agent) and the
+// creation of mv_filter_apps happen on the next PostgreSQL startup via
+// ensureMatViews / repairMatViewShapes, which detect the required app column
+// and drop+recreate the drifted view. The rebuild is intentionally deferred to
+// startup (not done inline here) to avoid heavy AccessExclusiveLock churn during
+// rolling deploys on large logs tables. The user_agent_mappings table guard
+// also runs here for local DBs that already recorded the edited column migration
+// before the table was added to it.
+func migrationRecreateMatViewsWithAppColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "logs_recreate_matviews_with_user_agent_column",
+		ID: "logs_recreate_matviews_with_app_column",
 		Migrate: func(tx *gorm.DB) error {
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.CreateTable(&UserAgentMapping{}); err != nil {
+					return fmt.Errorf("failed to create user_agent_mappings table: %w", err)
+				}
+			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -3269,7 +3283,7 @@ func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while recreating matviews with user_agent column: %s", err.Error())
+		return fmt.Errorf("error while recreating matviews with app column: %s", err.Error())
 	}
 	return nil
 }

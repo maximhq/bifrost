@@ -27,8 +27,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status } from "@/lib/constants/logs";
+import {
+	logAppDisplayName,
+	mapAppToClientApp,
+	mapUserAgentToApp,
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+} from "@/lib/constants/logs";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -36,7 +46,7 @@ import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -641,7 +651,21 @@ export function LogDetailView({
 
 	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
 	const isContainer = isContainerOperation(log.object);
+	const detectedApp = log.app ? mapAppToClientApp(log.app) : log.user_agent ? mapUserAgentToApp(log.user_agent) : null;
+	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
+	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
@@ -703,11 +727,7 @@ export function LogDetailView({
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
 							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
-							<Switch
-								checked={revealEnabled}
-								onCheckedChange={handleToggleReveal}
-								data-testid="logdetails-reveal-toggle"
-							/>
+							<Switch checked={revealEnabled} onCheckedChange={handleToggleReveal} data-testid="logdetails-reveal-toggle" />
 						</div>
 					)}
 					{onClose ? (
@@ -1007,6 +1027,28 @@ export function LogDetailView({
 							)}
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+							)}
+							{detectedApp && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="App"
+									value={
+										<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
+											{detectedAppIcon ? (
+												<img
+													className="rounded-sm"
+													src={detectedAppIcon}
+													alt={detectedAppLabel}
+													width={20}
+													height={20}
+													loading="lazy"
+													decoding="async"
+												/>
+											) : null}
+											<span className="truncate">{detectedAppLabel}</span>
+										</div>
+									}
+								/>
 							)}
 							<LogEntryDetailsView
 								className="w-full"

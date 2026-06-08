@@ -13,6 +13,7 @@ import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/t
 import { Info, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import UserAgentMappingsView from "./userAgentMappingsView";
 
 // Security headers that cannot be configured in allowlist/denylist
 // These headers are always blocked for security reasons regardless of configuration
@@ -378,6 +379,8 @@ export default function ClientSettingsView() {
 					/>
 				</div>
 			</div>
+
+			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
 
 			{/* Header Filter Section */}
 			<div className="space-y-4">

@@ -599,6 +599,9 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 			return true, nil
 		}
 	}
+	if len(actual) != len(requiredColumns) {
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -835,6 +838,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
+		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0
@@ -961,9 +965,6 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.BusinessUnitIDs) > 0 {
 		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
-	}
-	if len(f.UserAgents) > 0 {
-		q = q.Where("user_agent IN ?", f.UserAgents)
 	}
 	if len(f.Apps) > 0 {
 		q = q.Where("app IN ?", f.Apps)

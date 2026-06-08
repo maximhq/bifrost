@@ -68,6 +68,11 @@ type LogStore interface {
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
+	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
+	DeleteUserAgentMapping(ctx context.Context, id string) error
+	ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error)
+
 	// Distinct value methods for filter data
 	GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)

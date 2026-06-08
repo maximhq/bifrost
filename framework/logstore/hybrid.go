@@ -818,6 +818,22 @@ func (h *HybridLogStore) GetDistinctApps(ctx context.Context, limit int, query s
 	return h.inner.GetDistinctApps(ctx, limit, query)
 }
 
+func (h *HybridLogStore) CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error {
+	return h.inner.CreateUserAgentMapping(ctx, mapping)
+}
+
+func (h *HybridLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	return h.inner.UpdateUserAgentMapping(ctx, id, mapping)
+}
+
+func (h *HybridLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	return h.inner.DeleteUserAgentMapping(ctx, id)
+}
+
+func (h *HybridLogStore) ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error) {
+	return h.inner.ListUserAgentMappings(ctx, activeOnly)
+}
+
 // GetDistinctMetadataKeys delegates to the inner store and returns distinct
 // metadata keys (and their distinct values) matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {

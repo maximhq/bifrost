@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/errgroup"
+	"gorm.io/gorm"
 )
 
 // LoggingHandler manages HTTP requests for logging operations
@@ -272,6 +273,10 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.getLogSessionSummaryByID, middlewares...))
 	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.getLogSessionByID, middlewares...))
+	r.GET("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.listUserAgentMappings, middlewares...))
+	r.POST("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.createUserAgentMapping, middlewares...))
+	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
+	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
@@ -306,6 +311,77 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
 	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
+}
+
+func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
+	mappings, err := h.logManager.ListUserAgentMappings(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list user agent mappings: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"mappings": mappings})
+}
+
+func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	var mapping logstore.UserAgentMapping
+	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	created, err := h.logManager.CreateUserAgentMapping(ctx, &mapping)
+	if err != nil {
+		if errors.Is(err, logging.ErrInvalidUserAgentMapping) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to create user agent mapping: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, created)
+}
+
+func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || strings.TrimSpace(id) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
+		return
+	}
+	var mapping logstore.UserAgentMapping
+	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	updated, err := h.logManager.UpdateUserAgentMapping(ctx, id, &mapping)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
+			return
+		}
+		if errors.Is(err, logging.ErrInvalidUserAgentMapping) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to update user agent mapping: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, updated)
+}
+
+func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || strings.TrimSpace(id) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
+		return
+	}
+	if err := h.logManager.DeleteUserAgentMapping(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"success": true})
 }
 
 // getLogSessionByID handles GET /api/logs/sessions/{session_id} - Get logs in a single session.
