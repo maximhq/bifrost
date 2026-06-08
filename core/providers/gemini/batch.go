@@ -274,6 +274,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	req.Header.SetMethod(http.MethodGet)
 	if key.Value.GetValue() != "" {
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
+		req.Header.Del("Authorization")
 	}
 
 	// Make request
