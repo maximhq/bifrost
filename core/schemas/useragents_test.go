@@ -11,8 +11,13 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "claude cli versioned", userAgent: "claude-cli/2.1.168 (external, cli)", want: "Claude Code"},
 		{name: "claude code contains", userAgent: "external claude-code/1.0", want: "Claude Code"},
 		{name: "claude desktop", userAgent: "claude-desktop/1.2.3", want: "Claude Desktop"},
-		{name: "codex cli", userAgent: "codex-cli/0.1.0", want: "Codex"},
-		{name: "codex tui", userAgent: "codex-tui/0.1.0", want: "Codex"},
+		{name: "claude desktop electron", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.11187.1 Chrome/146.0.7680.216 Electron/41.6.1 Safari/537.36", want: "Claude Desktop"},
+		{name: "fasthttp api", userAgent: "fasthttp", want: "API"},
+		{name: "codex cli", userAgent: "codex-cli/0.1.0", want: "Codex CLI"},
+		{name: "codex tui", userAgent: "codex-tui/0.1.0", want: "Codex CLI"},
+		{name: "codex desktop mac", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
+		{name: "codex desktop windows", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
+		{name: "codex desktop linux", userAgent: "Mozilla/5.0 (X11; Linux x86_64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "cursor", userAgent: "Cursor/0.47", want: "Cursor"},
 		{name: "gemini", userAgent: "gemini-cli/1.0", want: "Gemini CLI"},
 		{name: "qwen", userAgent: "qwen-code/1.0", want: "Qwen Code"},
@@ -29,6 +34,31 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := DetectAppFromUserAgent(tt.userAgent); got != tt.want {
 				t.Fatalf("DetectAppFromUserAgent(%q) = %q, want %q", tt.userAgent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchUserAgent(t *testing.T) {
+	tests := []struct {
+		name      string
+		userAgent string
+		pattern   string
+		matchType UserAgentMappingMatchType
+		want      bool
+	}{
+		{name: "contains", userAgent: "claude-cli/2.1.168 (external, cli)", pattern: "CLI/2.1", matchType: UserAgentMappingMatchTypeContains, want: true},
+		{name: "starts with", userAgent: "claude-cli/2.1.168", pattern: "Claude-CLI", matchType: UserAgentMappingMatchTypeStartsWith, want: true},
+		{name: "exact", userAgent: "Cursor/1.0", pattern: "cursor/1.0", matchType: UserAgentMappingMatchTypeExact, want: true},
+		{name: "regex", userAgent: "custom-client/42", pattern: `custom-client/\d+`, matchType: UserAgentMappingMatchTypeRegex, want: true},
+		{name: "invalid regex", userAgent: "custom-client/42", pattern: `[`, matchType: UserAgentMappingMatchTypeRegex, want: false},
+		{name: "unknown match type", userAgent: "custom-client/42", pattern: "custom", matchType: UserAgentMappingMatchType("bad"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MatchUserAgent(tt.userAgent, tt.pattern, tt.matchType); got != tt.want {
+				t.Fatalf("MatchUserAgent(%q, %q, %q) = %v, want %v", tt.userAgent, tt.pattern, tt.matchType, got, tt.want)
 			}
 		})
 	}

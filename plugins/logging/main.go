@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -329,6 +330,7 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
+// Config controls logging plugin behavior.
 type Config struct {
 	DisableContentLogging *bool                  `json:"disable_content_logging"`
 	LoggingHeaders        *[]string              `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
@@ -359,6 +361,13 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
 	}
 	return nil
+}
+
+type compiledUserAgentMapping struct {
+	Pattern   string
+	MatchType schemas.UserAgentMappingMatchType
+	App       string
+	Regex     *regexp.Regexp
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -392,6 +401,8 @@ type LoggerPlugin struct {
 	batchCancel            context.CancelFunc    // Cancels batchCtx
 	batchWriterDone        chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch         []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings      atomic.Value          // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu     sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store
@@ -455,6 +466,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		plugin.updateDataPool.Put(&UpdateLogData{})
 	}
 
+	if err := plugin.ReloadUserAgentMappings(ctx); err != nil {
+		logger.Warn("failed to load user agent mappings: %v", err)
+		plugin.userAgentMappings.Store([]compiledUserAgentMapping{})
+	}
+
 	// Start cleanup ticker (runs every 1 minute)
 	plugin.cleanupTicker = time.NewTicker(1 * time.Minute)
 	plugin.wg.Add(1)
@@ -465,6 +481,57 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// ReloadUserAgentMappings refreshes the in-memory custom User-Agent mapping cache.
+func (p *LoggerPlugin) ReloadUserAgentMappings(ctx context.Context) error {
+	mappings, err := p.store.ListUserAgentMappings(ctx, true)
+	if err != nil {
+		return err
+	}
+	compiled := make([]compiledUserAgentMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		matchType := schemas.UserAgentMappingMatchType(mapping.MatchType)
+		entry := compiledUserAgentMapping{
+			Pattern:   mapping.Pattern,
+			MatchType: matchType,
+			App:       mapping.App,
+		}
+		if matchType == schemas.UserAgentMappingMatchTypeRegex {
+			re, err := regexp.Compile(mapping.Pattern)
+			if err != nil {
+				p.logger.Warn("skipping invalid user agent mapping regex %q: %v", mapping.Pattern, err)
+				continue
+			}
+			entry.Regex = re
+		}
+		compiled = append(compiled, entry)
+	}
+	p.userAgentMappings.Store(compiled)
+	return nil
+}
+
+func (p *LoggerPlugin) detectAppFromUserAgent(userAgent string) string {
+	if strings.TrimSpace(userAgent) == "" {
+		return ""
+	}
+	if mappings, ok := p.userAgentMappings.Load().([]compiledUserAgentMapping); ok {
+		for _, mapping := range mappings {
+			if mapping.App == "" || mapping.Pattern == "" {
+				continue
+			}
+			if mapping.Regex != nil {
+				if mapping.Regex.MatchString(userAgent) {
+					return mapping.App
+				}
+				continue
+			}
+			if schemas.MatchUserAgent(userAgent, mapping.Pattern, mapping.MatchType) {
+				return mapping.App
+			}
+		}
+	}
+	return schemas.DetectAppFromUserAgent(userAgent)
 }
 
 // SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
@@ -661,7 +728,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
-	initialData.App = schemas.DetectAppFromUserAgent(initialData.UserAgent)
+	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 
 	if p.contentLoggingEnabled(ctx) {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
@@ -947,7 +1014,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			if ua := userAgentFromContext(ctx); ua != "" {
 				entry.UserAgent = &ua
-				if app := schemas.DetectAppFromUserAgent(ua); app != "" {
+				if app := p.detectAppFromUserAgent(ua); app != "" {
 					entry.App = &app
 				}
 			}
@@ -1512,7 +1579,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	if ua := userAgentFromContext(ctx); ua != "" {
 		entry.UserAgent = &ua
-		if app := schemas.DetectAppFromUserAgent(ua); app != "" {
+		if app := p.detectAppFromUserAgent(ua); app != "" {
 			entry.App = &app
 		}
 	}
