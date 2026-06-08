@@ -195,6 +195,7 @@ export const baseApi = createApi({
 		"ComplexityAnalyzerConfig",
 		"Skills",
 		"OAuth2Grants",
+		"UserAgentMappings",
 		"Devices",
 		"CircuitBreakerPolicies",
 		"CircuitBreakerState",

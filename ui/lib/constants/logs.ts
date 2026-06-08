@@ -172,9 +172,12 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
+	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
 	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
-	{ identifiers: ["codex"], app: { name: "Codex", icon: "/images/codex.png" } },
+	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
+	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
+	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
 	{ identifiers: ["cursor"], app: { name: "Cursor", icon: "/images/cursor.png" } },
 	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: "/images/kilo-code.png" } },
 	{ identifiers: ["roo"], app: { name: "Roo Code", icon: "/images/roo-code.png" } },
@@ -208,6 +211,13 @@ export const mapUserAgentToApp = (userAgent?: string | null): ClientApp => {
 		}
 	}
 	return { name: "Other" };
+};
+
+export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): string => {
+	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
+		return userAgent.trim();
+	}
+	return app.name;
 };
 
 export const StatusColors = {
