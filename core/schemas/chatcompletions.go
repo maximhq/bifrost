@@ -200,7 +200,7 @@ type ChatParameters struct {
 	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
 	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
-	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in-memory" or "24h")
+	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in_memory" or "24h")
 	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
 	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
 	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
