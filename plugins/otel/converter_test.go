@@ -210,7 +210,7 @@ func TestConvertTraceToResourceSpan_PropagatesTraceAttributesToChildSpans(t *tes
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan(trace)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false)
 	if rs == nil || len(rs.ScopeSpans) == 0 {
 		t.Fatal("convertTraceToResourceSpan returned nil/empty result")
 	}
@@ -256,7 +256,7 @@ func TestConvertTraceToResourceSpan_SpanAttributePrecedence(t *testing.T) {
 		Attributes: map[string]any{"foo": "trace-level"},
 	}
 
-	rs := p.convertTraceToResourceSpan(trace)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 exported span, got %d", len(spans))
@@ -297,7 +297,7 @@ func TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression(t *testing.T)
 			RootSpan: root,
 			Spans:    []*schemas.Span{root},
 		}
-		rs := p.convertTraceToResourceSpan(trace)
+		rs := p.convertTraceToResourceSpan("", trace, nil, false)
 		spans := rs.ScopeSpans[0].Spans
 		// One attribute: http.method (no AttrRequestID because RequestID is unset).
 		if len(spans[0].Attributes) != 1 {
@@ -312,7 +312,7 @@ func TestConvertTraceToResourceSpan_NoTraceAttributes_NoRegression(t *testing.T)
 			Spans:      []*schemas.Span{root},
 			Attributes: map[string]any{},
 		}
-		rs := p.convertTraceToResourceSpan(trace)
+		rs := p.convertTraceToResourceSpan("", trace, nil, false)
 		spans := rs.ScopeSpans[0].Spans
 		if len(spans[0].Attributes) != 1 {
 			t.Errorf("expected 1 attribute, got %d (%v)", len(spans[0].Attributes), spans[0].Attributes)
@@ -338,7 +338,7 @@ func TestConvertTraceToResourceSpan_EmptyStringDimValue_NoCrash(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan(trace)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 exported span, got %d", len(spans))
@@ -387,7 +387,7 @@ func TestConvertTraceToResourceSpan_FilteredSpansDoNotReceiveAttrs(t *testing.T)
 		Attributes: map[string]any{"customer_id": "acme"},
 	}
 
-	rs := p.convertTraceToResourceSpan(trace)
+	rs := p.convertTraceToResourceSpan("", trace, nil, false)
 	spans := rs.ScopeSpans[0].Spans
 	if len(spans) != 2 {
 		t.Fatalf("expected 2 exported spans (root + gov-pre), got %d", len(spans))
