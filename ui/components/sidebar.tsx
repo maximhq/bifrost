@@ -637,6 +637,9 @@ export default function AppSidebar() {
     RbacResource.Observability,
     RbacOperation.View,
   );
+  // Alerting is gated on the same resource the alerting route layouts use
+  // (AlertRules), so sidebar visibility matches page access.
+  const hasAlertingAccess = useRbac(RbacResource.AlertRules, RbacOperation.View);
   const hasDashboardAccess = useRbac(
     RbacResource.Dashboard,
     RbacOperation.View,
@@ -871,28 +874,28 @@ export default function AppSidebar() {
         url: "/workspace/alerting",
         icon: Bell,
         description: "Manage alert channels, rules, and history",
-        hasAccess: hasObservabilityAccess,
+        hasAccess: hasAlertingAccess,
         subItems: [
           {
             title: "Channels",
             url: "/workspace/alerting/channels",
             icon: Megaphone,
             description: "Configure notification channels",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasAlertingAccess,
           },
           {
             title: "Rules",
             url: "/workspace/alerting/rules",
             icon: Gavel,
             description: "Define alerting rules",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasAlertingAccess,
           },
           {
             title: "History",
             url: "/workspace/alerting/history",
             icon: History,
             description: "Review alert delivery history",
-            hasAccess: hasObservabilityAccess,
+            hasAccess: hasAlertingAccess,
           },
         ],
       },
@@ -1115,6 +1118,7 @@ export default function AppSidebar() {
       hasLogsAccess,
       hasAPIKeyAccess,
       hasObservabilityAccess,
+      hasAlertingAccess,
       hasDashboardAccess,
       hasModelProvidersAccess,
       hasMCPGatewayAccess,
