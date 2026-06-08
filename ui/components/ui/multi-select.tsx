@@ -19,7 +19,7 @@ export function useMultiSelect() {
 	if (!ctx) {
 		throw new Error("useMultiSelect must be used within MultiSelect");
 	}
-	return { close: ctx.close };
+	return ctx;
 }
 
 interface MultiSelectProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -32,6 +32,7 @@ interface MultiSelectProps extends React.HTMLAttributes<HTMLDivElement> {
 
 function MultiSelect({ value, onValueChange, placeholder = "Select...", className, children, getBadgeLabel, ...props }: MultiSelectProps) {
 	const [open, setOpen] = React.useState(false);
+	const popupId = React.useId();
 
 	const handleUnselect = (item: string) => {
 		onValueChange(value.filter((i) => i !== item));
@@ -43,7 +44,10 @@ function MultiSelect({ value, onValueChange, placeholder = "Select...", classNam
 				<PopoverTrigger asChild>
 					<div
 						role="combobox"
+						aria-expanded={open}
+						aria-controls={popupId}
 						tabIndex={0}
+						data-testid="multi-select-trigger"
 						onKeyDown={(e) => {
 							if (e.key === "Enter" || e.key === " ") {
 								e.preventDefault();
@@ -58,10 +62,12 @@ function MultiSelect({ value, onValueChange, placeholder = "Select...", classNam
 					>
 						{value.length > 0 ? (
 							value.map((item) => (
-								<Badge key={item} variant="secondary" className="gap-1">
+								<Badge key={item} variant="secondary" className="gap-1" data-testid={`multi-select-badge-${item}`}>
 									{getBadgeLabel ? getBadgeLabel(item) : item}
 									<button
 										type="button"
+										aria-label={`Remove ${getBadgeLabel ? getBadgeLabel(item) : item}`}
+										data-testid={`multi-select-remove-${item}`}
 										className="ring-offset-background focus:ring-ring ml-1 rounded-full outline-hidden focus:ring-2 focus:ring-offset-2"
 										onMouseDown={(e) => {
 											e.preventDefault();
@@ -83,7 +89,7 @@ function MultiSelect({ value, onValueChange, placeholder = "Select...", classNam
 						<ChevronDown className="ml-auto h-4 w-4 shrink-0 opacity-50" />
 					</div>
 				</PopoverTrigger>
-				<PopoverContent className="w-full p-0" align="start">
+				<PopoverContent id={popupId} className="w-full p-0" align="start">
 					<Command>
 						<CommandList>
 							<CommandGroup>{children}</CommandGroup>
@@ -112,16 +118,15 @@ function MultiSelectGroup({ children, className, ...props }: React.HTMLAttribute
 }
 
 function MultiSelectItem({ children, className, value, ...props }: { children: React.ReactNode; className?: string; value: string }) {
-	const ctx = React.useContext(MultiSelectContext);
-	const isSelected = ctx?.value.includes(value);
+	const ctx = useMultiSelect();
+	const isSelected = ctx.value.includes(value);
 	return (
 		<CommandItem
+			data-testid={`multi-select-item-${value}`}
 			className={cn("cursor-pointer", className)}
 			onSelect={() => {
-				if (ctx) {
-					const next = isSelected ? ctx.value.filter((v: string) => v !== value) : [...ctx.value, value];
-					ctx.onValueChange(next);
-				}
+				const next = isSelected ? ctx.value.filter((v: string) => v !== value) : [...ctx.value, value];
+				ctx.onValueChange(next);
 			}}
 			value={value}
 			{...props}
