@@ -1,1 +1,0 @@
-- feat: `request_headers` pattern capture with wildcard support (#4012)

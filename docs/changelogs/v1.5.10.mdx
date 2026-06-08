@@ -1,0 +1,80 @@
+---
+title: "v1.5.10"
+description: "v1.5.10 changelog - 2026-06-07"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.10
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.10
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.10
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.10">
+<Note>
+  **Hotfix on [v1.5.9](https://docs.getbifrost.ai/changelogs/v1.5.9).** The key fix corrects wildcard (`*`) allowed-models handling: for providers whose models the catalog cannot enumerate, a wildcard now correctly allows any model instead of rejecting it. This affected keyless self-hosted providers (vLLM/Ollama/SGL) and custom providers without list-models support.
+</Note>
+
+## 🐞 Fixed
+
+- **Virtual Key Usage Tracking Under User Attribution** - Usage is no longer silently dropped from virtual-key accounting whenever a user is attributed on a request. Governance now tracks both the virtual-key and user scopes by default; callers that deliberately want user-only accounting can opt in with the new `bifrost-skip-virtual-key-usage-tracking` context flag (#4123)
+- **Wildcard Allow-Lists for Catalog-Opaque Providers** - A wildcard (`*`) allowed-models list now correctly permits any model for providers whose models the catalog cannot enumerate - custom providers without list-models support, and keyless self-hosted vLLM/Ollama/SGL - instead of incorrectly rejecting them (#4124)
+
+</Update>
+<Update label="Core" description="1.5.18">
+- feat: added `BifrostContextKeySkipVirtualKeyUsageTracking` context key so callers can skip virtual-key usage tracking while preserving virtual-key auth and attribution (#4123)
+
+</Update>
+<Update label="Framework" description="1.3.18">
+- fix: wildcard (`*`) allow-lists now resolve to allow-all for catalog-opaque providers (custom providers without list-models, keyless self-hosted vLLM/Ollama/SGL) via the new shared `IsCatalogOpaqueProvider` helper (#4124)
+- chore: upgraded core to v1.5.18
+
+</Update>
+<Update label="compat" description="0.1.17">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="governance" description="1.5.18">
+- fix: track both virtual-key and user usage scopes by default; skip virtual-key usage only when `BifrostContextKeySkipVirtualKeyUsageTracking` is set, preventing dropped VK accounting under user attribution (#4123)
+- fix: honor wildcard allow-lists for catalog-opaque providers via `IsCatalogOpaqueProvider` (#4124)
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="jsonparser" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="logging" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="maxim" description="1.6.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="mocker" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="otel" description="1.2.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="prompts" description="1.0.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="semanticcache" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
+<Update label="telemetry" description="1.5.18">
+- chore: upgraded core to v1.5.18 and framework to v1.3.18
+
+</Update>
