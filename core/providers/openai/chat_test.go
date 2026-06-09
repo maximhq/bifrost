@@ -894,3 +894,85 @@ func TestApplyXAICompatibility(t *testing.T) {
 		})
 	}
 }
+
+// TestToOpenAIChatRequest_CacheControl_OpenRouterOnly verifies that
+// Anthropic-style cache_control breakpoints on message content blocks and on
+// tools survive marshalling only when the originating provider is OpenRouter
+// (which forwards them to the underlying Claude/Gemini model). For OpenAI and
+// other OpenAI-format providers, cache_control is still stripped.
+func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-opus-4",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type:         schemas.ChatContentBlockTypeText,
+								Text:         schemas.Ptr("long cacheable system prompt"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+						},
+					},
+				},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+			},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "lookup",
+							Description: schemas.Ptr("lookup something"),
+							Parameters: &schemas.ToolFunctionParameters{
+								Type: "object",
+								Properties: schemas.NewOrderedMapFromPairs(
+									schemas.KV("q", map[string]interface{}{"type": "string"}),
+								),
+							},
+						},
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		wantKept bool
+	}{
+		{name: "openrouter preserves cache_control", provider: schemas.OpenRouter, wantKept: true},
+		{name: "openai strips cache_control", provider: schemas.OpenAI, wantKept: false},
+		{name: "gemini strips cache_control", provider: schemas.Gemini, wantKept: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			result := ToOpenAIChatRequest(ctx, makeReq(tt.provider))
+			require.NotNil(t, result)
+
+			wireBody, err := json.Marshal(result)
+			require.NoError(t, err)
+			s := string(wireBody)
+
+			if tt.wantKept {
+				require.Contains(t, s, "cache_control", "cache_control must be preserved for OpenRouter: %s", s)
+				// Both the content-block breakpoint and the tool breakpoint must survive.
+				require.Equal(t, 2, strings.Count(s, "cache_control"), "expected cache_control on both content block and tool: %s", s)
+			} else {
+				require.NotContains(t, s, "cache_control", "cache_control must be stripped for %s: %s", tt.provider, s)
+			}
+
+			// The tool identity must always survive regardless of stripping.
+			require.Contains(t, s, "lookup")
+		})
+	}
+}
