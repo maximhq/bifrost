@@ -730,6 +730,7 @@ export const bifrostConfigSchema = z.object({
 	is_db_connected: z.boolean(),
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
+	is_git_available: z.boolean(),
 });
 
 // Network and proxy form schema - combined for the NetworkFormFragment
