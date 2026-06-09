@@ -242,7 +242,7 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
@@ -272,7 +272,7 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 		modelEntry := schemas.Model{
 			ID:    modelID,
 			Name:  schemas.Ptr(modelName),
-			Alias: schemas.Ptr(deploymentValue),
+			Alias: schemas.Ptr(deploymentValue.ModelID),
 		}
 
 		response.Data = append(response.Data, modelEntry)
