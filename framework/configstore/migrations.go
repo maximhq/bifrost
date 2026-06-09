@@ -638,6 +638,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSkillsRepoTables(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
 		return err
 	}
@@ -6554,6 +6557,73 @@ func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_mcp_client_allowed_extra_headers_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddSkillsRepoTables adds the skills repository tables.
+// Files belong to skill_versions (not directly to skills); blobs are reused
+// across versions via shared blob_id/storage_key references.
+//
+// Idempotent: guards each table create so retrying after a partially applied
+// migration does not fail when some tables were already created.
+func migrationAddSkillsRepoTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_skills_repo_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// --- skills table ---
+			if !mg.HasTable(&tables.TableSkill{}) {
+				if err := mg.CreateTable(&tables.TableSkill{}); err != nil {
+					return fmt.Errorf("create skills table: %w", err)
+				}
+			}
+
+			// --- skill_versions table ---
+			if !mg.HasTable(&tables.TableSkillVersion{}) {
+				if err := mg.CreateTable(&tables.TableSkillVersion{}); err != nil {
+					return fmt.Errorf("create skill_versions table: %w", err)
+				}
+			}
+
+			// --- skill_file_blobs table ---
+			if !mg.HasTable(&tables.TableSkillFileBlob{}) {
+				if err := mg.CreateTable(&tables.TableSkillFileBlob{}); err != nil {
+					return fmt.Errorf("create skill_file_blobs table: %w", err)
+				}
+			}
+
+			// --- skill_files table ---
+			if !mg.HasTable(&tables.TableSkillFile{}) {
+				if err := mg.CreateTable(&tables.TableSkillFile{}); err != nil {
+					return fmt.Errorf("create skill_files table: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if err := mg.DropTable(&tables.TableSkillFile{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkillVersion{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkill{}); err != nil {
+				return err
+			}
+			if err := mg.DropTable(&tables.TableSkillFileBlob{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running skills repo tables migration: %s", err.Error())
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -35,6 +36,13 @@ type ModelConfigsQueryParams struct {
 	Search   string
 	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
+}
+
+// SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
+type SkillListQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
 }
 
 // RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
@@ -536,6 +544,21 @@ type ConfigStore interface {
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
 	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
 	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Skills Repository
+	CreateSkill(ctx context.Context, skill *tables.TableSkill, version string, objectStore objectstore.ObjectStore) error
+	GetSkill(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillLean(ctx context.Context, id string) (*tables.TableSkill, error)
+	GetSkillByName(ctx context.Context, name string) (*tables.TableSkill, error)
+	GetSkillVersion(ctx context.Context, skillID, version string) (*tables.TableSkillVersion, error)
+	ListSkillVersions(ctx context.Context, skillID string, limit, offset int) ([]tables.TableSkillVersion, int64, error)
+	UpdateSkill(ctx context.Context, skill *tables.TableSkill, version string, serve bool, objectStore objectstore.ObjectStore) error
+	DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error
+	ListSkills(ctx context.Context, params SkillListQueryParams) ([]tables.TableSkill, int64, error)
+	ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error
+	GetAllSkillsVersion(ctx context.Context) (string, error)
+	CreateSkillFileBlob(ctx context.Context, blob *tables.TableSkillFileBlob) error
+	CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error)
 
 	// Prompt Repository - Sessions
 	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)

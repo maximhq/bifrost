@@ -65,6 +65,83 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	return s
 }
 
+func TestValidateSkillVersionIncrementRequiresGreaterVersion(t *testing.T) {
+	tests := []struct {
+		name     string
+		latest   string
+		next     string
+		wantErr  bool
+	}{
+		{name: "rejects lower prerelease core", latest: "1.0.3", next: "1.0.2-1", wantErr: true},
+		{name: "accepts same core with suffix after release", latest: "1.0.3", next: "1.0.3-1", wantErr: false},
+		{name: "accepts release after same core suffix", latest: "1.0.3-beta1", next: "1.0.3", wantErr: false},
+		{name: "accepts higher patch", latest: "1.0.3", next: "1.0.4", wantErr: false},
+		{name: "accepts higher minor", latest: "1.0.3", next: "1.1.0", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSkillVersionIncrement(tt.latest, tt.next)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	ctx := context.Background()
+	baseTime := time.Now()
+
+	skillID := "skill-latest-created"
+	err = store.DB().Create(&tables.TableSkill{
+		ID:            skillID,
+		Name:          "latest-created",
+		Description:   "Latest created version test",
+		SkillMDBody:   "body",
+		LatestVersion: "1.0.3",
+		CreatedAt:     baseTime,
+		UpdatedAt:     baseTime,
+	}).Error
+	require.NoError(t, err)
+	err = store.DB().Create(&tables.TableSkillVersion{
+		ID:                  "skill-version-old",
+		SkillID:             skillID,
+		Version:             "1.0.3",
+		SkillMDBody:         "body",
+		FrontmatterSnapshot: tables.SkillJSONMap{"name": "latest-created", "description": "Latest created version test"},
+		CreatedAt:           baseTime,
+	}).Error
+	require.NoError(t, err)
+	err = store.DB().Create(&tables.TableSkillVersion{
+		ID:                  "skill-version-new",
+		SkillID:             skillID,
+		Version:             "1.0.2-1",
+		SkillMDBody:         "body",
+		FrontmatterSnapshot: tables.SkillJSONMap{"name": "latest-created", "description": "Latest created version test"},
+		CreatedAt:           baseTime.Add(time.Minute),
+	}).Error
+	require.NoError(t, err)
+
+	latest, err := latestCreatedSkillVersion(store.DB(), skillID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.2-1", latest)
+
+	skill, err := store.GetSkillLean(ctx, skillID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
+}
+
 // =============================================================================
 // Provider and Key Tests
 // =============================================================================
