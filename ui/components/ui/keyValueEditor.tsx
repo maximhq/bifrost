@@ -10,28 +10,49 @@ interface KeyValuePair {
 	value: string;
 }
 
-function pairsToRecord(pairs: KeyValuePair[]): Record<string, string> {
-	const result: Record<string, string> = {};
-	for (const { key, value } of pairs) {
-		if (key.trim()) {
-			result[key.trim()] = value;
-		}
-	}
-	return result;
-}
-
 function recordsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
-	const aKeys = Object.keys(a);
-	const bKeys = Object.keys(b);
-	if (aKeys.length !== bKeys.length) {
+	const aEntries = Object.entries(a);
+	const bEntries = Object.entries(b);
+	if (aEntries.length !== bEntries.length) {
 		return false;
 	}
-	for (const key of aKeys) {
-		if (a[key] !== b[key]) {
-			return false;
+	return aEntries.every(([aKey, aValue], index) => {
+		const [bKey, bValue] = bEntries[index] ?? [];
+		return aKey === bKey && aValue === bValue;
+	});
+}
+
+type FieldErrors = Record<number, string>;
+
+function validatePairs(pairs: KeyValuePair[]): { record: Record<string, string>; keyErrors: FieldErrors } {
+	const record: Record<string, string> = {};
+	const keys = new Map<string, number[]>();
+
+	for (const pair of pairs) {
+		const key = pair.key.trim();
+		if (!key) {
+			continue;
+		}
+		record[key] = pair.value;
+		const ids = keys.get(key);
+		if (ids) {
+			ids.push(pair.id);
+		} else {
+			keys.set(key, [pair.id]);
 		}
 	}
-	return true;
+
+	const keyErrors: FieldErrors = {};
+	for (const ids of keys.values()) {
+		if (ids.length < 2) {
+			continue;
+		}
+		for (const id of ids) {
+			keyErrors[id] = "Duplicate key";
+		}
+	}
+
+	return { record, keyErrors };
 }
 
 interface KeyValueEditorProps {
@@ -70,6 +91,7 @@ export function KeyValueEditor({
 	}, []);
 
 	const [pairs, setPairs] = useState<KeyValuePair[]>(() => buildPairs(value));
+	const [keyErrors, setKeyErrors] = useState<FieldErrors>({});
 	const isFirstRender = useRef(true);
 	const suppressOnChange = useRef(false);
 	// Last record we emitted to (or received from) the parent. Used to ignore
@@ -90,6 +112,11 @@ export function KeyValueEditor({
 	}, [value, buildPairs]);
 
 	useEffect(() => {
+		const validation = validatePairs(pairs);
+		setKeyErrors(validation.keyErrors);
+		if (Object.keys(validation.keyErrors).length > 0) {
+			return;
+		}
 		if (isFirstRender.current) {
 			isFirstRender.current = false;
 			return;
@@ -98,7 +125,7 @@ export function KeyValueEditor({
 			suppressOnChange.current = false;
 			return;
 		}
-		const record = pairsToRecord(pairs);
+		const record = validation.record;
 		lastSyncedRef.current = record;
 		onChangeRef.current(record);
 	}, [pairs]);
@@ -121,7 +148,24 @@ export function KeyValueEditor({
 	}, []);
 
 	const updatePair = useCallback((index: number, field: "key" | "value", newValue: string) => {
-		setPairs((prev) => prev.map((pair, i) => (i === index ? { ...pair, [field]: newValue } : pair)));
+		setPairs((prev) =>
+			prev.map((pair, i) => {
+				if (i !== index) {
+					return pair;
+				}
+				if (field === "key") {
+					const oldKey = pair.key.trim();
+					const nextKey = newValue.trim();
+					if (oldKey) {
+						idMapRef.current.delete(oldKey);
+					}
+					if (nextKey) {
+						idMapRef.current.set(nextKey, pair.id);
+					}
+				}
+				return { ...pair, [field]: newValue };
+			}),
+		);
 	}, []);
 
 	return (
@@ -140,19 +184,38 @@ export function KeyValueEditor({
 			{pairs.map((pair, index) => (
 				<div key={pair.id} className="mb-2 flex items-center gap-2">
 					<div className="flex-1">
-						{index === 0 && <Label className="text-xs">Key</Label>}
+						{index === 0 && (
+							<Label className="text-xs" htmlFor={`key-value-editor-key-${pair.id}`}>
+								Key
+							</Label>
+						)}
 						<Input
+							id={`key-value-editor-key-${pair.id}`}
 							placeholder={keyPlaceholder}
 							value={pair.key}
+							aria-label={`Key ${index + 1}`}
+							aria-invalid={Boolean(keyErrors[pair.id])}
+							aria-describedby={keyErrors[pair.id] ? `key-value-editor-key-error-${pair.id}` : undefined}
 							onChange={(e) => updatePair(index, "key", e.target.value)}
 							data-testid={`key-value-editor-key-input-${index}`}
 						/>
+						{keyErrors[pair.id] && (
+							<p id={`key-value-editor-key-error-${pair.id}`} className="text-destructive mt-1 text-xs">
+								{keyErrors[pair.id]}
+							</p>
+						)}
 					</div>
 					<div className="flex-[2]">
-						{index === 0 && <Label className="text-xs">Value</Label>}
+						{index === 0 && (
+							<Label className="text-xs" htmlFor={`key-value-editor-value-${pair.id}`}>
+								Value
+							</Label>
+						)}
 						<Input
+							id={`key-value-editor-value-${pair.id}`}
 							placeholder={valuePlaceholder}
 							value={pair.value}
+							aria-label={`Value ${index + 1}`}
 							onChange={(e) => updatePair(index, "value", e.target.value)}
 							data-testid={`key-value-editor-value-input-${index}`}
 						/>
