@@ -1,4 +1,4 @@
-package modelcatalog
+package datasheet
 
 import (
 	"context"
@@ -11,95 +11,8 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// PricingLookupScopes carries the runtime identifiers used to resolve scoped
-// pricing overrides during cost calculation.
-type PricingLookupScopes struct {
-	VirtualKeyID  string
-	SelectedKeyID string
-	Provider      string
-}
-
-// PricingLookupScopesFromContext builds a PricingLookupScopes from a BifrostContext.
-// It reads the governance virtual key ID (not the raw VK token) and the selected key ID.
-// provider should be the provider name string (e.g. "openai"), pass "" if unavailable.
-// Returns nil only when ctx is nil. An empty scopes value is still returned when all fields
-// are empty so that global-scope overrides are always evaluated.
-// DO NOT USE THIS FUNCTION IN A GO ROUTINE. This is because it reads from ctx which is cancelled when the request ends.
-// Better to call it in PostHooks synchronously and then pass the scopes object to the pricing manager.
-// Only use this in go routines when you know for sure that the request will not end before the go routine completes.
-func PricingLookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *PricingLookupScopes {
-	if ctx == nil {
-		return nil
-	}
-	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
-	return &PricingLookupScopes{
-		VirtualKeyID:  virtualKeyID,
-		SelectedKeyID: selectedKeyID,
-		Provider:      provider,
-	}
-}
-
-// ScopeKind identifies which governance scope an override applies to.
-type ScopeKind string
-
-const (
-	ScopeKindGlobal                ScopeKind = "global"
-	ScopeKindProvider              ScopeKind = "provider"
-	ScopeKindProviderKey           ScopeKind = "provider_key"
-	ScopeKindVirtualKey            ScopeKind = "virtual_key"
-	ScopeKindVirtualKeyProvider    ScopeKind = "virtual_key_provider"
-	ScopeKindVirtualKeyProviderKey ScopeKind = "virtual_key_provider_key"
-)
-
-// MatchType controls how an override pattern is matched against model names.
-type MatchType string
-
-const (
-	MatchTypeExact    MatchType = "exact"
-	MatchTypeWildcard MatchType = "wildcard"
-)
-
-// PricingOverride describes a scoped pricing override shared across config storage,
-// model catalog compilation, and governance APIs.
-type PricingOverride struct {
-	ID            string                `json:"id"`
-	Name          string                `json:"name"`
-	ScopeKind     ScopeKind             `json:"scope_kind"`
-	VirtualKeyID  *string               `json:"virtual_key_id,omitempty"`
-	ProviderID    *string               `json:"provider_id,omitempty"`
-	ProviderKeyID *string               `json:"provider_key_id,omitempty"`
-	MatchType     MatchType             `json:"match_type"`
-	Pattern       string                `json:"pattern"`
-	RequestTypes  []schemas.RequestType `json:"request_types,omitempty"`
-	Options       PricingOptions        `json:"options"`
-}
-
-// customPricingEntry is a single flattened override ready for lookup.
-type customPricingEntry struct {
-	id            string
-	scopeKind     ScopeKind
-	virtualKeyID  string
-	providerID    string
-	providerKeyID string
-	pattern       string // exact model name, or wildcard prefix (trailing * stripped)
-	wildcard      bool
-	requestModes  map[string]struct{} // always non-nil for valid overrides
-	options       PricingOptions
-}
-
-// customPricingData is the in-memory lookup structure for pricing overrides.
-// Exact matches are indexed by model name; wildcards are a flat slice.
-type customPricingData struct {
-	exact    map[string][]customPricingEntry
-	wildcard []customPricingEntry
-}
-
-// IsValid validates the shared pricing override contract before persistence or runtime use.
-//
-// Input:  override — the PricingOverride to validate (receiver).
-// Output: error — non-nil if any scope, pattern, or request-type constraint is violated.
-func (override *PricingOverride) IsValid() error {
+// IsValid validates the shared override contract before persistence or runtime use.
+func (override *Override) IsValid() error {
 	if err := override.validateScopeKind(); err != nil {
 		return err
 	}
@@ -109,11 +22,7 @@ func (override *PricingOverride) IsValid() error {
 	return override.validateRequestTypes()
 }
 
-// validateScopeKind validates the scope identifiers required by override.ScopeKind.
-//
-// Input:  override — receiver; ScopeKind and the three optional ID fields are inspected.
-// Output: error — non-nil when required identifiers are absent or forbidden ones are present.
-func (override *PricingOverride) validateScopeKind() error {
+func (override *Override) validateScopeKind() error {
 	switch override.ScopeKind {
 	case ScopeKindGlobal:
 		if override.VirtualKeyID != nil || override.ProviderID != nil || override.ProviderKeyID != nil {
@@ -157,13 +66,7 @@ func (override *PricingOverride) validateScopeKind() error {
 	return nil
 }
 
-// validatePattern checks that Pattern is non-empty and consistent with MatchType.
-//
-// Input:  override — receiver; Pattern and MatchType are inspected.
-// Output: error — non-nil when the pattern is empty, contains a wildcard for exact mode,
-//
-//	or does not end with a single trailing "*" for wildcard mode.
-func (override *PricingOverride) validatePattern() error {
+func (override *Override) validatePattern() error {
 	pattern := strings.TrimSpace(override.Pattern)
 	if pattern == "" {
 		return fmt.Errorf("pattern is required")
@@ -186,13 +89,10 @@ func (override *PricingOverride) validatePattern() error {
 	return nil
 }
 
-// validateRequestTypes checks that RequestTypes is non-empty and that every entry is a
-// supported base request type. Stream variants (e.g. chat_completion_stream) are rejected —
-// the base type (chat_completion) already covers both streaming and non-streaming requests.
-//
-// Input:  override — receiver; RequestTypes slice is inspected.
-// Output: error — non-nil if RequestTypes is empty, or contains an unsupported or stream variant.
-func (override *PricingOverride) validateRequestTypes() error {
+// validateRequestTypes checks that RequestTypes is non-empty and that every
+// entry is a supported base request type. Stream variants are rejected — the
+// base type already covers both streaming and non-streaming requests.
+func (override *Override) validateRequestTypes() error {
 	if len(override.RequestTypes) == 0 {
 		return fmt.Errorf("request_types is required and must contain at least one value")
 	}
@@ -207,11 +107,9 @@ func (override *PricingOverride) validateRequestTypes() error {
 	return nil
 }
 
-// matchesScope reports whether the entry's governance scope matches the runtime identifiers.
-//
-// Input:  scopes — runtime VirtualKeyID, SelectedKeyID, and Provider to match against.
-// Output: bool — true when the entry's scope kind and stored IDs align with scopes.
-func (e *customPricingEntry) matchesScope(scopes PricingLookupScopes) bool {
+// matchesScope reports whether the entry's governance scope matches the
+// runtime identifiers.
+func (e *customPricingEntry) matchesScope(scopes LookupScopes) bool {
 	switch e.scopeKind {
 	case ScopeKindGlobal:
 		return true
@@ -229,25 +127,14 @@ func (e *customPricingEntry) matchesScope(scopes PricingLookupScopes) bool {
 	return false
 }
 
-// matchesMode reports whether the entry applies to the given normalized request mode.
-//
-// Input:  mode — normalized request type string (e.g. "chat", "embedding").
-// Output: bool — true when requestModes contains mode.
 func (e *customPricingEntry) matchesMode(mode string) bool {
 	_, ok := e.requestModes[mode]
 	return ok
 }
 
 // resolve walks the 6-scope priority hierarchy and returns the first matching
-// pricing patch for the given model, request mode, and runtime scopes.
-//
-// Input:  model  — exact model name being priced.
-//
-//	mode   — normalized request type string (e.g. "chat", "embedding").
-//	scopes — runtime governance identifiers used to narrow the scope search.
-//
-// Output: *PricingOptions — pointer to the first matching override's options, or nil if none match.
-func (c *customPricingData) resolve(model, mode string, scopes PricingLookupScopes) *PricingOptions {
+// pricing patch for the given model, mode, and runtime scopes.
+func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Options {
 	for _, scopeKind := range scopePriorityOrder(scopes) {
 		for i := range c.exact[model] {
 			e := &c.exact[model][i]
@@ -267,10 +154,7 @@ func (c *customPricingData) resolve(model, mode string, scopes PricingLookupScop
 
 // scopePriorityOrder returns scope kinds in most-specific-first order,
 // skipping scopes that can't match given the available runtime identifiers.
-//
-// Input:  scopes — runtime governance identifiers; empty fields cause the corresponding scope kinds to be omitted.
-// Output: []ScopeKind — ordered list from most-specific (VirtualKeyProviderKey) to least-specific (Global).
-func scopePriorityOrder(scopes PricingLookupScopes) []ScopeKind {
+func scopePriorityOrder(scopes LookupScopes) []ScopeKind {
 	order := make([]ScopeKind, 0, 6)
 	if scopes.VirtualKeyID != "" && scopes.Provider != "" && scopes.SelectedKeyID != "" {
 		order = append(order, ScopeKindVirtualKeyProviderKey)
@@ -291,11 +175,10 @@ func scopePriorityOrder(scopes PricingLookupScopes) []ScopeKind {
 	return order
 }
 
-// buildCustomPricingData constructs a customPricingData lookup structure from a raw override slice.
-//
-// Input:  overrides — slice of validated PricingOverride records loaded from the config store.
-// Output: *customPricingData — ready-to-query structure with exact and wildcard indexes populated.
-func buildCustomPricingData(overrides []PricingOverride) *customPricingData {
+// buildCustomPricingData constructs the lookup structure from a raw override
+// slice. Wildcards are sorted longest-prefix-first so more specific patterns
+// (e.g. "gpt-4*") win over broader ones ("gpt-*") deterministically.
+func buildCustomPricingData(overrides []Override) *customPricingData {
 	data := &customPricingData{
 		exact: make(map[string][]customPricingEntry, len(overrides)),
 	}
@@ -329,60 +212,38 @@ func buildCustomPricingData(overrides []PricingOverride) *customPricingData {
 			data.wildcard = append(data.wildcard, entry)
 		}
 	}
-	// Sort wildcards by descending prefix length so more-specific patterns (e.g. "gpt-4*")
-	// are checked before broader ones (e.g. "gpt-*"), making precedence deterministic.
 	sort.Slice(data.wildcard, func(i, j int) bool {
 		return len(data.wildcard[i].pattern) > len(data.wildcard[j].pattern)
 	})
 	return data
 }
 
-// applyPricingOverrides resolves any active scoped pricing override for the given model
-// and request type, then patches the catalog base pricing with the override values.
-// It returns the original pricing unchanged when no custom pricing tree is loaded or
-// when the request type cannot be mapped to a known pricing mode.
-//
-// Input:  model       — exact model name being priced.
-//
-//	requestType — the request type used to derive the pricing mode.
-//	pricing     — base pricing row from the catalog to patch.
-//	scopes      — runtime governance identifiers used to narrow the override scope.
-//
-// Output: TableModelPricing — patched pricing row, or pricing unchanged if no override matches.
-// bool — true when an override was applied, false otherwise.
-func (mc *ModelCatalog) applyPricingOverrides(model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing, scopes PricingLookupScopes) (configstoreTables.TableModelPricing, bool) {
-	mc.overridesMu.RLock()
-	custom := mc.customPricing
-	mc.overridesMu.RUnlock()
+// applyPricingOverrides resolves any active scoped override for (model,
+// requestType) and patches the catalog base pricing. Returns the original
+// pricing unchanged when no override matches or the request type can't be
+// mapped to a known pricing mode.
+func (s *Store) applyPricingOverrides(model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing, scopes LookupScopes) (configstoreTables.TableModelPricing, bool) {
+	s.overridesMu.RLock()
+	custom := s.customPricing
+	s.overridesMu.RUnlock()
 
 	if custom == nil {
 		return pricing, false
 	}
-
 	mode := normalizeRequestType(requestType)
 	if mode == "unknown" {
 		return pricing, false
 	}
-
 	if patch := custom.resolve(model, mode, scopes); patch != nil {
 		return patchPricing(pricing, *patch), true
 	}
 	return pricing, false
 }
 
-// patchPricing applies override values onto a copy of the base pricing row.
-// For all fields, a non-nil override pointer replaces the corresponding destination value;
-// a nil override leaves the base value intact.
-// The original pricing row is never modified; a patched copy is always returned.
-//
-// Input:  pricing  — base pricing row from the catalog.
-//
-//	override — pricing options sourced from the matched override entry.
-//
-// Output: TableModelPricing — shallow copy of pricing with override fields applied.
-func patchPricing(pricing configstoreTables.TableModelPricing, override PricingOptions) configstoreTables.TableModelPricing {
+// patchPricing returns a copy of pricing with override fields applied. Nil
+// fields in override leave the corresponding base values intact.
+func patchPricing(pricing configstoreTables.TableModelPricing, override Options) configstoreTables.TableModelPricing {
 	patched := pricing
-
 	for _, field := range []struct {
 		dst **float64
 		src *float64
@@ -458,13 +319,86 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override PricingO
 	return patched
 }
 
-func (mc *ModelCatalog) loadPricingOverridesFromStore(ctx context.Context) error {
-	if mc.configStore == nil {
+// LoadOverridesFromStore reloads all overrides from the config store. Called
+// at bootstrap and after force-reload paths.
+func (s *Store) LoadOverridesFromStore(ctx context.Context) error {
+	if s.configStore == nil {
 		return nil
 	}
-	rows, err := mc.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilters{})
+	rows, err := s.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilters{})
 	if err != nil {
 		return err
 	}
-	return mc.SetPricingOverrides(rows)
+	return s.SetOverrides(rows)
+}
+
+// SetOverrides replaces the full in-memory override set. Duplicate IDs in
+// the input keep the last-seen entry (matching today's behavior).
+func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) error {
+	seen := make(map[string]int, len(rows))
+	overrides := make([]Override, 0, len(rows))
+	for i := range rows {
+		o, err := convertTableOverride(&rows[i])
+		if err != nil {
+			return err
+		}
+		if idx, exists := seen[o.ID]; exists {
+			overrides[idx] = o
+		} else {
+			seen[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+	s.overridesMu.Lock()
+	s.rawOverrides = overrides
+	s.customPricing = buildCustomPricingData(overrides)
+	s.overridesMu.Unlock()
+	return nil
+}
+
+// UpsertOverrides inserts or replaces one or more overrides, rebuilding the
+// lookup map exactly once at the end.
+func (s *Store) UpsertOverrides(rows ...*configstoreTables.TablePricingOverride) error {
+	seenIncoming := make(map[string]int, len(rows))
+	overrides := make([]Override, 0, len(rows))
+	for _, row := range rows {
+		o, err := convertTableOverride(row)
+		if err != nil {
+			return err
+		}
+		if idx, exists := seenIncoming[o.ID]; exists {
+			overrides[idx] = o
+		} else {
+			seenIncoming[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+
+	s.overridesMu.Lock()
+	defer s.overridesMu.Unlock()
+
+	updated := make([]Override, 0, len(s.rawOverrides)+len(overrides))
+	for _, o := range s.rawOverrides {
+		if _, replacing := seenIncoming[o.ID]; !replacing {
+			updated = append(updated, o)
+		}
+	}
+	updated = append(updated, overrides...)
+	s.rawOverrides = updated
+	s.customPricing = buildCustomPricingData(updated)
+	return nil
+}
+
+// DeleteOverride removes an override by ID.
+func (s *Store) DeleteOverride(id string) {
+	s.overridesMu.Lock()
+	defer s.overridesMu.Unlock()
+	updated := make([]Override, 0, len(s.rawOverrides))
+	for _, o := range s.rawOverrides {
+		if o.ID != id {
+			updated = append(updated, o)
+		}
+	}
+	s.rawOverrides = updated
+	s.customPricing = buildCustomPricingData(updated)
 }

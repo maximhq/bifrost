@@ -1,9 +1,6 @@
-package modelcatalog
+package datasheet
 
 import (
-	"context"
-	"encoding/json"
-	"os"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -28,14 +25,14 @@ func chatPricing(input, output float64) configstoreTables.TableModelPricing {
 	}
 }
 
-// testCatalogWithPricing creates a catalog pre-loaded with the given pricing entries.
-func testCatalogWithPricing(entries map[string]configstoreTables.TableModelPricing) *ModelCatalog {
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
+// testStoreWithPricing creates a catalog pre-loaded with the given pricing entries.
+func testStoreWithPricing(entries map[string]configstoreTables.TableModelPricing) *Store {
+	s := newTestStore()
+	
 	for k, v := range entries {
-		mc.pricingData[k] = v
+		s.pricingData[k] = v
 	}
-	return mc
+	return s
 }
 
 // routingInfoFor builds a minimal RoutingInfo populated by core.bifrost for a
@@ -1148,7 +1145,7 @@ func TestExtractCostInput_VideoResponseInvalidSeconds(t *testing.T) {
 // =========================================================================
 
 func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
 			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
@@ -1170,7 +1167,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1179,7 +1176,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 	embModel := "text-embedding-3-small"
 	embTokens := 500
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
 			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
@@ -1208,7 +1205,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Only embedding cost: 500 * 0.00000002 = 0.00001
 	assert.InDelta(t, 0.00001, cost, 1e-12)
 }
@@ -1218,7 +1215,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 	embModel := "text-embedding-3-small"
 	embTokens := 500
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
 			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
@@ -1245,7 +1242,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Base cost: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	// Embedding cost: 500 * 0.00000002 = 0.00001
 	// Total: 0.01251
@@ -1253,7 +1250,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 }
 
 func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
+	s := testStoreWithPricing(nil)
 
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -1266,7 +1263,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1275,12 +1272,12 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 // =========================================================================
 
 func TestCalculateCost_NilResponse(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
-	assert.Equal(t, 0.0, mc.CalculateCost(nil, nil))
+	s := testStoreWithPricing(nil)
+	assert.Equal(t, 0.0, s.CalculateCost(nil, nil))
 }
 
 func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -1293,23 +1290,23 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
 }
 
 func TestCalculateCost_NoUsageData(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", nil)
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
 func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	// GPT-4o: $5/M input, $15/M output, cache_read=$0.5/M
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model: "gpt-4o", Provider: "openai", Mode: "chat",
 			InputCostPerToken:       bifrost.Ptr(0.000005),
@@ -1324,14 +1321,14 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 		TotalTokens:      12000,
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
 
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 	// Claude 3.5 Sonnet (Bedrock): $3/M input, $15/M output, cache_read=$0.3/M, cache_creation=$3.75/M
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): {
 			Model: "anthropic.claude-3-5-sonnet-20241022-v2:0", Provider: "bedrock", Mode: "chat",
 			InputCostPerToken:                 bifrost.Ptr(0.000003),
@@ -1353,7 +1350,7 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Both cached read and write tokens are input-side deductions from promptTokens.
 	// Input: (5000-3000-500)*0.000003 + 3000*0.0000003 + 500*0.00000375 = 0.0045 + 0.0009 + 0.001875 = 0.007275
 	// Output: 1000*0.000015 = 0.015
@@ -1363,7 +1360,7 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 
 func TestCalculateCost_Embedding(t *testing.T) {
 	// Titan Embed Text v1: $0.1/M input
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("amazon.titan-embed-text-v1", "bedrock", "embedding"): {
 			Model: "amazon.titan-embed-text-v1", Provider: "bedrock", Mode: "embedding",
 			InputCostPerToken:  bifrost.Ptr(0.0000001),
@@ -1376,13 +1373,13 @@ func TestCalculateCost_Embedding(t *testing.T) {
 		TotalTokens:  10000,
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 10000 * 0.0000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
 }
 
 func TestCalculateCost_Rerank(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("amazon.rerank-v1:0", "bedrock", "rerank"): {
 			Model: "amazon.rerank-v1:0", Provider: "bedrock", Mode: "rerank",
 			InputCostPerToken:  bifrost.Ptr(0.0),
@@ -1395,13 +1392,13 @@ func TestCalculateCost_Rerank(t *testing.T) {
 		TotalTokens:  500,
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
 func TestCalculateCost_ImageGeneration(t *testing.T) {
 	// dall-e-3 via aiml: output_cost_per_image=$0.052
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("dall-e-3", "aiml", "image_generation"): {
 			Model: "dall-e-3", Provider: "aiml", Mode: "image_generation",
 			OutputCostPerImage: bifrost.Ptr(0.052),
@@ -1412,13 +1409,13 @@ func TestCalculateCost_ImageGeneration(t *testing.T) {
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 3},
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 3 * 0.052 = 0.156
 	assert.InDelta(t, 0.156, cost, 1e-12)
 }
 
 func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -1433,12 +1430,12 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_WebSocketResponsesFallsBackToChatPricing(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -1454,16 +1451,16 @@ func TestCalculateCost_WebSocketResponsesFallsBackToChatPricing(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_NoPricingData(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
+	s := testStoreWithPricing(nil)
 	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
 	})
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1472,76 +1469,76 @@ func TestCalculateCost_NoPricingData(t *testing.T) {
 // =========================================================================
 
 func TestGetPricing_DirectLookup(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): {
 			Model: "gemini-2.0-flash", Provider: "vertex", Mode: "chat",
 			InputCostPerToken: bifrost.Ptr(0.0000001), OutputCostPerToken: bifrost.Ptr(0.0000004),
 		},
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_VertexStripsProviderPrefix(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "vertex", Model: "google/gemini-2.0-flash"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "vertex"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "vertex", Model: "google/gemini-2.0-flash"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "vertex"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_BedrockAddsAnthropicPrefix(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): chatPricing(0.000003, 0.000015),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "claude-3-5-sonnet-20241022-v2:0"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "bedrock"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "claude-3-5-sonnet-20241022-v2:0"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
 	assert.Equal(t, 0.000003, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_ResponsesFallsBackToChat(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesStreamRequest, PricingLookupScopes{Provider: "openai"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesStreamRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.RealtimeRequest, PricingLookupScopes{Provider: "openai"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.RealtimeRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
 	// gemini provider + responses request → try vertex + responses → try vertex + chat
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ResponsesRequest, PricingLookupScopes{Provider: "gemini"})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ResponsesRequest, LookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_NotFound(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "nonexistent"}, schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	s := testStoreWithPricing(nil)
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "nonexistent"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
 	assert.Nil(t, p)
 }
 
@@ -1550,32 +1547,32 @@ func TestGetPricing_NotFound(t *testing.T) {
 // =========================================================================
 
 func TestResolvePricing_DeploymentFallback(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
 	// Model not found directly, but deployment matches
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-custom", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, PricingLookupScopes{})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-custom", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, LookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"):        chatPricing(0.000005, 0.000015),
 		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000001, 0.000002),
 	})
 
 	// Resolved model ("my-deployment") is looked up first and has priority
 	// over the originally requested model ("gpt-4o").
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, PricingLookupScopes{})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, LookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "unknown"}, schemas.ChatCompletionRequest, PricingLookupScopes{})
+	s := testStoreWithPricing(nil)
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "unknown"}, schemas.ChatCompletionRequest, LookupScopes{})
 	assert.Nil(t, p)
 }
 
@@ -1662,7 +1659,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 
 func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 	// Claude 3.5 Sonnet Bedrock with 200k tier pricing
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock", "chat"): {
 			Model: "anthropic.claude-3-5-sonnet-20240620-v1:0", Provider: "bedrock", Mode: "chat",
 			InputCostPerToken:                          bifrost.Ptr(0.000003),
@@ -1682,14 +1679,14 @@ func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      210000, // Above 200k
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000006, output=0.00003
 	// 190000*0.000006 + 20000*0.00003 = 1.14 + 0.6 = 1.74
 	assert.InDelta(t, 1.74, cost, 1e-9)
 }
 
 func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("claude-3-7-sonnet", "anthropic", "chat"): {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
@@ -1712,7 +1709,7 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      280000, // Above 272k
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000009, output=0.000045
 	// 250000*0.000009 + 30000*0.000045 = 2.25 + 1.35 = 3.60
 	assert.InDelta(t, 3.60, cost, 1e-9)
@@ -1720,7 +1717,7 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 
 func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 	// Verifies the 272k cache read rate takes precedence over 200k and base rates
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("claude-3-7-sonnet", "anthropic", "chat"): {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
@@ -1744,7 +1741,7 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Non-cached input: (250000-50000) * 0.000009 = 200000 * 0.000009 = 1.80
 	// Cached read (272k rate): 50000 * 0.0000009 = 0.045
 	// Output: 30000 * 0.000045 = 1.35
@@ -1856,7 +1853,7 @@ func TestComputeTextCost_PriorityCacheReadRate(t *testing.T) {
 
 func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 	tier := schemas.BifrostServiceTierPriority
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
@@ -1883,14 +1880,14 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Priority rates: 1000*0.000010 + 500*0.000030 = 0.010 + 0.015 = 0.025
 	assert.InDelta(t, 0.025, cost, 1e-12)
 }
 
 func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 	tier := schemas.BifrostServiceTierAuto
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
@@ -1917,7 +1914,7 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Base rates (not priority): 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -2133,7 +2130,7 @@ func TestComputeTextCost_FlexFallsBackToBaseWhenNoFlexRate(t *testing.T) {
 
 func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 	tier := schemas.BifrostServiceTierFlex
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): {
 			Model:                  "gpt-4o",
 			Provider:               "openai",
@@ -2160,14 +2157,14 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Flex rates: 1000*0.0000025 + 500*0.0000075 = 0.0025 + 0.00375 = 0.00625
 	assert.InDelta(t, 0.00625, cost, 1e-12)
 }
 
 func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 	tier := schemas.BifrostServiceTierFlex
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2186,13 +2183,13 @@ func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// No flex rates configured — falls back to base: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_ProviderCostZeroTotalStillCalculates(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2206,7 +2203,7 @@ func TestCalculateCost_ProviderCostZeroTotalStillCalculates(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
@@ -2243,12 +2240,12 @@ func TestCalculateCost_ImageGeneration_NilUsage_PerImagePricing(t *testing.T) {
 		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("dall-e-3", "openai", "image_generation"): pricing,
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", nil)
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 1 image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
@@ -2263,12 +2260,12 @@ func TestCalculateCost_ImageGeneration_NilUsage_InputAndOutputPerImage(t *testin
 		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("test-image-model", "test", "image_generation"): pricing,
 	})
 
 	resp := makeImageResponse("test", "test-image-model", nil)
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// NumInputImages is 0 (not populated from request), so only output pricing applies
 	// 1 output image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
@@ -2284,14 +2281,14 @@ func TestCalculateCost_ImageGeneration_WithInputImages(t *testing.T) {
 		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-image-1", "openai", "image_generation"): pricing,
 	})
 
 	resp := makeImageResponse("openai", "gpt-image-1", &schemas.ImageUsage{
 		NumInputImages: 2,
 	})
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 2 input images * $0.01 + 1 output image * $0.04 = $0.06
 	assert.InDelta(t, 0.06, cost, 1e-12)
 }
@@ -2305,7 +2302,7 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("dall-e-3", "openai", "image_generation"): pricing,
 	})
 
@@ -2322,7 +2319,7 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 			},
 		},
 	}
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 3 output images * $0.04 = $0.12
 	assert.InDelta(t, 0.12, cost, 1e-12)
 }
@@ -2337,12 +2334,12 @@ func TestCalculateCost_ImageGeneration_NilUsage_NoPerImagePricing(t *testing.T) 
 		OutputCostPerToken: bifrost.Ptr(0.000002),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("token-only-model", "test", "image_generation"): pricing,
 	})
 
 	resp := makeImageResponse("test", "token-only-model", nil)
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// No per-image pricing and all tokens are zero → 0
 	assert.InDelta(t, 0.0, cost, 1e-12)
 }
@@ -2356,12 +2353,12 @@ func TestCalculateCost_ImageGeneration_EmptyUsage_PerImagePricing(t *testing.T) 
 		OutputCostPerImage: bifrost.Ptr(0.04),
 	}
 
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("dall-e-3", "openai", "image_generation"): pricing,
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", &schemas.ImageUsage{})
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
 
@@ -2420,7 +2417,7 @@ func TestComputeImageCost_BothHaveTokens_IgnoresPerImage(t *testing.T) {
 }
 
 func TestCalculateCost_ResponsesWithCodeInterpreter(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4.1", "openai", "chat"): chatPricing(0.000002, 0.000008),
 	})
 
@@ -2443,7 +2440,7 @@ func TestCalculateCost_ResponsesWithCodeInterpreter(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Token cost only: 579*0.000002 + 334*0.000008 = 0.001158 + 0.002672 = 0.003830
 	// Session cost is now tracked via ContainerCreateRequest, not per-response
 	assert.InDelta(t, 0.003830, cost, 1e-6)
@@ -2481,7 +2478,7 @@ func TestComputeContainerCreationCost_NilRate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCalculateCost_ContainerCreate_NoMemoryLimit(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("container", "openai", "chat"): {
 			Model:                         "container",
 			Provider:                      "openai",
@@ -2501,12 +2498,12 @@ func TestCalculateCost_ContainerCreate_NoMemoryLimit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.03, cost, 1e-12)
 }
 
 func TestCalculateCost_ContainerCreate_MemorySpecificEntry(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("container", "openai", "chat"): {
 			Model:                         "container",
 			Provider:                      "openai",
@@ -2533,12 +2530,12 @@ func TestCalculateCost_ContainerCreate_MemorySpecificEntry(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.12, cost, 1e-12)
 }
 
 func TestCalculateCost_ContainerCreate_FallsBackToBaseEntry(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("container", "openai", "chat"): {
 			Model:                         "container",
 			Provider:                      "openai",
@@ -2560,12 +2557,12 @@ func TestCalculateCost_ContainerCreate_FallsBackToBaseEntry(t *testing.T) {
 	}
 
 	// No container-4g entry — should fall back to base "container" rate
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.03, cost, 1e-12)
 }
 
-func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
-	mc := testCatalogWithPricing(nil)
+func TestCalculateCost_ContainerCreate_NoEntry(t *testing.T) {
+	s := testStoreWithPricing(nil)
 
 	resp := &schemas.BifrostResponse{
 		ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
@@ -2578,7 +2575,7 @@ func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -2594,7 +2591,7 @@ func TestCalculateCost_ContainerCreate_NoPricingEntry(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCalculateCost_BackCompat_LegacyFieldsOnly_NoAlias(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2611,13 +2608,13 @@ func TestCalculateCost_BackCompat_LegacyFieldsOnly_NoAlias(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 1000 * 0.000005 + 500 * 0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_BackCompat_LegacyFieldsOnly_WithAlias(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2638,13 +2635,13 @@ func TestCalculateCost_BackCompat_LegacyFieldsOnly_WithAlias(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// 1000 * 0.000005 + 500 * 0.000015 = 0.0125, charged via the deployment-keyed entry
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_BackCompat_RoutingInfoWinsOverLegacyFields(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 		makeKey("gemini-2.0-flash", "gemini", "chat"): {
 			Model:              "gemini-2.0-flash",
@@ -2669,13 +2666,13 @@ func TestCalculateCost_BackCompat_RoutingInfoWinsOverLegacyFields(t *testing.T) 
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	// Priced via RoutingInfo → openai/gpt-4o → 0.0125 (not the gemini rate).
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
 func TestCalculateCost_BackCompat_BothEmpty_ReturnsZero(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2690,12 +2687,12 @@ func TestCalculateCost_BackCompat_BothEmpty_ReturnsZero(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
 func TestCalculateCost_BackCompat_PartialRoutingInfo_NoFallback(t *testing.T) {
-	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 
@@ -2715,77 +2712,6 @@ func TestCalculateCost_BackCompat_PartialRoutingInfo_NoFallback(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp, nil)
+	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
-}
-
-// ---------------------------------------------------------------------------
-// file:// URL loading tests
-// ---------------------------------------------------------------------------
-
-func TestLoadPricingFromURL_FileScheme(t *testing.T) {
-	pricingData := map[string]PricingEntry{
-		"gpt-4o": {
-			Provider: "openai",
-			Mode:     "chat",
-		},
-	}
-	data, err := json.Marshal(pricingData)
-	require.NoError(t, err)
-
-	f, err := os.CreateTemp(t.TempDir(), "pricing-*.json")
-	require.NoError(t, err)
-	_, err = f.Write(data)
-	require.NoError(t, err)
-	f.Close()
-
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
-	mc.pricingURL = "file://" + f.Name()
-
-	result, err := mc.loadPricingFromURL(context.Background())
-	require.NoError(t, err)
-	require.Len(t, result, 1)
-	assert.Equal(t, "openai", result["gpt-4o"].Provider)
-}
-
-func TestLoadPricingFromURL_FileMissing(t *testing.T) {
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
-	mc.pricingURL = "file:///nonexistent/path/pricing.json"
-
-	_, err := mc.loadPricingFromURL(context.Background())
-	require.Error(t, err)
-}
-
-func TestLoadModelParametersFromURL_FileScheme(t *testing.T) {
-	paramsData := map[string]json.RawMessage{
-		"gpt-4o": json.RawMessage(`{"max_output_tokens":4096}`),
-	}
-	data, err := json.Marshal(paramsData)
-	require.NoError(t, err)
-
-	f, err := os.CreateTemp(t.TempDir(), "model-parameters-*.json")
-	require.NoError(t, err)
-	_, err = f.Write(data)
-	require.NoError(t, err)
-	f.Close()
-
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
-	mc.modelParametersURL = "file://" + f.Name()
-
-	result, err := mc.loadModelParametersFromURL(context.Background())
-	require.NoError(t, err)
-	require.Len(t, result, 1)
-	assert.JSONEq(t, `{"max_output_tokens":4096}`, string(result["gpt-4o"]))
-}
-
-func TestLoadModelParametersFromURL_FileMissing(t *testing.T) {
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
-	mc.modelParametersURL = "file:///nonexistent/path/model-parameters.json"
-
-	_, err := mc.loadModelParametersFromURL(context.Background())
-	require.Error(t, err)
 }

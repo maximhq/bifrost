@@ -1,4 +1,4 @@
-package modelcatalog
+package datasheet
 
 import (
 	"testing"
@@ -7,13 +7,13 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-func TestGetModelCapabilityEntryForModel_PrefersChatThenResponsesThenCompletion(t *testing.T) {
+func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T) {
 	contextLengthChat := 128000
 	maxInputTokensChat := 64000
 	maxOutputTokensChat := 16000
 	modality := "text"
 
-	mc := &ModelCatalog{
+	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
 			makeKey("gpt-4o", "openai", "responses"): {
 				Model:           "gpt-4o",
@@ -37,7 +37,7 @@ func TestGetModelCapabilityEntryForModel_PrefersChatThenResponsesThenCompletion(
 		},
 	}
 
-	entry := mc.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI)
+	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
 		t.Fatal("expected capability entry")
 	}
@@ -58,8 +58,8 @@ func TestGetModelCapabilityEntryForModel_PrefersChatThenResponsesThenCompletion(
 	}
 }
 
-func TestGetModelCapabilityEntryForModel_FallsBackToAnyModeDeterministically(t *testing.T) {
-	mc := &ModelCatalog{
+func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
+	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
 			makeKey("imagen", "vertex", "image_generation"): {
 				Model:           "imagen",
@@ -71,7 +71,7 @@ func TestGetModelCapabilityEntryForModel_FallsBackToAnyModeDeterministically(t *
 		},
 	}
 
-	entry := mc.GetModelCapabilityEntryForModel("imagen", schemas.Vertex)
+	entry := s.GetCapabilityEntry("imagen", schemas.Vertex)
 	if entry == nil {
 		t.Fatal("expected capability entry")
 	}
@@ -80,10 +80,10 @@ func TestGetModelCapabilityEntryForModel_FallsBackToAnyModeDeterministically(t *
 	}
 }
 
-func TestGetModelCapabilityEntryForModel_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
+func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 
-	mc := &ModelCatalog{
+	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
 			makeKey("gpt-4o-2024-08-06", "openai", "responses"): {
 				Model:           "gpt-4o-2024-08-06",
@@ -107,7 +107,7 @@ func TestGetModelCapabilityEntryForModel_ResolvesAliasFamilyViaBaseModel(t *test
 		},
 	}
 
-	entry := mc.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI)
+	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
 		t.Fatal("expected capability entry for base-model alias")
 	}
@@ -119,8 +119,8 @@ func TestGetModelCapabilityEntryForModel_ResolvesAliasFamilyViaBaseModel(t *test
 	}
 }
 
-func TestGetModelCapabilityEntryForModel_ResolvesProviderPrefixedAlias(t *testing.T) {
-	mc := &ModelCatalog{
+func TestGetCapabilityEntry_ResolvesProviderPrefixedAlias(t *testing.T) {
+	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
 			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
@@ -136,7 +136,7 @@ func TestGetModelCapabilityEntryForModel_ResolvesProviderPrefixedAlias(t *testin
 		},
 	}
 
-	entry := mc.GetModelCapabilityEntryForModel("openai/gpt-4o", schemas.OpenAI)
+	entry := s.GetCapabilityEntry("openai/gpt-4o", schemas.OpenAI)
 	if entry == nil {
 		t.Fatal("expected capability entry for provider-prefixed alias")
 	}
@@ -145,11 +145,11 @@ func TestGetModelCapabilityEntryForModel_ResolvesProviderPrefixedAlias(t *testin
 	}
 }
 
-func TestGetModelCapabilityEntryForModel_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
+func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 	literalContextLength := 32000
 	aliasContextLength := 128000
 
-	mc := &ModelCatalog{
+	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
 			makeKey("gpt-4o", "openai", "chat"): {
 				Model:           "gpt-4o",
@@ -174,7 +174,7 @@ func TestGetModelCapabilityEntryForModel_PrefersLiteralMatchOverAliasFamily(t *t
 		},
 	}
 
-	entry := mc.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI)
+	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
 		t.Fatal("expected literal capability entry")
 	}
@@ -187,24 +187,24 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	modality := "text"
 	inputCost := float64(1)
 	outputCost := float64(2)
-	entry := PricingEntry{
+	entry := Entry{
 		BaseModel: "gpt-4o",
 		Provider:  "openai",
 		Mode:      "chat",
-		PricingOptions: PricingOptions{
+		Options: Options{
 			InputCostPerToken:  &inputCost,
 			OutputCostPerToken: &outputCost,
 		},
-		ContextLength:  capabilityIntPtr(128000),
-		MaxInputTokens:     capabilityIntPtr(64000),
-		MaxOutputTokens:    capabilityIntPtr(16000),
+		ContextLength:   capabilityIntPtr(128000),
+		MaxInputTokens:  capabilityIntPtr(64000),
+		MaxOutputTokens: capabilityIntPtr(16000),
 		Architecture: &schemas.Architecture{
 			Modality: &modality,
 		},
 	}
 
-	table := convertPricingDataToTableModelPricing("gpt-4o", entry)
-	roundTrip := convertTableModelPricingToPricingData(&table)
+	table := convertEntryToTablePricing("gpt-4o", entry)
+	roundTrip := convertTablePricingToEntry(&table)
 
 	if roundTrip.ContextLength == nil || *roundTrip.ContextLength != 128000 {
 		t.Fatalf("expected context_length to round-trip, got %#v", roundTrip.ContextLength)
