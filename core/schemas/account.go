@@ -156,7 +156,10 @@ const (
 	ModelFamilyMistral   ModelFamily = "mistral"
 	ModelFamilyCohere    ModelFamily = "cohere"
 	ModelFamilyGemini    ModelFamily = "gemini"
+	ModelFamilyGemma     ModelFamily = "gemma"
 	ModelFamilyLlama     ModelFamily = "llama"
+	ModelFamilyImagen    ModelFamily = "imagen"
+	ModelFamilyVeo       ModelFamily = "veo"
 	ModelFamilyNova      ModelFamily = "nova"
 	ModelFamilyTitan     ModelFamily = "titan"
 )
@@ -168,7 +171,8 @@ func (mf *ModelFamily) IsValid() bool {
 	}
 	switch *mf {
 	case ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
-		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyLlama,
+		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyGemma,
+		ModelFamilyLlama, ModelFamilyImagen, ModelFamilyVeo,
 		ModelFamilyNova, ModelFamilyTitan:
 		return true
 	}
@@ -359,8 +363,18 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 			return ModelFamilyAnthropic
 		case IsMistralModel(s):
 			return ModelFamilyMistral
+		// Imagen and Veo are checked before Gemini as a defensive ordering:
+		// they are distinct Google model families whose names do not contain
+		// "gemini", so they could never be mis-classified here, but keeping
+		// them first makes the intent explicit.
+		case IsImagenModel(s):
+			return ModelFamilyImagen
+		case IsVeoModel(s):
+			return ModelFamilyVeo
 		case IsGeminiModel(s):
 			return ModelFamilyGemini
+		case IsGemmaModel(s):
+			return ModelFamilyGemma
 		case IsLlamaModel(s):
 			return ModelFamilyLlama
 		case IsNovaModel(s):
@@ -416,6 +430,33 @@ func IsCohereModelFamily(ctx *BifrostContext, model string) bool {
 // request/response envelope.
 func IsTitanModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyTitan
+}
+
+// IsGeminiModelFamily reports whether the current attempt resolves to the
+// Google Gemini model family. Used by Vertex to pick Gemini-shaped request
+// transforms and the publishers/google URL prefix.
+func IsGeminiModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyGemini
+}
+
+// IsGemmaModelFamily reports whether the current attempt resolves to the
+// Gemma model family. Vertex routes Gemma via the publishers/google path
+// alongside Gemini.
+func IsGemmaModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyGemma
+}
+
+// IsImagenModelFamily reports whether the current attempt resolves to the
+// Imagen model family. Used by Vertex for the :predict endpoint and Imagen-
+// specific request shaping.
+func IsImagenModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyImagen
+}
+
+// IsVeoModelFamily reports whether the current attempt resolves to the Veo
+// model family. Used by Vertex for video-generation request shaping.
+func IsVeoModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyVeo
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
