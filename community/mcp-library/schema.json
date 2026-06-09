@@ -71,8 +71,7 @@
         },
         "icon_url": {
           "type": "string",
-          "description": "URL to a square icon (PNG/SVG recommended).",
-          "format": "uri"
+          "description": "URL or path to a square icon (PNG/SVG recommended)."
         },
         "docs_url": {
           "type": "string",
