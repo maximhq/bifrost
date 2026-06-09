@@ -266,17 +266,96 @@ To create an API token, navigate to **Security** → **API** → **Tokens**.
 
 ## Step 8: Understand Okta user sync
 
-Bifrost does not currently support Okta SCIM management APIs or inbound Okta SCIM provisioning. Do not create or configure an Okta SCIM app for Bifrost yet.
+Bifrost supports two complementary sync mechanisms for Okta users:
 
-For Okta, Bifrost uses the API token from Step 7 to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Okta.
+**Background reconciliation (always on):**
+
+Bifrost uses the API token from Step 7 to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Okta.
 
 Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Okta whether the user is still active; if Okta reports the user is inactive, Bifrost decommissions that user locally.
 
-Support for Okta SCIM management APIs is coming soon.
+**Inbound SCIM push (optional, real-time):**
+
+Bifrost exposes a SCIM 2.0 endpoint that Okta can push user and group changes to in real time — without waiting for the next 24-hour reconciliation.
 
 ---
 
-## Step 9: Configure Bifrost
+## Step 9: Configure Okta SCIM push (optional)
+
+<Note>
+  Okta does not support SCIM provisioning on a custom OIDC app. You need to create a **separate** SCIM app in Okta alongside your existing OIDC application.
+</Note>
+
+### Create a SCIM app in Okta
+
+1. In the Okta Admin Console, go to **Applications → Applications** and click **Browse App Catalog**.
+2. Search for **SCIM 2.0 Test App (Header Auth)** and add it.
+3. Give it a recognizable name, e.g. **Bifrost SCIM**.
+
+### Connect it to Bifrost
+
+4. Open the new SCIM app and go to **Provisioning → Configure API Integration**.
+5. Check **Enable API Integration** and enter:
+   - **SCIM 2.0 Base URL**: `https://your-bifrost-domain.com/scim/v2` (can be found under **Governance → User Provisioning → SCIM Settings**)
+   - **API Token**: the provisioning token from Bifrost (generate it under **Governance → User Provisioning → SCIM Settings → Rotate Provisioning Token**)
+6. Click **Test API Credentials** to verify the connection, then **Save**.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-configure-api.png" alt="Okta SCIM app — Configure API Integration" />
+</Frame>
+
+### Enable provisioning actions
+
+7. Still under **Provisioning → To App**, enable:
+   - **Create Users**
+   - **Update User Attributes**
+   - **Deactivate Users**
+8. Click **Save**.
+
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-configure-provisioning.png" alt="Okta SCIM app — Provisioning To App settings" />
+</Frame>
+
+### Assign users and groups
+
+9. Go to the **Assignments** tab and assign the users or groups you want to keep in sync with Bifrost.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-assignments.png" alt="Okta SCIM app — Assignments" />
+</Frame>
+
+Assigned users are pushed to Bifrost immediately. When a user is removed from the assignment or deactivated in Okta, Bifrost decommissions them in real time.
+
+### Push Groups (for group-based team/BU mapping)
+
+User sync covers individual user attributes. To also sync group membership so that Bifrost can assign teams or business units based on Okta group names, you need to configure **Push Groups**:
+
+10. Go to the **Push Groups** tab in the SCIM app.
+11. Click **Push Groups** → **Find groups by name** and add the Okta groups you want to push to Bifrost.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-push-groups.png" alt="Okta SCIM app — Push Groups" />
+</Frame>
+
+Once groups are pushed, configure `attributeType: "group"` mappings in Bifrost to assign teams or business units based on the group `displayName`:
+
+```json
+{
+  "attribute": "displayName",
+  "value": "platform-team",
+  "team": "Platform",
+  "attributeType": "group"
+}
+```
+
+<Note>
+  SCIM push and the 24-hour background sync are complementary. SCIM push gives real-time updates; background sync catches anything the SCIM connector may have missed — but only if an API token is configured (Step 7).
+</Note>
+
+---
+
+## Step 10: Configure Bifrost
 
 Now configure Bifrost to use Okta as the identity provider.
 
@@ -379,9 +458,11 @@ You can also map any custom attributes to any entity (role, team or business uni
 | `clientId`                      | Yes      | Application Client ID from Okta                                                                                |
 | `clientSecret`                  | Yes      | Application Client Secret (enables token revocation)                                                           |
 | `audience`                      | Custom only | API audience identifier from your Custom Authorization Server. Leave empty for Org Authorization Server.       |
-| `attributeRoleMappings`         | Yes      | Ordered list of attribute→role mappings. First match wins.                                                     |
-| `attributeTeamMappings`         | No       | Attribute→team mappings (all matches apply).                                                                   |
-| `attributeBusinessUnitMappings` | No       | Attribute→business-unit mappings (all matches apply).                                                          |
+| `apiToken`                      | No       | Okta API token for bulk import and 24-hour background sync.                                                    |
+| `provisioningToken`             | No       | Bearer token for inbound SCIM push from Okta. Rotate via the dashboard or `POST /api/scim/providers/{name}/provisioning-token/rotate`. |
+| `attributeRoleMappings`         | Yes      | Ordered list of `{ attribute, value, role }` mappings. First match wins.                                       |
+| `attributeTeamMappings`         | No       | List of `{ attribute, value, team, attributeType, attributeValue }` mappings. All matches apply.               |
+| `attributeBusinessUnitMappings` | No       | List of `{ attribute, value, businessUnit, attributeType, attributeValue }` mappings. All matches apply.       |
 
 
 ---
