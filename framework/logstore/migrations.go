@@ -2112,10 +2112,11 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// and value separately, making the index ~3x smaller and faster to build.
 	// It supports the @> containment operator used by all metadata filter queries.
 	//
-	// The partial predicate (WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT) skips NULL and non-object rows,
-	// further reducing build time and index size. Queries that filter on metadata
-	// always include an IS NOT NULL guard (rdb.go) so the planner will use this index.
-	if _, err := conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT"); err != nil {
+	// The partial predicate skips NULL and non-object rows, further reducing build
+	// time and index size. Queries that filter on metadata always include the same
+	// guard (rdb.go) so the planner will use this index.
+	// Use jsonb_typeof (PG 9.4+) instead of IS JSON OBJECT (PG 15+) for compatibility.
+	if _, err := conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object'"); err != nil {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
 	}
 	return nil

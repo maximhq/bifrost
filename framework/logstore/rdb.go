@@ -317,7 +317,7 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// Guard must match the partial-index predicate so the planner uses the GIN index.
 		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object'")
 		} else {
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
 		}
@@ -327,17 +327,10 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 			switch dialect {
 			case "postgres":
-				// Use @> containment operator to leverage GIN index on metadata::jsonb
-				// Preserve value type (number/boolean) for JSON containment
-				var jsonFragment string
-				if value == "true" || value == "false" {
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, value)
-				} else if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
-					// Reject NaN/Inf which would produce invalid JSON; normalize the number
-					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, strconv.FormatFloat(f, 'f', -1, 64))
-				} else {
-					jsonFragment = fmt.Sprintf(`{%q: %q}`, key, value)
-				}
+				// Use @> containment operator to leverage GIN index on metadata::jsonb.
+				// Metadata values always originate from HTTP headers and are stored as JSON
+				// strings — always match as a string to avoid type mismatch with jsonb.
+				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
 				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
@@ -691,6 +684,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		}
 	}
 
+	pagination.TotalCount = totalCount
 	return &SearchResult{
 		Logs:       logs,
 		Pagination: pagination,
@@ -3357,7 +3351,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 	// Guard must match the partial-index predicate so the planner uses the GIN index.
 	var metadataGuard string
 	if s.db.Dialector.Name() == "postgres" {
-		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
+		metadataGuard = "metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object' AND metadata != '{}' AND timestamp >= ?"
 	} else {
 		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
 	}
