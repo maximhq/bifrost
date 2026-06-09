@@ -276,9 +276,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if k.Aliases != nil {
-		if err := k.Aliases.Validate(); err != nil {
-			return err
-		}
 		data, err := sonic.Marshal(k.Aliases)
 		if err != nil {
 			return err

@@ -113,7 +113,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := key.Aliases.Validate(); err != nil {
+	if err := key.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
@@ -224,7 +224,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := mergedKey.Aliases.Validate(); err != nil {
+	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
