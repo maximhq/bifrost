@@ -630,6 +630,8 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			r.PUT(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodDelete:
 			r.DELETE(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
+		case fasthttp.MethodPatch:
+			r.PATCH(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodHead:
 			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
