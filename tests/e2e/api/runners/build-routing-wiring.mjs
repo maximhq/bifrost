@@ -582,6 +582,30 @@ const SCENARIOS = [
     ],
   },
   {
+    id: "reverse-alias-gate",
+    title: "Routing the resolved model directly (not the alias) is rejected",
+    description: "A key gates the alias name, not the resolved id. Routing the alias resolves and succeeds; routing the resolved model id directly fails the gate — alias targets are not auto-added to the key's Models.",
+    steps: [
+      { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
+      { type: "route", model: "catwiring-alias-{{run_id}}", useVk: false, expectStatus: 200, expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias routes (resolves to the model id)" },
+      { type: "route", model: MODEL_B, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", waitSeconds: 0, label: "resolved id routed directly → 400 (not in Models)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "alias-collision-last-wins",
+    title: "An alias defined on two keys resolves to the last key",
+    description: "Two keys define the same alias to different models. The alias resolves to the last-defined key's target and is served by that key.",
+    steps: [
+      { type: "addProvider", keys: [
+        key({ id: "k1", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_A } }),
+        key({ id: "k2", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_B } }),
+      ] },
+      { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k2", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias resolves to the last key (k2 → gpt-4o-mini)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
     id: "alias-routing-no-vk",
     title: "Alias resolves at routing with no governance",
     description: "Pure model-catalog case (no VK): a key alias routes an inference request to the underlying model; routing_info.resolved_key_alias records the resolution.",
