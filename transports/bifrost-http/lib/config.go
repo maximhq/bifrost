@@ -803,6 +803,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := initEncryption(&configData); err != nil {
 		return nil, err
 	}
+	// 1a. Vault config acknowledgement (initialization handled by enterprise layer)
+	initVault(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -4088,6 +4090,10 @@ func initEncryption(configData *ConfigData) error {
 	}
 	return nil
 }
+
+// initVault is a no-op stub at the OSS level.
+// Vault initialization is performed by the enterprise layer via config_store.vault_store.
+func initVault(_ *ConfigData) {}
 
 // syncEncryption encrypts all plaintext rows in the config store if encryption is enabled.
 // Called during bootup after encryption key is initialized and all config data has been loaded.

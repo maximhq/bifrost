@@ -1828,7 +1828,31 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 
 		headersJSONStr := string(headersJSON)
-		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
+		vaultEnabled := tables.VaultIsEnabled()
+		mcpTableName := tables.TableMCPClient{}.TableName()
+		vaultPfx := tables.VaultPrefix()
+		if tables.VaultHooks.Prefix != nil {
+			vaultPfx = tables.VaultHooks.Prefix()
+		}
+		headersPath := fmt.Sprintf("%s/%s/%s/headers_json", vaultPfx, mcpTableName, id)
+		connPath := fmt.Sprintf("%s/%s/%s/connection_string", vaultPfx, mcpTableName, id)
+		// StoreString runs before Updates so the vault ref is available to write to DB.
+		// vaultStoredPaths tracks paths written to vault so we can compensate (remove)
+		// if the subsequent DB write fails — preventing vault/DB divergence.
+		// vaultRemovePaths tracks cleared/env-backed paths to remove post-commit so a
+		// DB failure doesn't leave DB holding a ref to an already-deleted vault entry.
+		var vaultStoredPaths []string
+		var vaultRemovePaths []string
+		if vaultEnabled {
+			if headersJSONStr != "" && headersJSONStr != "{}" {
+				if err := tables.VaultHooks.StoreString(ctx, headersPath, &headersJSONStr); err != nil {
+					return fmt.Errorf("failed to vault mcp headers: %w", err)
+				}
+				vaultStoredPaths = append(vaultStoredPaths, headersPath)
+			} else if tables.VaultHooks.Remove != nil {
+				vaultRemovePaths = append(vaultRemovePaths, headersPath)
+			}
+		} else if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
 			encrypted, encErr := encrypt.Encrypt(headersJSONStr)
 			if encErr != nil {
 				return fmt.Errorf("failed to encrypt mcp headers: %w", encErr)
@@ -1851,7 +1875,9 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
 		}
-		if encrypt.IsEnabled() {
+		if vaultEnabled {
+			updates["encryption_status"] = tables.EncryptionStatusVault
+		} else if encrypt.IsEnabled() {
 			updates["encryption_status"] = encryptionStatusEncrypted
 		}
 		if clientConfigCopy.OauthConfigID != nil {
@@ -1875,7 +1901,19 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		// also sync connection/auth metadata from config.json and persist the hash.
 		if clientConfigCopy.ConfigHash != "" {
 			connectionStringToPersist := clientConfigCopy.ConnectionString
-			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
+			if vaultEnabled {
+				if connectionStringToPersist != nil && !connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
+					// Mirror TableMCPClient.BeforeSave vault behavior for map-based Updates.
+					cs := *connectionStringToPersist
+					if err := tables.VaultHooks.StoreString(ctx, connPath, &cs.Val); err != nil {
+						return fmt.Errorf("failed to vault mcp connection string: %w", err)
+					}
+					connectionStringToPersist = &cs
+					vaultStoredPaths = append(vaultStoredPaths, connPath)
+				} else if tables.VaultHooks.Remove != nil {
+					vaultRemovePaths = append(vaultRemovePaths, connPath)
+				}
+			} else if encrypt.IsEnabled() && connectionStringToPersist != nil &&
 				!connectionStringToPersist.IsFromEnv() && connectionStringToPersist.GetValue() != "" {
 				// Mirror TableMCPClient.BeforeSave behavior for map-based Updates.
 				cs := *connectionStringToPersist
@@ -1904,7 +1942,20 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
+			// DB write failed — compensate by removing any vault entries we just wrote
+			// so vault and DB don't diverge (old DB ref would point to nothing).
+			if tables.VaultHooks.Remove != nil {
+				for _, p := range vaultStoredPaths {
+					_ = tables.VaultHooks.Remove(ctx, p)
+				}
+			}
 			return s.parseGormError(err)
+		}
+		// Post-commit: best-effort vault removal for cleared/env-backed fields.
+		// Runs after DB succeeds so a failed Updates doesn't leave DB holding a
+		// ref to a vault entry we already deleted.
+		for _, p := range vaultRemovePaths {
+			_ = tables.VaultHooks.Remove(ctx, p)
 		}
 		return nil
 	})
@@ -1912,16 +1963,45 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.
 func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
-		// Find existing client
-		var existingClient tables.TableMCPClient
-		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("MCP client with id '%s' not found", id)
-			}
-			return err
+	// Find existing client upfront so we can pre-select vault-backed rows.
+	var existingClient tables.TableMCPClient
+	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("MCP client with id '%s' not found", id)
 		}
+		return err
+	}
 
+	// Fetch IDs of vault-backed rows before deletion for post-tx cleanup.
+	var vaultTokenIDs, vaultSessionIDs, vaultCredIDs []string
+	if tables.VaultHooks.Remove != nil {
+		var tokens []tables.TableOauthUserToken
+		if err := s.DB().WithContext(ctx).Select("id").
+			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
+			Find(&tokens).Error; err == nil {
+			for _, t := range tokens {
+				vaultTokenIDs = append(vaultTokenIDs, t.ID)
+			}
+		}
+		var sessions []tables.TableOauthUserSession
+		if err := s.DB().WithContext(ctx).Select("id").
+			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
+			Find(&sessions).Error; err == nil {
+			for _, sess := range sessions {
+				vaultSessionIDs = append(vaultSessionIDs, sess.ID)
+			}
+		}
+		var creds []tables.TableMCPPerUserHeaderCredential
+		if err := s.DB().WithContext(ctx).Select("id").
+			Where("mcp_client_id = ? AND encryption_status = ?", existingClient.ClientID, tables.EncryptionStatusVault).
+			Find(&creds).Error; err == nil {
+			for _, c := range creds {
+				vaultCredIDs = append(vaultCredIDs, c.ID)
+			}
+		}
+	}
+
+	err := s.DB().Transaction(func(tx *gorm.DB) error {
 		// Delete any virtual key MCP configs that reference this client
 		var configIDs []uint
 		if err := dbForUpdate(tx.WithContext(ctx)).
@@ -1958,6 +2038,20 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 		// Delete the client (this will also handle foreign key cascades)
 		return tx.WithContext(ctx).Delete(&existingClient).Error
 	})
+	if err != nil {
+		return err
+	}
+
+	// Best-effort vault cleanup after successful transaction.
+	if len(vaultTokenIDs) > 0 || len(vaultSessionIDs) > 0 || len(vaultCredIDs) > 0 {
+		go func() {
+			tables.TableOauthUserToken{}.DeleteVaultSecrets(context.Background(), vaultTokenIDs)
+			tables.TableOauthUserSession{}.DeleteVaultSecrets(context.Background(), vaultSessionIDs)
+			tables.TableMCPPerUserHeaderCredential{}.DeleteVaultSecrets(context.Background(), vaultCredIDs)
+		}()
+	}
+
+	return nil
 }
 
 // GetVectorStoreConfig retrieves the vector store configuration from the database.
@@ -2490,11 +2584,22 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
-	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {
-		if localTx {
-			txDB.Rollback()
+	var existing tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", plugin.Name).First(&existing).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
 		}
-		return err
+		// not found — nothing to delete
+	} else {
+		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
+			if localTx {
+				txDB.Rollback()
+			}
+			return err
+		}
 	}
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		if localTx {
@@ -2516,7 +2621,14 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	} else {
 		txDB = s.DB()
 	}
-	return txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", name).Error
+	var plugin tables.TablePlugin
+	if err := txDB.WithContext(ctx).Where("name = ?", name).First(&plugin).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return txDB.WithContext(ctx).Delete(&plugin).Error
 }
 
 // GOVERNANCE METHODS
@@ -3038,8 +3150,8 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 			return err
 		}
 		rateLimitID := virtualKey.RateLimitID
-		// Delete the virtual key
-		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
+		// Delete the virtual key (use hydrated struct so AfterDelete vault cleanup fires correctly)
+		if err := txDB.WithContext(ctx).Delete(&virtualKey).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -4935,13 +5047,17 @@ func (s *RDBConfigStore) CreateSession(ctx context.Context, session *tables.Sess
 // DeleteSession deletes a session from the database.
 func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error {
 	tokenHash := encrypt.HashSHA256(token)
-	result := s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token_hash = ?", tokenHash)
+	var session tables.SessionsTable
+	if err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Fall back to plaintext lookup for backward compatibility
+			return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
+		}
+		return err
+	}
+	result := s.DB().WithContext(ctx).Delete(&session)
 	if result.Error != nil {
 		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		// Fall back to plaintext lookup for backward compatibility
-		return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error
 	}
 	return nil
 }
@@ -4990,11 +5106,20 @@ func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope
 	if len(tx) > 0 {
 		db = tx[0]
 	}
+	var vaultIDs []string
+	if tables.VaultHooks.Remove != nil {
+		db.WithContext(ctx).Model(&tables.TempToken{}).
+			Where("scope = ? AND resource_id = ? AND encryption_status = ?", scope, resourceID, tables.EncryptionStatusVault).
+			Pluck("id", &vaultIDs)
+	}
 	res := db.WithContext(ctx).
 		Where("scope = ? AND resource_id = ?", scope, resourceID).
 		Delete(&tables.TempToken{})
 	if res.Error != nil {
 		return 0, res.Error
+	}
+	if len(vaultIDs) > 0 {
+		go tables.TempToken{}.DeleteVaultSecrets(context.Background(), vaultIDs)
 	}
 	return res.RowsAffected, nil
 }
@@ -5002,9 +5127,18 @@ func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope
 // DeleteExpiredTempTokens hard-deletes rows whose expires_at is at or before
 // the given cutoff. Returns the number of rows deleted.
 func (s *RDBConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
+	var vaultIDs []string
+	if tables.VaultHooks.Remove != nil {
+		s.DB().WithContext(ctx).Model(&tables.TempToken{}).
+			Where("expires_at <= ? AND encryption_status = ?", before, tables.EncryptionStatusVault).
+			Pluck("id", &vaultIDs)
+	}
 	res := s.DB().WithContext(ctx).Where("expires_at <= ?", before).Delete(&tables.TempToken{})
 	if res.Error != nil {
 		return 0, res.Error
+	}
+	if len(vaultIDs) > 0 {
+		go tables.TempToken{}.DeleteVaultSecrets(context.Background(), vaultIDs)
 	}
 	return res.RowsAffected, nil
 }
@@ -5292,7 +5426,16 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 
 // DeleteOauthToken deletes an OAuth token by its ID
 func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthToken{})
+	var existing tables.TableOauthToken
+	// Check if the token exists before attempting to delete
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // Token doesn't exist, consider it deleted
+		}
+		return fmt.Errorf("failed to check existence of oauth token: %w", err)
+	}
+	result := s.DB().WithContext(ctx).Delete(&existing)
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
 	}
