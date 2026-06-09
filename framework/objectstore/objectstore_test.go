@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 )
 
@@ -103,6 +104,24 @@ func TestInMemoryObjectStore(t *testing.T) {
 	}
 	if store.Len() != 1 {
 		t.Fatalf("Len after batch delete: got %d, want 1", store.Len())
+	}
+
+	// ListByPrefix
+	_ = store.Put(ctx, "prefix/one", []byte("1"), nil)
+	_ = store.Put(ctx, "prefix/two", []byte("2"), nil)
+	_ = store.Put(ctx, "other/three", []byte("3"), nil)
+	objects, err := store.ListByPrefix(ctx, "prefix/")
+	if err != nil {
+		t.Fatalf("ListByPrefix: %v", err)
+	}
+	if len(objects) != 2 {
+		t.Fatalf("ListByPrefix got %d objects, want 2: %v", len(objects), objects)
+	}
+	gotKeys := []string{objects[0].Key, objects[1].Key}
+	sort.Strings(gotKeys)
+	wantKeys := []string{"prefix/one", "prefix/two"}
+	if gotKeys[0] != wantKeys[0] || gotKeys[1] != wantKeys[1] {
+		t.Fatalf("ListByPrefix keys: got %v, want %v", gotKeys, wantKeys)
 	}
 
 	// Ping and Close
