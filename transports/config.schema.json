@@ -1055,6 +1055,9 @@
               }
             }
           ]
+        },
+        "vault_store": {
+          "$ref": "#/$defs/vault_config"
         }
       },
       "additionalProperties": false
@@ -5035,6 +5038,130 @@
         }
       },
       "required": ["base_provider_type"],
+      "additionalProperties": false
+    },
+    "vault_config": {
+      "type": "object",
+      "description": "External secret manager configuration. When set with enabled: true, sensitive fields (API keys, credentials) are stored in the vault backend instead of AES-encrypted in the database. Mutually exclusive with encryption_key for new rows; existing encrypted rows continue to work.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether vault is active. Set to false to keep the config block but disable vault (falls back to AES encryption or plain text).",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "description": "Vault backend to use.",
+          "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"]
+        },
+        "prefix": {
+          "type": "string",
+          "description": "Path prefix for all secrets stored by Bifrost (e.g. \"bifrost\" produces paths like \"bifrost/config_keys/<id>/value\"). Defaults to \"bifrost\".",
+          "default": "bifrost"
+        },
+        "aws": {
+          "type": "object",
+          "description": "AWS Secrets Manager configuration. Required when type is \"aws-secrets-manager\".",
+          "properties": {
+            "region": {
+              "type": "string",
+              "description": "AWS region (e.g. \"us-east-1\"). Supports env.VAR_NAME. Falls back to the default AWS credential chain if omitted."
+            },
+            "access_key_id": {
+              "type": "string",
+              "description": "AWS access key ID. Supports env.VAR_NAME. Omit to use the default credential chain (instance profile, IRSA, etc.)."
+            },
+            "secret_access_key": {
+              "type": "string",
+              "description": "AWS secret access key. Supports env.VAR_NAME. Must be set together with access_key_id."
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token for temporary credentials. Supports env.VAR_NAME."
+            },
+            "role_arn": {
+              "type": "string",
+              "description": "IAM role ARN to assume via STS. Supports env.VAR_NAME."
+            },
+            "kms_key_id": {
+              "type": "string",
+              "description": "KMS key ID or ARN used to encrypt secrets at rest. Supports env.VAR_NAME. Uses the default AWS-managed key if omitted."
+            }
+          },
+          "dependentRequired": {
+            "access_key_id": ["secret_access_key"],
+            "secret_access_key": ["access_key_id"],
+            "session_token": ["access_key_id", "secret_access_key"]
+          },
+          "additionalProperties": false
+        },
+        "gcp": {
+          "type": "object",
+          "description": "GCP Secret Manager configuration. Required when type is \"gcp-secret-manager\".",
+          "properties": {
+            "project_id": {
+              "type": "string",
+              "description": "GCP project ID. Supports env.VAR_NAME."
+            },
+            "credentials_json": {
+              "type": "string",
+              "description": "Path to a GCP service account JSON key file, or inline JSON. Supports env.VAR_NAME. Uses Application Default Credentials if omitted."
+            }
+          },
+          "additionalProperties": false
+        },
+        "hashicorp": {
+          "type": "object",
+          "description": "HashiCorp Vault (KV v2) configuration. Required when type is \"hashicorp-vault\".",
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "HashiCorp Vault server address (e.g. \"https://vault.example.com:8200\"). Supports env.VAR_NAME. Falls back to VAULT_ADDR environment variable."
+            },
+            "token": {
+              "type": "string",
+              "description": "Vault token for authentication. Supports env.VAR_NAME. Falls back to VAULT_TOKEN environment variable."
+            },
+            "namespace": {
+              "type": "string",
+              "description": "Vault namespace (Vault Enterprise only). Supports env.VAR_NAME."
+            },
+            "mount_path": {
+              "type": "string",
+              "description": "KV v2 mount path (default: \"secret\"). Supports env.VAR_NAME.",
+              "default": "secret"
+            },
+            "role_id": {
+              "type": "string",
+              "description": "AppRole role ID for AppRole authentication. Supports env.VAR_NAME."
+            },
+            "secret_id": {
+              "type": "string",
+              "description": "AppRole secret ID for AppRole authentication. Supports env.VAR_NAME."
+            }
+          },
+          "dependentRequired": {
+            "role_id": ["secret_id"],
+            "secret_id": ["role_id"]
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["enabled", "type"],
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "aws-secrets-manager" } }, "required": ["type"] },
+          "then": { "required": ["aws"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "gcp-secret-manager" } }, "required": ["type"] },
+          "then": { "required": ["gcp"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "hashicorp-vault" } }, "required": ["type"] },
+          "then": { "required": ["hashicorp"] }
+        }
+      ],
       "additionalProperties": false
     }
   }
