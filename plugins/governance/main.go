@@ -595,6 +595,32 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	return nil
 }
 
+// publishRoutingAllowlist records, for downstream routing layers, which of the VK's configured
+// providers permit modelStr according to the VK's own allowed_models / blocked_models. It is a
+// coarse provider gate (BifrostContextKeyRoutingAllowedProviders) layered on top of the model
+// catalog checks those layers already run — its purpose is to stop a later routing layer (load
+// balancing, model-catalog resolution) from selecting a provider the VK forbids for this model,
+// even when governance itself couldn't pick one. An empty slice means "no provider is permitted"
+// (fail-closed via the empty-provider validation in handleRequest); a nil VK publishes nothing.
+//
+// Provider prefixes on the request model are already split into req.Provider + bare model at the
+// HTTP layer (resolveModelAndProvider), so VK allowed_models / blocked_models are matched against
+// bare names and plain membership checks are sufficient here.
+func (p *GovernancePlugin) publishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string) {
+	if virtualKey == nil {
+		return
+	}
+	allowed := make([]schemas.ModelProvider, 0, len(virtualKey.ProviderConfigs))
+	for _, pc := range virtualKey.ProviderConfigs {
+		// No model to filter on → keep the provider so we don't over-restrict.
+		if modelStr == "" ||
+			(pc.AllowedModels.IsAllowed(modelStr) && !pc.BlacklistedModels.IsBlocked(modelStr)) {
+			allowed = append(allowed, schemas.ModelProvider(pc.Provider))
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
+}
+
 // applyRoutingRules evaluates routing rules against req and mutates
 // req.Provider/req.Model/req.Fallbacks when a rule matches. Returns the matched RoutingDecision
 // (nil if no rule matched). Integrations normalize req.Model (and Provider when applicable) before
@@ -1013,20 +1039,6 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 
 	stampGovernanceCtxFromVK(ctx, virtualKey)
 
-	// Publish the VK's allowed-provider set so downstream routing layers (enterprise LB,
-	// model-catalog-resolver) intersect their candidates with it. This guards against the case
-	// where governance fails to pick a provider (every VK entry rejected by allowed_models /
-	// budget / rate limit) and a downstream layer would otherwise pick a provider the VK does
-	// not permit. Empty slice means "no provider is permitted" → fail-closed via the empty-
-	// provider validation in handleRequest.
-	if virtualKey != nil {
-		allowed := make([]schemas.ModelProvider, 0, len(virtualKey.ProviderConfigs))
-		for _, pc := range virtualKey.ProviderConfigs {
-			allowed = append(allowed, schemas.ModelProvider(pc.Provider))
-		}
-		ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
-	}
-
 	// Large-payload mode: the body streams to the provider unparsed, so req.Model is
 	// empty for routes where the model lives in the body (OpenAI/Anthropic chat,
 	// responses, etc.). Route on LargePayloadMetadata.Model — the provider's
@@ -1041,6 +1053,8 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		if newModel != "" && newModel != metadata.Model {
 			metadata.Model = newModel
 		}
+		_, routedModel := schemas.ParseModelString(metadata.Model, "")
+		p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
 		return nil
 	}
 
@@ -1049,6 +1063,12 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 			return err
 		}
 	}
+
+	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
+	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
+	// candidates with it — a later layer must not select a provider the VK forbids for this model.
+	_, routedModel, _ := req.GetRequestFields()
+	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
 
 	if virtualKey != nil {
 		if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
