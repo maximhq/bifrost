@@ -354,6 +354,20 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	fill: var(--foreground) !important;
 }
 
+@keyframes sidebar-new-badge-shine {
+	0% {
+		opacity: 0;
+		left: -60%;
+	}
+	22% {
+		opacity: 0.75;
+	}
+	100% {
+		opacity: 0;
+		left: 115%;
+	}
+}
+
 /* Dynamic chain: dash period 3+5 = 8 — offset must move exactly one period per loop */
 @keyframes rf-routing-tree-dynamic-chain-dash {
 	from {
@@ -374,7 +388,8 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.rf-chain-legend-dynamic-dash {
+	.rf-chain-legend-dynamic-dash,
+	[data-new-badge="true"] {
 		animation: none;
 	}
 

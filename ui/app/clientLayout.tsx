@@ -135,7 +135,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
           <Sidebar />
           <div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
             <TrialExpiryBanner />
-            <main className="custom-scrollbar content-container-inner relative mx-auto flex flex-col overflow-y-hidden p-4">
+            <main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
               {isLoading ? (
                 <FullPageLoader />
               ) : (
@@ -156,7 +156,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 function MinimalShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] h-[calc(100dvh-1rem)] w-full overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
-      <main className="custom-scrollbar content-container-inner relative mx-auto flex flex-col overflow-y-hidden p-4">
+      <main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
         {children}
       </main>
     </div>
