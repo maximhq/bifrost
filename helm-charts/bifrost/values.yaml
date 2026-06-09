@@ -520,6 +520,28 @@ bifrost:
         version: ""
         custom_tags: {}
         enable_traces: true
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    bigquery:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        dataset_id: "bifrost_traces"
+        table_id: "traces"
+        location: "US"
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        create_table_if_not_exists: true
+        flush_interval_seconds: 5
+        buffer_size: 500
+        custom_labels: {}
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
 
     # Custom/dynamic plugins
     custom: []
