@@ -1389,6 +1389,15 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if promptsHandler != nil {
 		promptsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	skillsHandler := handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore)
+	if skillsHandler != nil {
+		skillsHandler.RegisterRoutes(s.Router, middlewares...)
+		startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
+	}
+	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore)
+	if skillsServingHandler != nil {
+		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	if featureFlagsHandler != nil {
 		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1489,6 +1498,22 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
 	}
 	return commonMiddlewares
+}
+
+func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config) {
+	if config == nil || config.ConfigStore == nil {
+		return
+	}
+
+	// Run once on startup asynchronously
+	go func() {
+		result, err := handlers.CleanupOrphanSkillFiles(ctx, config.ConfigStore, config.ObjectStore, false)
+		if err != nil {
+			logger.Warn("skills orphan cleanup failed during startup: %v", err)
+		} else {
+			logger.Info("skills orphan cleanup completed during startup: deleted_db_blobs=%d deleted_storage_objects=%d", result.DeletedDBBlobs, result.DeletedStorageObjects)
+		}
+	}()
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -1737,6 +1762,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
+	// trigger 404 warnings when probing the host before marketplace fetches.
+	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("text/plain; charset=utf-8")
+		ctx.SetBodyString("User-agent: *\nAllow: /\n")
+	})
 	// Register UI handler
 	s.RegisterUIRoutes()
 	// Create fasthttp server instance
