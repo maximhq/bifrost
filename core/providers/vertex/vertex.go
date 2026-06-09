@@ -1491,7 +1491,11 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Build the native Vertex embedding API endpoint
-	url := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	}
+	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1505,22 +1509,28 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}()
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Getting oauth2 token
-	tokenSource, err := getAuthTokenSource(key)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
+	// If auth query is set, add it to the URL
+	// Otherwise, get the oauth2 token and set the Authorization header
+	if authQuery != "" {
+		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+	} else {
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	}
-	token, err := tokenSource.Token()
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+	req.SetRequestURI(completeURL)
 
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
