@@ -292,13 +292,24 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				tokenBudget = anthropic.MinimumReasoningMaxTokens
 			}
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if tokenBudget < anthropic.MinimumReasoningMaxTokens {
-					return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+				if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						"type": "adaptive",
+					})
+					// Preserve a co-present effort — these models support effort,
+					// and the budget is otherwise dropped.
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+						setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
+				} else {
+					if tokenBudget < anthropic.MinimumReasoningMaxTokens {
+						return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						"type":          "enabled",
+						"budget_tokens": tokenBudget,
+					})
 				}
-				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-					"type":          "enabled",
-					"budget_tokens": tokenBudget,
-				})
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
 				modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -389,8 +400,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsOpus47Plus(bifrostReq.Model) {
-						// Opus 4.7+ omits reasoning text by default; default to "summarized"
+					} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 						thinkingConfig["display"] = "summarized"
 					}
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -409,9 +419,11 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		} else {
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-					"type": "disabled",
-				})
+				if !anthropic.IsFableFamily(bifrostReq.Model) {
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						"type": "disabled",
+					})
+				}
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
