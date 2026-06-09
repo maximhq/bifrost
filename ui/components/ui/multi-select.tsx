@@ -14,6 +14,14 @@ interface MultiSelectContextValue {
 
 const MultiSelectContext = React.createContext<MultiSelectContextValue | null>(null);
 
+function toTestId(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
 export function useMultiSelect() {
 	const ctx = React.useContext(MultiSelectContext);
 	if (!ctx) {
@@ -74,12 +82,12 @@ function MultiSelect({
 					>
 						{value.length > 0 ? (
 							value.map((item) => (
-								<Badge key={item} variant="secondary" className="gap-1" data-testid={`multi-select-badge-${item}`}>
+								<Badge key={item} variant="secondary" className="gap-1" data-testid={`multi-select-badge-${toTestId(item)}`}>
 									{getBadgeLabel ? getBadgeLabel(item) : item}
 									<button
 										type="button"
 										aria-label={`Remove ${getBadgeLabel ? getBadgeLabel(item) : item}`}
-										data-testid={`multi-select-remove-${item}`}
+										data-testid={`multi-select-remove-${toTestId(item)}`}
 										className="ring-offset-background focus:ring-ring ml-1 rounded-full outline-hidden focus:ring-2 focus:ring-offset-2"
 										onMouseDown={(e) => {
 											e.preventDefault();
@@ -136,7 +144,7 @@ function MultiSelectItem({ children, className, value, ...props }: { children: R
 	const isSelected = ctx.value.includes(value);
 	return (
 		<CommandItem
-			data-testid={`multi-select-item-${value}`}
+			data-testid={`multi-select-item-${toTestId(value)}`}
 			className={cn("cursor-pointer", className)}
 			onSelect={() => {
 				const next = isSelected ? ctx.value.filter((v: string) => v !== value) : [...ctx.value, value];
