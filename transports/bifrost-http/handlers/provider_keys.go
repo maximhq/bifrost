@@ -139,8 +139,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key create: %v", provider, err)
+	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
+		if err := h.modelsManager.OnKeyAdded(ctx, provider, key); err != nil {
+			logger.Warn("Catalog refresh failed for provider %s after key create: %v", provider, err)
+		}
 	}
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, key.ID)
@@ -244,8 +246,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key update: %v", provider, err)
+	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
+		if err := h.modelsManager.OnKeyUpdated(ctx, provider, mergedKey); err != nil {
+			logger.Warn("Catalog refresh failed for provider %s after key update: %v", provider, err)
+		}
 	}
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
@@ -305,8 +309,8 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key delete: %v", provider, err)
+	if err := h.modelsManager.OnKeyDeleted(ctx, provider, keyID); err != nil {
+		logger.Warn("Catalog refresh failed for provider %s after key delete: %v", provider, err)
 	}
 
 	SendJSON(ctx, redactedKey)
