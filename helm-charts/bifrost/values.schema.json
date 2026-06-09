@@ -892,8 +892,77 @@
                     },
                     "enable_traces": {
                       "type": "boolean"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
                     }
                   }
+                }
+              }
+            },
+            "bigquery": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "dataset_id": {
+                      "type": "string"
+                    },
+                    "table_id": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "create_table_if_not_exists": {
+                      "type": "boolean"
+                    },
+                    "flush_interval_seconds": {
+                      "type": "integer"
+                    },
+                    "buffer_size": {
+                      "type": "integer"
+                    },
+                    "custom_labels": {
+                      "type": "object"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/pluginSpanFilter"
+                    }
+                  },
+                  "required": ["project_id"]
                 }
               }
             },
@@ -3391,9 +3460,9 @@
         }
       ]
     },
-    "otelPluginSpanFilter": {
+    "pluginSpanFilter": {
       "type": "object",
-      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "description": "Controls which plugin hook spans this observability connector exports. Omit to export all plugin spans. Mode \"include\" exports only the listed plugins; mode \"exclude\" exports everything except them.",
       "properties": {
         "mode": {
           "type": "string",
@@ -3475,7 +3544,7 @@
           "default": false
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otelPluginSpanFilter"
+          "$ref": "#/$defs/pluginSpanFilter"
         }
       },
       "allOf": [
@@ -3523,7 +3592,7 @@
           "minItems": 1
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otelPluginSpanFilter"
+          "$ref": "#/$defs/pluginSpanFilter"
         },
         "enabled": {
           "type": "boolean",
