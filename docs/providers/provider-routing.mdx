@@ -874,6 +874,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   prefix.
 </Note>
 
+### Routing allowlist enforcement
+
+When a Virtual Key has `provider_configs`, governance publishes the VK's allowed-provider set to the request context (`BifrostContextKeyRoutingAllowedProviders`). The constraint is then enforced at **two levels**:
+
+1. **Cooperative filtering (observability-first):** Enterprise LB and the model-catalog-resolver intersect their catalog candidates with the allowlist before picking a provider. This produces clean routing-engine logs explaining *why* a candidate was excluded ("filtered N catalog candidates by routing allowlist").
+
+2. **Hard enforcement in core:** After all `PreRequestHook` plugins have run, the core validates the final `req.Provider` against the allowlist. If `req.Provider` isn't in the allowlist, the request fails with HTTP 400. Fallbacks that target non-allowed providers are silently filtered out.
+
+**Why two levels:** cooperative filtering surfaces routing decisions in observability; core enforcement makes the constraint a *guarantee* that no plugin (or user-specified `provider/model` prefix) can bypass. A user request for `model: "anthropic/claude-3"` against a VK that allows only `[openai, azure]` is rejected by core enforcement even though the user provided an explicit prefix.
+
+Custom routing plugins can set the same context key to constrain downstream routing for any reason — geo restrictions, A/B test cohorts, tier-based gating, etc. The semantics are **fail-closed**: setting `BifrostContextKeyRoutingAllowedProviders` to an empty slice means "no provider is permitted for this request" → HTTP 400.
+
 ---
 
 ## Governance-based Routing
