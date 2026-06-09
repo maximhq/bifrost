@@ -1,9 +1,19 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 
+early_access: true
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+
 reviews:
-  profile: assertive
-  request_changes_workflow: false
+  high_level_summary_in_walkthrough: true
+  fail_commit_status: true
+  suggested_labels: false
+  auto_assign_reviewers: true
+  profile: chill
+  request_changes_workflow: true
   high_level_summary: true
   review_status: true
   changed_files_summary: true
@@ -13,9 +23,41 @@ reviews:
     enabled: true
     drafts: false
     auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
     base_branches:
       - ".*"
   path_instructions:
+    - path: package.json
+      instructions: |
+        do not allow any carats in package.json, we never want any auto updates for any patch versions of any
+        packages in package.json
+    - path: "**"
+      instructions: |
+        always check the stack if there is one for the current PR. do not give localized reviews for the PR,
+        always see all changes in the light of the whole stack of PRs (if there is a stack, if there is no stack you can
+        continue to make localized suggestions/reviews)
+    - path: "**/*.go"
+      instructions: |
+        Rule: No raw context keys in Go.
+
+        When reviewing code, ALWAYS check for incorrect usage of context values.
+
+        Reject or flag the change if you find ANY of the following:
+        - context.WithValue(ctx, "someKey", value)         // string literal key
+        - context.WithValue(ctx, someStringVar, value)   // key is type string
+        - context.WithValue(ctx, fmt.Sprintf(...), value)    // computed/dynamic string key
+        - ctx.Value("someKey") or ctx.Value(someStringVar)        // same problem on retrieval
+
+        Required pattern:
+        - Context keys MUST be a dedicated named type (NOT plain string), e.g.
+          - type contextKey string
+            const userIDKey contextKey = "userId"
+          OR
+          - type userIDKeyType struct{}
+            var userIDKey userIDKeyType
+
+        - The key passed to WithValue/Value MUST be that typed identifier, e.g.
+          - ctx = context.WithValue(ctx, userIDKey, userID)
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
