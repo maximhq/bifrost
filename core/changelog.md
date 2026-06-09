@@ -1,0 +1,1 @@
+- [fix]: allow mistral as a base_provider_type for custom providers [@georg-wolflein](https://github.com/georg-wolflein)
