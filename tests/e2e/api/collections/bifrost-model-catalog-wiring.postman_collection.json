@@ -15,6 +15,16 @@
       "key": "run_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "__purge_target",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "__purge_queue",
+      "value": "",
+      "type": "string"
     }
   ],
   "event": [
@@ -34,6 +44,94 @@
     }
   ],
   "item": [
+    {
+      "id": "setup-clear-providers",
+      "name": "Setup: clear providers",
+      "item": [
+        {
+          "id": "setup-list-providers",
+          "name": "setup: list providers to clear",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup: list providers', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var provs = ((pm.response.json() || {}).providers || []).map(function (p) { return p.name; }).filter(Boolean);",
+                  "if (provs.length === 0) { pm.collectionVariables.set('__purge_target', ''); pm.collectionVariables.set('__purge_queue', ''); return; }",
+                  "pm.collectionVariables.set('__purge_target', provs[0]);",
+                  "pm.collectionVariables.set('__purge_queue', provs.slice(1).join(','));",
+                  "pm.execution.setNextRequest(\"setup: delete provider\");"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "id": "setup-delete-provider",
+          "name": "setup: delete provider",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('__purge_target')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup: delete provider', function () { pm.expect([200, 204, 404], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code); });",
+                  "var queue = (pm.collectionVariables.get('__purge_queue') || '').split(',').filter(Boolean);",
+                  "if (queue.length) {",
+                  "  pm.collectionVariables.set('__purge_target', queue[0]);",
+                  "  pm.collectionVariables.set('__purge_queue', queue.slice(1).join(','));",
+                  "  pm.execution.setNextRequest(\"setup: delete provider\");",
+                  "} else {",
+                  "  pm.collectionVariables.set('__purge_target', '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/{{__purge_target}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{__purge_target}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
     {
       "name": "Add provider and key surfaces models (openai)",
       "description": "A fresh provider plus one gated key surfaces that key's allowed model in the catalog.",
