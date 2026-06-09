@@ -257,7 +257,9 @@ const SidebarItemView = ({
   const hasSubItems =
     "subItems" in item && item.subItems && item.subItems.length > 0;
   const isRouteMatch = (url: string) => {
-    if (url === "/workspace/custom-pricing") return pathname === url;
+    // Exact-match base paths that have sibling tab routes nested under them, so the base
+    // tab isn't also highlighted when a child tab (e.g. /settings) is active.
+    if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
     return pathname.startsWith(url);
   };
   const isAnySubItemActive =
@@ -963,8 +965,24 @@ export default function AppSidebar() {
         title: "Adaptive Routing",
         url: "/workspace/adaptive-routing",
         icon: Shuffle,
-        description: "Manage adaptive load balancer",
+        description: "Manage adaptive routing",
         hasAccess: isAdaptiveRoutingAllowed,
+        subItems: [
+          {
+            title: "Dashboard",
+            url: "/workspace/adaptive-routing",
+            icon: ChartColumnBig,
+            description: "Adaptive routing metrics",
+            hasAccess: isAdaptiveRoutingAllowed,
+          },
+          {
+            title: "Settings",
+            url: "/workspace/adaptive-routing/settings",
+            icon: Settings,
+            description: "Adaptive routing settings",
+            hasAccess: isAdaptiveRoutingAllowed,
+          },
+        ],
       },
       ...(isDbConnected
         ? [
@@ -1158,7 +1176,7 @@ export default function AppSidebar() {
   useEffect(() => {
     const newExpandedItems = new Set<string>();
     const isRouteMatch = (url: string) => {
-      if (url === "/workspace/custom-pricing") return pathname === url;
+      if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
       return pathname.startsWith(url);
     };
     items.forEach((item) => {
