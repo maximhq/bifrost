@@ -363,7 +363,7 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 
 	// Pass 1: if any matching provider config blacklists the model, block immediately.
 	for _, pc := range vk.ProviderConfigs {
-		if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, model) {
+		if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(model) {
 			return false
 		}
 	}
