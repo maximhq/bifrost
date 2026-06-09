@@ -373,6 +373,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/require"
@@ -1463,6 +1464,59 @@ func (m *MockConfigStore) CreatePromptVersion(ctx context.Context, version *tabl
 	return nil
 }
 func (m *MockConfigStore) DeletePromptVersion(ctx context.Context, id uint) error { return nil }
+
+// Skills Repository
+func (m *MockConfigStore) CreateSkill(ctx context.Context, skill *tables.TableSkill, version string, objectStore objectstore.ObjectStore) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetSkill(ctx context.Context, id string) (*tables.TableSkill, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetSkillLean(ctx context.Context, id string) (*tables.TableSkill, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetSkillByName(ctx context.Context, name string) (*tables.TableSkill, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) GetSkillVersion(ctx context.Context, skillID, version string) (*tables.TableSkillVersion, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListSkillVersions(ctx context.Context, skillID string, limit, offset int) ([]tables.TableSkillVersion, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSkill, version string, serve bool, objectStore objectstore.ObjectStore) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListSkills(ctx context.Context, params configstore.SkillListQueryParams) ([]tables.TableSkill, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetAllSkillsVersion(ctx context.Context) (string, error) {
+	return "1.0.0", nil
+}
+
+func (m *MockConfigStore) CreateSkillFileBlob(ctx context.Context, blob *tables.TableSkillFileBlob) error {
+	return nil
+}
+
+func (m *MockConfigStore) CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error) {
+	return 0, nil
+}
 
 // Prompt Repository - Sessions
 func (m *MockConfigStore) GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error) {

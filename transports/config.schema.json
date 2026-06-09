@@ -1276,6 +1276,62 @@
       },
       "additionalProperties": false
     },
+    "skills_registry": {
+      "type": "object",
+      "description": "Declarative Skills Repository definitions reconciled from config.json",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether config-defined skills should be reconciled at startup"
+        },
+        "skills": {
+          "type": "array",
+          "description": "Skills to create or update from config.json",
+          "items": {
+            "type": "object",
+            "required": ["name", "description", "skill_md_body", "version"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "license": { "type": "string" },
+              "compatibility": { "type": "string" },
+              "allowed_tools": { "type": "string" },
+              "extra_frontmatter": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "skill_md_body": { "type": "string" },
+              "version": { "type": "string" },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "source_type"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "source_type": {
+                      "type": "string",
+                      "enum": ["text", "url", "filepath", "dataurl"]
+                    },
+                    "url": { "type": "string" },
+                    "filepath": { "type": "string" },
+                    "content": { "type": "string" },
+                    "dataurl": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "plugins": {
       "type": "array",
       "description": "Plugins configuration",
