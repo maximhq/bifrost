@@ -3035,36 +3035,71 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	}
 	purpose := purposeValues[0]
 
-	// Extract file (required)
+	// Extract file (optional for providers that support resumable uploads, e.g. Vertex/GCS;
+	// when omitted, the provider mints an upload session URL instead of receiving bytes)
+	var fileData []byte
+	var filename string
 	fileHeaders := form.File["file"]
-	if len(fileHeaders) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "file is required")
-		return
+	if len(fileHeaders) > 0 {
+		fileHeader := fileHeaders[0]
+		filename = fileHeader.Filename
+
+		// Open and read the file
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.Warn("Failed to open uploaded file: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		defer file.Close()
+
+		// Read file data
+		fileData, err = io.ReadAll(file)
+		if err != nil {
+			logger.Warn("Failed to read uploaded file: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+	} else if len(form.Value["filename"]) > 0 {
+		filename = form.Value["filename"][0]
 	}
 
-	fileHeader := fileHeaders[0]
-
-	// Open and read the file
-	file, err := fileHeader.Open()
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-		return
+	// Extract content type (used for resumable upload sessions and stored object metadata)
+	var contentType *string
+	if len(form.Value["content_type"]) > 0 && form.Value["content_type"][0] != "" {
+		contentType = &form.Value["content_type"][0]
 	}
-	defer file.Close()
 
-	// Read file data
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-		return
+	// GCS storage location for Vertex uploads: sent as individual multipart fields,
+	// parsed into the typed StorageConfig rather than passed opaquely via extra_params.
+	var storageConfig *schemas.FileStorageConfig
+	if len(form.Value["gcs_bucket"]) > 0 && form.Value["gcs_bucket"][0] != "" {
+		gcs := &schemas.GCSStorageConfig{Bucket: form.Value["gcs_bucket"][0]}
+		if len(form.Value["gcs_prefix"]) > 0 {
+			gcs.Prefix = form.Value["gcs_prefix"][0]
+		}
+		storageConfig = &schemas.FileStorageConfig{GCS: gcs}
+	}
+
+	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
+	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
+	extraParams := map[string]interface{}{}
+	for k, vals := range form.Value {
+		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {
+			extraParams[k] = vals[0]
+		}
 	}
 
 	// Build Bifrost file upload request
 	bifrostFileReq := &schemas.BifrostFileUploadRequest{
-		Provider: schemas.ModelProvider(provider),
-		File:     fileData,
-		Filename: fileHeader.Filename,
-		Purpose:  schemas.FilePurpose(purpose),
+		Provider:      schemas.ModelProvider(provider),
+		File:          fileData,
+		Filename:      filename,
+		Purpose:       schemas.FilePurpose(purpose),
+		ContentType:   contentType,
+		StorageConfig: storageConfig,
+		ExtraParams:   extraParams,
 	}
 
 	// Convert context
@@ -3127,13 +3162,35 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		order = &s
 	}
 
+	// GCS storage location for Vertex listing: parsed into the typed StorageConfig
+	// rather than passed opaquely via extra_params.
+	var storageConfig *schemas.FileStorageConfig
+	if gcsBucket := string(ctx.QueryArgs().Peek("gcs_bucket")); gcsBucket != "" {
+		storageConfig = &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{
+			Bucket: gcsBucket,
+			Prefix: string(ctx.QueryArgs().Peek("gcs_prefix")),
+		}}
+	}
+
+	// Collect unknown query args as extra params. gcs_bucket/gcs_prefix are consumed into
+	// StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
+	fileListKnownArgs := map[string]bool{"provider": true, "x-model-provider": true, "purpose": true, "limit": true, "after": true, "order": true, "gcs_bucket": true, "gcs_prefix": true}
+	extraParams := map[string]interface{}{}
+	ctx.QueryArgs().VisitAll(func(k, v []byte) {
+		if argKey := string(k); !fileListKnownArgs[argKey] && len(v) > 0 {
+			extraParams[argKey] = string(v)
+		}
+	})
+
 	// Build Bifrost file list request
 	bifrostFileReq := &schemas.BifrostFileListRequest{
-		Provider: schemas.ModelProvider(provider),
-		Purpose:  schemas.FilePurpose(purpose),
-		Limit:    limit,
-		After:    after,
-		Order:    order,
+		Provider:      schemas.ModelProvider(provider),
+		Purpose:       schemas.FilePurpose(purpose),
+		Limit:         limit,
+		After:         after,
+		Order:         order,
+		StorageConfig: storageConfig,
+		ExtraParams:   extraParams,
 	}
 
 	// Convert context
@@ -3167,6 +3224,13 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 	if fileID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
 		return
+	}
+
+	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
+	if decodedID, err := url.PathUnescape(fileID); err == nil {
+		fileID = decodedID
+	} else {
+		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
 	}
 
 	// Get provider from query parameters
@@ -3215,6 +3279,13 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
+	if decodedID, err := url.PathUnescape(fileID); err == nil {
+		fileID = decodedID
+	} else {
+		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
+	}
+
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
 	if provider == "" {
@@ -3259,6 +3330,13 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 	if fileID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
 		return
+	}
+
+	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
+	if decodedID, err := url.PathUnescape(fileID); err == nil {
+		fileID = decodedID
+	} else {
+		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
 	}
 
 	// Get provider from query parameters

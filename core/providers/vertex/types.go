@@ -246,3 +246,30 @@ type VertexCountTokensResponse struct {
 	TotalTokens             int32 `json:"totalTokens,omitempty"`
 	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
 }
+
+// ================================ GCS File API Types ================================
+
+// gcsObjectMetadata represents GCS object metadata as returned by the JSON API.
+type gcsObjectMetadata struct {
+	Name        string            `json:"name"`
+	Bucket      string            `json:"bucket"`
+	Size        string            `json:"size"`        // int64 serialised as string by GCS
+	ContentType string            `json:"contentType"`
+	TimeCreated string            `json:"timeCreated"` // RFC3339
+	Updated     string            `json:"updated"`     // RFC3339
+	Metadata    map[string]string `json:"metadata"`
+}
+
+// gcsObjectListResponse is the GCS object list response envelope.
+type gcsObjectListResponse struct {
+	NextPageToken string              `json:"nextPageToken"`
+	Items         []gcsObjectMetadata `json:"items"`
+}
+
+// gcsErrorBody is the GCS API error response envelope.
+type gcsErrorBody struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
