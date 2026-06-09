@@ -11,6 +11,14 @@ import { toast } from "sonner";
 interface PluginTracingSheetProps {
 	open: boolean;
 	onClose: () => void;
+	/**
+	 * Backend plugin name of the observability connector whose span filter is being edited
+	 * (e.g. "otel", "datadog", "bigquery"). The sheet reads/writes only this plugin's
+	 * `plugin_span_filter`; the backend merges it over the rest of the connector config.
+	 */
+	pluginName: string;
+	/** Human-readable destination used in the copy, e.g. "the OTEL collector", "Datadog". */
+	destination: string;
 }
 
 function resolveToggleState(filter: PluginSpanFilter | null | undefined, allPlugins: string[]): Record<string, boolean> {
@@ -43,7 +51,7 @@ function buildFilter(toggles: Record<string, boolean>): PluginSpanFilter | null 
 function PluginRow({ name, checked, onChange }: { name: string; checked: boolean; onChange: (v: boolean) => void }) {
 	return (
 		<div className="flex items-center justify-between rounded-md border px-3 py-2.5">
-			<span className="text-sm font-mono">{name}</span>
+			<span className="font-mono text-sm">{name}</span>
 			<div className="flex items-center gap-2">
 				<Switch checked={checked} onCheckedChange={onChange} data-testid={`plugin-tracing-toggle-${name}`} />
 			</div>
@@ -51,41 +59,49 @@ function PluginRow({ name, checked, onChange }: { name: string; checked: boolean
 	);
 }
 
-export default function PluginTracingSheet({ open, onClose }: PluginTracingSheetProps) {
+export default function PluginTracingSheet({ open, onClose, pluginName, destination }: PluginTracingSheetProps) {
 	const { data: builtinPluginNames = [] } = useGetBuiltinPluginsQuery();
 	const { data: allPluginsData } = useGetPluginsQuery();
 	const customPluginNames = (allPluginsData ?? []).filter((p) => p.isCustom).map((p) => p.name);
 	const allPlugins = [...builtinPluginNames, ...customPluginNames];
-	const { data: otelPlugin } = useGetPluginQuery("otel");
+	const { data: targetPlugin } = useGetPluginQuery(pluginName);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
 	const [toggles, setToggles] = useState<Record<string, boolean>>({});
 	const wasOpenRef = useRef(false);
 
 	useEffect(() => {
 		if (open && !wasOpenRef.current) {
-			if (!otelPlugin) return; // wait until persisted config is available
-			const filter = (otelPlugin.config?.plugin_span_filter as PluginSpanFilter | undefined) ?? null;
+			if (!targetPlugin) return; // wait until persisted config is available
+			const filter = (targetPlugin.config?.plugin_span_filter as PluginSpanFilter | undefined) ?? null;
+			if (filter?.mode === "include" && allPlugins.length === 0) return;
 			setToggles(resolveToggleState(filter, allPlugins));
 			wasOpenRef.current = true;
 		}
 		if (!open) wasOpenRef.current = false;
-	}, [open, otelPlugin, allPlugins]);
+	}, [open, targetPlugin, allPlugins]);
 
 	const setToggle = useCallback((name: string, value: boolean) => {
 		setToggles((prev) => ({ ...prev, [name]: value }));
 	}, []);
 
 	const handleSave = useCallback(async () => {
-		if (!otelPlugin) {
-			toast.error("OTEL plugin not found");
+		if (!wasOpenRef.current) {
+			// Toggles haven't been initialized from persisted config yet (e.g. the plugin list
+			// is still loading for an include-mode filter). Saving now would build an empty
+			// filter and wipe the stored plugin_span_filter, so block until init completes.
+			toast.error("Plugin list is still loading. Please wait before saving.");
+			return;
+		}
+		if (!targetPlugin) {
+			toast.error(`${destination} is not configured yet. Save its configuration before configuring plugin tracing.`);
 			return;
 		}
 		const filter = buildFilter(toggles);
 		try {
 			await updatePlugin({
-				name: "otel",
+				name: pluginName,
 				data: {
-					enabled: otelPlugin.enabled,
+					enabled: targetPlugin.enabled,
 					config: { plugin_span_filter: filter },
 				},
 			}).unwrap();
@@ -94,7 +110,7 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [toggles, otelPlugin, updatePlugin, onClose]);
+	}, [toggles, targetPlugin, updatePlugin, onClose, pluginName, destination]);
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
@@ -102,8 +118,8 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>Configure Plugin Tracing</SheetTitle>
 					<SheetDescription>
-						Choose which plugin hook spans are exported to the OTEL collector. Disabling a plugin removes its spans from traces without
-						affecting execution.
+						Choose which plugin hook spans are exported to {destination}. Disabling a plugin removes its spans from traces without affecting
+						execution.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -111,7 +127,7 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 					<div className="flex flex-col gap-4">
 						<div>
 							<div className="mb-2 flex items-center justify-between">
-								<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Built-in Plugins</p>
+								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Built-in Plugins</p>
 								<TriStateCheckbox
 									allIds={builtinPluginNames}
 									selectedIds={builtinPluginNames.filter((n) => toggles[n] ?? true)}
@@ -137,7 +153,7 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 						{customPluginNames.length > 0 && (
 							<div>
 								<div className="mb-2 flex items-center justify-between">
-									<p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Custom Plugins</p>
+									<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Custom Plugins</p>
 									<TriStateCheckbox
 										allIds={customPluginNames}
 										selectedIds={customPluginNames.filter((n) => toggles[n] ?? true)}
@@ -167,7 +183,8 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 					<Alert variant="info">
 						<AlertDescription>
 							<span>
-								If <strong className="inline">plugin_span_filter</strong> is set inside the OTEL plugin config in config.json, it takes precedence over these settings after restarting Bifrost.
+								If <strong className="inline">plugin_span_filter</strong> is set in the <strong className="inline">{pluginName}</strong>{" "}
+								plugin config in config.json, it takes precedence over these settings after restarting Bifrost.
 							</span>
 						</AlertDescription>
 					</Alert>
@@ -175,7 +192,13 @@ export default function PluginTracingSheet({ open, onClose }: PluginTracingSheet
 						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-tracing-cancel-button">
 							Cancel
 						</Button>
-						<Button onClick={handleSave} disabled={isLoading} isLoading={isLoading} data-testid="plugin-tracing-save-button" type="button">
+						<Button
+							onClick={handleSave}
+							disabled={isLoading || !wasOpenRef.current}
+							isLoading={isLoading}
+							data-testid="plugin-tracing-save-button"
+							type="button"
+						>
 							Save
 						</Button>
 					</div>
