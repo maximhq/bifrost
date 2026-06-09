@@ -62,6 +62,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
 | `allowed_origins` | array | `["*"]` | CORS allowed origins |
+| `allow_direct_keys` | boolean | `false` | Let callers bypass the key pool with `x-bf-direct-key: true` + a raw provider key |
 | `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |

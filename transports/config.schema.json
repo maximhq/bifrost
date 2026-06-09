@@ -198,7 +198,7 @@
         },
         "allow_direct_keys": {
           "type": "boolean",
-          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and an Authorization header carrying the provider's raw API key.",
+          "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
         "mcp_agent_depth": {
