@@ -1433,6 +1433,19 @@ func IsImagenModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "imagen")
 }
 
+// IsCohereModel checks if the model is a Cohere model. Matches the Bedrock
+// identifier prefix ("cohere.embed-*", "cohere.command-*") which is the wire
+// shape that flows through alias resolution.
+func IsCohereModel(model string) bool {
+	return strings.Contains(model, "cohere")
+}
+
+// IsTitanModel checks if the model is an Amazon Titan model. Matches the
+// Bedrock identifier prefix ("amazon.titan-*").
+func IsTitanModel(model string) bool {
+	return strings.Contains(model, "titan")
+}
+
 // List of grok reasoning models
 var grokReasoningModels = []string{
 	"grok-3",
