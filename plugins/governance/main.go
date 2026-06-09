@@ -1010,6 +1010,20 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 
 	stampGovernanceCtxFromVK(ctx, virtualKey)
 
+	// Publish the VK's allowed-provider set so downstream routing layers (enterprise LB,
+	// model-catalog-resolver) intersect their candidates with it. This guards against the case
+	// where governance fails to pick a provider (every VK entry rejected by allowed_models /
+	// budget / rate limit) and a downstream layer would otherwise pick a provider the VK does
+	// not permit. Empty slice means "no provider is permitted" → fail-closed via the empty-
+	// provider validation in handleRequest.
+	if virtualKey != nil {
+		allowed := make([]schemas.ModelProvider, 0, len(virtualKey.ProviderConfigs))
+		for _, pc := range virtualKey.ProviderConfigs {
+			allowed = append(allowed, schemas.ModelProvider(pc.Provider))
+		}
+		ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
+	}
+
 	// Large-payload mode: the body streams to the provider unparsed, so req.Model is
 	// empty for routes where the model lives in the body (OpenAI/Anthropic chat,
 	// responses, etc.). Route on LargePayloadMetadata.Model — the provider's
