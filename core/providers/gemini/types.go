@@ -1350,19 +1350,21 @@ func (p Part) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
-// This handles the thoughtSignature field which can be sent as a base64-encoded string from the Google GenAI SDK.
+// This accepts function_response so native GenAI tool-output media can be
+// parsed, while keeping broader snake_case compatibility out of Part.
 func (p *Part) UnmarshalJSON(data []byte) error {
 	type PartAlias struct {
-		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
-		Thought             bool                 `json:"thought,omitempty"`
-		InlineData          *Blob                `json:"inlineData,omitempty"`
-		FileData            *FileData            `json:"fileData,omitempty"`
-		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
-		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
-		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
-		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
-		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
-		Text                string               `json:"text,omitempty"`
+		VideoMetadata         *VideoMetadata       `json:"videoMetadata,omitempty"`
+		Thought               bool                 `json:"thought,omitempty"`
+		InlineData            *Blob                `json:"inlineData,omitempty"`
+		FileData              *FileData            `json:"fileData,omitempty"`
+		ThoughtSignature      string               `json:"thoughtSignature,omitempty"`
+		CodeExecutionResult   *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
+		ExecutableCode        *ExecutableCode      `json:"executableCode,omitempty"`
+		FunctionCall          *FunctionCall        `json:"functionCall,omitempty"`
+		FunctionResponse      *FunctionResponse    `json:"functionResponse,omitempty"`
+		FunctionResponseSnake *FunctionResponse    `json:"function_response,omitempty"`
+		Text                  string               `json:"text,omitempty"`
 	}
 
 	var aux PartAlias
@@ -1378,6 +1380,9 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.ExecutableCode = aux.ExecutableCode
 	p.FunctionCall = aux.FunctionCall
 	p.FunctionResponse = aux.FunctionResponse
+	if p.FunctionResponse == nil {
+		p.FunctionResponse = aux.FunctionResponseSnake
+	}
 	p.Text = aux.Text
 
 	if aux.ThoughtSignature != "" {
@@ -1418,9 +1423,11 @@ type Blob struct {
 // UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64
 func (b *Blob) UnmarshalJSON(data []byte) error {
 	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		Data             string `json:"data,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
 	}
 
 	var aux BlobAlias
@@ -1429,7 +1436,13 @@ func (b *Blob) UnmarshalJSON(data []byte) error {
 	}
 
 	b.DisplayName = aux.DisplayName
+	if b.DisplayName == "" {
+		b.DisplayName = aux.DisplayNameSnake
+	}
 	b.MIMEType = aux.MIMEType
+	if b.MIMEType == "" {
+		b.MIMEType = aux.MIMETypeSnake
+	}
 
 	if aux.Data != "" {
 		// Convert URL-safe base64 to standard base64
@@ -1507,6 +1520,37 @@ type FileData struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
+func (f *FileData) UnmarshalJSON(data []byte) error {
+	type fileDataAlias struct {
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		FileURI          string `json:"fileUri,omitempty"`
+		FileURISnake     string `json:"file_uri,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
+	}
+
+	var aux fileDataAlias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	f.DisplayName = aux.DisplayName
+	if f.DisplayName == "" {
+		f.DisplayName = aux.DisplayNameSnake
+	}
+	f.FileURI = aux.FileURI
+	if f.FileURI == "" {
+		f.FileURI = aux.FileURISnake
+	}
+	f.MIMEType = aux.MIMEType
+	if f.MIMEType == "" {
+		f.MIMEType = aux.MIMETypeSnake
+	}
+
+	return nil
+}
+
 // FunctionCall represents a function call.
 type FunctionCall struct {
 	// Optional. The unique ID of the function call. If populated, the client to execute
@@ -1543,6 +1587,39 @@ type FunctionResponse struct {
 	// function output and "error" key to specify error details (if any). If "output" and
 	// "error" keys are not specified, then whole "response" is treated as function output.
 	Response json.RawMessage `json:"response,omitempty"`
+	// Optional. Media parts attached to the function response.
+	Parts []*FunctionResponsePart `json:"parts,omitempty"`
+}
+
+// FunctionResponsePart represents media nested under a Gemini functionResponse.
+type FunctionResponsePart struct {
+	InlineData *Blob     `json:"inlineData,omitempty"`
+	FileData   *FileData `json:"fileData,omitempty"`
+}
+
+func (f *FunctionResponsePart) UnmarshalJSON(data []byte) error {
+	type functionResponsePartAlias struct {
+		InlineData      *Blob     `json:"inlineData,omitempty"`
+		InlineDataSnake *Blob     `json:"inline_data,omitempty"`
+		FileData        *FileData `json:"fileData,omitempty"`
+		FileDataSnake   *FileData `json:"file_data,omitempty"`
+	}
+
+	var aux functionResponsePartAlias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	f.InlineData = aux.InlineData
+	if f.InlineData == nil {
+		f.InlineData = aux.InlineDataSnake
+	}
+	f.FileData = aux.FileData
+	if f.FileData == nil {
+		f.FileData = aux.FileDataSnake
+	}
+
+	return nil
 }
 
 // ==================== RESPONSE TYPES ====================
