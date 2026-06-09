@@ -2588,6 +2588,316 @@
         }
 
       ]
+    },
+    {
+      "name": "13. OpenRouter Prompt Caching (cache_control)",
+      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) \u2014 these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
+      "item": [
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control on tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}, \"cache_control\": {\"type\": \"ephemeral\"}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control 1h ttl",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\", \"ttl\": \"1h\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Google Gemini Flash: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/google/gemini-2.5-flash\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Google Gemini Pro: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/google/gemini-2.5-pro\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI GPT-4o: cache_control ignored (no 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/openai/gpt-4o\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter DeepSeek: cache_control ignored (no 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/deepseek/deepseek-chat\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Qwen: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/qwen/qwen-2.5-72b-instruct\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
