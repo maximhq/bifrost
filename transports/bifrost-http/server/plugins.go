@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -119,6 +120,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
+
+	case modelcatalogresolver.PluginName:
+		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
@@ -251,6 +255,17 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.markPluginDisabled(maxim.PluginName)
 	}
 	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(8))
+
+	// 9. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
+	// already set one. CEL rules can still match on provider == "" because this runs last.
+	// Requires a model catalog; only register when one is configured.
+	if s.Config.ModelCatalog != nil {
+		s.registerPluginWithStatus(ctx, modelcatalogresolver.PluginName, nil, nil, false)
+	} else {
+		s.markPluginDisabled(modelcatalogresolver.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, builtinPlacement, schemas.Ptr(9))
 
 	return nil
 }
