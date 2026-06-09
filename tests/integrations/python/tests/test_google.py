@@ -1660,6 +1660,211 @@ Joe: Pretty good, thanks for asking."""
         
         print("\n✓ Gemini 3 Pro Preview thought signature handling test completed successfully!")
 
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize("model,expect_image_understood", [
+        ("gemini-3-flash-preview", True),
+    ])
+    def test_30_multimodal_function_response_image(self, test_config, model, expect_image_understood):
+        """Test Case 30: Image returned inside a function response (functionResponse.parts).
+
+        A tool returns a solid red image as multimodal content nested in the function response.
+        The image must survive Bifrost's Gemini<->Bifrost translation instead of being dropped.
+        Regression guard for multimodal function_call_output (text + image), and for the
+        model-version gating Bifrost applies:
+
+          - gemini-3-flash-preview: Bifrost forwards the image as functionResponse.parts (no $ref;
+            the $ref form is rejected by the Gemini Developer API), so the model sees it -> "red".
+          - gemini-2.5-flash: multimodal function responses are unsupported (a hard 400 upstream),
+            so Bifrost drops the image and sends text only. The request must still SUCCEED; the
+            model just can't see the image. This proves gating prevents a regression.
+
+        Notes:
+          - No real first turn is needed: we inject the `skip_thought_signature_validator` sentinel
+            as the function call's thought signature (Gemini 3 requires a signature on tool calls).
+          - We deliberately do NOT put a {"$ref": ...} in `response` (Developer API rejects it).
+        """
+        from google.genai import types
+        import base64
+
+        client = get_provider_google_client(provider="gemini")
+
+        read_image_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "read_image",
+                    "description": "Reads an image file from disk and returns it.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Path to the image file"}
+                        },
+                        "required": ["path"],
+                    },
+                }
+            ]
+        )
+
+        # BASE64_IMAGE is a 64x64 solid red PNG. FunctionResponseBlob.data takes raw bytes;
+        # the SDK base64-encodes it on the wire (what Bifrost receives).
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+
+        # Bypass Gemini 3's thought-signature validation for this fabricated multi-turn history.
+        # The SDK base64-encodes these bytes on the wire; Gemini decodes and matches the sentinel.
+        skip_sig = b"skip_thought_signature_validator"
+
+        conversation = [
+            types.Content(
+                role="user",
+                parts=[types.Part(text=(
+                    "Call read_image to read 'photo.png', then tell me the single dominant "
+                    "color of the image it returns. Reply with only the color word."
+                ))],
+            ),
+            types.Content(
+                role="model",
+                parts=[types.Part(
+                    function_call=types.FunctionCall(
+                        id="call_1", name="read_image", args={"path": "photo.png"}
+                    ),
+                    thought_signature=skip_sig,
+                )],
+            ),
+            types.Content(
+                role="user",
+                parts=[types.Part(function_response=types.FunctionResponse(
+                    id="call_1",
+                    name="read_image",
+                    response={"output": "Here is the image."},
+                    parts=[types.FunctionResponsePart(
+                        inline_data=types.FunctionResponseBlob(
+                            mime_type="image/png",
+                            display_name="photo.png",
+                            data=image_bytes,
+                        )
+                    )],
+                ))],
+            ),
+        ]
+
+        response = client.models.generate_content(
+            model=model,
+            contents=conversation,
+            config=types.GenerateContentConfig(tools=[read_image_tool]),
+        )
+
+        assert response.candidates, "Response should have candidates"
+        text = (response.text or "").strip().lower()
+        print(f"\n[{model}] reply: {text!r}")
+        assert text, "Model should produce a text reply after the multimodal tool result"
+
+        if expect_image_understood:
+            assert "red" in text, (
+                f"[{model}] model did not identify the tool-returned image color (got: {text!r}). "
+                "The image was likely dropped during functionResponse translation."
+            )
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize("model,expect_image_understood", [
+        ("gemini-2.5-flash", False),
+        ("gemini-3-flash-preview", True),
+    ])
+    def test_30b_multimodal_function_response_full_workflow(self, test_config, model, expect_image_understood):
+        """Test Case 30b: Full two-turn multimodal function-calling workflow (mirrors the
+        Gemini docs example) through Bifrost.
+
+        Unlike test_30 (which fabricates the history), this drives a real round trip:
+          1. Send a prompt that triggers the tool -> the model returns a genuine functionCall
+             (carrying its own thought signature, required by Gemini 3).
+          2. Send the tool result back as a multimodal functionResponse: the response references
+             the image via {"image_ref": {"$ref": "<displayName>"}} and the bytes live in parts,
+             exactly like the docs/Vertex example.
+          3. The model produces a final answer describing the returned image.
+
+        Bifrost adapts the $ref per provider: it keeps it for Vertex and strips it for the Gemini
+        Developer API (where the $ref form is an upstream 400 bug), so this works on both.
+          - gemini-3-flash-preview: image reaches the model -> final answer says "red".
+          - gemini-2.5-flash: multimodal tool output is unsupported, so Bifrost drops the image and
+            the request still succeeds (gating prevents a hard 400); we only assert a text reply.
+        """
+        from google.genai import types
+        import base64
+
+        client = get_provider_google_client(provider="gemini")
+
+        get_image_declaration = types.FunctionDeclaration(
+            name="get_image",
+            description="Retrieves the image file for a specific item.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": "The name or description of the item (e.g., 'red shirt').",
+                    }
+                },
+                "required": ["item_name"],
+            },
+        )
+        tool_config = types.Tool(function_declarations=[get_image_declaration])
+
+        # Turn 1: a prompt that should make the model call get_image
+        prompt = (
+            "Use get_image to retrieve the shirt I ordered, then tell me its single dominant "
+            "color. Reply with only the color word."
+        )
+        response_1 = client.models.generate_content(
+            model=format_provider_model("vertex", model),
+            contents=[prompt],
+            config=types.GenerateContentConfig(tools=[tool_config]),
+        )
+
+        if not getattr(response_1, "function_calls", None):
+            pytest.skip(f"[{model}] model did not call the tool on turn 1; cannot drive the workflow")
+        function_call = response_1.function_calls[0]
+        print(f"\n[{model}] turn 1 called: {function_call.name}({dict(function_call.args)})")
+
+        # BASE64_IMAGE is a 64x64 solid red PNG; the tool "returns" it as multimodal content.
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        function_response_data = {"image_ref": {"$ref": "shirt.png"}}
+        function_response_multimodal_data = types.FunctionResponsePart(
+            inline_data=types.FunctionResponseBlob(
+                mime_type="image/png",
+                display_name="shirt.png",
+                data=image_bytes,
+            )
+        )
+
+        # Turn 2: append the real model turn + the tool result, then ask for the final answer.
+        history = [
+            types.Content(role="user", parts=[types.Part(text=prompt)]),
+            response_1.candidates[0].content,
+            types.Content(
+                role="tool",
+                parts=[types.Part.from_function_response(
+                    name=function_call.name,
+                    response=function_response_data,
+                    parts=[function_response_multimodal_data],
+                )],
+            ),
+        ]
+
+        response_2 = client.models.generate_content(
+            model=format_provider_model("vertex", model),
+            contents=history,
+            config=types.GenerateContentConfig(tools=[tool_config]),
+        )
+
+        assert response_2.candidates, "Turn 2 should have candidates"
+        text = (response_2.text or "").strip().lower()
+        print(f"[{model}] final reply: {text!r}")
+        assert text, "Model should produce a final text reply after the multimodal tool result"
+
+        if expect_image_understood:
+            assert "red" in text, (
+                f"[{model}] model did not identify the tool-returned image color (got: {text!r}). "
+                "The image was likely dropped during functionResponse translation."
+            )
+
     @skip_if_no_api_key("google")
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
     def test_29_structured_output_with_thinking(self, google_client, test_config, provider, model):
