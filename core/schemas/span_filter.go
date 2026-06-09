@@ -40,9 +40,15 @@ func (f *PluginSpanFilter) Validate() error {
 	}
 }
 
+// SanitizePluginSpanName normalizes a plugin's name into the form embedded in its
+// span names.
+func SanitizePluginSpanName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}
+
 // PluginNameFromSpan extracts "<name>" from a plugin span whose name follows the
 // core tracer contract "plugin.<name>.<stage>", where <stage> is one of prehook,
-// posthook, mcp_prehook, mcp_posthook, mcp_connect_prehook, or mcp_connect_posthook
+// posthook, prerequesthook, mcp_prehook, mcp_posthook, mcp_connect_prehook, or mcp_connect_posthook
 // (see core/bifrost.go). It returns "" for non-plugin spans or names that don't match
 // the contract (wrong prefix, or fewer than three segments), so malformed names pass
 // through ShouldExportSpan as exported rather than being silently filtered.

@@ -447,7 +447,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 | `exclude` | Export spans for all plugins **except** those listed |
 | `include` | Export spans **only** for the listed plugins |
 
-**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. Note that some plugins are registered under a different name than their config key: the enterprise prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` (not `prompts`/`governance`). Common names include `telemetry`, `logging`, `otel`, `semantic_cache`, `compat`, `maxim`, `enterprise-prompts`, `enterprise-governance`, `datadog`, `bigquery`, `guardrails`, `adaptive-loadbalancer`, and `model-catalog-resolver`. The exact set depends on which plugins are loaded in your deployment.
 
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected. The filter applies to APM trace spans only; it does not change DogStatsD metrics, which are never derived from plugin spans.
 

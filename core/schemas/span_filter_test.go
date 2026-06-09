@@ -52,6 +52,42 @@ func TestPluginNameFromSpan(t *testing.T) {
 	}
 }
 
+func TestSanitizePluginSpanName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"logging", "logging"},
+		{"enterprise-prompts", "enterprise-prompts"},
+		{"Model Catalog Resolver", "model-catalog-resolver"},
+		{"UPPER", "upper"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := SanitizePluginSpanName(tt.in); got != tt.want {
+			t.Errorf("SanitizePluginSpanName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestSanitizedNameMatchesSpanExtraction locks the invariant that the name used to build a
+// plugin span (SanitizePluginSpanName(GetName())) is exactly what PluginNameFromSpan extracts
+// back out. If these ever diverge, the UI's filterable-plugin list stops matching real spans
+// and span filtering silently no-ops — the bug this contract exists to prevent.
+func TestSanitizedNameMatchesSpanExtraction(t *testing.T) {
+	pluginNames := []string{"logging", "enterprise-prompts", "adaptive-loadbalancer", "Has Spaces", "MixedCase"}
+	stages := []string{"prehook", "posthook", "prerequesthook", "mcp_prehook", "mcp_connect_posthook"}
+	for _, raw := range pluginNames {
+		sanitized := SanitizePluginSpanName(raw)
+		for _, stage := range stages {
+			spanName := "plugin." + sanitized + "." + stage
+			if got := PluginNameFromSpan(pluginSpan("1", "", spanName)); got != sanitized {
+				t.Errorf("PluginNameFromSpan(%q) = %q, want %q", spanName, got, sanitized)
+			}
+		}
+	}
+}
+
 func TestPluginSpanFilter_ShouldExportSpan(t *testing.T) {
 	llm := &Span{SpanID: "llm", Name: "llm.call", Kind: SpanKindLLMCall}
 	logging := pluginSpan("p1", "", "plugin.logging.prehook")
