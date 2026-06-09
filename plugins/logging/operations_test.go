@@ -99,6 +99,38 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 	}
 }
 
+func TestPreLLMHookSetsAppContextFromHeader(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"x-bf-app":     "claude-code",
+		"user-agent":   "claude-cli/2.1.168 (external, cli)",
+		"x-bf-vk":      "vk-test",
+		"x-bf-user-id": "user-test",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code", got)
+	}
+}
+
 func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close(context.Background())
