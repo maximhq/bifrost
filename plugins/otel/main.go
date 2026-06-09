@@ -41,20 +41,18 @@ const (
 	ProtocolGRPC Protocol = "grpc"
 )
 
-// PluginSpanFilterMode controls whether the plugins list is an allowlist or denylist.
-type PluginSpanFilterMode string
-
-const (
-	PluginSpanFilterModeInclude PluginSpanFilterMode = "include"
-	PluginSpanFilterModeExclude PluginSpanFilterMode = "exclude"
+// PluginSpanFilter, its mode type, and the include/exclude constants are shared across
+// all observability connectors and live in core/schemas. They are re-exported here as
+// aliases so existing OTEL config parsing, tests, and the UI keep their import paths.
+type (
+	PluginSpanFilterMode = schemas.PluginSpanFilterMode
+	PluginSpanFilter     = schemas.PluginSpanFilter
 )
 
-// PluginSpanFilter configures which plugin spans are exported to the OTEL collector.
-// Mode "include" exports only the listed plugins; mode "exclude" exports everything except them.
-type PluginSpanFilter struct {
-	Mode    PluginSpanFilterMode `json:"mode"`
-	Plugins []string             `json:"plugins"`
-}
+const (
+	PluginSpanFilterModeInclude = schemas.PluginSpanFilterModeInclude
+	PluginSpanFilterModeExclude = schemas.PluginSpanFilterModeExclude
+)
 
 // Profile is a single OTEL export target: a collector endpoint and an optional
 // metrics-push destination. A Config holds one or more profiles; each profile gets
@@ -349,13 +347,8 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if len(config.Profiles) == 0 {
 		return nil, fmt.Errorf("at least one otel profile is required")
 	}
-	if config.PluginSpanFilter != nil {
-		switch config.PluginSpanFilter.Mode {
-		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
-		default:
-			return nil, fmt.Errorf("plugin_span_filter.mode %q is invalid: must be %q or %q",
-				config.PluginSpanFilter.Mode, PluginSpanFilterModeInclude, PluginSpanFilterModeExclude)
-		}
+	if err := config.PluginSpanFilter.Validate(); err != nil {
+		return nil, err
 	}
 	// Loading attributes from environment
 	attributesFromEnvironment := make([]*commonpb.KeyValue, 0)
