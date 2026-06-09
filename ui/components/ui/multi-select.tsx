@@ -2,7 +2,7 @@ import { CheckIcon, ChevronDown, X } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
-import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
@@ -26,11 +26,23 @@ interface MultiSelectProps extends React.HTMLAttributes<HTMLDivElement> {
 	value: string[];
 	onValueChange: (value: string[]) => void;
 	placeholder?: string;
+	searchable?: boolean;
+	searchPlaceholder?: string;
 	children?: React.ReactNode;
 	getBadgeLabel?: (value: string) => string;
 }
 
-function MultiSelect({ value, onValueChange, placeholder = "Select...", className, children, getBadgeLabel, ...props }: MultiSelectProps) {
+function MultiSelect({
+	value,
+	onValueChange,
+	placeholder = "Select...",
+	searchable = false,
+	searchPlaceholder = "Search...",
+	className,
+	children,
+	getBadgeLabel,
+	...props
+}: MultiSelectProps) {
 	const [open, setOpen] = React.useState(false);
 	const popupId = React.useId();
 
@@ -91,7 +103,9 @@ function MultiSelect({ value, onValueChange, placeholder = "Select...", classNam
 				</PopoverTrigger>
 				<PopoverContent id={popupId} className="w-full p-0" align="start">
 					<Command>
+						{searchable && <CommandInput placeholder={searchPlaceholder} />}
 						<CommandList>
+							<CommandEmpty>No results found</CommandEmpty>
 							<CommandGroup>{children}</CommandGroup>
 						</CommandList>
 					</Command>
