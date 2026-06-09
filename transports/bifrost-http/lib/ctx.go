@@ -621,6 +621,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
+	// Collect all request query params for downstream use (e.g., governance routing CEL rules
+	// that read params["..."]). Keys are lowercased for case-insensitive lookup.
+	queryArgs := ctx.Request.URI().QueryArgs()
+	if queryArgs.Len() > 0 {
+		allQuery := make(map[string]string, queryArgs.Len())
+		queryArgs.All()(func(key, value []byte) bool {
+			allQuery[strings.ToLower(string(key))] = string(value)
+			return true
+		})
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
+	}
+
 	// Build and set the MCP callback base URL. Used by per-user OAuth (appends
 	// /api/oauth/callback) and per-user headers (appends the workspace submit
 	// path) resolvers when initiating their respective auth flows. Bifrost is
