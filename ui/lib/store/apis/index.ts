@@ -1,5 +1,10 @@
 // Base API
-export { baseApi, clearAuthStorage, getErrorMessage, setAuthToken } from "./baseApi";
+export {
+  baseApi,
+  clearAuthStorage,
+  getErrorMessage,
+  setAuthToken,
+} from "./baseApi";
 
 // API slices and hooks
 export * from "./configApi";
@@ -15,3 +20,4 @@ export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./sessionApi";
+export * from "./skillsApi";
