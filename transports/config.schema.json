@@ -1703,8 +1703,113 @@
                       "type": "boolean",
                       "description": "Enable APM traces (default: true)",
                       "default": true
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
                     }
                   },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "bigquery"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the BigQuery traces plugin",
+                  "properties": {
+                    "project_id": {
+                      "type": "string",
+                      "description": "GCP project ID (required)"
+                    },
+                    "dataset_id": {
+                      "type": "string",
+                      "description": "BigQuery dataset name",
+                      "default": "bifrost_traces"
+                    },
+                    "table_id": {
+                      "type": "string",
+                      "description": "BigQuery table name",
+                      "default": "traces"
+                    },
+                    "location": {
+                      "type": "string",
+                      "description": "BigQuery dataset location",
+                      "default": "US"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Service account key JSON for authentication. Omit to use Application Default Credentials (ADC). Supports env var syntax: \"env.MY_VAR\"."
+                    },
+                    "create_table_if_not_exists": {
+                      "type": "boolean",
+                      "description": "Auto-create the table if it does not exist",
+                      "default": true
+                    },
+                    "flush_interval_seconds": {
+                      "type": "integer",
+                      "description": "Interval between buffer flushes, in seconds",
+                      "default": 5
+                    },
+                    "buffer_size": {
+                      "type": "integer",
+                      "description": "Max rows to buffer before flushing",
+                      "default": 500
+                    },
+                    "custom_labels": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "anyOf": [
+                          { "type": "string" },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "value": { "type": "string" },
+                              "env_var": { "type": "string" },
+                              "from_env": { "type": "boolean" }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "description": "Arbitrary key-value pairs stored as JSON in the labels column"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Omit conversation history (input/output) columns",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose values are stored in the request_headers column"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["project_id"],
                   "additionalProperties": false
                 }
               }
@@ -1758,9 +1863,9 @@
         }
       ]
     },
-    "otel_plugin_span_filter": {
+    "plugin_span_filter": {
       "type": "object",
-      "description": "Controls which plugin hook spans are exported to the OTEL collector. Omit to export all plugin spans.",
+      "description": "Controls which plugin hook spans this observability connector exports. Omit to export all plugin spans. Mode \"include\" exports only the listed plugins; mode \"exclude\" exports everything except them. Plugin names match the <name> in the span name \"plugin.<name>.<stage>\".",
       "properties": {
         "mode": {
           "type": "string",
@@ -1849,7 +1954,7 @@
           "default": true
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otel_plugin_span_filter"
+          "$ref": "#/$defs/plugin_span_filter"
         }
       },
       "allOf": [
@@ -1897,7 +2002,7 @@
           "minItems": 1
         },
         "plugin_span_filter": {
-          "$ref": "#/$defs/otel_plugin_span_filter"
+          "$ref": "#/$defs/plugin_span_filter"
         }
       },
       "required": ["profiles"],

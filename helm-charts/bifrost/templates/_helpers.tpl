@@ -1197,8 +1197,54 @@ false
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
 {{- $plugin := dict "enabled" true "name" "datadog" "config" $datadogConfig }}
 {{- if hasKey .Values.bifrost.plugins.datadog "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.datadog.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
+{{- end }}
+{{- if .Values.bifrost.plugins.bigquery.enabled }}
+{{- $bigqueryConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.bigquery.config | default dict }}
+{{- if $inputConfig.project_id }}
+{{- $_ := set $bigqueryConfig "project_id" $inputConfig.project_id }}
+{{- end }}
+{{- if $inputConfig.dataset_id }}
+{{- $_ := set $bigqueryConfig "dataset_id" $inputConfig.dataset_id }}
+{{- end }}
+{{- if $inputConfig.table_id }}
+{{- $_ := set $bigqueryConfig "table_id" $inputConfig.table_id }}
+{{- end }}
+{{- if $inputConfig.location }}
+{{- $_ := set $bigqueryConfig "location" $inputConfig.location }}
+{{- end }}
+{{- if $inputConfig.service_account_key }}
+{{- $_ := set $bigqueryConfig "service_account_key" $inputConfig.service_account_key }}
+{{- end }}
+{{- if hasKey $inputConfig "create_table_if_not_exists" }}
+{{- $_ := set $bigqueryConfig "create_table_if_not_exists" $inputConfig.create_table_if_not_exists }}
+{{- end }}
+{{- if hasKey $inputConfig "flush_interval_seconds" }}
+{{- $_ := set $bigqueryConfig "flush_interval_seconds" $inputConfig.flush_interval_seconds }}
+{{- end }}
+{{- if hasKey $inputConfig "buffer_size" }}
+{{- $_ := set $bigqueryConfig "buffer_size" $inputConfig.buffer_size }}
+{{- end }}
+{{- if $inputConfig.custom_labels }}
+{{- $_ := set $bigqueryConfig "custom_labels" $inputConfig.custom_labels }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $bigqueryConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.request_headers }}
+{{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $bigqueryConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- $plugin := dict "enabled" true "name" "bigquery" "config" $bigqueryConfig }}
+{{- if hasKey .Values.bifrost.plugins.bigquery "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.bigquery.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- /* Custom plugins */ -}}
@@ -1358,6 +1404,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (gt (int .Values.bifrost.plugins.datadog.version) 32767) }}
 {{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (hasKey .Values.bifrost.plugins.bigquery "version") (lt (int .Values.bifrost.plugins.bigquery.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (hasKey .Values.bifrost.plugins.bigquery "version") (gt (int .Values.bifrost.plugins.bigquery.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (not (.Values.bifrost.plugins.bigquery.config | default dict).project_id) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.config.project_id is required when the BigQuery plugin is enabled." }}
 {{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
