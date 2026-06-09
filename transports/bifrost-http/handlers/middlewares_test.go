@@ -690,6 +690,50 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	t.Run("serve routes bypass auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if !nextCalled {
+			t.Fatal("expected public skills serving route to bypass auth")
+		}
+	})
+
+	t.Run("management routes require auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if nextCalled {
+			t.Fatal("expected skills management route to require auth")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+			t.Fatalf("expected %d, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+		}
+	})
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})

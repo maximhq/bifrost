@@ -170,6 +170,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
+	mapConfig["is_git_available"] = CheckGitAvailability()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
 	// Fetching proxy config
