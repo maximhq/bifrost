@@ -131,8 +131,10 @@ type ComprehensiveTestConfig struct {
 	VideoGenerationModel     string                 // Model for video generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
-	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
-	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	BatchExtraParams         map[string]interface{}     // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
+	BatchOutputFolder        *schemas.BatchOutputFolder // Typed batch output location (e.g., GCS gs:// prefix for Vertex)
+	FileExtraParams          map[string]interface{}     // Extra params for file operations (e.g., s3_bucket for Bedrock)
+	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
