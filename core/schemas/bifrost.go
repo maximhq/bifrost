@@ -1095,6 +1095,107 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// syncDeprecatedFromRoutingInfo backfills the deprecated Provider /
+// OriginalModelRequested / ResolvedModelUsed triplet on an ExtraFields-like
+// target from a finalized RoutingInfo, applying the rules documented on each
+// deprecated field. Centralized so PopulateRoutingInfo and
+// SetFallbackRoutingInfo cannot drift apart.
+func syncDeprecatedFromRoutingInfo(info RoutingInfo, provider *ModelProvider, originalModelRequested, resolvedModelUsed *string) {
+	if provider != nil && info.Provider != "" {
+		*provider = info.Provider
+	}
+	// OriginalModelRequested: collapses to the caller-sent model. On a fallback
+	// attempt that's the primary's model (the user never asked for the fallback's);
+	// otherwise it's this attempt's model.
+	if originalModelRequested != nil {
+		if info.IsFallback && info.PrimaryModel != nil && *info.PrimaryModel != "" {
+			*originalModelRequested = *info.PrimaryModel
+		} else if info.Model != "" {
+			*originalModelRequested = info.Model
+		}
+	}
+	// ResolvedModelUsed: the wire model. Alias's ModelID when an alias matched,
+	// otherwise the attempt's Model.
+	if resolvedModelUsed != nil {
+		if info.ResolvedKeyAlias != nil && info.ResolvedKeyAlias.ModelID != "" {
+			*resolvedModelUsed = info.ResolvedKeyAlias.ModelID
+		} else if info.Model != "" {
+			*resolvedModelUsed = info.Model
+		}
+	}
+}
+
+// PopulateRoutingInfo sets ExtraFields.RoutingInfo on the active sub-response
+// and keeps the deprecated Provider/OriginalModelRequested/ResolvedModelUsed
+// triplet in sync per their documented derivation rules.
+// Core always calls this both before and after RunPostLLMHooks so any plugin
+// modifications are no-ops — tampering with RoutingInfo inside plugins is
+// discouraged.
+func (r *BifrostResponse) PopulateRoutingInfo(info RoutingInfo) {
+	if r == nil {
+		return
+	}
+	if ef := r.GetExtraFields(); ef != nil {
+		ef.RoutingInfo = info
+		syncDeprecatedFromRoutingInfo(info, &ef.Provider, &ef.OriginalModelRequested, &ef.ResolvedModelUsed)
+	}
+}
+
+// PopulateRoutingInfo sets ExtraFields.RoutingInfo on the error and syncs the
+// deprecated triplet. Core calls this both before and after RunPostLLMHooks
+// alongside PopulateExtraFields.
+func (e *BifrostError) PopulateRoutingInfo(info RoutingInfo) {
+	if e == nil {
+		return
+	}
+	e.ExtraFields.RoutingInfo = info
+	syncDeprecatedFromRoutingInfo(info, &e.ExtraFields.Provider, &e.ExtraFields.OriginalModelRequested, &e.ExtraFields.ResolvedModelUsed)
+}
+
+// SetFallbackRoutingInfo marks the active sub-response's RoutingInfo as a
+// fallback attempt and records the primary attempt's provider/model. Also
+// re-syncs the deprecated OriginalModelRequested to the primary model per
+// its documented derivation rule.
+// Called by the orchestrator (handleRequest) on each fallback attempt's
+// result/error — the per-attempt code never sets these fields itself.
+func (r *BifrostResponse) SetFallbackRoutingInfo(primaryProvider ModelProvider, primaryModel string) {
+	if r == nil {
+		return
+	}
+	ef := r.GetExtraFields()
+	if ef == nil {
+		return
+	}
+	ef.RoutingInfo.IsFallback = true
+	if primaryProvider != "" {
+		p := primaryProvider
+		ef.RoutingInfo.PrimaryProvider = &p
+	}
+	if primaryModel != "" {
+		m := primaryModel
+		ef.RoutingInfo.PrimaryModel = &m
+	}
+	syncDeprecatedFromRoutingInfo(ef.RoutingInfo, &ef.Provider, &ef.OriginalModelRequested, &ef.ResolvedModelUsed)
+}
+
+// SetFallbackRoutingInfo is the BifrostError counterpart — see the
+// BifrostResponse method for semantics.
+func (e *BifrostError) SetFallbackRoutingInfo(primaryProvider ModelProvider, primaryModel string) {
+	if e == nil {
+		return
+	}
+	e.ExtraFields.RoutingInfo.IsFallback = true
+	if primaryProvider != "" {
+		p := primaryProvider
+		e.ExtraFields.RoutingInfo.PrimaryProvider = &p
+	}
+	if primaryModel != "" {
+		m := primaryModel
+		e.ExtraFields.RoutingInfo.PrimaryModel = &m
+	}
+	syncDeprecatedFromRoutingInfo(e.ExtraFields.RoutingInfo, &e.ExtraFields.Provider, &e.ExtraFields.OriginalModelRequested, &e.ExtraFields.ResolvedModelUsed)
+}
+
 // PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
 // active sub-response. Core always calls this both before and after RunPostLLMHooks, so any plugin
 // modifications to these 4 fields are no-ops — tampering with them inside plugins is discouraged.
@@ -1448,9 +1549,20 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType               RequestType        `json:"request_type"`
-	Provider                  ModelProvider      `json:"provider,omitempty"`
-	OriginalModelRequested    string             `json:"original_model_requested,omitempty"` // the model alias the caller sent in the request
-	ResolvedModelUsed         string             `json:"resolved_model_used,omitempty"`      // the actual provider API identifier used (equals OriginalModelRequested when no alias mapping exists)
+	RoutingInfo               RoutingInfo        `json:"routing_info"`
+	// Deprecated: use RoutingInfo.Provider. Still populated for backward
+	// compatibility; new consumers should read from RoutingInfo.
+	Provider ModelProvider `json:"provider,omitempty"`
+	// Deprecated: use RoutingInfo.PrimaryModel when RoutingInfo.IsFallback
+	// is true, otherwise RoutingInfo.Model — both branches collapse to the
+	// model string the caller sent in the request. Still populated for
+	// backward compatibility; new consumers should read from RoutingInfo.
+	OriginalModelRequested string `json:"original_model_requested,omitempty"`
+	// Deprecated: use RoutingInfo.ResolvedKeyAlias.ModelID when an alias
+	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
+	// RoutingInfo.Model. Still populated for backward compatibility; new
+	// consumers should read from RoutingInfo.
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
 	Latency                   int64              `json:"latency"`                            // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex                int                `json:"chunk_index"`                        // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}        `json:"raw_request,omitempty"`
@@ -1461,6 +1573,28 @@ type BifrostResponseExtraFields struct {
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
 	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
 	PassthroughPath           string             `json:"passthrough_path,omitempty"`             // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+}
+
+type RoutingInfo struct {
+	// What actually handled this attempt
+	Provider ModelProvider `json:"provider,omitempty"`
+	Model    string        `json:"model,omitempty"` // model name passed to this attempt's key
+	Key      string        `json:"key,omitempty"`   // KeyName of the key used
+
+	// Populated only when Model matched an entry in this key's Aliases map
+	ResolvedKeyAlias *ResolvedKeyAlias `json:"resolved_key_alias,omitempty"`
+
+	IsFallback bool `json:"is_fallback,omitempty"`
+
+	// What the caller asked for, before any fallback resolution (populated only when fallback resolution occurred)
+	PrimaryProvider *ModelProvider `json:"primary_provider,omitempty"`
+	PrimaryModel    *string        `json:"primary_model,omitempty"`
+}
+
+type ResolvedKeyAlias struct {
+	ModelID     string       `json:"model_id"`               // wire model identifier actually sent to the provider
+	ModelName   *string      `json:"model_name,omitempty"`   // canonical name (used for pricing/logs)
+	ModelFamily *ModelFamily `json:"model_family,omitempty"` // resolved family for routing
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -1698,8 +1832,19 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider                  ModelProvider         `json:"provider,omitempty"`
-	OriginalModelRequested    string                `json:"original_model_requested,omitempty"`
+	RoutingInfo RoutingInfo `json:"routing_info"`
+	// Deprecated: use RoutingInfo.Provider. Still populated for backward
+	// compatibility; new consumers should read from RoutingInfo.
+	Provider ModelProvider `json:"provider,omitempty"`
+	// Deprecated: use RoutingInfo.PrimaryModel when RoutingInfo.IsFallback
+	// is true, otherwise RoutingInfo.Model — both branches collapse to the
+	// model string the caller sent in the request. Still populated for
+	// backward compatibility; new consumers should read from RoutingInfo.
+	OriginalModelRequested string `json:"original_model_requested,omitempty"`
+	// Deprecated: use RoutingInfo.ResolvedKeyAlias.ModelID when an alias
+	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
+	// RoutingInfo.Model. Still populated for backward compatibility; new
+	// consumers should read from RoutingInfo.
 	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
 	RequestType               RequestType           `json:"request_type,omitempty"`
 	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
