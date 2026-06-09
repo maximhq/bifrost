@@ -2712,3 +2712,47 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
+// a hit returns the single matching key, a miss returns an empty slice
+// (which the caller surfaces as "no key found"), and the input slice must
+// not be mutated.
+func TestFilterKeysByID(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1"},
+		{ID: "k2"},
+		{ID: "k3"},
+	}
+
+	t.Run("match returns single key", func(t *testing.T) {
+		got := filterKeysByID(keys, "k2")
+		if len(got) != 1 || got[0].ID != "k2" {
+			t.Fatalf("filterKeysByID(_, k2) = %+v, want one key with ID=k2", got)
+		}
+	})
+
+	t.Run("no match returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "does-not-exist")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, missing) = %+v, want empty", got)
+		}
+	})
+
+	t.Run("empty target returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, \"\") = %+v, want empty", got)
+		}
+	})
+
+	t.Run("input slice is not mutated", func(t *testing.T) {
+		before := make([]schemas.Key, len(keys))
+		copy(before, keys)
+		_ = filterKeysByID(keys, "k1")
+		for i := range keys {
+			if keys[i].ID != before[i].ID {
+				t.Fatalf("input mutated at index %d: got %q, want %q", i, keys[i].ID, before[i].ID)
+			}
+		}
+	})
+}
