@@ -26,6 +26,7 @@ var reservedKeys = []any{
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
+	BifrostContextKeyMCPHealthCheckRequest,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
