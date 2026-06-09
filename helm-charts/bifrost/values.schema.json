@@ -3740,7 +3740,8 @@
         },
         "disableAuthOnInference": {
           "type": "boolean",
-          "description": "Whether authentication is disabled on inference"
+          "deprecated": true,
+          "description": "Deprecated and ignored. Use client.enforceAuthOnInference instead."
         },
         "existingSecret": {
           "type": "string"

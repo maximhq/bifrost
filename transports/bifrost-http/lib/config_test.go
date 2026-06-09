@@ -16138,6 +16138,12 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
 	},
+	"auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
+	},
+	"governance.auth_config": {
+		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
+	},
 	"governance.teams": {
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
@@ -16938,21 +16944,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("sameadmin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("sameadmin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("sameadmin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("sameadmin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)
@@ -17154,21 +17156,17 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 
 		mockStore.authConfig = &configstore.AuthConfig{
-			AdminUserName:          schemas.NewEnvVar("admin"),
-			AdminPassword:          schemas.NewEnvVar(hashedPassword),
-			IsEnabled:              true,
-			DisableAuthOnInference: false,
-		}
+			AdminUserName: schemas.NewEnvVar("admin"),
+			AdminPassword: schemas.NewEnvVar(hashedPassword),
+			IsEnabled:     true}
 		config := &Config{
 			ConfigStore: mockStore,
 		}
 		configData := &ConfigData{
 			AuthConfig: &configstore.AuthConfig{
-				AdminUserName:          schemas.NewEnvVar("admin"),
-				AdminPassword:          schemas.NewEnvVar(plainPassword),
-				IsEnabled:              true,
-				DisableAuthOnInference: false,
-			},
+				AdminUserName: schemas.NewEnvVar("admin"),
+				AdminPassword: schemas.NewEnvVar(plainPassword),
+				IsEnabled:     true},
 		}
 
 		loadAuthConfig(ctx, config, configData)

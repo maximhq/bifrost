@@ -150,26 +150,23 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username":            authConfig.AdminUserName,
-				"admin_password":            passwordEnvVar,
-				"is_enabled":                authConfig.IsEnabled,
-				"disable_auth_on_inference": authConfig.DisableAuthOnInference,
+				"admin_username": authConfig.AdminUserName,
+				"admin_password": passwordEnvVar,
+				"is_enabled":     authConfig.IsEnabled,
 			}
 		} else {
 			// No auth config exists yet, return default empty EnvVar values
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-				"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-				"is_enabled":                false,
-				"disable_auth_on_inference": true,
+				"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+				"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+				"is_enabled":     false,
 			}
 		}
 	} else {
 		mapConfig["auth_config"] = map[string]any{
-			"admin_username":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-			"admin_password":            &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-			"is_enabled":                false,
-			"disable_auth_on_inference": true,
+			"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			"is_enabled":     false,
 		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
