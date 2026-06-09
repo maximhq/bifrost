@@ -165,6 +165,12 @@ providers:
     streaming: "gemini-2.5-flash"
     count_tokens: "claude-sonnet-4-5"
     video: "veo-3.1-generate-preview"
+    batch_create: "gemini-2.5-flash"
+    batch_inline: "gemini-2.5-flash"
+    batch_file_upload: "gemini-2.5-flash"
+    batch_list: "gemini-2.5-flash"
+    batch_retrieve: "gemini-2.5-flash"
+    batch_cancel: "gemini-2.5-flash"
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"

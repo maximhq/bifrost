@@ -1503,13 +1503,15 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						}
 					}
 
-					// For Azure, extract inline requests from raw body
-					if createReq.Provider == schemas.Azure {
+					// Azure (input_blob + output_folder) and Vertex (output_folder, a gs:// prefix)
+					// carry their storage location in the request body rather than a managed file.
+					if createReq.Provider == schemas.Azure || createReq.Provider == schemas.Vertex {
 						var extraFields map[string]interface{}
 						if err := json.Unmarshal(ctx.Request.Body(), &extraFields); err == nil {
-							// Extract requests array for inline batching
-							if inputBlob, ok := extraFields["input_blob"].(string); ok {
-								createReq.InputBlob = &inputBlob
+							if createReq.Provider == schemas.Azure {
+								if inputBlob, ok := extraFields["input_blob"].(string); ok {
+									createReq.InputBlob = &inputBlob
+								}
 							}
 							if outputFolder, ok := extraFields["output_folder"].(map[string]interface{}); ok {
 								outputURL, ok := outputFolder["url"].(string)
