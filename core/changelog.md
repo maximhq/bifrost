@@ -1,3 +1,4 @@
+- [fix]: mistral custom providers can override request paths for all endpoints [@georg-wolflein](https://github.com/georg-wolflein)
 - [fix]: allow mistral as a base_provider_type for custom providers [@georg-wolflein](https://github.com/georg-wolflein)
 [fix]: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links [@MarcusPeng](https://github.com/MarcusPeng)
 [fix]: zero pooled ChannelMessage references on release to avoid pinning request bodies [@citrocat](https://github.com/citrocat)
