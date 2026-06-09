@@ -314,3 +314,8 @@ updates:
     directory: /tests/cmd/seedvks
     schedule:
       interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/modelcatalogresolver
+    schedule:
+      interval: weekly
