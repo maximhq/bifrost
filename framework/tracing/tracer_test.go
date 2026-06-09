@@ -14,6 +14,9 @@ type testRealtimeObservabilityPlugin struct {
 
 func (p *testRealtimeObservabilityPlugin) GetName() string { return "test-observability" }
 func (p *testRealtimeObservabilityPlugin) Cleanup() error  { return nil }
+func (p *testRealtimeObservabilityPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
 func (p *testRealtimeObservabilityPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
