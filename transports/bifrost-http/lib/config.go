@@ -4415,6 +4415,30 @@ func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
 	return nil
 }
 
+// GetLoadedPluginNames returns the sanitized names of every currently loaded plugin,
+// matching the names embedded in their trace span names.
+func (c *Config) GetLoadedPluginNames() []string {
+	plugins := c.BasePlugins.Load()
+	if plugins == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(*plugins))
+	names := make([]string, 0, len(*plugins))
+	for _, p := range *plugins {
+		name := schemas.SanitizePluginSpanName(p.GetName())
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // pluginChunkInterceptor implements StreamChunkInterceptor by calling plugin hooks
 type pluginChunkInterceptor struct {
 	plugins []schemas.HTTPTransportPlugin

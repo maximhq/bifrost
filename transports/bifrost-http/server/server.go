@@ -64,6 +64,7 @@ type ServerCallbacks interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
+	GetLoadedPluginNames() []string
 	NormalizePluginConfig(name string, config map[string]any) (map[string]any, error)
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
@@ -1156,6 +1157,15 @@ func (s *BifrostHTTPServer) GetUnfilteredModelsForProvider(provider schemas.Mode
 // Delegates to Config for centralized plugin status management
 func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus {
 	return s.Config.GetPluginStatus()
+}
+
+// GetLoadedPluginNames returns the sanitized names of all currently loaded plugins,
+// matching the names embedded in their trace span names.
+func (s *BifrostHTTPServer) GetLoadedPluginNames() []string {
+	if s.Config == nil {
+		return []string{}
+	}
+	return s.Config.GetLoadedPluginNames()
 }
 
 // NormalizePluginConfig implements handlers.PluginsLoader. It looks up the plugin

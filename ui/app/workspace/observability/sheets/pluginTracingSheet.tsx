@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
-import { getErrorMessage, useGetBuiltinPluginsQuery, useGetPluginQuery, useGetPluginsQuery, useUpdatePluginMutation } from "@/lib/store";
+import { getErrorMessage, useGetLoadedPluginsQuery, useGetPluginQuery, useUpdatePluginMutation } from "@/lib/store";
 import { PluginSpanFilter } from "@/lib/types/config";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -60,10 +60,10 @@ function PluginRow({ name, checked, onChange }: { name: string; checked: boolean
 }
 
 export default function PluginTracingSheet({ open, onClose, pluginName, destination }: PluginTracingSheetProps) {
-	const { data: builtinPluginNames = [] } = useGetBuiltinPluginsQuery();
-	const { data: allPluginsData } = useGetPluginsQuery();
-	const customPluginNames = (allPluginsData ?? []).filter((p) => p.isCustom).map((p) => p.name);
-	const allPlugins = [...builtinPluginNames, ...customPluginNames];
+	// All currently loaded plugins (built-in, enterprise, custom, and auto-loaded) that can
+	// emit spans, named to match the connector's span filter. One flat list — the backend
+	// already returns the complete set, so there's no built-in/custom split to maintain.
+	const { data: allPlugins = [], isLoading: isLoadingLoadedPlugins } = useGetLoadedPluginsQuery();
 	const { data: targetPlugin } = useGetPluginQuery(pluginName);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
 	const [toggles, setToggles] = useState<Record<string, boolean>>({});
@@ -73,12 +73,12 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 		if (open && !wasOpenRef.current) {
 			if (!targetPlugin) return; // wait until persisted config is available
 			const filter = (targetPlugin.config?.plugin_span_filter as PluginSpanFilter | undefined) ?? null;
-			if (filter?.mode === "include" && allPlugins.length === 0) return;
+			if (isLoadingLoadedPlugins || allPlugins.length === 0) return;
 			setToggles(resolveToggleState(filter, allPlugins));
 			wasOpenRef.current = true;
 		}
 		if (!open) wasOpenRef.current = false;
-	}, [open, targetPlugin, allPlugins]);
+	}, [open, targetPlugin, allPlugins, isLoadingLoadedPlugins]);
 
 	const setToggle = useCallback((name: string, value: boolean) => {
 		setToggles((prev) => ({ ...prev, [name]: value }));
@@ -127,55 +127,28 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 					<div className="flex flex-col gap-4">
 						<div>
 							<div className="mb-2 flex items-center justify-between">
-								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Built-in Plugins</p>
+								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Plugins</p>
 								<TriStateCheckbox
-									allIds={builtinPluginNames}
-									selectedIds={builtinPluginNames.filter((n) => toggles[n] ?? true)}
+									allIds={allPlugins}
+									selectedIds={allPlugins.filter((n) => toggles[n] ?? true)}
 									onChange={(next) => {
 										const nextSet = new Set(next);
 										setToggles((prev) => {
 											const updated = { ...prev };
-											for (const n of builtinPluginNames) updated[n] = nextSet.has(n);
+											for (const n of allPlugins) updated[n] = nextSet.has(n);
 											return updated;
 										});
 									}}
-									ariaLabel="Toggle all built-in plugin tracing"
-									data-testid="plugin-tracing-select-all-builtins"
+									ariaLabel="Toggle all plugin tracing"
+									data-testid="plugin-tracing-select-all"
 								/>
 							</div>
 							<div className="flex flex-col gap-1.5">
-								{builtinPluginNames.map((name) => (
+								{allPlugins.map((name) => (
 									<PluginRow key={name} name={name} checked={toggles[name] ?? true} onChange={(v) => setToggle(name, v)} />
 								))}
 							</div>
 						</div>
-
-						{customPluginNames.length > 0 && (
-							<div>
-								<div className="mb-2 flex items-center justify-between">
-									<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Custom Plugins</p>
-									<TriStateCheckbox
-										allIds={customPluginNames}
-										selectedIds={customPluginNames.filter((n) => toggles[n] ?? true)}
-										onChange={(next) => {
-											const nextSet = new Set(next);
-											setToggles((prev) => {
-												const updated = { ...prev };
-												for (const n of customPluginNames) updated[n] = nextSet.has(n);
-												return updated;
-											});
-										}}
-										ariaLabel="Toggle all custom plugin tracing"
-										data-testid="plugin-tracing-select-all-custom"
-									/>
-								</div>
-								<div className="flex flex-col gap-1.5">
-									{customPluginNames.map((name) => (
-										<PluginRow key={name} name={name} checked={toggles[name] ?? true} onChange={(v) => setToggle(name, v)} />
-									))}
-								</div>
-							</div>
-						)}
 					</div>
 				</div>
 

@@ -557,9 +557,9 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	return nil
 }
 
-// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return schemas.SanitizePluginSpanName(name)
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.

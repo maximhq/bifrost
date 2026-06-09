@@ -1065,7 +1065,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 | `exclude` | Export spans for all plugins **except** those listed |
 | `include` | Export spans **only** for the listed plugins |
 
-**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. The built-in OSS plugins are `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, and `maxim`. In enterprise deployments some plugins are registered under a different name than their config key — for example the prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` — so always copy the name from the tracing sheet rather than assuming the config key.
 
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 
