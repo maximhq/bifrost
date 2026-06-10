@@ -12,7 +12,7 @@ const (
 	DefaultSyncInterval           = datasheet.DefaultSyncInterval
 	MinimumPricingSyncIntervalSec = int64(3600)
 
-	ConfigLastPricingSyncKey     = "LastModelPricingSync"
+	ConfigLastPricingSyncKey    = "LastModelPricingSync"
 	ConfigLastParamsSyncKey     = "LastModelParametersSync"
 	ConfigLastMCPLibrarySyncKey = "LastMCPLibrarySync"
 )
@@ -71,6 +71,9 @@ const (
 	DefaultModelParametersURL     = datasheet.DefaultModelParametersURL
 	DefaultPricingTimeout         = datasheet.DefaultPricingTimeout
 	DefaultModelParametersTimeout = datasheet.DefaultModelParametersTimeout
+
+	DefaultMCPLibraryURL     = "https://getbifrost.ai/mcp-library"
+	DefaultMCPLibraryTimeout = 45 * time.Second
 )
 
 // syncWorkerTickerPeriod is the fixed interval at which the background sync worker
