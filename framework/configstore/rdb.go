@@ -2332,6 +2332,8 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_token_priority",
 	"input_cost_per_token_flex",
 	"output_cost_per_token_flex",
+	"input_cost_per_token_fast",
+	"output_cost_per_token_fast",
 	"input_cost_per_character",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
