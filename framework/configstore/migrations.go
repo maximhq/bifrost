@@ -866,6 +866,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPLibraryTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9772,6 +9775,40 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryTable creates the mcp_library table, the synced-only
+// catalog of discoverable MCP servers. Rows are populated from the external MCP
+// library datasheet on a configurable interval (mirroring the model-pricing
+// sync), so this migration only stands up the schema; no rows exist yet.
+func migrationAddMCPLibraryTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableMCPLibrary{}) {
+				if err := mg.CreateTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("create mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPLibrary{}) {
+				if err := mg.DropTable(&tables.TableMCPLibrary{}); err != nil {
+					return fmt.Errorf("drop mcp_library table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_table migration: %s", err.Error())
 	}
 	return nil
 }

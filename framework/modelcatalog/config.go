@@ -12,8 +12,9 @@ const (
 	DefaultSyncInterval           = datasheet.DefaultSyncInterval
 	MinimumPricingSyncIntervalSec = int64(3600)
 
-	ConfigLastPricingSyncKey = "LastModelPricingSync"
-	ConfigLastParamsSyncKey  = "LastModelParametersSync"
+	ConfigLastPricingSyncKey     = "LastModelPricingSync"
+	ConfigLastParamsSyncKey     = "LastModelParametersSync"
+	ConfigLastMCPLibrarySyncKey = "LastMCPLibrarySync"
 )
 
 // Config is the model pricing configuration.
@@ -21,6 +22,12 @@ type Config struct {
 	PricingURL          *string `json:"pricing_url,omitempty"`
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
 	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
+
+	// MCPLibraryURL overrides the endpoint the MCP server library catalog is
+	// synced from. Empty/nil uses DefaultMCPLibraryURL. Mirrors PricingURL: the
+	// default ships out of the box and the user can point it at a custom source.
+	MCPLibraryURL          *string `json:"mcp_library_url,omitempty"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval,omitempty"` // seconds
 }
 
 // Type re-exports so external callers can continue importing the legacy
