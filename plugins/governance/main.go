@@ -18,6 +18,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // PluginName is the name of the governance plugin
@@ -84,6 +85,8 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	complexityAnalyzer *complexity.ComplexityAnalyzer
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -232,6 +235,7 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 	}
+	plugin.complexityAnalyzer = complexity.NewComplexityAnalyzer()
 	return plugin, nil
 }
 
@@ -326,6 +330,7 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 	}
+	plugin.complexityAnalyzer = complexity.NewComplexityAnalyzer()
 	return plugin, nil
 }
 
@@ -635,6 +640,37 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
 
+	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
+	var computeComplexity func() *complexity.ComplexityResult
+	if analyzer := p.complexityAnalyzer; analyzer != nil {
+		computeComplexity = func() *complexity.ComplexityResult {
+			input, ok := buildComplexityInput(req)
+			if !ok {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
+				return nil
+			}
+
+			result := analyzer.Analyze(input)
+			if p.logger != nil {
+				p.logger.Debug(
+					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
+					result.Tier,
+					result.Score,
+					result.WordCount,
+				)
+			}
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
+			)
+			return result
+		}
+	}
+
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		Provider:                 provider,
@@ -643,6 +679,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		Headers:                  headers,
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		computeComplexity:        computeComplexity,
 	}
 
 	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
