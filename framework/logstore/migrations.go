@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/framework/migrator"
@@ -2065,24 +2066,39 @@ func migrationAddMultiTeamBusinessUnitGINIndexes(ctx context.Context, db *gorm.D
 func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// pg_index.indisvalid is false when a CONCURRENTLY build was interrupted.
 	// COALESCE returns false when no row matches (index does not exist yet).
+	// MAX(pg_get_expr) captures the stored predicate so we can detect a stale
+	// IS JSON OBJECT predicate (PG 15+ only) left by an older deployment.
 	var indexValid bool
+	var indexPredicate sql.NullString
 
 	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		SELECT COALESCE(bool_and(pi.indisvalid), false),
+		       MAX(pg_get_expr(pi.indpred, pi.indrelid))
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		WHERE pc.relname = 'logs'
 		  AND ic.relname = 'idx_logs_metadata_gin'
-	`).Scan(&indexValid); err != nil {
+	`).Scan(&indexValid, &indexPredicate); err != nil {
 		return fmt.Errorf("failed to query GIN index validity: %w", err)
 	}
 
 	if indexValid {
-		if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
-			return err
+		// If the stored predicate still uses the PG 15+ IS JSON OBJECT guard, the
+		// new jsonb_typeof() guard in rdb.go won't satisfy it and the planner will
+		// fall back to sequential scans. Drop the stale index so it gets rebuilt
+		// with the compatible predicate below.
+		if indexPredicate.Valid && strings.Contains(strings.ToLower(indexPredicate.String), "is json") {
+			if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_metadata_gin"); err != nil {
+				return fmt.Errorf("failed to drop stale metadata GIN index: %w", err)
+			}
+			// Fall through to rebuild with the jsonb_typeof predicate.
+		} else {
+			if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
+				return err
+			}
+			return nil
 		}
-		return nil
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
@@ -2128,7 +2144,7 @@ func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
 			SELECT ctid
 			FROM logs
 			WHERE metadata IS NOT NULL
-			  AND metadata IS NOT JSON OBJECT
+			  AND jsonb_typeof(metadata::jsonb) <> 'object'
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
