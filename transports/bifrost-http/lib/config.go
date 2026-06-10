@@ -2136,10 +2136,16 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		// Preparing hash
 		found := false
 		for j, existingVirtualKey := range governanceConfig.VirtualKeys {
-			if existingVirtualKey.ID == newVirtualKey.ID {
+			idMatch := existingVirtualKey.ID == newVirtualKey.ID
+			nameMatch := newVirtualKey.ID == "" && existingVirtualKey.Name == newVirtualKey.Name
+			if idMatch || nameMatch {
+				if nameMatch {
+					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
+					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
+				}
 				found = true
 				if existingVirtualKey.ConfigHash != fileVKHash {
-					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", newVirtualKey.ID)
+					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 					// This is added for backward compatibility with existing configs
 					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
@@ -2781,6 +2787,9 @@ func updateGovernanceConfigInStore(
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
+			if virtualKey.ID == "" {
+				virtualKey.ID = uuid.NewString()
+			}
 			providerConfigs := virtualKey.ProviderConfigs
 			mcpConfigs := virtualKey.MCPConfigs
 			virtualKey.ProviderConfigs = nil
@@ -3333,6 +3342,10 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			mcpConfigs := virtualKey.MCPConfigs
 			virtualKey.ProviderConfigs = nil
 			virtualKey.MCPConfigs = nil
+
+			if virtualKey.ID == "" {
+				virtualKey.ID = uuid.NewString()
+			}
 
 			if err := config.ConfigStore.CreateVirtualKey(ctx, virtualKey, tx); err != nil {
 				logger.Error("failed to create virtual key %s: %v", virtualKey.ID, err)
