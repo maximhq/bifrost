@@ -800,6 +800,13 @@ export default function AppSidebar() {
             hasAccess: hasRoutingRulesAccess,
           },
           {
+            title: "Complexity Router",
+            url: "/workspace/complexity-router",
+            icon: Settings2Icon,
+            description: "Complexity tier routing",
+            hasAccess: hasRoutingRulesAccess,
+          },
+          {
             title: "Pricing Overrides",
             url: "/workspace/custom-pricing/overrides",
             icon: SlidersHorizontal,
