@@ -83,8 +83,17 @@ Production-grade storage suitable for high-availability and high-throughput depl
 | `password` | - | Database password (supports `env.` prefix). Leave empty for IAM role auth. |
 | `db_name` | - | Database name |
 | `ssl_mode` | - | `"disable"`, `"require"`, `"verify-ca"`, `"verify-full"` |
+| `schema` | connection `search_path` (usually `public`) | Optional Postgres schema. Auto-created on startup if missing (DB user needs `CREATE` on the database in that case). |
 | `max_idle_conns` | `5` | Maximum idle connections in the pool |
 | `max_open_conns` | `50` | Maximum open connections to the database |
+
+<Note>
+**Custom `schema`.**
+
+- If the schema already exists, grant the DB user `USAGE` and `CREATE` on that schema. Otherwise, grant the DB user `CREATE` on the database so Bifrost can create the schema on startup.
+- Schema should be owned by the Bifrost DB user. Untrusted users with `CREATE` on schemas earlier in `search_path` can shadow Bifrost's tables.
+- Name format: `[a-zA-Z_][a-zA-Z0-9_]*`, max 63 chars. Set per store.
+</Note>
 
 </Tab>
 
