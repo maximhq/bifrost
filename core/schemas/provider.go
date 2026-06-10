@@ -10,18 +10,29 @@ import (
 )
 
 const (
-	DefaultMaxRetries                 = 0
-	DefaultRetryBackoffInitial        = 500 * time.Millisecond
-	DefaultRetryBackoffMax            = 5 * time.Second
-	DefaultRequestTimeoutInSeconds    = 30
-	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
-	DefaultBufferSize                 = 5000
-	DefaultConcurrency                = 1000
-	DefaultStreamBufferSize           = 256
-	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
-	DefaultMaxConnsPerHost            = 5000
-	MaxConnsPerHostUpperBound         = 10000
-	DefaultMaxIdleConnsPerHost        = 40
+	DefaultMaxRetries              = 0
+	DefaultRetryBackoffInitial     = 500 * time.Millisecond
+	DefaultRetryBackoffMax         = 5 * time.Second
+	DefaultRequestTimeoutInSeconds = 30
+	// DynamicProviderTransportTimeoutCeilingInSeconds is the fasthttp client
+	// timeout used when a provider is auto-initialised without static config
+	// (the dynamically-configurable-providers path). Dynamic providers serve
+	// many tenants through ONE shared client per built-in provider type, so the
+	// construction-time timeout cannot encode any single tenant's policy — it is
+	// only the transport-level safety ceiling. The effective per-request timeout
+	// is enforced as a context deadline from
+	// ProviderNetworkConfigOverride.RequestTimeoutInSeconds (see
+	// MakeRequestWithContext); callers routing traffic to auto-initialised
+	// providers should always set it, otherwise requests run to this ceiling.
+	DynamicProviderTransportTimeoutCeilingInSeconds = 600
+	DefaultMaxConnDurationInSeconds                 = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultBufferSize                               = 5000
+	DefaultConcurrency                              = 1000
+	DefaultStreamBufferSize                         = 256
+	DefaultStreamIdleTimeoutInSeconds               = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultMaxConnsPerHost                          = 5000
+	MaxConnsPerHostUpperBound                       = 10000
+	DefaultMaxIdleConnsPerHost                      = 40
 )
 
 // Pre-defined errors for provider operations
@@ -64,6 +75,63 @@ type NetworkConfig struct {
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+}
+
+// ProviderNetworkConfigOverride contains request-scoped NetworkConfig fields.
+// Pointer fields distinguish "not configured" from an explicit zero value so
+// omitted override fields can inherit the provider's defaults.
+type ProviderNetworkConfigOverride struct {
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+	// RequestTimeoutInSeconds bounds the full non-streaming HTTP round-trip for
+	// THIS request only. It is enforced via fasthttp Request.SetTimeout inside
+	// MakeRequestWithContext — never by reconfiguring the shared per-provider
+	// HTTP client — so any number of tenants can carry distinct timeouts through
+	// one client with zero per-tenant state. Values above the client's
+	// construction-time transport timeout
+	// (DynamicProviderTransportTimeoutCeilingInSeconds for auto-initialised
+	// providers, NetworkConfig.DefaultRequestTimeoutInSeconds for static ones)
+	// are effectively capped by that ceiling. Deadline hits surface as HTTP 504.
+	// Streaming calls are NOT bounded by this field — SSE handlers drive the
+	// streaming client directly (it has no ReadTimeout) and per-chunk progress
+	// is governed by StreamIdleTimeoutInSeconds below.
+	//
+	// This deliberately does NOT map onto NetworkConfig.DefaultRequestTimeoutInSeconds
+	// in ApplyProviderNetworkConfigOverride: that field is read once at provider
+	// construction, so merging it there would be a silent no-op.
+	RequestTimeoutInSeconds    *int           `json:"request_timeout_in_seconds,omitempty"`
+	MaxRetries                 *int           `json:"max_retries,omitempty"`
+	RetryBackoffInitial        *time.Duration `json:"retry_backoff_initial,omitempty"`
+	RetryBackoffMax            *time.Duration `json:"retry_backoff_max,omitempty"`
+	StreamIdleTimeoutInSeconds *int           `json:"stream_idle_timeout_in_seconds,omitempty"`
+}
+
+// ApplyProviderNetworkConfigOverride returns base with request-scoped overrides
+// applied. Omitted fields keep the provider's configured values.
+func ApplyProviderNetworkConfigOverride(base NetworkConfig, override *ProviderNetworkConfigOverride) NetworkConfig {
+	if override == nil {
+		return base
+	}
+	if override.ExtraHeaders != nil {
+		merged := maps.Clone(base.ExtraHeaders)
+		if merged == nil {
+			merged = map[string]string{}
+		}
+		maps.Copy(merged, override.ExtraHeaders)
+		base.ExtraHeaders = merged
+	}
+	if override.MaxRetries != nil && *override.MaxRetries >= 0 {
+		base.MaxRetries = *override.MaxRetries
+	}
+	if override.RetryBackoffInitial != nil && *override.RetryBackoffInitial > 0 {
+		base.RetryBackoffInitial = *override.RetryBackoffInitial
+	}
+	if override.RetryBackoffMax != nil && *override.RetryBackoffMax > 0 {
+		base.RetryBackoffMax = *override.RetryBackoffMax
+	}
+	if override.StreamIdleTimeoutInSeconds != nil && *override.StreamIdleTimeoutInSeconds > 0 {
+		base.StreamIdleTimeoutInSeconds = *override.StreamIdleTimeoutInSeconds
+	}
+	return base
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.

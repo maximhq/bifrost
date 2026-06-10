@@ -4,6 +4,7 @@ package lib
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -69,6 +70,9 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 
 // GetConfigForProvider returns the complete configuration for a specific provider.
 // Configuration is already fully processed (environment variables, key configs) by the store.
+// Returns (nil, nil) when the provider is not statically configured — Bifrost treats this as
+// "not configured" and may auto-initialise the provider for dynamic routing. Returns (nil, error)
+// only for genuine store failures (e.g. store not initialized).
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	if baseAccount.store == nil {
@@ -76,6 +80,11 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}
 	config, err := baseAccount.store.GetProviderConfigRaw(providerKey)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Provider is not statically configured — signal "not configured" so Bifrost
+			// may auto-initialise it (e.g. for dynamic routing via interceptor plugin).
+			return nil, nil
+		}
 		return nil, err
 	}
 	providerConfig := &schemas.ProviderConfig{}
