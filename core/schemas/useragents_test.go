@@ -15,6 +15,8 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "fasthttp api", userAgent: "fasthttp", want: "API"},
 		{name: "codex cli", userAgent: "codex-cli/0.1.0", want: "Codex CLI"},
 		{name: "codex tui", userAgent: "codex-tui/0.1.0", want: "Codex CLI"},
+		{name: "codex tui terminal capture", userAgent: "codex-tui/0.137.0 (Mac OS 14.1.0; arm64) iTerm.app/3.6.6 (codex-tui; 0.137.0)", want: "Codex CLI"},
+		{name: "claude cowork runtime capture", userAgent: "claude-cli/2.1.170 (external, local-agent, agent-sdk/0.3.170)", want: "Claude Code"},
 		{name: "codex desktop mac", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "codex desktop windows", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
 		{name: "codex desktop linux", userAgent: "Mozilla/5.0 (X11; Linux x86_64) Codex/1.0 Electron/41.0", want: "Codex Desktop"},
@@ -34,6 +36,27 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := DetectAppFromUserAgent(tt.userAgent); got != tt.want {
 				t.Fatalf("DetectAppFromUserAgent(%q) = %q, want %q", tt.userAgent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppKeyFromName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "claude code", in: "Claude Code", want: "claude-code"},
+		{name: "custom app", in: " Internal Claude Wrapper ", want: "internal-claude-wrapper"},
+		{name: "collapsed spaces", in: "Gemini   CLI", want: "gemini-cli"},
+		{name: "other ignored", in: UserAgentAppOther, want: ""},
+		{name: "empty ignored", in: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AppKeyFromName(tt.in); got != tt.want {
+				t.Fatalf("AppKeyFromName(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

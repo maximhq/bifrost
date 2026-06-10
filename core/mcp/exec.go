@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -82,37 +81,24 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
-	// Resolve the upstream client and acquire its connection BEFORE the plugin
-	// gate runs. Connection lifecycle is the orchestrator's concern, not the
-	// plugin op's — the plugin pipeline only wraps the actual CallTool. When
-	// AcquireClientConn fails (e.g. *MCPAuthRequiredError for per-user
-	// clients that need re-auth or headers submission), the plugin gate is
-	// never invoked.
-	state, conn, release, prepErr := m.prepareToolExecution(ctx, request)
-	if prepErr != nil {
-		bErr := &schemas.BifrostError{
-			IsBifrostError: false,
-			Error:          &schemas.ErrorField{Message: prepErr.Error()},
-			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: requestType, MCPRequestType: request.RequestType},
-		}
-		var authRequiredErr *schemas.MCPAuthRequiredError
-		if errors.As(prepErr, &authRequiredErr) {
-			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
-		}
-		return nil, bErr
-	}
-	defer release()
-
-	// state == nil signals a code-mode tool: pass nil conn/config/mapping and
-	// ToolsManager.ExecuteTool routes directly to CodeMode.
-	var executionConfig *schemas.MCPClientConfig
-	var toolNameMapping map[string]string
-	if state != nil {
-		executionConfig = state.ExecutionConfig
-		toolNameMapping = state.ToolNameMapping
-	}
-
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
+		// MCP clients before any auth or transport work.
+		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
+		if prepErr != nil {
+			return nil, prepErr
+		}
+		defer release()
+
+		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// ToolsManager.ExecuteTool routes directly to CodeMode.
+		var executionConfig *schemas.MCPClientConfig
+		var toolNameMapping map[string]string
+		if state != nil {
+			executionConfig = state.ExecutionConfig
+			toolNameMapping = state.ToolNameMapping
+		}
+
 		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
 		if opErr != nil {
 			return nil, opErr

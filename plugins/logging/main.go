@@ -679,23 +679,6 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 	return ua
 }
 
-// appFromContext returns the canonical app key from the request header map.
-func appFromContext(ctx *schemas.BifrostContext) string {
-	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	if allHeaders == nil {
-		return ""
-	}
-	if app := strings.TrimSpace(allHeaders["x-bf-app"]); app != "" {
-		return app
-	}
-	for key, value := range allHeaders {
-		if strings.EqualFold(key, "x-bf-app") && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context. Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
@@ -803,8 +786,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
-	if app := appFromContext(ctx); app != "" {
-		initialData.App = app
+	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
 	if p.contentLoggingEnabled(ctx) {
