@@ -32,7 +32,7 @@ import {
 	Plus,
 	RefreshCcw,
 	Search,
-	Trash2
+	Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";

@@ -3,20 +3,30 @@ import type { VirtualKey } from "@/lib/types/governance";
 import type { MCPClient } from "@/lib/types/mcp";
 import type { HarnessPlatform, ServerScope } from "./types";
 
+/** Default port Bifrost serves on; used when guessing the gateway URL in local dev. */
+const DEFAULT_BIFROST_PORT = "8080";
+
 /**
  * Resolve the externally reachable Bifrost base URL used in generated commands/configs.
- * Falls back to the current window origin (normalising the dev port) or a placeholder.
+ *
+ * Order of preference:
+ *  1. The admin-configured `mcp_external_client_url`. When sourced from an env var the
+ *     value is still honoured as long as it resolves to a concrete http(s) URL — a
+ *     redacted/empty value falls through to the window-origin heuristic below.
+ *  2. The current window origin. For local dev on a non-default port we assume the
+ *     gateway listens on DEFAULT_BIFROST_PORT (the UI is often proxied on another port).
+ *  3. A placeholder the user must replace by hand.
  */
 export function getExternalBaseUrl(clientConfig?: CoreConfig): string {
-	const configuredURL = clientConfig?.mcp_external_client_url;
-	if (configuredURL && !configuredURL.from_env && configuredURL.value?.trim()) {
-		return configuredURL.value.trim().replace(/\/+$/, "");
+	const configuredURL = clientConfig?.mcp_external_client_url?.value?.trim();
+	if (configuredURL && /^https?:\/\//i.test(configuredURL)) {
+		return configuredURL.replace(/\/+$/, "");
 	}
 	if (typeof window !== "undefined" && window.location.origin) {
 		const { protocol, hostname, port } = window.location;
 		const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-		if (isLocalHost && port && port !== "8080") {
-			return `${protocol}//${hostname}:8080`;
+		if (isLocalHost && port && port !== DEFAULT_BIFROST_PORT) {
+			return `${protocol}//${hostname}:${DEFAULT_BIFROST_PORT}`;
 		}
 		return window.location.origin.replace(/\/+$/, "");
 	}
