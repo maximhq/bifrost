@@ -3,9 +3,31 @@ package bedrock
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// bedrockInputTokenCountHeader is the HTTP response header Bedrock uses to report input
+// token counts for models — notably Cohere embed and rerank — that omit token usage from
+// the response body.
+const bedrockInputTokenCountHeader = "X-Amzn-Bedrock-Input-Token-Count"
+
+// inputTokensFromHeaders extracts the X-Amzn-Bedrock-Input-Token-Count value from a provider
+// response-headers map (case-insensitive, since header casing depends on the transport).
+// It returns (count, true) only when the header is present and parses as a non-negative int.
+func inputTokensFromHeaders(headers map[string]string) (int, bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, bedrockInputTokenCountHeader) {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 {
+				return 0, false
+			}
+			return n, true
+		}
+	}
+	return 0, false
+}
 
 // ToBedrockTitanEmbeddingRequest converts a Bifrost embedding request to Bedrock Titan format
 func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*BedrockTitanEmbeddingRequest, error) {
