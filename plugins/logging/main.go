@@ -804,7 +804,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	initialData.UserAgent = userAgentFromContext(ctx)
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if app := appFromContext(ctx); app != "" {
-		ctx.SetValue(schemas.BifrostContextKeyApp, app)
+		initialData.App = app
 	}
 
 	if p.contentLoggingEnabled(ctx) {
