@@ -1,0 +1,1 @@
+- [fix]: always serialize OCR pages[].images and dimensions per Mistral contract [@georg-wolflein](https://github.com/georg-wolflein)
