@@ -79,6 +79,19 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	}
 }
 
+// Shutdown closes idle provider HTTP connections.
+func (provider *OpenAIProvider) Shutdown() {
+	if provider == nil {
+		return
+	}
+	if provider.client != nil {
+		provider.client.CloseIdleConnections()
+	}
+	if provider.streamingClient != nil && provider.streamingClient != provider.client {
+		provider.streamingClient.CloseIdleConnections()
+	}
+}
+
 // GetProviderKey returns the provider identifier for OpenAI.
 func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.OpenAI, provider.customProviderConfig)
@@ -767,7 +780,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	return HandleOpenAIChatCompletionRequest(
+	return handleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest),
@@ -781,7 +794,23 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		nil,
 		nil,
 		provider.logger,
+		func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+			return provider.applyCustomProviderParamsConfig(ToOpenAIChatRequest(ctx, request)), nil
+		},
 	)
+}
+
+func (provider *OpenAIProvider) applyCustomProviderParamsConfig(req *OpenAIChatRequest) *OpenAIChatRequest {
+	if req == nil ||
+		provider.customProviderConfig == nil ||
+		provider.customProviderConfig.BaseProviderType != schemas.OpenAI ||
+		provider.customProviderConfig.ParamsConfig == nil {
+		return req
+	}
+	if provider.customProviderConfig.ParamsConfig.PreserveCacheControl {
+		req.PreserveCacheControl = true
+	}
+	return req
 }
 
 // HandleOpenAIChatCompletionRequest handles a chat completion request to OpenAI's API.
@@ -799,6 +828,40 @@ func HandleOpenAIChatCompletionRequest(
 	customErrorConverter ErrorConverter,
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	return handleOpenAIChatCompletionRequest(
+		ctx,
+		client,
+		url,
+		request,
+		authHeader,
+		extraHeaders,
+		sendBackRawRequest,
+		sendBackRawResponse,
+		providerName,
+		customResponseHandler,
+		customErrorConverter,
+		signer,
+		logger,
+		nil,
+	)
+}
+
+func handleOpenAIChatCompletionRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostChatRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	customResponseHandler responseHandler[schemas.BifrostChatResponse],
+	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
+	logger schemas.Logger,
+	requestConverter func(*schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -848,6 +911,9 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if requestConverter != nil {
+				return requestConverter(request)
+			}
 			return ToOpenAIChatRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
@@ -959,7 +1025,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		nil,
 		nil,
-		nil,
+		provider.applyCustomProviderParamsConfig,
 		nil,
 		nil,
 		provider.logger,
