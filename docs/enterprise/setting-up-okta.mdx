@@ -6,7 +6,7 @@ icon: "o"
 
 ## Overview
 
-This guide walks you through configuring Okta as your identity provider for Bifrost Enterprise. After completing this setup, your users will be able to sign in to Bifrost using their Okta credentials, with roles and team memberships automatically synchronized.
+This guide walks you through configuring Okta as your identity provider for Bifrost Enterprise. After completing this setup, your users will be able to sign in to Bifrost using their Okta credentials, with roles and team memberships synchronized from Okta.
 
 ## Prerequisites
 
@@ -113,9 +113,13 @@ To map Okta users to Bifrost roles (Admin, Developer, Viewer), you need to creat
 
 ---
 
-## Step 4: Add Role Claim to Tokens (If you have added custom role attribute)
+## Step 4: Add Claims to Tokens
 
-Configure the authorization server to include the role in the access token.
+Configure the authorization server to include attributes in the access token so Bifrost can use them for role, team, and business unit mappings.
+
+<Note>
+  This step applies to **Custom Authorization Server** only. The Org Authorization Server does not support custom claim expressions — use app-level Group Claims (Step 5) for group-based mappings instead.
+</Note>
 
 1. Navigate to **Security** → **API** → **Authorization Servers**
 2. Click on your authorization server (e.g., **default**)
@@ -126,22 +130,28 @@ Configure the authorization server to include the role in the access token.
   <img src="/media/user-provisioning/okta-claim-addition.png" alt="Add role claim" />
 </Frame>
 
-Configure the claim:
+### Any other custom attribute
 
-| Field                     | Value                |
-| ------------------------- | -------------------- |
-| **Name**                  | `role`               |
+The same process works for any Okta user profile attribute — `department`, `costCenter`, a custom field, or the `bifrostRole` attribute from Step 3. The **Value** can be a direct attribute reference or an expression:
+
+| Value type | Example | When to use |
+| --- | --- | --- |
+| Attribute | `user.department` | Pass the raw profile value through as-is |
+| Expression | `user.department != null ? user.department : "unknown"` | Transform or provide a fallback |
+
+For example, to expose the `bifrostRole` attribute created in Step 3 as a token claim:
+
+| Field | Value |
+| --- | --- |
+| **Name** | `bifrostRole` |
 | **Include in token type** | Access Token, Always |
-| **Value type**            | Expression           |
-| **Value**                 | `user.bifrostRole`   |
-| **Include in**            | Any scope            |
+| **Value type** | Expression |
+| **Value** | `user.bifrostRole` |
+| **Include in** | Any scope |
+
+Set **Name** to the claim name Bifrost will see in the token. For OIDC-only flows, `attribute` is sufficient. If SCIM is enabled, each Bifrost mapping must also include `attributeValue` set to the SCIM attribute's `external_name`. Aligning the OIDC claim name with `external_name` makes it easier to keep the two in sync, but does not remove the requirement to set `attributeValue` for SCIM mappings.
 
 5. Click **Create**
-
-<Note>
-  If you named your custom attribute differently, update the Value expression accordingly (e.g.,
-  `user.yourAttributeName`).
-</Note>
 
 ---
 
@@ -242,11 +252,13 @@ For each user, set their **bifrostRole** (if you are planning to do role-level m
   <img src="/media/user-provisioning/okta-assign-custom-role.png" alt="Assign custom role to user" />
 </Frame>
 
-4. Click **Save and Go Back**
+3. Click **Save and Go Back**
 
 ---
 
 ## Step 7: Create API token for bulk user and team sync
+
+This step is optional if you plan to rely solely on [SCIM push (Step 9)](#step-9-configure-okta-scim-push-optional) for real-time sync. Note that SCIM push and background sync are complementary — the API token enables the 24-hour background reconciliation that catches anything SCIM push may have missed.
 
 To create an API token, navigate to **Security** → **API** → **Tokens**.
 
@@ -262,18 +274,161 @@ To create an API token, navigate to **Security** → **API** → **Tokens**.
 
 2. Copy token to be used in the next step.
 
-## Step 8: Configure Bifrost
+---
+
+## Step 8: Understand Okta user sync
+
+Bifrost supports two complementary sync mechanisms for Okta users:
+
+**Background reconciliation (always on):**
+
+Bifrost uses the API token from Step 7 to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Okta.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Okta whether the user is still active; if Okta reports the user is inactive, Bifrost decommissions that user locally.
+
+**Inbound SCIM push (optional, real-time):**
+
+Bifrost exposes a SCIM 2.0 endpoint that Okta can push user and group changes to in real time — without waiting for the next 24-hour reconciliation.
+
+---
+
+## Step 9: Configure Okta SCIM push (optional)
+
+<Note>
+  Okta does not support SCIM provisioning on a custom OIDC app. You need to create a **separate** SCIM app in Okta alongside your existing OIDC application.
+</Note>
+
+### Create a SCIM app in Okta
+
+1. In the Okta Admin Console, go to **Applications → Applications** and click **Browse App Catalog**.
+2. Search for **SCIM 2.0 Test App (Header Auth)** and add it.
+3. Give it a recognizable name, e.g. **Bifrost SCIM**.
+
+### Connect it to Bifrost
+
+4. Open the new SCIM app and go to **Provisioning → Configure API Integration**.
+5. Check **Enable API Integration** and enter:
+   - **SCIM 2.0 Base URL**: `https://your-bifrost-domain.com/scim/v2` (can be found under **Governance → User Provisioning → SCIM Settings**)
+   - **API Token**: the provisioning token from Bifrost (generate it under **Governance → User Provisioning → SCIM Settings → Rotate Provisioning Token**)
+6. Click **Test API Credentials** to verify the connection, then **Save**.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-configure-api.png" alt="Okta SCIM app — Configure API Integration" />
+</Frame>
+
+### Enable provisioning actions
+
+7. Still under **Provisioning → To App**, enable:
+   - **Create Users**
+   - **Update User Attributes**
+   - **Deactivate Users**
+8. Click **Save**.
+
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-configure-provisioning.png" alt="Okta SCIM app — Provisioning To App settings" />
+</Frame>
+
+### Assign users and groups
+
+9. Go to the **Assignments** tab and assign the users or groups you want to keep in sync with Bifrost.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-assignments.png" alt="Okta SCIM app — Assignments" />
+</Frame>
+
+Assigned users are pushed to Bifrost immediately. When a user is removed from the assignment or deactivated in Okta, Bifrost decommissions them in real time.
+
+### Push Groups (for group-based team/BU mapping)
+
+User sync covers individual user attributes. To also sync group membership so that Bifrost can assign teams or business units based on Okta group names, you need to configure **Push Groups**:
+
+10. Go to the **Push Groups** tab in the SCIM app.
+11. Click **Push Groups** → **Find groups by name** and add the Okta groups you want to push to Bifrost.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-push-groups.png" alt="Okta SCIM app — Push Groups" />
+</Frame>
+
+Once groups are pushed, configure `attributeType: "group"` mappings in Bifrost to assign teams or business units based on the group `displayName`:
+
+```json
+{
+  "attribute": "groups",
+  "value": "platform-team",
+  "team": "Platform",
+  "attributeType": "group",
+  "attributeValue": "displayName"
+}
+```
+
+`attribute` and `value` drive the OIDC flow — Bifrost checks the `groups` JWT claim for the value `platform-team`. `attributeType: "group"` and `attributeValue` drive the SCIM flow — `attributeValue` specifies which field of the pushed SCIM Group to match against (`displayName` is the supported value).
+
+### Map custom attributes to SCIM (for SCIM attribute-based mappings)
+
+If you want Bifrost to assign roles, teams, or business units based on Okta user profile attributes (e.g. `department`, `costCenter`, or any custom field), you need to wire up two things in Okta: declare the attribute on the SCIM app's schema, then map an Okta user value to it.
+
+#### 1. Add the attribute to the SCIM app schema
+
+1. Navigate to **Directory → Profile Editor** and select the **Bifrost SCIM** app profile (not the Okta User profile).
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-profile-editor-page.png" alt="Okta Profile Editor showing the Bifrost SCIM app profile" />
+</Frame>
+
+2. Click **Add Attribute**.
+3. Configure it:
+
+| Field | Value |
+| --- | --- |
+| **Data type** | `string` (or appropriate type) |
+| **Display name** | e.g. `Bifrost Role` |
+| **Variable name** | e.g. `bifrost_role` |
+| **External name** | Must match the SCIM attribute name exactly, e.g. `bifrost_role` |
+| **External namespace** | `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` for custom attributes |
+
+4. Click **Save**.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-profile-editor-add-attribute.png" alt="Add Attribute dialog in Okta Profile Editor for a custom SCIM attribute" />
+</Frame>
+
+#### 2. Map an Okta user value to the attribute
+
+5. Still in **Profile Editor**, click **Mappings** on the SCIM app profile.
+6. Select the **Okta User to Bifrost SCIM** direction.
+7. Find the attribute you just added and set its source. This can be any Okta user profile attribute or expression — for example:
+   - A built-in attribute: e.g. `user.department`
+   - A custom attribute: e.g. `user.bifrostRole`
+   - An expression: e.g. `user.bifrostRole != null ? user.bifrostRole : "member"`
+8. Click **Save Mappings**.
+
+<Frame>
+  <img src="/media/user-provisioning/okta-scim-profile-editor-mapping.png" alt="Mapping Okta user attribute to SCIM app attribute in Okta" />
+</Frame>
+
+<Note>
+  OIDC and SCIM are independent flows. If you have SCIM enabled, `attributeValue` is required on each mapping — set it to match the `external_name` of the SCIM attribute Okta sends so Bifrost can look up the value from the SCIM profile.
+</Note>
+
+<Note>
+  SCIM push and the 24-hour background sync are complementary. SCIM push gives real-time updates; background sync catches anything the SCIM connector may have missed — but only if an API token is configured (Step 7).
+</Note>
+
+---
+
+## Step 10: Configure Bifrost
 
 Now configure Bifrost to use Okta as the identity provider.
 
 ### Using the Bifrost UI
 
 <Frame>
-  <img src="/media/user-provisioning/okta-form.png" alt="Create token dialog in Okta" />
+  <img src="/media/user-provisioning/okta-form.png" alt="Bifrost Okta configuration form" />
 </Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
-2. Select **Okta** as the SCIM Provider
+2. Select **Okta** as the OIDC Provider
 3. Enter the following configuration:
 
 | Field                    | Value                                                                |
@@ -283,6 +438,7 @@ Now configure Bifrost to use Okta as the identity provider.
 | **Authorization Server** | Select **Org Authorization Server** or **Custom Authorization Server** |
 | **Audience**             | Your API audience (required only for Custom Authorization Server)     |
 | **Client Secret**        | Your Okta application Client Secret (optional, for token revocation) |
+| **API Token**            | Okta API token used for bulk import and 24-hour background sync       |
 
 <Frame>
   <img src="/media/user-provisioning/okta-select-auth-server.png" alt="Select Okta authorization server type in Bifrost" />
@@ -349,11 +505,9 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 #### Evaluation rules
 
-- **Role mappings**: Ordered, first match wins. If no rule matches, users are not allowed to login into the system.
+- **Role mappings**: Ordered, first match wins. If a user matches multiple role mapping rules, the highest privilege role is assigned. If no mapping matches, the user is not allowed to log in.
 - **Team and business unit mappings**: All matching rules apply - users can be placed on multiple teams and business units simultaneously.
 - **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
-
-5. Click **Save Configuration**
 
 <Warning>After saving, you'll need to restart your Bifrost server for the changes to take effect.</Warning>
 
@@ -366,9 +520,11 @@ You can also map any custom attributes to any entity (role, team or business uni
 | `clientId`                      | Yes      | Application Client ID from Okta                                                                                |
 | `clientSecret`                  | Yes      | Application Client Secret (enables token revocation)                                                           |
 | `audience`                      | Custom only | API audience identifier from your Custom Authorization Server. Leave empty for Org Authorization Server.       |
-| `attributeRoleMappings`         | Yes      | Ordered list of attribute→role mappings. First match wins.                                                     |
-| `attributeTeamMappings`         | No       | Attribute→team mappings (all matches apply).                                                                   |
-| `attributeBusinessUnitMappings` | No       | Attribute→business-unit mappings (all matches apply).                                                          |
+| `apiToken`                      | No       | Okta API token for bulk import and 24-hour background sync.                                                    |
+| `provisioningToken`             | No       | Bearer token for inbound SCIM push from Okta. Rotate via the dashboard or `POST /api/scim/providers/{name}/provisioning-token/rotate`. |
+| `attributeRoleMappings`         | Yes      | Ordered list of `{ attribute, value, role }` mappings. First match wins.                                       |
+| `attributeTeamMappings`         | No       | List of `{ attribute, value, team, attributeType, attributeValue }` mappings. All matches apply.               |
+| `attributeBusinessUnitMappings` | No       | List of `{ attribute, value, businessUnit, attributeType, attributeValue }` mappings. All matches apply.       |
 
 
 ---
@@ -387,7 +543,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ### User not redirected to Okta
 
-- Verify the SCIM provider is enabled in Bifrost
+- Verify the OIDC provider is enabled in Bifrost
 - Check that the Bifrost server was restarted after configuration
 - Ensure the Issuer URL is correct and accessible
 
@@ -405,7 +561,7 @@ You can also map any custom attributes to any entity (role, team or business uni
 
 ## Next Steps
 
-- **[User Provisioning (SCIM)](./user-provisioning)** - Overview of SCIM in Bifrost and alternative identity providers
+- **[User Provisioning (OIDC)](./user-provisioning)** - Overview of OIDC user provisioning in Bifrost and alternative identity providers
 - **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
 - **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
 - **[Audit Logs](./audit-logs)** - Monitor user authentication and activity

@@ -1,0 +1,152 @@
+---
+title: "Security hardening"
+description: "Mandatory controls before exposing Bifrost Enterprise to production traffic: IdP-enforced identity, scoped virtual keys, locked-down CORS, and a minimal header allowlist."
+icon: "shield-halved"
+---
+
+<Warning>
+**Do not skip this page.** Bifrost Enterprise ships with sensible defaults, but a production deployment is only as safe as the controls you actually turn on. The items below are the minimum required hardening before exposing the gateway to real users or real inference traffic.
+</Warning>
+
+## 1. IdP-backed identity is enforced
+
+User access to the Enterprise dashboard and admin APIs is gated by OAuth / OIDC login and directory sync from your identity provider. Manual user creation and ad-hoc invites are not the supported path once your IdP is wired up.
+
+- Wire up your IdP via one of the SSO setup guides: [Okta](/enterprise/setting-up-okta), [Entra](/enterprise/setting-up-entra), [Keycloak](/enterprise/setting-up-keycloak), [Zitadel](/enterprise/setting-up-zitadel), or [Google Workspace](/enterprise/setting-up-google-workspace).
+- Enable [User Provisioning (OIDC)](/enterprise/user-provisioning) so active sessions are checked every 15 minutes and imported users, roles, teams, and business units are reconciled from your IdP every 24 hours.
+- Group claims in the IdP token drive team attachment. As of Enterprise v1.4.0, Bifrost no longer enriches groups via directory API calls (see the [v1.4.0 migration notes](/enterprise/migration-guides/v1.4.0)).
+
+The result: every operator who can change configuration is a known, traceable identity from your corporate directory.
+
+## 2. Virtual key authentication is enforced on every inference call
+
+There is no anonymous path to a model in Enterprise. Every `/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and similar call must present a [Virtual Key](/features/governance/virtual-keys), which Bifrost resolves to one or more upstream provider keys with explicit provider, model, and budget scopes.
+
+Enforce this with `client.enforce_auth_on_inference`:
+
+```json
+{
+  "client": {
+    "enforce_auth_on_inference": true
+  }
+}
+```
+
+This is the canonical switch. The older fields `enforce_governance_header` and `enforce_scim_auth` are deprecated and should not be used in new deployments.
+
+- Virtual keys are the **only** credential clients present on inference calls. Raw upstream provider keys (OpenAI, Anthropic, Bedrock, etc.) never leave Bifrost.
+- The direct-key bypass (`allow_direct_keys`) was removed in OSS v1.5.0 / Enterprise v1.4.0, so callers cannot inject their own provider keys via headers. See the [v1.4.0 migration guide](/enterprise/migration-guides/v1.4.0).
+- Every virtual key is attributable to a team, customer, or user, and is the join point for budgets, rate limits, model allowlists, and audit trails.
+- For programmatic access from CI/CD or internal services, scope virtual keys narrowly: one provider config, one model alias, one budget envelope per VK.
+
+## 3. Lock CORS to your own origins
+
+The default of `*` is for development only. Production deployments must restrict CORS to the specific origins that legitimately call Bifrost. Set `client.allowed_origins` to the explicit list:
+
+```json
+{
+  "client": {
+    "allowed_origins": [
+      "https://app.example.com",
+      "https://internal-dashboard.example.com"
+    ]
+  }
+}
+```
+
+A wildcard origin exposes the gateway to drive-by JavaScript from any page on the public internet. List origins explicitly.
+
+## 4. Tighten both header allowlists
+
+Bifrost has **two distinct header controls** and both should be locked down in production. They live at different points in the request path:
+
+| Control | Schema field | What it gates |
+|---|---|---|
+| **CORS / WebSocket allowlist** | `client.allowed_headers` | Headers callers can send TO Bifrost over CORS / WebSocket |
+| **Provider-forwarded allowlist** | `client.header_filter_config.allowlist` | Which `x-bf-eh-*` prefixed headers Bifrost forwards FROM clients TO upstream LLM providers |
+
+### CORS / WebSocket allowlist
+
+Narrow `allowed_headers` to the minimum your callers actually need - typically `Authorization`, `Content-Type`, a tracing header, and any Bifrost-specific headers documented in [Request Options](/providers/request-options):
+
+```json
+{
+  "client": {
+    "allowed_headers": [
+      "Authorization",
+      "Content-Type",
+      "X-Bifrost-Virtual-Key",
+      "X-Request-Id"
+    ]
+  }
+}
+```
+
+### Provider-forwarded `x-bf-eh-*` allowlist
+
+Callers can attach `x-bf-eh-*` prefixed headers that Bifrost will forward to upstream providers (e.g., to set provider-specific feature flags or trace IDs). In production, set an explicit allowlist for which of these are permitted:
+
+```json
+{
+  "client": {
+    "header_filter_config": {
+      "allowlist": [
+        "x-bf-eh-anthropic-beta",
+        "x-bf-eh-anthropic-version",
+        "x-bf-eh-x-trace-id"
+      ],
+      "denylist": [
+        "x-bf-eh-cookie",
+        "x-bf-eh-proxy-authorization",
+        "x-bf-eh-host"
+      ]
+    }
+  }
+}
+```
+
+The `denylist` is always enforced even when no `allowlist` is set - use it for headers that must never leave your perimeter (cookies, proxy auth, host overrides).
+
+### Why both matter
+
+- Reduces the attack surface for header-smuggling and request-splitting bugs.
+- Prevents accidental forwarding of internal headers (cookies, session tokens, tracing IDs containing PII) to upstream providers.
+- Makes upstream auditing simpler: you know exactly what each provider received and exactly what each caller could send.
+
+If a caller asks you to enable an additional header on either list, treat it as a security review item, not a config tweak.
+
+## 5. Budgets and limits are part of hardening
+
+Treat budgets the same way you treat rate limits and CORS: they are a control, not a nice-to-have. A misconfigured loop in a downstream agent can burn through six figures of provider spend in an afternoon. Wire budgets in **before** going live, not after the first incident.
+
+<CardGroup cols={2}>
+  <Card title="Budgets & Limits (OSS)" icon="dollar-sign" href="/features/governance/budget-and-limits">
+    Per-virtual-key budgets, RPM / TPM limits, and reset windows.
+  </Card>
+  <Card title="Advanced Governance (Enterprise)" icon="shield-check" href="/enterprise/advanced-governance">
+    Hierarchical budgets across teams, customers, and business units, layered on top of OSS budgets.
+  </Card>
+</CardGroup>
+
+## Hardening checklist
+
+<Steps>
+<Step title="OIDC-only user provisioning">
+  IdP-driven, no manual invites.
+</Step>
+<Step title="No anonymous inference">
+  Every call presents a virtual key that resolves to scoped provider keys.
+</Step>
+<Step title="CORS allowlist set">
+  Specific origins only, no `*` in production.
+</Step>
+<Step title="Header allowlist set">
+  Forward only the headers your callers actually need.
+</Step>
+<Step title="Budgets configured before traffic">
+  Both OSS budgets and Enterprise hierarchical budgets where relevant.
+</Step>
+<Step title="Audit logs verified">
+  Confirm [Audit Logs](/enterprise/audit-logs) are flowing before the first real user lands.
+</Step>
+</Steps>

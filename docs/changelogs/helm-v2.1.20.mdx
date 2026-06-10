@@ -1,0 +1,13 @@
+---
+title: "v2.1.20"
+description: "Helm v2.1.20 changelog - 2026-05-29"
+---
+
+<Update label="Bifrost Helm" description="v2.1.20">
+
+## Changelog
+
+- Added `authServerType` (`"org"` or `"custom"`) to the Okta SCIM/SSO config in `values.schema.json`. The field was documented but previously rejected at validation time by `additionalProperties: false`. Defaults to auto-detection from the issuer URL when omitted.
+- Exposed `authServerType` as a commented example under `bifrost.scim.config` in `values.yaml` for discoverability.
+
+</Update>

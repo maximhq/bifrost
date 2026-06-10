@@ -29,7 +29,7 @@ jobs:
       skip-tests: ${{ steps.skip_tests.outputs.skip-tests }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -82,7 +82,7 @@ jobs:
       transport-version: ${{ steps.detect.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -90,6 +90,9 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
+            dl.google.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             dl.google.com:443
@@ -116,7 +119,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Detect what needs release
         id: detect
@@ -146,7 +149,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -161,6 +164,7 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
+            bifrost-gateway-resource.openai.azure.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
@@ -188,7 +192,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -251,7 +255,7 @@ jobs:
       approved: ${{ steps.approve.outputs.approved }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -273,7 +277,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -289,6 +293,7 @@ jobs:
             github.com:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
@@ -306,7 +311,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Docker Compose
         run: |
@@ -364,15 +369,18 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             _grpc_config.localhost:443
             _http._tcp.azure.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
+            _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            production.cloudfront.docker.com:443
+            dl.google.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -408,7 +416,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Docker Compose
         run: |
@@ -466,13 +474,23 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # bifrost-http binary runs on the host and connects to Postgres via
+          # the published port mapping (5432:5432) at 127.0.0.1. harden-runner
+          # filters on the post-NAT destination IP, so the published port DNATs
+          # to Postgres's pinned bridge IP 172.38.0.11 - that IP:port (not
+          # 127.0.0.1:5432) is what must be allowed. The 172.38.0.12 entries are
+          # weaviate's pinned bridge IP from
+          # .github/workflows/configs/docker-compose.yml (gossip + published
+          # 9000->8080). Keep all *.0.11/*.0.12 entries in sync with that file.
           allowed-endpoints: >
+            127.0.0.1:5432
+            172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
-            172.38.0.2:5432
+            iojs.org:443
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -485,6 +503,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -504,7 +523,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -541,11 +560,22 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # Migration test binary runs on the host (not in a container) and
+          # connects to Postgres via the published port mapping (5432:5432) at
+          # 127.0.0.1 (see run-migration-tests.sh:46, POSTGRES_HOST defaults to
+          # localhost). harden-runner filters on the post-NAT destination IP, so
+          # the published port DNATs to Postgres's pinned bridge IP 172.38.0.11 -
+          # that IP:port must be allowed. Keep in sync with the pinned IP in
+          # .github/workflows/configs/docker-compose.yml. (The 172.38.0.12
+          # weaviate entries are vestigial here - this job only starts postgres.)
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -555,6 +585,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -571,7 +602,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -606,11 +637,26 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # API integrations test compiles bifrost-http and runs it on the host
+          # (not in a container), connecting to Postgres via the published port
+          # mapping (5432:5432) at 127.0.0.1. See test-api-integrations.sh which
+          # defaults POSTGRES_HOST to localhost. harden-runner filters on the
+          # post-NAT destination IP, so the published port DNATs to Postgres's
+          # pinned bridge IP 172.38.0.11 - that IP:port must be allowed. This
+          # script does `docker compose up -d` (ALL services) and waits for them
+          # to be healthy, so weaviate's gossip to its own advertise address
+          # 172.38.0.12:8301 (and 8080) must also be allowed or weaviate never
+          # becomes healthy. Keep the pinned IPs in sync with
+          # .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
+            iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -637,6 +683,7 @@ jobs:
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -655,7 +702,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -727,10 +774,20 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -775,7 +832,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -786,7 +843,7 @@ jobs:
         run: npm install -g newman newman-reporter-htmlextra
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Test Docker image (amd64)
         env:
@@ -837,10 +894,20 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -885,7 +952,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -896,7 +963,7 @@ jobs:
         run: npm install -g newman newman-reporter-htmlextra
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Test Docker image (arm64)
         env:
@@ -962,7 +1029,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.core-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -981,7 +1048,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1059,7 +1126,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.framework-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1080,7 +1147,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Configure Git
         run: |
@@ -1166,7 +1233,7 @@ jobs:
       success: ${{ steps.release.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1200,7 +1267,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1293,7 +1360,7 @@ jobs:
       success: ${{ steps.prep.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1318,7 +1385,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1345,7 +1412,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1382,7 +1449,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1421,7 +1488,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1451,7 +1518,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1480,13 +1547,7 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs:
-      [
-        build-binaries-x86,
-        build-binaries-arm64,
-        detect-changes,
-        bifrost-http-prep,
-      ]
+    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ubuntu-latest
     permissions:
@@ -1496,7 +1557,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1560,7 +1621,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1592,10 +1653,10 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1609,7 +1670,7 @@ jobs:
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push AMD64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           build-args: |
@@ -1648,7 +1709,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1680,10 +1741,10 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1697,7 +1758,7 @@ jobs:
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push ARM64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           file: ./transports/Dockerfile
@@ -1718,20 +1779,21 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1769,7 +1831,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1779,6 +1841,7 @@ jobs:
             fonts.gstatic.com:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             *.redhat.com:443
@@ -1802,10 +1865,10 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1819,7 +1882,7 @@ jobs:
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 AMD64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           build-args: |
@@ -1860,7 +1923,7 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1870,6 +1933,7 @@ jobs:
             fonts.gstatic.com:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             *.redhat.com:443
@@ -1893,10 +1957,10 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1910,7 +1974,7 @@ jobs:
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 ARM64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           file: ./transports/Dockerfile.redhat
@@ -1924,13 +1988,7 @@ jobs:
 
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
-    needs:
-      [
-        check-skip,
-        detect-changes,
-        docker-build-ubi9-amd64,
-        docker-build-ubi9-arm64,
-      ]
+    needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
     env:
@@ -1939,20 +1997,21 @@ jobs:
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
             github.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -1986,7 +2045,7 @@ jobs:
       contents: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -2027,11 +2086,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443

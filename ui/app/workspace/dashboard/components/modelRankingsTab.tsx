@@ -5,7 +5,6 @@ import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT, formatCompactNumber as formatNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -19,6 +18,7 @@ import {
 } from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
+import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
 
 type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency";
 type SortOrder = "asc" | "desc";
@@ -32,78 +32,9 @@ interface ModelRankingsTabProps {
 	endTime: number;
 }
 
-function formatCost(value: number): string {
-	if (value >= 1) return `$${value.toFixed(2)}`;
-	if (value >= 0.01) return `$${value.toFixed(3)}`;
-	if (value > 0) return `$${value.toFixed(4)}`;
-	return "$0.00";
-}
-
 function formatLatency(ms: number): string {
 	if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
 	return `${ms.toFixed(0)}ms`;
-}
-
-function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
-	if (isNew) {
-		return <span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">new</span>;
-	}
-
-	if (value === 0) {
-		return (
-			<span className="text-muted-foreground inline-flex items-center gap-0.5 text-xs">
-				<Minus className="h-3 w-3" />
-			</span>
-		);
-	}
-
-	const isPositive = value > 0;
-	const isGood = positiveIsGood ? isPositive : !isPositive;
-	return (
-		<span
-			className={`inline-flex items-center gap-0.5 text-xs font-medium ${isGood ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-		>
-			{isPositive ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
-			{Math.abs(value).toFixed(1)}%
-		</span>
-	);
-}
-
-function SortableHeader({
-	label,
-	field,
-	currentSort,
-	currentOrder,
-	onSort,
-}: {
-	label: string;
-	field: SortField;
-	currentSort: SortField;
-	currentOrder: SortOrder;
-	onSort: (field: SortField) => void;
-}) {
-	const isActive = currentSort === field;
-	const ariaSort = isActive ? (currentOrder === "asc" ? "ascending" : "descending") : "none";
-	return (
-		<button
-			type="button"
-			data-testid={`sort-${field}-btn`}
-			aria-sort={ariaSort}
-			className="hover:text-foreground inline-flex items-center gap-1 transition-colors"
-			onClick={() => onSort(field)}
-		>
-			{label}
-			{isActive ? (
-				currentOrder === "desc" ? (
-					<ArrowDown className="h-3 w-3" />
-				) : (
-					<ArrowUp className="h-3 w-3" />
-				)
-			) : (
-				<ArrowUpDown className="text-muted-foreground h-3 w-3" />
-			)}
-		</button>
-	);
 }
 
 const UNNAMED_MODEL_LABEL = "(unnamed)";
@@ -259,7 +190,7 @@ function TopModelsChart({
 									domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 									allowDataOverflow={false}
 								/>
-								<Tooltip content={<UsageShareTooltip models={displayModels} />} />
+								<Tooltip content={<UsageShareTooltip models={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 								{displayModels.map((model, idx) => (
 									<Bar
 										key={model}

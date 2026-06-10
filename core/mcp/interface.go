@@ -9,8 +9,8 @@ import (
 )
 
 // MCPManagerInterface defines the interface for MCP management functionality.
-// This interface allows different implementations (OSS and Enterprise) to be used
-// interchangeably in the Bifrost core.
+// This interface allows different implementations to be used interchangeably
+// in the Bifrost core.
 type MCPManagerInterface interface {
 	// Tool Operations
 	// AddToolsToRequest parses available MCP tools and adds them to the request
@@ -18,9 +18,6 @@ type MCPManagerInterface interface {
 
 	// GetAvailableTools returns all available MCP tools for the given context
 	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
-
-	// ExecuteToolCall executes a single tool call and returns the result
-	ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
 	// UpdateToolManagerConfig updates the configuration for the tool manager.
 	// DisableAutoToolInject in the config controls auto injection — pass the
@@ -58,7 +55,7 @@ type MCPManagerInterface interface {
 	GetClients() []schemas.MCPClientState
 
 	// AddClient adds a new MCP client with the given configuration
-	AddClient(config *schemas.MCPClientConfig) error
+	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
@@ -78,6 +75,11 @@ type MCPManagerInterface interface {
 
 	// EnableClient reconnects a disabled client and restarts its workers
 	EnableClient(id string) error
+
+	// VerifyHeadersConnection creates a temporary MCP connection using a set of
+	// caller-supplied header values to verify connectivity and discover tools.
+	// The connection is closed after verification.
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection

@@ -201,6 +201,9 @@ type BedrockContentBlock struct {
 	// Image content
 	Image *BedrockImageSource `json:"image,omitempty"`
 
+	// Video content
+	Video *BedrockVideoBlock `json:"video,omitempty"`
+
 	// Document content
 	Document *BedrockDocumentSource `json:"document,omitempty"`
 
@@ -218,6 +221,9 @@ type BedrockContentBlock struct {
 
 	// For Tool Call Result content
 	JSON json.RawMessage `json:"json,omitempty"`
+
+	// Search result content (only valid inside toolResult.content per AWS Converse API)
+	SearchResult *BedrockSearchResultBlock `json:"searchResult,omitempty"`
 
 	// Cache point for the content block
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
@@ -261,6 +267,28 @@ type BedrockDocumentSourceData struct {
 	Text  *string `json:"text,omitempty"`  // Plain text content
 }
 
+// BedrockVideoBlock represents a video content block.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_VideoBlock.html
+type BedrockVideoBlock struct {
+	Format string             `json:"format"` // Required: mkv|mov|mp4|webm|flv|mpeg|mpg|wmv|three_gp
+	Source BedrockVideoSource `json:"source"` // Required: video source (bytes or s3Location, union)
+}
+
+// BedrockVideoSource is the source for a BedrockVideoBlock.
+// This is a tagged union — exactly one of Bytes or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_VideoSource.html
+type BedrockVideoSource struct {
+	Bytes      *string            `json:"bytes,omitempty"`      // Optional: base64-encoded video bytes (<25MB)
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location
+}
+
+// BedrockS3Location represents a storage location in an Amazon S3 bucket.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_S3Location.html
+type BedrockS3Location struct {
+	URI         string  `json:"uri"`                   // Required: object URI starting with s3://
+	BucketOwner *string `json:"bucketOwner,omitempty"` // Optional: 12-digit AWS account ID if cross-account
+}
+
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
 	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
@@ -275,6 +303,27 @@ type BedrockToolResult struct {
 	Content   []BedrockContentBlock `json:"content"`          // Required: Content of the tool result
 	Status    *string               `json:"status,omitempty"` // Optional: Status of tool execution ("success" or "error")
 	Type      *string               `json:"type,omitempty"`   // Optional: result type e.g. "nova_code_interpreter_result"
+}
+
+// BedrockSearchResultBlock represents a search result tool-result content block.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_SearchResultBlock.html
+type BedrockSearchResultBlock struct {
+	Source    string                       `json:"source"`              // Required: source URL or identifier
+	Title     string                       `json:"title"`               // Required: descriptive title
+	Content   []BedrockSearchResultContent `json:"content"`             // Required: search result content blocks
+	Citations *BedrockCitationsConfig      `json:"citations,omitempty"` // Optional: citations config
+}
+
+// BedrockSearchResultContent represents a single content block inside a SearchResult.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_SearchResultContentBlock.html
+type BedrockSearchResultContent struct {
+	Text string `json:"text"` // Required: actual text content
+}
+
+// BedrockCitationsConfig represents citations configuration for a search result.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsConfig.html
+type BedrockCitationsConfig struct {
+	Enabled bool `json:"enabled"` // Required: whether citations are enabled
 }
 
 // BedrockGuardContent represents guard content for guardrails
@@ -460,20 +509,88 @@ type BedrockConverseTrace struct {
 	Guardrail *BedrockGuardrailTrace `json:"guardrail,omitempty"` // Guardrail trace details
 }
 
-// BedrockGuardrailTrace represents detailed guardrail trace information
+// BedrockGuardrailTrace represents guardrail trace information returned by Bedrock Converse / ConverseStream.
+// Both paths use the same shape: inputAssessment is map[guardrailId]Assessment,
+// outputAssessments is map[guardrailId][]Assessment.
 type BedrockGuardrailTrace struct {
-	Action            *string                      `json:"action,omitempty"`            // Action taken by guardrail
-	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments
-	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments
-	Trace             *BedrockGuardrailTraceDetail `json:"trace,omitempty"`             // Detailed trace information
+	ActionReason      *string                                 `json:"actionReason,omitempty"`      // Human-readable reason the guardrail acted
+	InputAssessment   map[string]BedrockGuardrailAssessment   `json:"inputAssessment,omitempty"`   // Map of guardrail ID → single assessment
+	OutputAssessments map[string][]BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Map of guardrail ID → array of assessments
+	ModelOutput       []interface{}                           `json:"modelOutput,omitempty"`       // Model output after guardrail evaluation
+	Action            *string                                 `json:"action,omitempty"`            // Action taken by guardrail (NONE | INTERVENED)
+	Trace             *BedrockGuardrailTraceDetail            `json:"trace,omitempty"`             // Detailed trace information
 }
 
 // BedrockGuardrailAssessment represents a guardrail assessment
 type BedrockGuardrailAssessment struct {
-	TopicPolicy         *BedrockGuardrailTopicPolicy         `json:"topicPolicy,omitempty"`         // Topic policy assessment
-	ContentPolicy       *BedrockGuardrailContentPolicy       `json:"contentPolicy,omitempty"`       // Content policy assessment
-	WordPolicy          *BedrockGuardrailWordPolicy          `json:"wordPolicy,omitempty"`          // Word policy assessment
-	SensitiveInfoPolicy *BedrockGuardrailSensitiveInfoPolicy `json:"sensitiveInfoPolicy,omitempty"` // Sensitive information policy assessment
+	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails           `json:"appliedGuardrailDetails,omitempty"`
+	AutomatedReasoningPolicy  *BedrockGuardrailAutomatedReasoningPolicy  `json:"automatedReasoningPolicy,omitempty"`
+	ContentPolicy             *BedrockGuardrailContentPolicy             `json:"contentPolicy,omitempty"`
+	ContextualGroundingPolicy *BedrockGuardrailContextualGroundingPolicy `json:"contextualGroundingPolicy,omitempty"`
+	InvocationMetrics         *BedrockGuardrailInvocationMetrics         `json:"invocationMetrics,omitempty"`
+	SensitiveInfoPolicy       *BedrockGuardrailSensitiveInfoPolicy       `json:"sensitiveInformationPolicy,omitempty"`
+	TopicPolicy               *BedrockGuardrailTopicPolicy               `json:"topicPolicy,omitempty"`
+	WordPolicy                *BedrockGuardrailWordPolicy                `json:"wordPolicy,omitempty"`
+}
+
+// BedrockGuardrailAppliedDetails holds metadata about the specific guardrail that was applied
+type BedrockGuardrailAppliedDetails struct {
+	GuardrailArn       *string  `json:"guardrailArn,omitempty"`
+	GuardrailID        *string  `json:"guardrailId,omitempty"`
+	GuardrailOrigin    []string `json:"guardrailOrigin,omitempty"`
+	GuardrailOwnership *string  `json:"guardrailOwnership,omitempty"`
+	GuardrailVersion   *string  `json:"guardrailVersion,omitempty"`
+}
+
+// BedrockGuardrailAutomatedReasoningPolicy represents an automated reasoning policy assessment
+type BedrockGuardrailAutomatedReasoningPolicy struct {
+	Findings []interface{} `json:"findings,omitempty"`
+}
+
+// BedrockGuardrailContextualGroundingPolicy represents a contextual grounding policy assessment
+type BedrockGuardrailContextualGroundingPolicy struct {
+	Filters []BedrockGuardrailContextualGroundingFilter `json:"filters,omitempty"`
+}
+
+// BedrockGuardrailContextualGroundingFilter represents a single contextual grounding filter result
+type BedrockGuardrailContextualGroundingFilter struct {
+	Type      *string  `json:"type,omitempty"`
+	Action    *string  `json:"action,omitempty"`
+	Score     *float64 `json:"score,omitempty"`
+	Threshold *float64 `json:"threshold,omitempty"`
+	Detected  *bool    `json:"detected,omitempty"`
+}
+
+// BedrockGuardrailInvocationMetrics holds latency and usage metrics for a guardrail invocation
+type BedrockGuardrailInvocationMetrics struct {
+	GuardrailCoverage          *BedrockGuardrailCoverage `json:"guardrailCoverage,omitempty"`
+	GuardrailProcessingLatency *int64                    `json:"guardrailProcessingLatency,omitempty"`
+	Usage                      *BedrockGuardrailUsage    `json:"usage,omitempty"`
+}
+
+// BedrockGuardrailCoverage holds coverage statistics for a guardrail invocation
+type BedrockGuardrailCoverage struct {
+	Images         *BedrockGuardrailCoverageCount `json:"images,omitempty"`
+	TextCharacters *BedrockGuardrailCoverageCount `json:"textCharacters,omitempty"`
+}
+
+// BedrockGuardrailCoverageCount holds guarded/total counts for a coverage dimension
+type BedrockGuardrailCoverageCount struct {
+	Guarded *int64 `json:"guarded,omitempty"`
+	Total   *int64 `json:"total,omitempty"`
+}
+
+// BedrockGuardrailUsage holds token/unit consumption for a guardrail invocation
+type BedrockGuardrailUsage struct {
+	AutomatedReasoningPolicies          *int64 `json:"automatedReasoningPolicies,omitempty"`
+	AutomatedReasoningPolicyUnits       *int64 `json:"automatedReasoningPolicyUnits,omitempty"`
+	ContentPolicyImageUnits             *int64 `json:"contentPolicyImageUnits,omitempty"`
+	ContentPolicyUnits                  *int64 `json:"contentPolicyUnits,omitempty"`
+	ContextualGroundingPolicyUnits      *int64 `json:"contextualGroundingPolicyUnits,omitempty"`
+	SensitiveInformationPolicyFreeUnits *int64 `json:"sensitiveInformationPolicyFreeUnits,omitempty"`
+	SensitiveInformationPolicyUnits     *int64 `json:"sensitiveInformationPolicyUnits,omitempty"`
+	TopicPolicyUnits                    *int64 `json:"topicPolicyUnits,omitempty"`
+	WordPolicyUnits                     *int64 `json:"wordPolicyUnits,omitempty"`
 }
 
 // BedrockGuardrailTopicPolicy represents topic policy assessment

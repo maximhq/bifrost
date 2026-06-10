@@ -14,6 +14,7 @@ var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
 	BifrostContextKeyAPIKeyName,
 	BifrostContextKeyAPIKeyID,
+	BifrostContextKeyDirectKey,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
 	BifrostContextKeySelectedKeyID,
@@ -351,10 +352,12 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
-// ClearValue removes a value from the internal userValues map.
-// After ClearValue, Value(key) falls through to the parent context lookup
-// rather than returning nil. Use this to restore parent-context visibility
-// for a key previously set on this context.
+// ClearValue clears a value from the internal userValues map.
+// For scoped contexts, delegates to the root context via valueDelegate.
+// The entry is nil-masked rather than deleted: Value(key) returns nil afterwards
+// instead of falling through to the parent context. This keeps security-sensitive
+// scrubs (clearCtxForFallback, key-identity scrubbing) from re-exposing values a
+// caller stashed on the parent context chain.
 func (bc *BifrostContext) ClearValue(key any) {
 	if bc.valueDelegate != nil {
 		bc.valueDelegate.ClearValue(key)
@@ -368,7 +371,7 @@ func (bc *BifrostContext) ClearValue(key any) {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues != nil {
-		delete(bc.userValues, key)
+		bc.userValues[key] = nil
 	}
 }
 

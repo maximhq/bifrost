@@ -13,6 +13,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyVirtualKey`              | `x-bf-vk`                                            | `string`              | Virtual key identifier for governance                                                                                                 |
 | `BifrostContextKeyAPIKeyName`              | `x-bf-api-key`                                       | `string`              | Explicit API key name selection                                                                                                       |
 | `BifrostContextKeyAPIKeyID`                | `x-bf-api-key-id`                                    | `string`              | Explicit API key ID selection (takes priority over name)                                                                              |
+| `BifrostContextKeyDirectKey`               | `x-bf-direct-key` (+ `Authorization` / `x-api-key` / `x-goog-api-key`) | `schemas.Key`         | Use a caller-supplied raw provider key directly, bypassing the registered key pool. On the gateway, requires `allow_direct_keys` server-side |
 | `BifrostContextKeySessionID`               | `x-bf-session-id`                                    | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
 | `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session-to-key cache TTL (duration string or seconds)                                                                                 |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
@@ -158,6 +159,65 @@ Input: messages,
 })
 
 ````
+</Tab>
+</Tabs>
+
+### Direct API Key
+
+**Context Key:** `BifrostContextKeyDirectKey`
+**Header:** `x-bf-direct-key` (plus the raw key in `Authorization`, `x-api-key`, or `x-goog-api-key`)
+**Type:** `schemas.Key`
+**Required:** No
+
+Supply a raw provider API key with the request and have Bifrost use it directly, bypassing the registered key pool entirely. Unlike [API Key Selection](#api-key-selection) (which references a *stored* key by ID or name), this passes the secret itself — useful for multi-tenant setups where each caller brings their own provider credentials.
+
+On the **gateway**, this is double-gated and off by default:
+
+1. The server admin must enable `allow_direct_keys` (see [client config](../deployment-guides/config-json/client)).
+2. The caller must send `x-bf-direct-key: true` on the request **and** the raw provider key in one of `Authorization: Bearer <key>`, `x-api-key`, or `x-goog-api-key`.
+
+Both conditions must hold; neither alone takes effect. Virtual keys (`sk-bf-*`) in those headers are **not** treated as direct keys — they continue to resolve as virtual keys.
+
+In the **Go SDK** there is no flag: set `BifrostContextKeyDirectKey` to a `schemas.Key` and it is used as-is.
+
+<Note>
+A direct key is **not** authentication. If [`enforce_auth_on_inference`](../deployment-guides/config-json/client) is enabled, a request with *only* a raw provider key is rejected with `401` — send a virtual key (`x-bf-vk`) or user token alongside it.
+</Note>
+
+<Warning>
+A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
+</Warning>
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-direct-key: true' \
+--header 'Authorization: Bearer sk-your-real-openai-key' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+    ID:     "caller-provided",
+    Name:   "caller-provided",
+    Value:  schemas.EnvVar{Val: "sk-your-real-openai-key"},
+    Models: []string{},
+    Weight: 1.0,
+})
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
 </Tab>
 </Tabs>
 
@@ -521,8 +581,13 @@ This flag affects only what is written to the log record (messages, params, tool
 
 Enable passthrough mode for extra parameters. When enabled, any parameters in `extra_params` (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider.
 
+How parameters are collected depends on the entrypoint:
+
+- Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.
+- OpenAI integration routes under `/openai` preserve the OpenAI request shape, so provider-specific fields must be put under `extra_params`.
+
 <Tabs>
-<Tab title="Gateway (cURL)">
+<Tab title="Standard Inference Routes">
 ```bash
 curl --location 'http://localhost:8080/v1/chat/completions' \
 --header 'x-bf-passthrough-extra-params: true' \
@@ -539,12 +604,30 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ````
 
 </Tab>
+<Tab title="OpenAI Integration">
+```bash
+curl --location 'http://localhost:8080/openai/chat/completions' \
+--header 'x-bf-passthrough-extra-params: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "extra_params": {
+        "custom_param": "value",
+        "nested_param": {
+            "a": "value",
+            "b": 123
+        }
+    }
+}'
+````
+</Tab>
 <Tab title="Go SDK">
 ```go
-ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
+ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,
 Model: "gpt-4o-mini",
 Input: messages,
@@ -687,11 +770,31 @@ Input: messages,
 
 The headers `x-bf-eh-user-id` and `x-bf-eh-tracking-id` are forwarded to the provider as `user-id` and `tracking-id` respectively.
 
+When the OTel plugin is enabled, each forwarded header is also attached to the `llm.call` span as a `gen_ai.request.extra_header.<name>` attribute, so the same metadata you send to the provider is searchable in your observability backend without extra wiring.
+
 **Example use cases:**
 - User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
 - Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
 - Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
 - A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
+**Example: forwarding a session ID**
+
+Send a stable `session-id` for each user session so every LLM call shares the same value on both the provider request and the OTel span:
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-eh-session-id: sess-abc-123' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+Result:
+- Provider receives `session-id: sess-abc-123` in the request headers.
+- OTel `llm.call` span gets attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"` so you can filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc.
 
 ## Semantic Cache Options
 
@@ -1190,6 +1293,7 @@ Bifrost maintains a security denylist of headers that are **never** forwarded to
 - `x-goog-api-key` (when used via `x-bf-eh-*`)
 - `x-bf-api-key` (when used via `x-bf-eh-*`)
 - `x-bf-vk` (when used via `x-bf-eh-*`)
+- `x-bf-direct-key` (when used via `x-bf-eh-*`)
 
 ## Internal Context Keys
 <Warning>

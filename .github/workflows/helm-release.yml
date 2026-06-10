@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -49,7 +49,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.4"
 
       - name: Run chart-testing (lint)
         run: |
@@ -117,7 +117,7 @@ jobs:
           fi
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4.0.0
+        uses: step-security/actions-gh-pages@db28a5e317d585916043c4acc5a4319ab3da9275 # v4.0.1
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.5.0'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

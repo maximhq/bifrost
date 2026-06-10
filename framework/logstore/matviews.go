@@ -37,6 +37,7 @@ SELECT
     COALESCE(team_id, '') AS team_id,
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
+    COALESCE(alias, '') AS alias,
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -51,7 +52,7 @@ SELECT
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
 WHERE status IN ('success', 'error')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 `
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
@@ -59,7 +60,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -78,6 +79,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"team_id",
 	"customer_id",
 	"business_unit_id",
+	"alias",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -116,12 +118,38 @@ const filterDataMatViewWindow = "30 days"
 //   - requiredColumns: resolved column aliases used by repairMatViewShapes
 //     to detect drifted matviews. Declared explicitly (not parsed from
 //     selectExpr) so SQL fragments like COALESCE(...) cannot poison the check.
+//   - bodyOverride:    when set, replaces the whole `SELECT DISTINCT ... FROM
+//     logs WHERE ...` body (selectExpr/whereExpr are ignored). Used by the
+//     multi-valued team / business-unit views, which must union the scalar
+//     column with the JSON-array column rather than read a single column.
 type filterMatViewDef struct {
 	name            string
 	selectExpr      string
 	whereExpr       string
 	uniqueIdx       string
 	requiredColumns []string
+	bodyOverride    string
+}
+
+// multiValueFilterMatViewBody builds the SELECT body for a filter matview whose
+// dimension is single-valued on the scalar column (old / pre-migration rows and
+// the VK-team path) and multi-valued on the JSON-array column (the enterprise
+// user/AP path). It reuses teamOrBUFanoutFrom — the same fan-out the ranking /
+// histogram readers use — so a team / business unit that only ever appears in
+// the JSON array still surfaces in the filter dropdown. The fanned-out
+// dim_id/dim_name become the dropdown id/name; the visibility columns
+// (user_id, team_id, virtual_key_id) come from the original log row (exposed via
+// l.* by the fan-out subquery) so DAC scope still applies. idCol is the scalar
+// id column ("team_id" / "business_unit_id").
+func multiValueFilterMatViewBody(idCol string) string {
+	from, _ := teamOrBUFanoutFrom(idCol)
+	return fmt.Sprintf(
+		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+
+			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, "+
+			"COALESCE(virtual_key_id, '') AS virtual_key_id "+
+			"FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
+		from, filterDataMatViewWindow,
+	)
 }
 
 // scopeProjection is the per-row visibility columns appended to every
@@ -202,37 +230,36 @@ var filterMatViews = []filterMatViewDef{
 	},
 	{
 		name: "mv_filter_teams",
-		// team_id is exposed as "id" for the dropdown and also as the scope
-		// column for uniform DAC predicates.
-		selectExpr: "team_id AS id, team_name AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
-		whereExpr:       "team_id IS NOT NULL AND team_id != '' AND team_name IS NOT NULL AND team_name != ''",
+		// A request can belong to one team (scalar team_id) or many (JSON-array
+		// team_ids, enterprise user/AP path). bodyOverride unions both so every
+		// team shows in the dropdown, not just the scalar primary. team_id is
+		// exposed as the dropdown "id" and the original row's team_id is kept as
+		// the scope column for uniform DAC predicates.
+		bodyOverride:    multiValueFilterMatViewBody("team_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:            "mv_filter_customers",
-		selectExpr:      "customer_id AS id, customer_name AS name, " + scopeProjection,
-		whereExpr:       "customer_id IS NOT NULL AND customer_id != '' AND customer_name IS NOT NULL AND customer_name != ''",
+		name: "mv_filter_customers",
+		// A request can carry one customer (scalar customer_id) or many (JSON-array
+		// customer_ids, enterprise team↔customer M2M). bodyOverride unions both so
+		// every customer shows in the dropdown, not just the scalar primary.
+		bodyOverride:    multiValueFilterMatViewBody("customer_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name: "mv_filter_users",
-		// user_id is exposed as both "id" and "name" for the dropdown and
-		// also as the scope column.
-		selectExpr: "user_id AS id, user_id AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
-		whereExpr:       "user_id IS NOT NULL AND user_id != ''",
-		uniqueIdx:       "id, " + scopeIdxColumns,
+		name:            "mv_filter_users",
+		selectExpr:      "user_id AS id, user_name AS name, " + scopeProjection,
+		whereExpr:       "user_id IS NOT NULL AND user_id != '' AND user_name IS NOT NULL AND user_name != ''",
+		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
 	{
-		name:            "mv_filter_business_units",
-		selectExpr:      "business_unit_id AS id, business_unit_name AS name, " + scopeProjection,
-		whereExpr:       "business_unit_id IS NOT NULL AND business_unit_id != '' AND business_unit_name IS NOT NULL AND business_unit_name != ''",
+		name: "mv_filter_business_units",
+		// Same scalar-or-JSON-array union as mv_filter_teams: a request can carry
+		// one business unit (scalar) or many (JSON-array business_unit_ids).
+		bodyOverride:    multiValueFilterMatViewBody("business_unit_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
 	},
@@ -246,11 +273,14 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"routing_rule_id", "routing_rule_name"}:   "mv_filter_routing_rules",
 	{"team_id", "team_name"}:                   "mv_filter_teams",
 	{"customer_id", "customer_name"}:           "mv_filter_customers",
-	{"user_id", "user_id"}:                     "mv_filter_users",
+	{"user_id", "user_name"}:                   "mv_filter_users",
 	{"business_unit_id", "business_unit_name"}: "mv_filter_business_units",
 }
 
 func filterMatViewDDL(v filterMatViewDef) string {
+	if v.bodyOverride != "" {
+		return fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s", v.name, v.bodyOverride)
+	}
 	return fmt.Sprintf(
 		"CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS SELECT DISTINCT %s FROM logs WHERE timestamp >= NOW() - INTERVAL '%s' AND (%s)",
 		v.name, v.selectExpr, filterDataMatViewWindow, v.whereExpr,
@@ -379,7 +409,8 @@ var matviewRequiredColumns = func() map[string][]string {
 // Postgres-only — runs on a dedicated connection so the advisory lock + the
 // CONCURRENTLY DDL all share one session and live outside any migration
 // transaction. Multi-replica deployments serialize on the advisory lock so
-// only one instance does the work.
+// only one instance does the work. It shares the same advisory lock as
+// refreshMatViews so startup create/repair cannot overlap a periodic refresh.
 func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" {
 		return nil
@@ -593,7 +624,8 @@ var refreshGate matViewRefreshGate
 
 // logsActivityCounter returns the cumulative INSERT+UPDATE+DELETE count for
 // the `logs` table from pg_stat_user_tables. The stat collector is eventually
-// consistent (lags a few seconds under load) which is fine for a 30s tick.
+// consistent (lags a few seconds under load) which is fine for the periodic
+// refresh tick.
 //
 // Returns (0, false) if the row is missing (fresh DB before any writes) or the
 // query fails — callers treat that as "fall back to always-refresh."
@@ -648,7 +680,8 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 
 // refreshMatViews refreshes all materialized views concurrently (non-blocking
 // for readers). Uses a PostgreSQL advisory try-lock so that in multi-replica
-// deployments only one instance refreshes at a time — others skip silently.
+// deployments only one instance refreshes at a time — others skip silently and
+// try again on their next scheduled tick.
 //
 // Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
@@ -737,7 +770,10 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
-		len(f.CacheHitTypes) == 0
+		len(f.CacheHitTypes) == 0 &&
+		len(f.TeamIDs) == 0 &&
+		len(f.BusinessUnitIDs) == 0 &&
+		len(f.CustomerIDs) == 0
 }
 
 // canUseMatView checks both that materialized views are ready (created and
@@ -752,7 +788,7 @@ func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
 // freshAggregateMatViewMinWindow is the minimum time-range size that justifies
 // serving user-visible aggregates (e.g. /api/logs/stats totals, /api/logs
 // pagination counts) from the materialized view. Below this, the raw `logs`
-// table is fast enough and avoids the up-to-30s freshness lag that would
+// table is fast enough and avoids the refresh-interval freshness lag that would
 // otherwise cause counts to disagree with the row-list view — a visible
 // inconsistency on short, low-traffic windows.
 const freshAggregateMatViewMinWindow = 24 * time.Hour
@@ -807,6 +843,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.Models) > 0 {
 		q = q.Where("model IN ?", f.Models)
+	}
+	if len(f.Aliases) > 0 {
+		q = q.Where("alias IN ?", f.Aliases)
 	}
 	if len(f.Status) > 0 {
 		q = q.Where("status IN ?", f.Status)
@@ -1569,6 +1608,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	q = q.Where("model IS NOT NULL AND model != ''")
 	if err := q.Select(`
 		model, provider,
 		SUM(count) AS total,
@@ -1601,6 +1641,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters.EndTime = &prevEnd
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
 			model, provider,
 			SUM(count) AS total,
@@ -1727,6 +1768,109 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		rankings = append(rankings, urt)
 	}
 	return &UserRankingResult{Rankings: rankings}, nil
+}
+
+// getDimensionRankingsFromMatView returns entities ranked by usage from mv_logs_hourly.
+func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	idCol, nameCol, ok := DimensionColumnDef(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
+	}
+
+	type row struct {
+		ID        string  `gorm:"column:id"`
+		Total     int64   `gorm:"column:total"`
+		TotalTkns int64   `gorm:"column:total_tkns"`
+		TotalCost float64 `gorm:"column:total_cost"`
+	}
+
+	var results []row
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	q = q.Where(fmt.Sprintf("%s != ''", idCol))
+	if err := q.Select(fmt.Sprintf(`
+		%s AS id,
+		SUM(count) AS total,
+		SUM(total_tokens) AS total_tkns,
+		SUM(total_cost) AS total_cost
+	`, idCol)).Group(idCol).
+		Order("total DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	// Resolve names from the logs table
+	nameMap := make(map[string]string)
+	if nameCol != "" && len(results) > 0 {
+		ids := make([]string, len(results))
+		for i, r := range results {
+			ids[i] = r.ID
+		}
+		var nameRows []struct {
+			ID   string `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		if err := s.ScopedDB(ctx).Model(&Log{}).
+			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
+			Where(fmt.Sprintf("%s IN ?", idCol), ids).
+			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
+			Order(fmt.Sprintf("%s, timestamp DESC", idCol)).
+			Find(&nameRows).Error; err == nil {
+			for _, nr := range nameRows {
+				nameMap[nr.ID] = nr.Name
+			}
+		}
+	}
+
+	// Previous period
+	var prevResults []row
+	if filters.StartTime != nil && filters.EndTime != nil {
+		duration := filters.EndTime.Sub(*filters.StartTime)
+		prevStart := filters.StartTime.Add(-duration)
+		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		prevFilters := filters
+		prevFilters.StartTime = &prevStart
+		prevFilters.EndTime = &prevEnd
+		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		pq = s.applyMatViewFilters(pq, prevFilters)
+		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
+		if err := pq.Select(fmt.Sprintf(`
+			%s AS id,
+			SUM(count) AS total,
+			SUM(total_tokens) AS total_tkns,
+			SUM(total_cost) AS total_cost
+		`, idCol)).Group(idCol).Find(&prevResults).Error; err != nil {
+			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		}
+	}
+
+	prevMap := make(map[string]int, len(prevResults))
+	for i, r := range prevResults {
+		prevMap[r.ID] = i
+	}
+
+	rankings := make([]DimensionRankingWithTrend, 0, len(results))
+	for _, r := range results {
+		entry := DimensionRankingEntry{
+			ID:            r.ID,
+			Name:          nameMap[r.ID],
+			TotalRequests: r.Total,
+			TotalTokens:   r.TotalTkns,
+			TotalCost:     r.TotalCost,
+		}
+		drt := DimensionRankingWithTrend{DimensionRankingEntry: entry}
+		if idx, exists := prevMap[r.ID]; exists {
+			prev := prevResults[idx]
+			drt.Trend = DimensionRankingTrend{
+				HasPreviousPeriod: true,
+				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
+				TokensTrend:       trendPct(float64(r.TotalTkns), float64(prev.TotalTkns)),
+				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+			}
+		}
+		rankings = append(rankings, drt)
+	}
+	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
 }
 
 // ---------------------------------------------------------------------------

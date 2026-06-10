@@ -88,7 +88,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	}
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	if config.NetworkConfig.BaseURL == "" {
@@ -429,7 +429,7 @@ func (provider *HuggingFaceProvider) ListModels(ctx *schemas.BifrostContext, key
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(provider.GetProviderKey(), func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+			return provider.listModelsByKey(ctx, schemas.Key{Models: schemas.WhiteList{"*"}}, request)
 		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
@@ -1061,6 +1061,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1132,8 +1133,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		// Initialize latency timers post-handshake so chunk latency reflects pure streaming time.
-		startTime := time.Now()
+		// Seed lastChunkTime with startTime (captured before Do) so the first chunk's latency reflects TTFT, including request/network time.
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string
@@ -1440,6 +1440,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -1511,8 +1512,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		// Initialize latency timers post-handshake so chunk latency reflects pure streaming time.
-		startTime := time.Now()
+		// Seed lastChunkTime with startTime (captured before Do) so the first chunk's latency reflects TTFT, including request/network time.
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string
@@ -1745,6 +1745,11 @@ func (provider *HuggingFaceProvider) FileContent(_ *schemas.BifrostContext, _ []
 // CountTokens is not supported by the Hugging Face provider.
 func (provider *HuggingFaceProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Hugging Face provider.
+func (provider *HuggingFaceProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Hugging Face provider.

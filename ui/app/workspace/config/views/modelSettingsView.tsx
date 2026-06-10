@@ -117,14 +117,10 @@ export default function ModelSettingsView() {
 							placeholder="https://example.com/pricing.json"
 							data-testid="pricing-datasheet-url-input"
 							{...register("pricing_datasheet_url", {
-								pattern: {
-									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))[\/\w \.-]*\/?$/,
-									message: "Please enter a valid URL.",
-								},
 								validate: {
-									checkIfHttp: (value) => {
+									checkIfValidUrl: (value) => {
 										if (!value) return true;
-										return value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://";
+										return value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://") || "URL must start with http://, https://, or file://";
 									},
 								},
 							})}
@@ -145,14 +141,10 @@ export default function ModelSettingsView() {
 							placeholder="https://example.com/model-parameters.json"
 							data-testid="model-parameters-url-input"
 							{...register("model_parameters_url", {
-								pattern: {
-									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))[\/\w \.-]*\/?$/,
-									message: "Please enter a valid URL.",
-								},
 								validate: {
-									checkIfHttp: (value) => {
+									checkIfValidUrl: (value) => {
 										if (!value) return true;
-										return value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://";
+										return value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://") || "URL must start with http://, https://, or file://";
 									},
 								},
 							})}

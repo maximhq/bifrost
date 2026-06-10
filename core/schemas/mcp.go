@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -21,15 +22,15 @@ import (
 
 // OAuth-related errors
 var (
-	ErrOAuth2ConfigNotFound           = errors.New("oauth2 config not found")
-	ErrOAuth2ProviderNotAvailable     = errors.New("oauth2 provider not available")
-	ErrOAuth2TokenExpired             = errors.New("oauth2 token expired")
-	ErrOAuth2TokenInvalid             = errors.New("oauth2 token invalid")
-	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
-	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
-	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
-	ErrOAuth2FlowNotPending           = errors.New("oauth flow is not in pending state")
-	ErrOAuth2FlowExpired              = errors.New("oauth flow has expired")
+	ErrOAuth2ConfigNotFound       = errors.New("oauth2 config not found")
+	ErrOAuth2ProviderNotAvailable = errors.New("oauth2 provider not available")
+	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
+	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
+	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
+	ErrOAuth2NotPerUserSession    = errors.New("state does not match a per-user oauth session")
+	ErrOAuth2TokenNotFound        = errors.New("per-user oauth token not found for this identity and mcp server")
+	ErrOAuth2FlowNotPending       = errors.New("oauth flow is not in pending state")
+	ErrOAuth2FlowExpired          = errors.New("oauth flow has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream
@@ -37,18 +38,105 @@ var (
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
 )
 
-// MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires
-// the user to authenticate before tool execution can proceed.
-type MCPUserOAuthRequiredError struct {
+// MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced
+// to the caller. The value lands in MCPAuthRequiredError.Kind and on the wire
+// under extra_fields.mcp_auth_required.kind.
+const (
+	MCPAuthRequiredKindOAuth   = "oauth"
+	MCPAuthRequiredKindHeaders = "headers"
+)
+
+// MCPAuthRequiredError is returned when a per-user MCP credential is missing
+// and the caller must complete an inline auth flow (OAuth dance or headers
+// submission) before tool execution can proceed.
+//
+// Kind discriminates which set of fields is populated:
+//   - "oauth":   AuthorizeURL, SessionID
+//   - "headers": SubmitURL, SessionID, RequiredHeaderKeys, AdminHeaderKeys
+//
+// SessionID is shared by both Kinds: for "oauth" it is the
+// mcp_per_user_oauth_flows row ID, for "headers" the
+// mcp_per_user_header_flows row ID. Either way it lets the caller
+// reference the pending flow row without parsing the URL fragment.
+//
+// Common fields (MCPClientID, MCPClientName, Message) are always set.
+type MCPAuthRequiredError struct {
+	Kind          string `json:"kind"`
 	MCPClientID   string `json:"mcp_client_id"`
 	MCPClientName string `json:"mcp_client_name"`
-	AuthorizeURL  string `json:"authorize_url"`
-	SessionID     string `json:"session_id"`
 	Message       string `json:"message"`
+
+	// OAuth-specific fields (populated when Kind == "oauth"). SessionID is
+	// also populated for Kind == "headers" — see the type-level comment.
+	AuthorizeURL string `json:"authorize_url,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+
+	// Headers-specific fields (populated when Kind == "headers"). SubmitURL is
+	// the workspace landing page where the user provides values for
+	// RequiredHeaderKeys; AdminHeaderKeys lists the admin-set static headers
+	// (names only, no values) for context display.
+	SubmitURL          string   `json:"submit_url,omitempty"`
+	RequiredHeaderKeys []string `json:"required_header_keys,omitempty"`
+	AdminHeaderKeys    []string `json:"admin_header_keys,omitempty"`
 }
 
-func (e *MCPUserOAuthRequiredError) Error() string {
+func (e *MCPAuthRequiredError) Error() string {
 	return e.Message
+}
+
+// MCPUserOAuthRequiredError is an alias retained for backward compatibility
+// with callers that referenced the OAuth-only error type before headers auth
+// was added. New code should use MCPAuthRequiredError directly.
+//
+// Deprecated: use MCPAuthRequiredError.
+type MCPUserOAuthRequiredError = MCPAuthRequiredError
+
+// MCPCredentialStore is the single source of truth for MCP credential resolution.
+// It exposes three predicates that MCPManager consumes uniformly:
+//
+//   - ConnectionHeaders         — headers attached to opening an upstream transport
+//   - RequestHeaders            — per-message headers on an already-open transport
+//   - RequiresPerCallConnection — whether each call needs an ephemeral transport
+//
+// Storage lifecycle (orphaning on VK reassignment, cascade on client delete)
+// is NOT part of this interface — those concerns stay in the configstore
+// layer where transactional atomicity is preserved.
+type MCPCredentialStore interface {
+	// ConnectionHeaders returns the headers to attach when opening an upstream
+	// transport. Called from two sites:
+	//
+	//  1. At AddClient / Reconnect / UpdateClientConnection for shared-
+	//     connection auth types (none, headers, server_oauth). The caller
+	//     wraps the Bifrost lifecycle context into a synthetic BifrostContext
+	//     with no identity, so the resolver returns admin-level headers
+	//     (static config + admin Bearer for server_oauth).
+	//
+	//  2. Per call inside the ephemeral-transport path for per-user auth
+	//     types. The caller passes the real request BifrostContext, and the
+	//     resolver returns the caller's full set (static + filtered
+	//     context-extras + per-user auth).
+	//
+	// May return *MCPAuthRequiredError when a per-user credential is missing
+	// and the caller must complete an inline auth flow (OAuth dance or
+	// headers submission) before retrying.
+	ConnectionHeaders(ctx *BifrostContext, config *MCPClientConfig) (http.Header, error)
+
+	// RequestHeaders returns the per-message headers attached to each
+	// CallTool / ListTools / Ping that flows over an already-open
+	// transport — currently just the filtered context-extras
+	// (BifrostContextKeyMCPExtraHeaders, scoped by config.AllowedExtraHeaders).
+	//
+	// Only meaningful when the connection is shared
+	// (RequiresPerCallConnection is false). Per-user types embed all
+	// caller-specific headers in the ephemeral transport itself via
+	// ConnectionHeaders; the caller skips RequestHeaders in that path.
+	RequestHeaders(ctx *BifrostContext, config *MCPClientConfig) (http.Header, error)
+
+	// RequiresPerCallConnection reports whether each tool invocation needs a
+	// freshly-built ephemeral upstream connection (rather than reusing a
+	// shared persistent one). True for per-user auth types; false for
+	// shared (none, headers, oauth-server-level).
+	RequiresPerCallConnection(config *MCPClientConfig) bool
 }
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
@@ -180,10 +268,11 @@ const (
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone         MCPAuthType = "none"           // No authentication
-	MCPAuthTypeHeaders      MCPAuthType = "headers"        // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth        MCPAuthType = "oauth"          // OAuth 2.0 authentication (server-level, admin authenticates once)
-	MCPAuthTypePerUserOauth MCPAuthType = "per_user_oauth" // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypeNone           MCPAuthType = "none"             // No authentication
+	MCPAuthTypeHeaders        MCPAuthType = "headers"          // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth          MCPAuthType = "oauth"            // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth   MCPAuthType = "per_user_oauth"   // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.
@@ -194,12 +283,21 @@ type MCPClientConfig struct {
 	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
+	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
 	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
 	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
 	OauthClientID       *EnvVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
 	OauthClientSecret   *EnvVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
 	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
 	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	// PerUserHeaderKeys lists the header *names* each caller must supply for
+	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
+	// values live per-user in the mcp_per_user_header_credentials table and
+	// are resolved at call time. Names in this list are stripped from
+	// utils.StaticConfigHeaders so admin-set values in `Headers` with the
+	// same name cannot leak through the plugin gate. Required (non-empty)
+	// when AuthType == per_user_headers; ignored otherwise.
+	PerUserHeaderKeys   []string          `json:"per_user_header_keys,omitempty"`
 	AllowedExtraHeaders WhiteList         `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
 	InProcessServer     *server.MCPServer `json:"-"`                               // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute      WhiteList         `json:"tools_to_execute,omitempty"`      // Include-only list.
@@ -336,50 +434,6 @@ func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
 	return &config
 }
 
-// HttpHeaders returns the HTTP headers for the MCP client config.
-func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2Provider) (map[string]string, error) {
-	headers := make(map[string]string)
-
-	switch c.AuthType {
-	case MCPAuthTypeOauth:
-		if c.OauthConfigID == nil {
-			return nil, ErrOAuth2ConfigNotFound
-		}
-		if oauth2Provider == nil {
-			return nil, ErrOAuth2ProviderNotAvailable
-		}
-		accessToken, err := oauth2Provider.GetAccessToken(ctx, *c.OauthConfigID)
-		if err != nil {
-			return nil, err
-		}
-		// Validate token format - trim whitespace and check for invalid characters
-		accessToken = strings.TrimSpace(accessToken)
-		if accessToken == "" {
-			return nil, errors.New("access token is empty")
-		}
-		if strings.ContainsAny(accessToken, "\n\r\t") {
-			return nil, errors.New("access token contains invalid characters")
-		}
-		headers["Authorization"] = "Bearer " + accessToken
-	case MCPAuthTypeHeaders:
-		for key, value := range c.Headers {
-			headers[key] = value.GetValue()
-		}
-	case MCPAuthTypePerUserOauth:
-		// Per-user OAuth: headers are injected per-call in executeToolInternal, not at connection level
-		return headers, nil
-	case MCPAuthTypeNone:
-		// No headers to add
-	default:
-		// Default to headers behavior for backward compatibility
-		for key, value := range c.Headers {
-			headers[key] = value.GetValue()
-		}
-	}
-
-	return headers, nil
-}
-
 // MCPConnectionType defines the communication protocol for MCP connections
 type MCPConnectionType string
 
@@ -395,6 +449,31 @@ type MCPStdioConfig struct {
 	Command string   `json:"command"` // Executable command to run
 	Args    []string `json:"args"`    // Command line arguments
 	Envs    []string `json:"envs"`    // Environment variables required
+}
+
+// MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.
+// InsecureSkipVerify takes priority over CACertPEM when both are set.
+type MCPTLSConfig struct {
+	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
+	CACertPEM          *EnvVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
+}
+
+// MarshalForStorage serializes MCPTLSConfig for DB persistence.
+// ca_cert_pem is stored as a plain string ("env.VAR_NAME" or literal PEM).
+// For HTTP API responses use json.Marshal so clients receive the full EnvVar object.
+func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
+	if t == nil {
+		return []byte("null"), nil
+	}
+	type tlsConfigStorage struct {
+		InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
+		CACertPEM          string `json:"ca_cert_pem,omitempty"`
+	}
+	a := tlsConfigStorage{InsecureSkipVerify: t.InsecureSkipVerify}
+	if t.CACertPEM != nil {
+		a.CACertPEM = EnvVarAsString(t.CACertPEM)
+	}
+	return json.Marshal(a)
 }
 
 type MCPConnectionState string

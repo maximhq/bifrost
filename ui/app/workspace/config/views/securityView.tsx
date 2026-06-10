@@ -95,8 +95,9 @@ export default function SecurityView() {
 		const whitelistedRoutesChanged = localWhitelistedRoutes !== serverWhitelistedRoutes;
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
+		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || requiredChanged || whitelistedRoutesChanged || authChanged || enforceAuthOnInferenceChanged;
+		return originsChanged || headersChanged || requiredChanged || whitelistedRoutesChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
 	const needsRestart = useMemo(() => {
@@ -311,6 +312,25 @@ export default function SecurityView() {
 						data-testid="enforce-auth-on-inference-switch"
 						checked={localConfig.enforce_auth_on_inference}
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
+					/>
+				</div>
+				{/* Allow Direct API Keys */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
+							Allow Direct API Keys
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, callers can pass a provider API key directly in the{" "}
+							<b>Authorization</b>, <b>x-api-key</b>, or <b>x-goog-api-key</b> header alongside{" "}
+							<b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the registered key pool.
+						</p>
+					</div>
+					<Switch
+						id="allow-direct-keys"
+						data-testid="security-allow-direct-keys-switch"
+						checked={localConfig.allow_direct_keys}
+						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 					/>
 				</div>
 				{/* Allowed Origins */}

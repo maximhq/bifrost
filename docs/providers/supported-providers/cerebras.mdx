@@ -32,6 +32,63 @@ Cerebras is a **fully OpenAI-compatible provider** leveraging the complete set o
 **Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cerebras API. These return `UnsupportedOperationError`.
 </Note>
 
+## Setup & Configuration
+
+Configure Cerebras as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Cerebras provider dashboard](../../media/provider-dashboard-cerebras.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Cerebras** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Cerebras**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.CEREBRAS_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "cerebras": {
+      "keys": [
+        {
+          "name": "cerebras-key-1",
+          "value": "env.CEREBRAS_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Cerebras:
+    return []schemas.Key{{
+        Name:   "cerebras-key-1",
+        Value:  *schemas.NewEnvVar("env.CEREBRAS_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 # 1. Chat Completions

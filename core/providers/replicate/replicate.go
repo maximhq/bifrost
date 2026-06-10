@@ -51,7 +51,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
@@ -534,6 +534,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -608,7 +609,6 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -731,7 +731,8 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 					nil, // usage - not available in done event
 					finishReason,
 					chunkIndex,
-					schemas.TextCompletionStreamRequest)
+					schemas.TextCompletionStreamRequest,
+					request.Model)
 
 				// Set raw request if enabled
 				if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -873,6 +874,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -947,7 +949,6 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -1225,6 +1226,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -1351,7 +1353,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		defer stopCancellation()
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
-		startTime := time.Now()
 		sequenceNumber := 0
 		messageID := prediction.ID
 		// Generate a unique item ID for the message (needed for accumulator to track deltas)
@@ -1840,6 +1841,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		schemas.ImageGenerationStreamRequest,
 		useDeploymentsEndpoint(key),
 	)
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -1921,7 +1923,6 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -2246,6 +2247,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		useDeploymentsEndpoint(key),
 	)
 
+	startTime := time.Now()
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
 		ctx,
@@ -2327,7 +2329,6 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -3237,6 +3238,11 @@ func (provider *ReplicateProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 func (provider *ReplicateProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Replicate provider.
+func (provider *ReplicateProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by replicate provider.

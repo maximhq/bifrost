@@ -41,6 +41,11 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		maps.Copy(accumulator.PassthroughHeaders, result.PassthroughResponse.Headers)
 	}
 
+	// Save path from the first chunk that carries it (set once in ExtraFields by the provider)
+	if accumulator.PassthroughPath == "" && result != nil && result.PassthroughResponse != nil {
+		accumulator.PassthroughPath = result.PassthroughResponse.ExtraFields.PassthroughPath
+	}
+
 	// Accumulate the body bytes from this chunk
 	if result != nil && result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
 		// Make a copy of the body bytes to avoid referencing pooled memory
@@ -67,14 +72,25 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		accumulator.FinalTimestamp = time.Now()
 	}
 
-	// Build the accumulated passthrough response
-	passthroughResp := &schemas.BifrostPassthroughResponse{
-		StatusCode: accumulator.PassthroughStatusCode,
-		Headers:    accumulator.PassthroughHeaders,
-		Body:       accumulator.PassthroughBody,
+	// PassthroughUsage is set by the provider on the final EOF chunk before any
+	// plugin runs — read it from result rather than re-extracting here.
+	var passthroughUsage *schemas.BifrostPassthroughUsage
+	if result != nil && result.PassthroughResponse != nil {
+		passthroughUsage = result.PassthroughResponse.PassthroughUsage
 	}
 
-	// Build accumulated data with the passthrough response
+	// Build the accumulated passthrough response
+	passthroughResp := &schemas.BifrostPassthroughResponse{
+		StatusCode:       accumulator.PassthroughStatusCode,
+		Headers:          accumulator.PassthroughHeaders,
+		Body:             accumulator.PassthroughBody,
+		Path:             accumulator.PassthroughPath,
+		PassthroughUsage: passthroughUsage,
+	}
+
+	// Build accumulated data with the passthrough response.
+	// Populate TokenUsage from PassthroughUsage.LLMUsage so applyStreamingOutputToEntry sets
+	// entry.TokenUsageParsed via the standard streaming token path.
 	data := &AccumulatedData{
 		RequestID:         requestID,
 		Model:             requestedModel,
@@ -83,6 +99,9 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		StartTimestamp:    accumulator.StartTimestamp,
 		EndTimestamp:      accumulator.FinalTimestamp,
 		PassthroughOutput: passthroughResp,
+	}
+	if passthroughUsage != nil && passthroughUsage.LLMUsage != nil {
+		data.TokenUsage = passthroughUsage.LLMUsage
 	}
 
 	// Set error status if there was an error

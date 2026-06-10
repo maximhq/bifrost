@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -622,27 +624,42 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
-// Test that retryableStatusCodes are properly defined
-func TestRetryableStatusCodes(t *testing.T) {
-	expectedCodes := map[int]bool{
-		500: true, // Internal Server Error
-		502: true, // Bad Gateway
-		503: true, // Service Unavailable
-		504: true, // Gateway Timeout
-		429: true, // Too Many Requests
-	}
-
-	for code, expected := range expectedCodes {
-		if retryableStatusCodes[code] != expected {
-			t.Errorf("Status code %d should be retryable=%v, got %v", code, expected, retryableStatusCodes[code])
+// Test that transientServerStatusCodes are properly defined.
+// These are upstream-side failures unrelated to the credential — the same key is retried.
+func TestTransientServerStatusCodes(t *testing.T) {
+	expected := []int{500, 502, 503, 504}
+	for _, code := range expected {
+		if !transientServerStatusCodes[code] {
+			t.Errorf("status code %d should be in transientServerStatusCodes", code)
 		}
 	}
 
-	// Test non-retryable codes
-	nonRetryableCodes := []int{200, 201, 400, 401, 403, 404, 422}
-	for _, code := range nonRetryableCodes {
-		if retryableStatusCodes[code] {
-			t.Errorf("Status code %d should not be retryable", code)
+	// Codes that must NOT be in transientServerStatusCodes: per-key codes (rotated, not
+	// retried-same-key), success codes, and request-bound 4xx (terminal).
+	notTransient := []int{200, 201, 400, 401, 402, 403, 404, 422, 429}
+	for _, code := range notTransient {
+		if transientServerStatusCodes[code] {
+			t.Errorf("status code %d should not be in transientServerStatusCodes", code)
+		}
+	}
+}
+
+// Test that perKeyFailureStatusCodes are properly defined.
+// These are credential/account-bound failures — rotate to the next key instead of retrying
+// the same one.
+func TestPerKeyFailureStatusCodes(t *testing.T) {
+	expected := []int{401, 402, 403, 429}
+	for _, code := range expected {
+		if !perKeyFailureStatusCodes[code] {
+			t.Errorf("status code %d should be in perKeyFailureStatusCodes", code)
+		}
+	}
+
+	// Request-bound 4xx, success codes, and transient-server 5xx must not trigger rotation.
+	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504}
+	for _, code := range notPerKey {
+		if perKeyFailureStatusCodes[code] {
+			t.Errorf("status code %d should not be in perKeyFailureStatusCodes", code)
 		}
 	}
 }
@@ -839,6 +856,51 @@ func (ma *MockAccount) SetKeysForProvider(provider schemas.ModelProvider, keys [
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.keys[provider] = keys
+}
+
+func TestFilterProvidersByContext(t *testing.T) {
+	providers := []schemas.ModelProvider{
+		schemas.OpenAI,
+		schemas.Anthropic,
+		schemas.Mistral,
+	}
+
+	t.Run("no context filter keeps all providers", func(t *testing.T) {
+		filtered := filterProvidersByContext(nil, providers)
+		if len(filtered) != len(providers) {
+			t.Fatalf("expected all providers, got %v", filtered)
+		}
+	})
+
+	t.Run("available providers restrict list models fanout", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic})
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 1 || filtered[0] != schemas.Anthropic {
+			t.Fatalf("expected only anthropic, got %v", filtered)
+		}
+	})
+
+	t.Run("empty available providers denies all providers", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 0 {
+			t.Fatalf("expected no providers, got %v", filtered)
+		}
+	})
+
+	t.Run("malformed available providers fails closed", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, "openai")
+
+		filtered := filterProvidersByContext(ctx, providers)
+		if len(filtered) != 0 {
+			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
+		}
+	})
 }
 
 // mockKVStore implements schemas.KVStore for session stickiness tests.
@@ -1064,7 +1126,7 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	}
 
 	fixedKey := pool[0]
-	keyProvider := func(_ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
+	keyProvider := func(_, _ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
 
 	// Simulate 3 rate-limit failures then success; all attempts must use key-a.
 	var usedKeyIDs []string
@@ -1169,7 +1231,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 
 	t.Run("RotatesKeyOnRateLimitRetry", func(t *testing.T) {
 		var selectedKeyIDs []string
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
 					return k, nil
@@ -1216,7 +1278,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 	t.Run("SameKeyOnNetworkError", func(t *testing.T) {
 		var selectedKeyIDs []string
 		keyProviderCalls := 0
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			keyProviderCalls++
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
@@ -1266,7 +1328,7 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 		var selectedKeyIDs []string
 		// 3 keys, 6 retries — should cycle through all 3 keys twice
 		config6 := createTestConfig(5, 0, 0) // 5 retries = 6 total attempts
-		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+		keyProvider := func(usedKeyIDs, _ map[string]bool) (schemas.Key, error) {
 			available := make([]schemas.Key, 0)
 			for _, k := range keys {
 				if !usedKeyIDs[k.ID] {
@@ -2878,57 +2940,6 @@ func TestProviderOverride(t *testing.T) {
 		}
 	})
 
-	// ArbitraryProviderViaBaseProviderType verifies that a non-built-in provider alias
-	// (e.g. "my-org-openai") is routed through the base type's queue when a plugin
-	// specifies a BaseProviderType via UpdateBaseProviderType. No static config entry
-	// is required; credentials and URL are supplied per-request via ProviderOverride.
-	t.Run("ArbitraryProviderViaBaseProviderType", func(t *testing.T) {
-		const arbitraryKey = "sk-arbitrary-tenant-key"
-		cap := &safeCapture{}
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cap.recordAuth(r)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
-		}))
-		defer server.Close()
-
-		// Empty account — "my-org-openai" is not registered anywhere. MockAccount returns
-		// (nil, nil) for unregistered providers (including the resolved "openai" base type)
-		// so getProviderQueue can auto-init it.
-		account := NewMockAccount()
-
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		bf, err := Init(ctx, schemas.BifrostConfig{
-			Account:    account,
-			Logger:     NewDefaultLogger(schemas.LogLevelError),
-			LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin("my-org-openai", schemas.OpenAI, arbitraryKey, server.URL)},
-		})
-		if err != nil {
-			t.Fatalf("Init() error = %v", err)
-		}
-		t.Cleanup(func() { bf.Shutdown() })
-
-		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
-		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
-			Provider: schemas.ModelProvider("my-org-openai"),
-			Model:    "gpt-4o",
-			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
-		})
-		if bifrostErr != nil {
-			t.Fatalf("ChatCompletionRequest() error = %v", bifrostErr)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil chat response")
-		}
-
-		wantAuth := "Bearer " + arbitraryKey
-		if got := cap.Auth(); got != wantAuth {
-			t.Errorf("Authorization header: got %q, want %q", got, wantAuth)
-		}
-	})
-
 	t.Run("StreamingKeyAndBaseURLAreOverridden", func(t *testing.T) {
 		// Verifies that UpdateAPIKey and UpdateProviderBaseURL are honoured on the
 		// streaming path (tryStreamRequest), not only the non-streaming path (tryRequest).
@@ -3457,8 +3468,7 @@ func TestProviderOverride(t *testing.T) {
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		reqCtx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
-			BaseURL:          "https://stale.example.com",
-			BaseProviderType: schemas.OpenAI,
+			BaseURL: "https://stale.example.com",
 		})
 
 		_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
@@ -3610,34 +3620,6 @@ func (p *primaryOnlyOverridePlugin) PostLLMHook(_ *schemas.BifrostContext, resp 
 	return resp, err, nil
 }
 
-// arbitraryProviderPlugin is a test helper plugin that routes a request through a
-// non-built-in provider alias by setting BaseProviderType (dialect), API key, and
-// base URL — exercising the ProviderOverride path in getProviderQueue.
-type arbitraryProviderPlugin struct {
-	providerName schemas.ModelProvider
-	baseType     schemas.ModelProvider
-	key, baseURL string
-}
-
-func newArbitraryProviderPlugin(providerName, baseType schemas.ModelProvider, key, baseURL string) *arbitraryProviderPlugin {
-	return &arbitraryProviderPlugin{providerName: providerName, baseType: baseType, key: key, baseURL: baseURL}
-}
-
-func (p *arbitraryProviderPlugin) GetName() string { return "arbitrary-provider-test-plugin" }
-func (p *arbitraryProviderPlugin) Cleanup() error  { return nil }
-func (p *arbitraryProviderPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	if err := req.UpdateProvider(p.providerName); err != nil {
-		return nil, nil, err
-	}
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
-	req.UpdateProviderBaseURL(p.baseURL)
-	req.UpdateBaseProviderType(p.baseType)
-	return req, nil, nil
-}
-func (p *arbitraryProviderPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	return resp, err, nil
-}
-
 // providerSwitchPlugin is a test helper plugin that switches the provider dialect and
 // injects credentials, using UpdateProvider, UpdateAPIKey, and UpdateProviderBaseURL.
 type providerSwitchPlugin struct {
@@ -3743,8 +3725,7 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 // tenant provider config and attaches the fallbacks before dispatch.
 func TestFallbacksAddedByPreLLMHookAreRetried(t *testing.T) {
 	const (
-		primaryAlias  = schemas.ModelProvider("dynamic-primary")
-		fallbackAlias = schemas.ModelProvider("dynamic-fallback")
+		primaryModel  = "gpt-4o"
 		fallbackModel = "gpt-4o-mini"
 	)
 
@@ -3765,13 +3746,13 @@ func TestFallbacksAddedByPreLLMHookAreRetried(t *testing.T) {
 		}))
 		defer fallbackServer.Close()
 
-		bf := initDynamicFallbackBifrost(t, primaryAlias, fallbackAlias, fallbackModel, primaryServer.URL, fallbackServer.URL)
+		bf := initDynamicFallbackBifrost(t, primaryModel, fallbackModel, primaryServer.URL, fallbackServer.URL)
 
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
-			Provider: primaryAlias,
-			Model:    "gpt-4o",
+			Provider: schemas.OpenAI,
+			Model:    primaryModel,
 			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 		})
 
@@ -3816,13 +3797,13 @@ func TestFallbacksAddedByPreLLMHookAreRetried(t *testing.T) {
 		}))
 		defer fallbackServer.Close()
 
-		bf := initDynamicFallbackBifrost(t, primaryAlias, fallbackAlias, fallbackModel, primaryServer.URL, fallbackServer.URL)
+		bf := initDynamicFallbackBifrost(t, primaryModel, fallbackModel, primaryServer.URL, fallbackServer.URL)
 
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
-			Provider: primaryAlias,
-			Model:    "gpt-4o",
+			Provider: schemas.OpenAI,
+			Model:    primaryModel,
 			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 		})
 		if bifrostErr != nil {
@@ -3858,16 +3839,15 @@ func TestFallbacksAddedByPreLLMHookAreRetried(t *testing.T) {
 	})
 }
 
-func initDynamicFallbackBifrost(t *testing.T, primaryAlias, fallbackAlias schemas.ModelProvider, fallbackModel, primaryURL, fallbackURL string) *Bifrost {
+func initDynamicFallbackBifrost(t *testing.T, primaryModel, fallbackModel, primaryURL, fallbackURL string) *Bifrost {
 	t.Helper()
 
 	account := NewMockAccount()
 	plugin := &dynamicFallbackPlugin{
-		fallbackProvider: fallbackAlias,
-		fallbackModel:    fallbackModel,
-		byAlias: map[schemas.ModelProvider]aliasRoute{
-			primaryAlias:  {key: "sk-primary", baseURL: primaryURL},
-			fallbackAlias: {key: "sk-fallback", baseURL: fallbackURL},
+		fallbackModel: fallbackModel,
+		byModel: map[string]modelRoute{
+			primaryModel:  {key: "sk-primary", baseURL: primaryURL},
+			fallbackModel: {key: "sk-fallback", baseURL: fallbackURL},
 		},
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -3884,9 +3864,8 @@ func initDynamicFallbackBifrost(t *testing.T, primaryAlias, fallbackAlias schema
 }
 
 type dynamicFallbackPlugin struct {
-	fallbackProvider schemas.ModelProvider
-	fallbackModel    string
-	byAlias          map[schemas.ModelProvider]aliasRoute
+	fallbackModel string
+	byModel       map[string]modelRoute
 }
 
 func (p *dynamicFallbackPlugin) GetName() string { return "dynamic-fallback-test-plugin" }
@@ -3897,20 +3876,19 @@ func (p *dynamicFallbackPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *sch
 	if idx == 0 && req.ChatRequest != nil {
 		replacement := req.Clone()
 		replacement.ChatRequest.Fallbacks = []schemas.Fallback{{
-			Provider: p.fallbackProvider,
+			Provider: schemas.OpenAI,
 			Model:    p.fallbackModel,
 		}}
 		req = &replacement
 	}
 
-	provider, _, _ := req.GetRequestFields()
-	route, ok := p.byAlias[provider]
+	_, model, _ := req.GetRequestFields()
+	route, ok := p.byModel[model]
 	if !ok {
 		return req, nil, nil
 	}
 	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
 	req.UpdateProviderBaseURL(route.baseURL)
-	req.UpdateBaseProviderType(schemas.OpenAI)
 	return req, nil, nil
 }
 
@@ -4316,7 +4294,7 @@ func TestResetBifrostRequest_ClearsAllFields(t *testing.T) {
 	// field that resetBifrostRequest forgets to clear.
 	req := &schemas.BifrostRequest{
 		RequestType:                  schemas.ChatCompletionRequest,
-		ProviderOverride:             &schemas.ProviderOverride{Key: &schemas.Key{ID: "leak-canary"}, BaseURL: "https://leak.example", BaseProviderType: schemas.OpenAI},
+		ProviderOverride:             &schemas.ProviderOverride{Key: &schemas.Key{ID: "leak-canary"}, BaseURL: "https://leak.example"},
 		ListModelsRequest:            &schemas.BifrostListModelsRequest{},
 		TextCompletionRequest:        &schemas.BifrostTextCompletionRequest{},
 		ChatRequest:                  &schemas.BifrostChatRequest{},
@@ -4461,8 +4439,7 @@ func TestBifrostRequest_Clone_ProviderOverrideIndependence(t *testing.T) {
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
 		ProviderOverride: &schemas.ProviderOverride{
-			BaseURL:          "https://eu.example",
-			BaseProviderType: schemas.OpenAI,
+			BaseURL: "https://eu.example",
 		},
 	}
 
@@ -4482,46 +4459,6 @@ func TestBifrostRequest_Clone_ProviderOverrideIndependence(t *testing.T) {
 	clone.ProviderOverride.BaseURL = "https://mutated"
 	if original.ProviderOverride.BaseURL == "https://mutated" {
 		t.Errorf("mutation on clone leaked into original — Clone must deep-copy ProviderOverride")
-	}
-}
-
-// TestResolveQueueProviderKey_AliasRetargets pins the contract that an
-// override with BaseProviderType retargets a non-standard alias onto the base
-// type's queue. The lazy-create path in getProviderQueue and the closing-queue
-// reroute path in tryRequest/tryStreamRequest both depend on this — using the
-// raw alias key in either place causes alias-based requests to miss the
-// replacement queue during UpdateProvider and incorrectly fail with
-// "provider is shutting down".
-func TestResolveQueueProviderKey_AliasRetargets(t *testing.T) {
-	override := &schemas.ProviderOverride{BaseProviderType: schemas.OpenAI}
-	got := resolveQueueProviderKey(schemas.ModelProvider("acme-openai"), override)
-	if got != schemas.OpenAI {
-		t.Errorf("alias with BaseProviderType: got %q, want %q", got, schemas.OpenAI)
-	}
-}
-
-// TestResolveQueueProviderKey_StandardProviderUnchanged pins that built-in
-// providers are never retargeted, even if a plugin sets BaseProviderType — the
-// override is meaningful only for non-standard aliases. Built-in keys must
-// continue to address their own queues.
-func TestResolveQueueProviderKey_StandardProviderUnchanged(t *testing.T) {
-	override := &schemas.ProviderOverride{BaseProviderType: schemas.Anthropic}
-	got := resolveQueueProviderKey(schemas.OpenAI, override)
-	if got != schemas.OpenAI {
-		t.Errorf("standard provider must not be retargeted: got %q, want %q", got, schemas.OpenAI)
-	}
-}
-
-// TestResolveQueueProviderKey_NoOverride pins that the function is a no-op when
-// no override or no BaseProviderType is supplied — the request routes to its
-// own provider's queue.
-func TestResolveQueueProviderKey_NoOverride(t *testing.T) {
-	if got := resolveQueueProviderKey(schemas.OpenAI, nil); got != schemas.OpenAI {
-		t.Errorf("nil override: got %q, want %q", got, schemas.OpenAI)
-	}
-	emptyOverride := &schemas.ProviderOverride{BaseURL: "https://x"}
-	if got := resolveQueueProviderKey(schemas.ModelProvider("acme"), emptyOverride); got != schemas.ModelProvider("acme") {
-		t.Errorf("override without BaseProviderType: got %q, want %q", got, schemas.ModelProvider("acme"))
 	}
 }
 
@@ -4677,8 +4614,8 @@ func TestPostHookRunsForQueueResolutionFailure(t *testing.T) {
 	t.Cleanup(func() { bf.Shutdown() })
 
 	// Use a non-standard provider name with no config — getProviderQueue will
-	// fail with "config is nil for provider <name>" because the alias isn't in
-	// dynamicallyConfigurableProviders and no override.BaseProviderType is set.
+	// fail with "config is nil for provider <name>" because the name isn't in
+	// dynamicallyConfigurableProviders.
 	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 	_, bifrostErr := bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 		Provider: schemas.ModelProvider("never-configured-alias"),
@@ -5023,85 +4960,6 @@ func TestConcurrentStreamingPostHookRunnerNoChannelMessageRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestStreamingChunkProviderIsAliasNotBase pins that streaming chunks emitted
-// through a provider alias (e.g. "my-org-openai" → BaseProviderType=openai)
-// carry the ALIAS in ExtraFields.Provider, not the base provider. The
-// non-streaming path achieves this by re-populating ExtraFields with the
-// post-hook-resolved request provider in tryRequest after the worker returns;
-// the streaming path emits chunks directly from the provider goroutine and
-// has no comparable "after-the-fact" correction site, so the per-attempt
-// postHookRunner must capture the alias up front. Without that snapshot,
-// chunks would silently report ExtraFields.Provider=openai for an
-// "my-org-openai" request, breaking accounting and per-tenant attribution
-// in plugins that rely on Provider for routing decisions.
-func TestStreamingChunkProviderIsAliasNotBase(t *testing.T) {
-	const aliasProvider = schemas.ModelProvider("my-org-openai")
-	const aliasKey = "sk-alias-stream-key"
-
-	sseBody := "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
-		"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
-		"\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
-		"data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
-		"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{}," +
-		"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3," +
-		"\"completion_tokens\":1,\"total_tokens\":4}}\n\n" +
-		"data: [DONE]\n\n"
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(sseBody))
-	}))
-	defer server.Close()
-
-	// Empty account — alias is not registered. The plugin sets BaseProviderType
-	// so getProviderQueue routes the request through the openai queue, but the
-	// post-hook-resolved request provider remains the alias.
-	account := NewMockAccount()
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	bf, err := Init(ctx, schemas.BifrostConfig{
-		Account:    account,
-		Logger:     NewDefaultLogger(schemas.LogLevelError),
-		LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin(aliasProvider, schemas.OpenAI, aliasKey, server.URL)},
-	})
-	if err != nil {
-		t.Fatalf("Init failed: %v", err)
-	}
-	t.Cleanup(func() { bf.Shutdown() })
-
-	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
-	ch, bifrostErr := bf.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
-		Provider: aliasProvider,
-		Model:    "gpt-4o",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
-	})
-	if bifrostErr != nil {
-		t.Fatalf("ChatCompletionStreamRequest failed: %v", bifrostErr)
-	}
-	if ch == nil {
-		t.Fatal("expected non-nil stream channel")
-	}
-
-	chunkCount := 0
-	for chunk := range ch {
-		if chunk.BifrostError != nil {
-			t.Fatalf("stream returned error: %v", chunk.BifrostError)
-		}
-		if chunk.BifrostChatResponse == nil {
-			continue
-		}
-		chunkCount++
-		if got := chunk.BifrostChatResponse.ExtraFields.Provider; got != aliasProvider {
-			t.Errorf("chunk ExtraFields.Provider: got %q, want %q (alias) — base-provider key leaked into streaming chunk metadata", got, aliasProvider)
-		}
-	}
-	if chunkCount == 0 {
-		t.Fatal("no chat-response chunks observed; cannot verify provider attribution")
-	}
-}
-
 // TestStreamFallback_PrimaryReturns503_FallsOverToFallback verifies that the
 // streaming entry point's fallback path actually fires when the primary provider
 // returns an HTTP-level 503 (status check before any SSE chunk is emitted) and,
@@ -5167,19 +5025,17 @@ func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
 		}))
 		defer fallbackServer.Close()
 
-		// Two distinct OpenAI-dialect providers: a plugin sets BaseProviderType so the
-		// alias names ("primary503" / "fallback-good") route through the openai queue
-		// while keeping their own base URLs. This mirrors the per-org fallback chain
-		// shape that production uses (PLATFORM-44).
-		const primaryAlias = schemas.ModelProvider("primary503")
-		const fallbackAlias = schemas.ModelProvider("fallback-good")
-
+		// Primary and fallback attempts both ride the auto-initialised openai queue;
+		// the plugin injects a per-attempt key and base URL keyed on the requested
+		// model. This mirrors the per-org fallback chain shape that production uses
+		// (PLATFORM-44): a plugin resolves provider config per attempt and points
+		// each attempt at its own upstream via ProviderOverride.
 		account := NewMockAccount()
 
-		plugin := &perAliasOpenAIDialectPlugin{
-			byAlias: map[schemas.ModelProvider]aliasRoute{
-				primaryAlias:  {key: "sk-primary", baseURL: primaryServer.URL},
-				fallbackAlias: {key: "sk-fallback", baseURL: fallbackServer.URL},
+		plugin := &perModelRoutePlugin{
+			byModel: map[string]modelRoute{
+				"gpt-4o":      {key: "sk-primary", baseURL: primaryServer.URL},
+				"gpt-4o-mini": {key: "sk-fallback", baseURL: fallbackServer.URL},
 			},
 		}
 
@@ -5197,11 +5053,11 @@ func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
-			Provider: primaryAlias,
+			Provider: schemas.OpenAI,
 			Model:    "gpt-4o",
 			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 			Fallbacks: []schemas.Fallback{
-				{Provider: fallbackAlias, Model: "gpt-4o-mini"},
+				{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 			},
 		})
 		if bifrostErr != nil {
@@ -5257,14 +5113,11 @@ func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
 		}))
 		defer fallbackServer.Close()
 
-		const primaryAlias = schemas.ModelProvider("primary-sse-err")
-		const fallbackAlias = schemas.ModelProvider("fallback-good-sse")
-
 		account := NewMockAccount()
-		plugin := &perAliasOpenAIDialectPlugin{
-			byAlias: map[schemas.ModelProvider]aliasRoute{
-				primaryAlias:  {key: "sk-primary", baseURL: primaryServer.URL},
-				fallbackAlias: {key: "sk-fallback", baseURL: fallbackServer.URL},
+		plugin := &perModelRoutePlugin{
+			byModel: map[string]modelRoute{
+				"gpt-4o":      {key: "sk-primary", baseURL: primaryServer.URL},
+				"gpt-4o-mini": {key: "sk-fallback", baseURL: fallbackServer.URL},
 			},
 		}
 
@@ -5282,11 +5135,11 @@ func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
 		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
-			Provider: primaryAlias,
+			Provider: schemas.OpenAI,
 			Model:    "gpt-4o",
 			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 			Fallbacks: []schemas.Fallback{
-				{Provider: fallbackAlias, Model: "gpt-4o-mini"},
+				{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 			},
 		})
 		if bifrostErr != nil {
@@ -5312,41 +5165,462 @@ func TestStreamFallback_PrimaryReturns503_FallsOverToFallback(t *testing.T) {
 	})
 }
 
-// aliasRoute describes how a single provider-alias should be routed: which API
-// key to inject and which upstream base URL to send the request to. Used by
-// perAliasOpenAIDialectPlugin to support primary→fallback test setups where
-// the primary and fallback are distinct named OpenAI-dialect providers.
-type aliasRoute struct {
-	key     string
-	baseURL string
+// modelRoute describes how a single attempt should be routed: which API key to
+// inject and which upstream base URL to send the request to. Used by
+// perModelRoutePlugin and dynamicFallbackPlugin to point primary and fallback
+// attempts at different httptest servers. extraHeaders, when set, is attached
+// as a per-request NetworkConfig override.
+type modelRoute struct {
+	key          string
+	baseURL      string
+	extraHeaders map[string]string
 }
 
-// perAliasOpenAIDialectPlugin sets BaseProviderType=openai for any request whose
-// provider matches one of the registered aliases, then injects the alias's API
-// key and base URL via ProviderOverride. This is the minimum machinery needed
-// to point primary and fallback at different httptest servers without adding
-// either to the static account config (which would make the test exercise a
-// different code path than the production "dynamically configurable provider"
-// fallback fix).
-type perAliasOpenAIDialectPlugin struct {
-	byAlias map[schemas.ModelProvider]aliasRoute
+// perModelRoutePlugin injects an API key and base URL via ProviderOverride for
+// any request whose model matches one of the registered routes. This is the
+// minimum machinery needed to point primary and fallback attempts at different
+// httptest servers without adding the provider to the static account config
+// (which would make the test exercise a different code path than the
+// production "dynamically configurable provider" fallback fix).
+type perModelRoutePlugin struct {
+	byModel map[string]modelRoute
 }
 
-func (p *perAliasOpenAIDialectPlugin) GetName() string { return "per-alias-openai-dialect-test-plugin" }
-func (p *perAliasOpenAIDialectPlugin) Cleanup() error  { return nil }
+func (p *perModelRoutePlugin) GetName() string { return "per-model-route-test-plugin" }
+func (p *perModelRoutePlugin) Cleanup() error  { return nil }
 
-func (p *perAliasOpenAIDialectPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	provider, _, _ := req.GetRequestFields()
-	route, ok := p.byAlias[provider]
+func (p *perModelRoutePlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	_, model, _ := req.GetRequestFields()
+	route, ok := p.byModel[model]
 	if !ok {
 		return req, nil, nil
 	}
 	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
 	req.UpdateProviderBaseURL(route.baseURL)
-	req.UpdateBaseProviderType(schemas.OpenAI)
+	if route.extraHeaders != nil {
+		req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{ExtraHeaders: route.extraHeaders})
+	}
 	return req, nil, nil
 }
 
-func (p *perAliasOpenAIDialectPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *perModelRoutePlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, err, nil
+}
+
+// TestAutoInitDoesNotAbsorbPerRequestNetworkOverride is a regression test for
+// the auto-init config pollution bug: the FIRST request to an unconfigured
+// provider triggers getProviderQueue's auto-init path, and that request's
+// per-request NetworkConfig override must not be merged into the provider
+// config that prepareProvider stores permanently. A later request without an
+// override must not inherit the first request's settings.
+func TestAutoInitDoesNotAbsorbPerRequestNetworkOverride(t *testing.T) {
+	const overrideHeader = "X-Tenant-Override"
+
+	var mu sync.Mutex
+	headersByAuth := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		headersByAuth[r.Header.Get("Authorization")] = r.Header.Get(overrideHeader)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+	}))
+	defer server.Close()
+
+	// Empty account — the openai queue is auto-initialised by the first request,
+	// which carries a NetworkConfig override (the polluting scenario).
+	account := NewMockAccount()
+	plugin := &perModelRoutePlugin{
+		byModel: map[string]modelRoute{
+			"gpt-4o":      {key: "sk-first", baseURL: server.URL, extraHeaders: map[string]string{overrideHeader: "tenant-a"}},
+			"gpt-4o-mini": {key: "sk-second", baseURL: server.URL},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		}); bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest(%s) failed: %v", model, bifrostErr)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := headersByAuth["Bearer sk-first"]; got != "tenant-a" {
+		t.Errorf("first request %s header = %q, want %q (per-request override must be applied)", overrideHeader, got, "tenant-a")
+	}
+	if got := headersByAuth["Bearer sk-second"]; got != "" {
+		t.Errorf("second request %s header = %q, want empty — the first request's override leaked into the auto-initialised provider config", overrideHeader, got)
+	}
+}
+
+// deadOverrideKeyPlugin injects a fixed per-request override key, points the
+// request at the given base URL, and raises MaxRetries to 1 via a per-request
+// NetworkConfig override.
+type deadOverrideKeyPlugin struct {
+	baseURL string
+}
+
+func (p *deadOverrideKeyPlugin) GetName() string { return "dead-override-key-test-plugin" }
+func (p *deadOverrideKeyPlugin) Cleanup() error  { return nil }
+func (p *deadOverrideKeyPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req.UpdateAPIKey(schemas.Key{ID: "ovr-dead-key", Value: *schemas.NewEnvVar("sk-revoked")})
+	req.UpdateProviderBaseURL(p.baseURL)
+	maxRetries := 1
+	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{MaxRetries: &maxRetries})
+	return req, nil, nil
+}
+func (p *deadOverrideKeyPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestOverrideKey_DeadKeySurfaces502CredentialsExhausted pins the interaction
+// between the per-request override key and upstream's dead-key rotation: the
+// override key flows into the fixed-key (canRotate=false) keyProvider branch,
+// and when the upstream rejects it with 401 the retry loop must surface the
+// synthetic 502 upstream_credentials_exhausted instead of the raw 401, without
+// hitting the upstream a second time.
+//
+// The test doubles as coverage for the per-request MaxRetries override applied
+// via effectiveConfig in executeRequestWithRetries: DefaultMaxRetries is 0, so
+// without the override taking effect there is no second attempt and the raw 401
+// (not 502) would be returned.
+func TestOverrideKey_DeadKeySurfaces502CredentialsExhausted(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&deadOverrideKeyPlugin{baseURL: server.URL}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected error for revoked override key, got success")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 502 {
+		t.Fatalf("status code = %v, want 502 upstream_credentials_exhausted (raw 401 means the dead-key path or the per-request MaxRetries override did not engage)", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Type == nil || *bifrostErr.Type != "upstream_credentials_exhausted" {
+		t.Fatalf("error type = %v, want upstream_credentials_exhausted", bifrostErr.Type)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("upstream hits = %d, want 1 — the dead key must short-circuit in the keyProvider, not burn another attempt against the upstream", got)
+	}
+}
+
+// perProviderTimeoutConfig is the per-provider slice of a pushed provider
+// config that matters for timeout routing: where the provider lives and how
+// long this tenant is willing to wait for it. Mirrors the gateway's
+// org-provider-config shape (base_url + default_request_timeout_in_seconds).
+type perProviderTimeoutConfig struct {
+	baseURL        string
+	timeoutSeconds int
+}
+
+// providerConfigTimeoutPlugin plays the gateway interceptor's role: on every
+// request it looks up the request's provider in its config table and injects
+// that provider's credentials, BaseURL, and per-request timeout — exactly what
+// injectProviderCreds does with a config fetched from Redis.
+type providerConfigTimeoutPlugin struct {
+	configs map[schemas.ModelProvider]perProviderTimeoutConfig
+}
+
+func (p *providerConfigTimeoutPlugin) GetName() string { return "provider-config-timeout-test-plugin" }
+func (p *providerConfigTimeoutPlugin) Cleanup() error  { return nil }
+func (p *providerConfigTimeoutPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	provider, _, _ := req.GetRequestFields()
+	cfg, ok := p.configs[provider]
+	if !ok {
+		return req, nil, nil
+	}
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar("sk-timeout-test")})
+	req.UpdateProviderBaseURL(cfg.baseURL)
+	timeoutSeconds := cfg.timeoutSeconds
+	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{RequestTimeoutInSeconds: &timeoutSeconds})
+	return req, nil, nil
+}
+func (p *providerConfigTimeoutPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// newHangingUpstream returns a mock LLM upstream that never answers on its
+// own: it parks until the CLIENT gives up and drops the connection (the
+// request context cancels), then returns immediately. This proves the
+// per-request deadline actively closes the connection at the timeout — the
+// mock holds no connection longer than the timeout under test — and keeps
+// server.Close() from waiting on sleeping handlers.
+func newHangingUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Drain the request body first: net/http only starts the background
+		// read that detects a client disconnect once the body is consumed, and
+		// r.Context() never cancels without it.
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+			// Client disconnected (deadline fired) — release the handler.
+		case <-time.After(30 * time.Second):
+			t.Error("upstream handler still connected 30s in; the per-request deadline never closed the connection")
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// timeoutProbeResult is one provider's observed outcome for the assertions in
+// TestPerRequestTimeoutOverride_TwoProvidersDistinctTimeouts.
+type timeoutProbeResult struct {
+	err     *schemas.BifrostError
+	elapsed time.Duration
+}
+
+// TestPerRequestTimeoutOverride_TwoProvidersDistinctTimeouts pins the
+// pushed-provider-config timeout contract end to end with TWO providers
+// carrying DIFFERENT timeouts through one Bifrost instance: a plugin (standing
+// in for the gateway interceptor) maps each request's provider to its own
+// config — openai at 1s, anthropic at 2s — and each request must surface a
+// 504 at ITS OWN provider's deadline. Both auto-initialised providers share
+// nothing per-tenant: the shared clients keep the transport ceiling
+// (DynamicProviderTransportTimeoutCeilingInSeconds) and the per-provider
+// timeout rides each request. The upstreams release their handlers on client
+// disconnect, so neither mock holds a connection past its provider's timeout.
+func TestPerRequestTimeoutOverride_TwoProvidersDistinctTimeouts(t *testing.T) {
+	openaiUpstream := newHangingUpstream(t)
+	anthropicUpstream := newHangingUpstream(t)
+
+	const (
+		openaiTimeoutSeconds    = 1
+		anthropicTimeoutSeconds = 2
+	)
+
+	account := NewMockAccount()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&providerConfigTimeoutPlugin{
+			configs: map[schemas.ModelProvider]perProviderTimeoutConfig{
+				schemas.OpenAI:    {baseURL: openaiUpstream.URL, timeoutSeconds: openaiTimeoutSeconds},
+				schemas.Anthropic: {baseURL: anthropicUpstream.URL, timeoutSeconds: anthropicTimeoutSeconds},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	probe := func(provider schemas.ModelProvider, model string) timeoutProbeResult {
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		start := time.Now()
+		_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		return timeoutProbeResult{err: bifrostErr, elapsed: time.Since(start)}
+	}
+
+	// Fire both providers concurrently: total wall clock is the slower
+	// provider's timeout (~2s), and concurrency doubles as proof the two
+	// in-flight overrides don't bleed into each other.
+	var openaiResult, anthropicResult timeoutProbeResult
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); openaiResult = probe(schemas.OpenAI, "gpt-4o") }()
+	go func() { defer wg.Done(); anthropicResult = probe(schemas.Anthropic, "claude-sonnet-4-6") }()
+	wg.Wait()
+
+	assertTimedOutAt := func(name string, result timeoutProbeResult, timeoutSeconds int) {
+		t.Helper()
+		if result.err == nil {
+			t.Fatalf("%s: expected timeout error from %ds override against hanging upstream, got success", name, timeoutSeconds)
+		}
+		if result.err.StatusCode == nil || *result.err.StatusCode != 504 {
+			t.Fatalf("%s: status = %v (err=%+v), want 504 from per-request timeout", name, result.err.StatusCode, result.err.Error)
+		}
+		want := time.Duration(timeoutSeconds) * time.Second
+		if result.elapsed < want-100*time.Millisecond {
+			t.Fatalf("%s: returned after %v, before its own %v deadline — a different provider's timeout leaked in", name, result.elapsed, want)
+		}
+		if result.elapsed > want+900*time.Millisecond {
+			t.Fatalf("%s: returned after %v; the %v per-request deadline did not bound the call", name, result.elapsed, want)
+		}
+	}
+	assertTimedOutAt("openai@1s", openaiResult, openaiTimeoutSeconds)
+	assertTimedOutAt("anthropic@2s", anthropicResult, anthropicTimeoutSeconds)
+}
+
+// findPrivateIPv4 returns a non-loopback RFC 1918 IPv4 address bound to a
+// local interface. Loopback can't exercise the dial-time private-IP policy
+// (ConfigureDialer always allows it), so tests that pin RFC 1918 behaviour
+// must bind a real private address — every dev machine and CI worker has one.
+func findPrivateIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("InterfaceAddrs failed: %v", err)
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP.To4()
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		if ip.IsPrivate() {
+			return ip.String()
+		}
+	}
+	t.Fatal("no RFC 1918 IPv4 interface address found — cannot exercise the private-IP dial policy")
+	return ""
+}
+
+// TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams pins the dial
+// policy for dynamic deployments: auto-initialised providers MUST be able to
+// reach RFC 1918 upstreams (in-cluster inference services are the legitimate
+// case), because the shared per-type client cannot carry per-tenant dial
+// policy and config-write time is where tenant SSRF policy belongs. Upstream
+// #3947's private-IP dial block broke this in deploy (gateway smoketests
+// failed with "connection to private IP 10.48.x.x is not allowed") — loopback
+// is always allowed, so httptest-on-127.0.0.1 tests never caught it. This
+// test binds the mock upstream to the host's real private address.
+// Link-local (cloud metadata endpoints) remains always-blocked regardless.
+func TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams(t *testing.T) {
+	privateIP := findPrivateIPv4(t)
+	listener, err := net.Listen("tcp", net.JoinHostPort(privateIP, "0"))
+	if err != nil {
+		t.Fatalf("cannot listen on private address %s: %v", privateIP, err)
+	}
+	server := &httptest.Server{
+		Listener: listener,
+		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		})},
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&providerConfigTimeoutPlugin{
+			configs: map[schemas.ModelProvider]perProviderTimeoutConfig{
+				schemas.OpenAI: {baseURL: server.URL, timeoutSeconds: 10},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	if bifrostErr != nil {
+		msg := ""
+		if bifrostErr.Error != nil {
+			msg = bifrostErr.Error.Message
+		}
+		if strings.Contains(msg, "private IP") {
+			t.Fatalf("auto-init provider blocked the RFC 1918 upstream %s — AllowPrivateNetwork is not set on the auto-init config: %s", server.URL, msg)
+		}
+		t.Fatalf("request to private upstream %s failed: %+v", server.URL, bifrostErr)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("expected a completion from the private upstream, got empty response")
+	}
+}
+
+// TestPerRequestTimeoutOverride_DynamicProvider pins the single-provider
+// contract: the auto-initialised provider's shared HTTP client is built with
+// the transport ceiling (DynamicProviderTransportTimeoutCeilingInSeconds), and
+// the tenant's real timeout — injected by a plugin via
+// UpdateProviderNetworkConfig — must surface a 504 in roughly 1 second, NOT
+// wait for the upstream or the transport ceiling.
+func TestPerRequestTimeoutOverride_DynamicProvider(t *testing.T) {
+	server := newHangingUpstream(t)
+
+	account := NewMockAccount()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&providerConfigTimeoutPlugin{
+			configs: map[schemas.ModelProvider]perProviderTimeoutConfig{
+				schemas.OpenAI: {baseURL: server.URL, timeoutSeconds: 1},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	start := time.Now()
+	_, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	})
+	elapsed := time.Since(start)
+
+	if bifrostErr == nil {
+		t.Fatal("expected timeout error from 1s per-request override against hanging upstream, got success")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 504 {
+		t.Fatalf("status = %v (err=%+v), want 504 from per-request timeout", bifrostErr.StatusCode, bifrostErr.Error)
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("request returned after %v; the 1s per-request deadline did not bound the call", elapsed)
+	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -32,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
@@ -82,6 +84,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestStorageOverride() bool
 	// ShouldAllowPerRequestRawOverride returns whether per-request overrides for raw request/response visibility are permitted
 	ShouldAllowPerRequestRawOverride() bool
+	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
+	ShouldAllowDirectKeys() bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -97,6 +101,13 @@ const (
 const (
 	DBLookupMaxRetries = 5
 	DBLookupDelay      = 1 * time.Second
+)
+
+const (
+	// SourceOfTruthSplit preserves the current DB/config.json merge behavior.
+	SourceOfTruthSplit = "split"
+	// SourceOfTruthConfigJSON makes present config.json sections authoritative during startup sync.
+	SourceOfTruthConfigJSON = "config.json"
 )
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -145,6 +156,7 @@ type ConfigData struct {
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
 	Version       int                       `json:"version,omitempty"`
+	SourceOfTruth string                    `json:"source_of_truth,omitempty"`
 	Client        *configstore.ClientConfig `json:"client"`
 	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
@@ -159,6 +171,9 @@ type ConfigData struct {
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+
+	presentSections           map[string]bool
+	presentGovernanceSections map[string]bool
 }
 
 // FeatureFlagsFileConfig is the config.json / Helm shape for feature flag
@@ -217,13 +232,111 @@ func (v *FeatureFlagFileValue) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// normalizeSourceOfTruth returns the configured source-of-truth mode, defaulting to split.
+func normalizeSourceOfTruth(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", SourceOfTruthSplit:
+		return SourceOfTruthSplit
+	case SourceOfTruthConfigJSON:
+		return SourceOfTruthConfigJSON
+	default:
+		// Unknown values fall back to split rather than persisting an invalid
+		// mode. Schema validation rejects unknown values upstream; this guards
+		// any path that bypasses it so reconciliation never acts on garbage.
+		logger.Warn("unknown source_of_truth %q, defaulting to %q", value, SourceOfTruthSplit)
+		return SourceOfTruthSplit
+	}
+}
+
+// isConfigJSONSourceOfTruth reports whether present config.json sections own reconciliation.
+func (cd *ConfigData) isConfigJSONSourceOfTruth() bool {
+	if cd == nil {
+		return false
+	}
+	return normalizeSourceOfTruth(cd.SourceOfTruth) == SourceOfTruthConfigJSON
+}
+
+// sectionPresent reports whether a top-level config.json section was explicitly provided.
+func (cd *ConfigData) sectionPresent(name string) bool {
+	if cd == nil {
+		return false
+	}
+	if cd.presentSections != nil {
+		return cd.presentSections[name]
+	}
+	switch name {
+	case "client":
+		return cd.Client != nil
+	case "providers":
+		return cd.Providers != nil
+	case "mcp":
+		return cd.MCP != nil
+	case "governance":
+		return cd.Governance != nil
+	case "plugins":
+		return cd.Plugins != nil
+	case "framework":
+		return cd.FrameworkConfig != nil
+	case "vector_store":
+		return cd.VectorStoreConfig != nil
+	case "logs_store":
+		return cd.LogsStoreConfig != nil
+	case "config_store":
+		return cd.ConfigStoreConfig != nil
+	default:
+		return false
+	}
+}
+
+// governanceSectionPresent reports whether a governance collection was explicitly provided.
+func (cd *ConfigData) governanceSectionPresent(name string) bool {
+	if cd == nil || cd.Governance == nil {
+		return false
+	}
+	if cd.presentGovernanceSections != nil {
+		return cd.presentGovernanceSections[name]
+	}
+	switch name {
+	case "virtual_keys":
+		return cd.Governance.VirtualKeys != nil
+	case "teams":
+		return cd.Governance.Teams != nil
+	case "customers":
+		return cd.Governance.Customers != nil
+	case "budgets":
+		return cd.Governance.Budgets != nil
+	case "rate_limits":
+		return cd.Governance.RateLimits != nil
+	case "model_configs":
+		return cd.Governance.ModelConfigs != nil
+	case "providers":
+		return cd.Governance.Providers != nil
+	case "routing_rules":
+		return cd.Governance.RoutingRules != nil
+	case "pricing_overrides":
+		return cd.Governance.PricingOverrides != nil
+	default:
+		return false
+	}
+}
+
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
 // for VectorStoreConfig, ConfigStoreConfig, and LogsStoreConfig to ensure proper
 // type safety and configuration parsing.
 func (cd *ConfigData) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("failed to inspect config data: %w", err)
+	}
+	cd.presentSections = make(map[string]bool, len(raw))
+	for key := range raw {
+		cd.presentSections[key] = true
+	}
+
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
 		Version           int                                   `json:"version,omitempty"`
+		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
@@ -246,6 +359,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// Set simple fields
 	cd.Version = temp.Version
+	cd.SourceOfTruth = normalizeSourceOfTruth(temp.SourceOfTruth)
 	cd.Client = temp.Client
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
@@ -255,6 +369,16 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
 	cd.FeatureFlags = temp.FeatureFlags
+	cd.presentGovernanceSections = nil
+	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
+		var rawGovernanceFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawGovernance, &rawGovernanceFields); err == nil {
+			cd.presentGovernanceSections = make(map[string]bool, len(rawGovernanceFields))
+			for key := range rawGovernanceFields {
+				cd.presentGovernanceSections[key] = true
+			}
+		}
+	}
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -333,12 +457,13 @@ type Config struct {
 	// All plugins are stored in BasePlugins. Interface-specific caches are
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
-	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
-	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
-	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
-	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
-	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
-	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin] // Derived cache (auto-rebuilt)
+	pluginsMu            sync.Mutex                                                // Protects structural changes to BasePlugins
+	pluginOrderMap       map[string]pluginOrderInfo                                // Plugin ordering metadata (protected by pluginsMu)
+	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]                      // Master list of all plugins
+	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]                       // Derived cache (auto-rebuilt)
+	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]                       // Derived cache (auto-rebuilt)
+	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin]             // Derived cache (auto-rebuilt)
+	ConfigMarshallers    atomic.Pointer[map[string]schemas.ConfigMarshallerPlugin] // Derived cache (auto-rebuilt)
 	PluginLoader         plugins.PluginLoader
 
 	// Plugin metadata from config file/database
@@ -351,6 +476,13 @@ type Config struct {
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
 	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
+
+	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
+	// Constructed alongside OAuthProvider and passed into the Bifrost core
+	// init so the per-user-headers resolver can resolve / persist values
+	// scoped by (auth_mode, identity, mcp_client).
+	MCPHeadersProvider    *mcp_headers.Provider
+	MCPHeadersSweepWorker *mcp_headers.CredentialSweepWorker
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
@@ -398,6 +530,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
+	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
 	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
 }
@@ -491,6 +624,19 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	if configData == nil || configData.Governance == nil {
 		return
 	}
+	// Build ID-keyed lookup maps for the global budget/rate-limit sections so
+	// customer entries (which reference by ID, not inline) can promote legacy
+	// calendar_aligned flags from the referenced rows.
+	budgetsByID := make(map[string]*configstoreTables.TableBudget, len(configData.Governance.Budgets))
+	for i := range configData.Governance.Budgets {
+		b := &configData.Governance.Budgets[i]
+		budgetsByID[b.ID] = b
+	}
+	rateLimitsByID := make(map[string]*configstoreTables.TableRateLimit, len(configData.Governance.RateLimits))
+	for i := range configData.Governance.RateLimits {
+		rl := &configData.Governance.RateLimits[i]
+		rateLimitsByID[rl.ID] = rl
+	}
 	for i := range configData.Governance.VirtualKeys {
 		vk := &configData.Governance.VirtualKeys[i]
 		promoteCalendarAligned(&vk.CalendarAligned, vk.Budgets, vk.RateLimit)
@@ -502,6 +648,28 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	for i := range configData.Governance.Teams {
 		team := &configData.Governance.Teams[i]
 		promoteCalendarAligned(&team.CalendarAligned, team.Budgets, team.RateLimit)
+	}
+	for i := range configData.Governance.Customers {
+		customer := &configData.Governance.Customers[i]
+		// Inline budgets (new multi-budget format): promote directly.
+		promoteCalendarAligned(&customer.CalendarAligned, customer.Budgets, nil)
+		// Legacy budget_id reference: look up the referenced row.
+		if customer.BudgetID != nil {
+			if b := budgetsByID[*customer.BudgetID]; b != nil {
+				if b.CalendarAlignedInput != nil && *b.CalendarAlignedInput {
+					customer.CalendarAligned = true
+				}
+				b.CalendarAlignedInput = nil
+			}
+		}
+		if customer.RateLimitID != nil {
+			if rl := rateLimitsByID[*customer.RateLimitID]; rl != nil {
+				if rl.CalendarAlignedInput != nil && *rl.CalendarAlignedInput {
+					customer.CalendarAligned = true
+				}
+				rl.CalendarAlignedInput = nil
+			}
+		}
 	}
 }
 
@@ -983,27 +1151,86 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		logger.Debug("no providers config found in store, processing from config file")
 		providersInConfigStore = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	}
-	// Process provider configurations from file
-	if len(configData.Providers) > 0 {
+	existingProvidersForPrune := providersInConfigStore
+	providersSectionPresent := configData.sectionPresent("providers")
+	if configData.isConfigJSONSourceOfTruth() && providersSectionPresent {
+		logger.Debug("source_of_truth=config.json: syncing providers exactly from config file")
+		authoritativeProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(configData.Providers))
 		for providerName, providerCfgInFile := range configData.Providers {
-			if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+			provider := schemas.ModelProvider(strings.ToLower(providerName))
+			existingCfg, exists := providersInConfigStore[provider]
+			if err = processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders); err != nil {
 				logger.Warn("failed to process provider %s: %v", providerName, err)
+				// Preserve the existing persisted config so a single bad file entry
+				// does not prune the provider (and its DB-only keys) from the store.
+				if exists {
+					authoritativeProviders[provider] = existingCfg
+				}
 			}
 		}
-	} else if len(providersInConfigStore) == 0 {
-		// No providers in file and none in DB — auto-detect from environment
-		config.autoDetectProviders(ctx)
-		maps.Copy(providersInConfigStore, config.Providers)
+		providersInConfigStore = authoritativeProviders
+	} else {
+		// Process provider configurations from file
+		if len(configData.Providers) > 0 {
+			for providerName, providerCfgInFile := range configData.Providers {
+				if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+					logger.Warn("failed to process provider %s: %v", providerName, err)
+				}
+			}
+		} else if len(providersInConfigStore) == 0 && (!configData.isConfigJSONSourceOfTruth() || providersSectionPresent) {
+			// No providers in file and none in DB — auto-detect from environment
+			config.autoDetectProviders(ctx)
+			maps.Copy(providersInConfigStore, config.Providers)
+		}
 	}
 	// Update store and config
 	if config.ConfigStore != nil {
 		logger.Debug("updating providers config in store")
-		if err = config.ConfigStore.UpdateProvidersConfig(ctx, providersInConfigStore); err != nil {
+		if configData.isConfigJSONSourceOfTruth() && providersSectionPresent {
+			err = syncAuthoritativeProvidersInStore(ctx, config.ConfigStore, existingProvidersForPrune, providersInConfigStore)
+		} else {
+			err = config.ConfigStore.UpdateProvidersConfig(ctx, providersInConfigStore)
+		}
+		if err != nil {
 			logger.Fatal("failed to update providers config: %v", err)
 		}
 	}
 	config.Providers = providersInConfigStore
 	return nil
+}
+
+// syncAuthoritativeProvidersInStore persists providers and deletes DB-only providers and keys.
+func syncAuthoritativeProvidersInStore(
+	ctx context.Context,
+	store configstore.ConfigStore,
+	existingProviders map[schemas.ModelProvider]configstore.ProviderConfig,
+	authoritativeProviders map[schemas.ModelProvider]configstore.ProviderConfig,
+) error {
+	return store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for provider, existingConfig := range existingProviders {
+			newConfig, keepProvider := authoritativeProviders[provider]
+			if !keepProvider {
+				if err := store.DeleteProvider(ctx, provider, tx); err != nil {
+					return err
+				}
+				continue
+			}
+			keepKeys := make(map[string]bool, len(newConfig.Keys))
+			for _, key := range newConfig.Keys {
+				if key.ID != "" {
+					keepKeys[key.ID] = true
+				}
+			}
+			for _, key := range existingConfig.Keys {
+				if key.ID != "" && !keepKeys[key.ID] {
+					if err := store.DeleteProviderKey(ctx, provider, key.ID, tx); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return store.UpdateProvidersConfig(ctx, authoritativeProviders, tx)
+	})
 }
 
 // processProvider processes a single provider configuration from config file
@@ -1032,6 +1259,37 @@ func processProvider(
 	providerCfgInFile.ConfigHash = fileProviderConfigHash
 	// Merge with existing config using hash-based reconciliation
 	mergeProviderWithHash(provider, providerCfgInFile, providersInConfigStore)
+	return nil
+}
+
+// processAuthoritativeProvider adds one config.json provider to the authoritative provider set.
+func processAuthoritativeProvider(
+	providerName string,
+	providerCfgInFile configstore.ProviderConfig,
+	existingCfg configstore.ProviderConfig,
+	exists bool,
+	providers map[schemas.ModelProvider]configstore.ProviderConfig,
+) error {
+	provider := schemas.ModelProvider(strings.ToLower(providerName))
+	for i, providerKeyInFile := range providerCfgInFile.Keys {
+		if providerKeyInFile.ID == "" {
+			providerCfgInFile.Keys[i].ID = uuid.NewString()
+		}
+		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
+		}
+	}
+	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
+	if err != nil {
+		logger.Warn("failed to generate config hash for %s: %v", provider, err)
+	}
+	providerCfgInFile.ConfigHash = fileProviderConfigHash
+	if exists {
+		providerCfgInFile.Keys = mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		providerCfgInFile.Status = existingCfg.Status
+		providerCfgInFile.Description = existingCfg.Description
+	}
+	providers[provider] = providerCfgInFile
 	return nil
 }
 
@@ -1271,7 +1529,11 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 	if config.MCPConfig != nil {
 		// Merge with config file if present
 		if configData.MCP != nil {
-			mergeMCPConfig(ctx, config, configData, config.MCPConfig)
+			if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp") {
+				syncMCPConfigFromFile(ctx, config, configData, config.MCPConfig)
+			} else {
+				mergeMCPConfig(ctx, config, configData, config.MCPConfig)
+			}
 		}
 	} else if configData.MCP != nil {
 		// MCP config not in store, use config file
@@ -1456,8 +1718,105 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Disabled:                  clientConfig.Disabled,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
+}
+
+// syncMCPConfigFromFile replaces stored MCP clients with the clients declared in config.json.
+//
+// Unlike the provider/plugin/governance syncs, this reconciliation is intentionally
+// best-effort rather than transactional: the MCP store methods (Create/Update/Delete
+// MCPClientConfig) do not accept an enclosing tx, and each client is reconciled
+// independently so a single malformed client only logs a warning instead of aborting
+// startup. An all-or-nothing transaction is incompatible with that warn-and-continue
+// behavior, and blocking boot on one bad MCP entry is the worse failure mode here.
+func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *ConfigData, mcpConfig *schemas.MCPConfig) {
+	logger.Debug("source_of_truth=config.json: syncing MCP config exactly from config file")
+	if configData.MCP == nil {
+		return
+	}
+	fileMCPConfig := configData.MCP
+	existingByName := make(map[string]*schemas.MCPClientConfig, len(mcpConfig.ClientConfigs))
+	existingByID := make(map[string]*schemas.MCPClientConfig, len(mcpConfig.ClientConfigs))
+	for _, existing := range mcpConfig.ClientConfigs {
+		if existing == nil {
+			continue
+		}
+		if existing.Name != "" {
+			existingByName[existing.Name] = existing
+		}
+		if existing.ID != "" {
+			existingByID[existing.ID] = existing
+		}
+	}
+
+	keepIDs := make(map[string]bool, len(fileMCPConfig.ClientConfigs))
+	updates := make([]configstoreTables.TableMCPClient, 0)
+	adds := make([]*schemas.MCPClientConfig, 0)
+	for _, fileClient := range fileMCPConfig.ClientConfigs {
+		if fileClient == nil {
+			continue
+		}
+		existing := existingByName[fileClient.Name]
+		if existing == nil && fileClient.ID != "" {
+			existing = existingByID[fileClient.ID]
+		}
+		// Mark the matched existing client as kept up-front so a later validation
+		// failure (which `continue`s) does not cause the prune loop to delete it.
+		if existing != nil && existing.ID != "" {
+			keepIDs[existing.ID] = true
+		}
+		if fileClient.ID == "" {
+			if existing != nil && existing.ID != "" {
+				fileClient.ID = existing.ID
+			} else {
+				fileClient.ID = uuid.NewString()
+			}
+		}
+		fileRow, err := mcpClientConfigToTable(fileClient)
+		if err != nil {
+			logger.Warn("invalid MCP client config for %q: %v", fileClient.Name, err)
+			continue
+		}
+		fileHash, err := configstore.GenerateMCPClientHash(fileRow)
+		if err != nil {
+			logger.Warn("failed to generate MCP client hash for %q: %v", fileClient.Name, err)
+			continue
+		}
+		fileClient.ConfigHash = fileHash
+		fileRow.ConfigHash = fileHash
+		keepIDs[fileClient.ID] = true
+		if existing == nil {
+			adds = append(adds, fileClient)
+		} else {
+			fileRow.ClientID = existing.ID
+			updates = append(updates, fileRow)
+		}
+	}
+
+	if config.ConfigStore != nil {
+		for _, existing := range mcpConfig.ClientConfigs {
+			if existing == nil || existing.ID == "" || keepIDs[existing.ID] {
+				continue
+			}
+			if err := config.ConfigStore.DeleteMCPClientConfig(ctx, existing.ID); err != nil {
+				logger.Warn("failed to delete MCP client config %q: %v", existing.Name, err)
+			}
+		}
+		for _, add := range adds {
+			if err := config.ConfigStore.CreateMCPClientConfig(ctx, add); err != nil {
+				logger.Warn("failed to create MCP client config: %v", err)
+			}
+		}
+		for i := range updates {
+			update := updates[i]
+			if err := config.ConfigStore.UpdateMCPClientConfig(ctx, update.ClientID, &update); err != nil {
+				logger.Warn("failed to update MCP client config %q: %v", update.Name, err)
+			}
+		}
+	}
+	config.MCPConfig = fileMCPConfig
 }
 
 // loadGovernanceConfig loads and merges governance config from file
@@ -2004,6 +2363,162 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			}
 		}
 	}
+	if configData.isConfigJSONSourceOfTruth() {
+		pruneGovernanceConfigToFile(ctx, config, configData)
+	}
+}
+
+// pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
+func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
+	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
+		return
+	}
+	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
+	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if configData.governanceSectionPresent("virtual_keys") {
+			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
+			for i := range configData.Governance.VirtualKeys {
+				vk := &configData.Governance.VirtualKeys[i]
+				keep[vk.ID] = true
+				// Unchanged VKs never went through resolveMCPConfigClientIDs in
+				// mergeGovernanceConfig, so their MCPConfigs may still carry
+				// mcp_client_name with MCPClientID==0. Resolve before reconciling
+				// to avoid creating/deleting client-id 0 associations.
+				vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
+				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.ProviderConfigs, vk.MCPConfigs); err != nil {
+					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
+				}
+			}
+			for _, existing := range config.GovernanceConfig.VirtualKeys {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteVirtualKey(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete virtual key %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.VirtualKeys = configData.Governance.VirtualKeys
+		}
+		if configData.governanceSectionPresent("routing_rules") {
+			keep := make(map[string]bool, len(configData.Governance.RoutingRules))
+			for _, row := range configData.Governance.RoutingRules {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.RoutingRules {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteRoutingRule(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete routing rule %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.RoutingRules = configData.Governance.RoutingRules
+		}
+		if configData.governanceSectionPresent("pricing_overrides") {
+			keep := make(map[string]bool, len(configData.Governance.PricingOverrides))
+			for _, row := range configData.Governance.PricingOverrides {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.PricingOverrides {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeletePricingOverride(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete pricing override %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.PricingOverrides = configData.Governance.PricingOverrides
+		}
+		if configData.governanceSectionPresent("model_configs") {
+			keep := make(map[string]bool, len(configData.Governance.ModelConfigs))
+			for _, row := range configData.Governance.ModelConfigs {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.ModelConfigs {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.ModelConfigs = configData.Governance.ModelConfigs
+		}
+		if configData.governanceSectionPresent("teams") {
+			keep := make(map[string]bool, len(configData.Governance.Teams))
+			for _, row := range configData.Governance.Teams {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.Teams {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteTeam(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete team %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.Teams = configData.Governance.Teams
+		}
+		if configData.governanceSectionPresent("customers") {
+			keep := make(map[string]bool, len(configData.Governance.Customers))
+			for _, row := range configData.Governance.Customers {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.Customers {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteCustomer(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete customer %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.Customers = configData.Governance.Customers
+		}
+		if configData.governanceSectionPresent("providers") {
+			keep := make(map[string]configstoreTables.TableProvider, len(configData.Governance.Providers))
+			for _, row := range configData.Governance.Providers {
+				keep[row.Name] = row
+			}
+			for _, existing := range config.GovernanceConfig.Providers {
+				if existing.Name == "" || keep[existing.Name].Name != "" {
+					continue
+				}
+				if err := tx.Model(&configstoreTables.TableProvider{}).
+					Where("name = ?", existing.Name).
+					Select("budget_id", "rate_limit_id").
+					Updates(map[string]interface{}{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
+					return fmt.Errorf("failed to clear provider governance mapping for %s: %w", existing.Name, err)
+				}
+			}
+			config.GovernanceConfig.Providers = configData.Governance.Providers
+		}
+		if configData.governanceSectionPresent("budgets") {
+			keep := make(map[string]bool, len(configData.Governance.Budgets))
+			for _, row := range configData.Governance.Budgets {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.Budgets {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.Budgets = configData.Governance.Budgets
+		}
+		if configData.governanceSectionPresent("rate_limits") {
+			keep := make(map[string]bool, len(configData.Governance.RateLimits))
+			for _, row := range configData.Governance.RateLimits {
+				keep[row.ID] = true
+			}
+			for _, existing := range config.GovernanceConfig.RateLimits {
+				if existing.ID != "" && !keep[existing.ID] {
+					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
+					}
+				}
+			}
+			config.GovernanceConfig.RateLimits = configData.Governance.RateLimits
+		}
+		return nil
+	})
+	if err != nil {
+		logger.Fatal("failed to prune governance config: %v", err)
+	}
 }
 
 // updateGovernanceConfigInStore updates governance config items in the store
@@ -2035,12 +2550,15 @@ func updateGovernanceConfigInStore(
 		// - team_id -> governance_teams
 		// - virtual_key_id -> governance_virtual_keys
 		// - provider_config_id -> governance_virtual_key_provider_configs
+		// - customer_id -> governance_customers
 		pendingTeamBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingVirtualKeyBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
+		pendingCustomerBudgetsToAdd := make([]configstoreTables.TableBudget, 0)
 		pendingTeamBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingVirtualKeyBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+		pendingCustomerBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 
 		// Create budgets
 		for _, budget := range budgetsToAdd {
@@ -2054,6 +2572,10 @@ func updateGovernanceConfigInStore(
 			}
 			if budget.ProviderConfigID != nil {
 				pendingProviderConfigBudgetsToAdd = append(pendingProviderConfigBudgetsToAdd, budget)
+				continue
+			}
+			if budget.CustomerID != nil {
+				pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, budget)
 				continue
 			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
@@ -2075,6 +2597,10 @@ func updateGovernanceConfigInStore(
 				pendingProviderConfigBudgetsToUpdate = append(pendingProviderConfigBudgetsToUpdate, budget)
 				continue
 			}
+			if budget.CustomerID != nil {
+				pendingCustomerBudgetsToUpdate = append(pendingCustomerBudgetsToUpdate, budget)
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -2094,17 +2620,85 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
-		// Create customers
-		for _, customer := range customersToAdd {
-			if err := config.ConfigStore.CreateCustomer(ctx, &customer, tx); err != nil {
+		// Create customers — strip inline Budgets first; created explicitly after the row exists.
+		for i := range customersToAdd {
+			customer := &customersToAdd[i]
+			for j := range customer.Budgets {
+				cid := customer.ID
+				customer.Budgets[j].CustomerID = &cid
+				pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, customer.Budgets[j])
+			}
+			customer.Budgets = nil
+			if err := config.ConfigStore.CreateCustomer(ctx, customer, tx); err != nil {
 				return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
 			}
 		}
 
 		// Update customers (config.json changed)
-		for _, customer := range customersToUpdate {
-			if err := config.ConfigStore.UpdateCustomer(ctx, &customer, tx); err != nil {
+		for i := range customersToUpdate {
+			customer := &customersToUpdate[i]
+			if customer.Budgets != nil {
+				// Fetch existing budget IDs for this customer so we can route
+				// to add vs update — avoids INSERT conflicts on second sync.
+				var existingIDs []string
+				if err := tx.Model(&configstoreTables.TableBudget{}).
+					Where("customer_id = ?", customer.ID).
+					Pluck("id", &existingIDs).Error; err != nil {
+					return fmt.Errorf("failed to query existing budgets for customer %s: %w", customer.ID, err)
+				}
+				existingSet := make(map[string]bool, len(existingIDs))
+				for _, id := range existingIDs {
+					existingSet[id] = true
+				}
+				desiredSet := make(map[string]bool, len(customer.Budgets))
+				for j := range customer.Budgets {
+					cid := customer.ID
+					customer.Budgets[j].CustomerID = &cid
+					desiredSet[customer.Budgets[j].ID] = true
+					if existingSet[customer.Budgets[j].ID] {
+						pendingCustomerBudgetsToUpdate = append(pendingCustomerBudgetsToUpdate, customer.Budgets[j])
+					} else {
+						pendingCustomerBudgetsToAdd = append(pendingCustomerBudgetsToAdd, customer.Budgets[j])
+					}
+				}
+				// Delete stale budgets one by one — mirrors the team/VK reconcile pattern.
+				for _, existingID := range existingIDs {
+					if !desiredSet[existingID] {
+						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil {
+							return fmt.Errorf("failed to delete stale budget %s for customer %s: %w", existingID, customer.ID, err)
+						}
+					}
+				}
+			}
+			customer.Budgets = nil
+			if err := config.ConfigStore.UpdateCustomer(ctx, customer, tx); err != nil {
 				return fmt.Errorf("failed to update customer %s: %w", customer.ID, err)
+			}
+		}
+
+		// Link budget_id references: validate ownership and set customer_id.
+		// For adds: verify the budget is unowned before taking it.
+		// For updates: also clear any stale link from the old budget_id.
+		for _, customer := range customersToAdd {
+			if customer.BudgetID == nil {
+				continue
+			}
+			if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
+				return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
+			}
+		}
+		for _, customer := range customersToUpdate {
+			if customer.BudgetID == nil {
+				// budget_id removed — unlink any budget previously owned via this path.
+				if err := tx.Model(&configstoreTables.TableBudget{}).
+					Where("customer_id = ?", customer.ID).
+					Update("customer_id", nil).Error; err != nil {
+					return fmt.Errorf("failed to unlink stale budgets from customer %s: %w", customer.ID, err)
+				}
+				continue
+			}
+			if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, true); err != nil {
+				return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
 			}
 		}
 
@@ -2131,6 +2725,20 @@ func updateGovernanceConfigInStore(
 
 		// Update team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToUpdate {
+			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Create customer-owned budgets after customers exist (inline budgets + top-level with customer_id).
+		for _, budget := range pendingCustomerBudgetsToAdd {
+			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+		}
+
+		// Update customer-owned budgets declared in top-level governance.budgets.
+		for _, budget := range pendingCustomerBudgetsToUpdate {
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -2237,6 +2845,11 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.CreateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
 			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Update model configs (config.json changed)
@@ -2246,6 +2859,11 @@ func updateGovernanceConfigInStore(
 			}
 			if err := config.ConfigStore.UpdateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to update model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2317,6 +2935,86 @@ func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstore
 	}
 	if err := validateRateLimitLinkOwnership(tx, modelConfig.RateLimitID, "model config", modelConfig.ID); err != nil {
 		return err
+	}
+	for _, budgetID := range modelConfig.BudgetIDs {
+		id := budgetID
+		if err := validateBudgetLinkOwnership(tx, &id, "model config", modelConfig.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkCustomerBudgetID sets customer_id on the referenced budget row, verifying that the budget
+// is either unowned or already owned by this customer. When clearStale is true it also
+// unlinks any other budget previously owned by the customer (handles budget_id changes).
+func linkCustomerBudgetID(tx *gorm.DB, customerID, budgetID string, clearStale bool) error {
+	var existing configstoreTables.TableBudget
+	if err := tx.Select("id", "customer_id", "team_id", "virtual_key_id", "provider_config_id", "model_config_id").
+		First(&existing, "id = ?", budgetID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("budget %s not found", budgetID)
+		}
+		return fmt.Errorf("failed to check budget ownership: %w", err)
+	}
+	if (existing.CustomerID != nil && *existing.CustomerID != customerID) ||
+		existing.TeamID != nil || existing.VirtualKeyID != nil ||
+		existing.ProviderConfigID != nil || existing.ModelConfigID != nil {
+		return fmt.Errorf("budget %s is already owned by another entity", budgetID)
+	}
+	if clearStale {
+		if err := tx.Model(&configstoreTables.TableBudget{}).
+			Where("customer_id = ? AND id != ?", customerID, budgetID).
+			Update("customer_id", nil).Error; err != nil {
+			return fmt.Errorf("failed to unlink stale budget from customer %s: %w", customerID, err)
+		}
+	}
+	result := tx.Model(&configstoreTables.TableBudget{}).
+		Where("id = ?", budgetID).
+		Update("customer_id", customerID)
+	if result.Error != nil {
+		return fmt.Errorf("failed to link budget %s to customer %s: %w", budgetID, customerID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("failed to link budget %s to customer %s: no row updated", budgetID, customerID)
+	}
+	return nil
+}
+
+// linkModelConfigBudgets sets model_config_id on each budget in budgetIDs, and clears it from
+// any budgets previously owned by mcID that are no longer in the list.
+func linkModelConfigBudgets(tx *gorm.DB, mcID string, budgetIDs []string) error {
+	// Normalize: trim whitespace and deduplicate.
+	seen := make(map[string]struct{}, len(budgetIDs))
+	normalized := make([]string, 0, len(budgetIDs))
+	for _, raw := range budgetIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+
+	// Clear ownership from budgets that are no longer referenced.
+	unlinkQ := tx.Model(&configstoreTables.TableBudget{}).
+		Where("model_config_id = ?", mcID)
+	if len(normalized) > 0 {
+		unlinkQ = unlinkQ.Where("id NOT IN ?", normalized)
+	}
+	if err := unlinkQ.UpdateColumn("model_config_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to unlink stale budgets from model config %q: %w", mcID, err)
+	}
+	// Link the declared budgets.
+	for _, id := range normalized {
+		if err := tx.Model(&configstoreTables.TableBudget{}).
+			Where("id = ?", id).
+			UpdateColumn("model_config_id", mcID).Error; err != nil {
+			return fmt.Errorf("failed to link budget %q to model config %q: %w", id, mcID, err)
+		}
 	}
 	return nil
 }
@@ -2502,21 +3200,6 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 				return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
 			}
 		}
-		for i := range config.GovernanceConfig.ModelConfigs {
-			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
-			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
-				return err
-			}
-			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
-			if err != nil {
-				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
-			} else {
-				modelConfig.ConfigHash = modelConfigHash
-			}
-			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
-				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
-			}
-		}
 		for i := range config.GovernanceConfig.Providers {
 			provider := &config.GovernanceConfig.Providers[i]
 			if provider.Name == "" {
@@ -2549,8 +3232,25 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			} else {
 				customer.ConfigHash = customerHash
 			}
-			if err := config.ConfigStore.CreateCustomer(ctx, customer, tx); err != nil {
+			// Work on a copy so the live GovernanceConfig entry keeps its Budgets
+			// slice — in-memory reads after boot must not see a nil slice.
+			inlineBudgets := customer.Budgets
+			customerRow := *customer
+			customerRow.Budgets = nil
+			if err := config.ConfigStore.CreateCustomer(ctx, &customerRow, tx); err != nil {
 				return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
+			}
+			for j := range inlineBudgets {
+				cid := customer.ID
+				inlineBudgets[j].CustomerID = &cid
+				if err := config.ConfigStore.CreateBudget(ctx, &inlineBudgets[j], tx); err != nil {
+					return fmt.Errorf("failed to create budget %s for customer %s: %w", inlineBudgets[j].ID, customer.ID, err)
+				}
+			}
+			if customer.BudgetID != nil {
+				if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
+					return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
+				}
 			}
 		}
 
@@ -2640,6 +3340,31 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		for _, budget := range pendingProviderConfigBudgets {
 			if err := createBudget(budget); err != nil {
 				return err
+			}
+		}
+
+		// Create model configs last: scope=virtual_key configs reference a virtual key by
+		// scope_id, and CreateModelConfig now locks that owner row and rejects a missing one
+		// (ErrNotFound), so the owning virtual keys must already exist. Budgets referenced via
+		// BudgetIDs are likewise all created by this point.
+		for i := range config.GovernanceConfig.ModelConfigs {
+			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
+			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
+				return err
+			}
+			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
+			if err != nil {
+				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
+			} else {
+				modelConfig.ConfigHash = modelConfigHash
+			}
+			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
+				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
+			}
+			if len(modelConfig.BudgetIDs) > 0 {
+				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2835,7 +3560,13 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 
 	// Merge with config file plugins
 	if len(configData.Plugins) > 0 {
-		mergePlugins(ctx, config, configData)
+		if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("plugins") {
+			syncPluginsFromFile(ctx, config, configData)
+		} else {
+			mergePlugins(ctx, config, configData)
+		}
+	} else if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("plugins") {
+		syncPluginsFromFile(ctx, config, configData)
 	}
 }
 
@@ -2920,6 +3651,69 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 			}
 		}
 	}
+}
+
+// syncPluginsFromFile replaces stored plugin configs with the plugins declared in config.json.
+func syncPluginsFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+	logger.Debug("source_of_truth=config.json: syncing plugins exactly from config file")
+	if config.ConfigStore == nil {
+		// No store to reconcile against, so in-memory cannot diverge from the DB.
+		config.PluginConfigs = configData.Plugins
+		return
+	}
+	keep := make(map[string]bool, len(configData.Plugins))
+	for _, plugin := range configData.Plugins {
+		if plugin == nil {
+			continue
+		}
+		keep[plugin.Name] = true
+	}
+	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		existing, err := config.ConfigStore.GetPlugins(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get plugins from store: %w", err)
+		}
+		for _, plugin := range existing {
+			if plugin != nil && !keep[plugin.Name] {
+				if err := config.ConfigStore.DeletePlugin(ctx, plugin.Name, tx); err != nil {
+					return fmt.Errorf("failed to delete plugin %s: %w", plugin.Name, err)
+				}
+			}
+		}
+		for _, plugin := range configData.Plugins {
+			if plugin == nil {
+				continue
+			}
+			pluginConfigCopy, err := DeepCopy(plugin.Config)
+			if err != nil {
+				return fmt.Errorf("failed to deep copy plugin config for %s: %w", plugin.Name, err)
+			}
+			if plugin.Version == nil {
+				plugin.Version = bifrost.Ptr(int16(1))
+			}
+			tablePlugin := &configstoreTables.TablePlugin{
+				Name:      plugin.Name,
+				Enabled:   plugin.Enabled,
+				Config:    pluginConfigCopy,
+				Path:      plugin.Path,
+				Version:   *plugin.Version,
+				Placement: plugin.Placement,
+				Order:     plugin.Order,
+			}
+			if err := config.ConfigStore.UpsertPlugin(ctx, tablePlugin, tx); err != nil {
+				return fmt.Errorf("failed to upsert plugin %s: %w", plugin.Name, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		// Leave config.PluginConfigs untouched so in-memory state stays consistent
+		// with the DB, which rolled back on failure.
+		logger.Warn("failed to sync plugins from config file: %v", err)
+		return
+	}
+	// Only adopt the file-declared plugins in memory after the durable commit.
+	config.PluginConfigs = configData.Plugins
 }
 
 // buildMCPPricingDataFromStore builds MCP pricing data from the config store
@@ -3201,6 +3995,9 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 
 	// Initialize OAuth provider
 	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+	// Initialize per-user-headers credential provider. Storage parallel of
+	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
+	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
 
 	// Start token refresh worker for automatic OAuth token refresh
 	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
@@ -3213,6 +4010,15 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	config.OAuthSweepWorker = oauth2.NewPerUserOAuthSweepWorker(config.OAuthProvider, 30*24*time.Hour, logger)
 	if config.OAuthSweepWorker != nil {
 		config.OAuthSweepWorker.Start(ctx)
+	}
+
+	// Start per-user headers credential sweep worker. Parallel of the OAuth
+	// sweep but only reaps orphaned credential rows (no flow table to sweep).
+	// Same 30-day retention so admin expectations stay uniform across the two
+	// per-user auth surfaces.
+	config.MCPHeadersSweepWorker = mcp_headers.NewCredentialSweepWorker(config.MCPHeadersProvider, 30*24*time.Hour, logger)
+	if config.MCPHeadersSweepWorker != nil {
+		config.MCPHeadersSweepWorker.Start(ctx)
 	}
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
@@ -3502,6 +4308,11 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
 }
 
+// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
+func (c *Config) ShouldAllowDirectKeys() bool {
+	return c.ClientConfig.AllowDirectKeys
+}
+
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
@@ -3680,6 +4491,9 @@ func (c *Config) Close(ctx context.Context) {
 	if c.OAuthSweepWorker != nil {
 		c.OAuthSweepWorker.Stop()
 	}
+	if c.MCPHeadersSweepWorker != nil {
+		c.MCPHeadersSweepWorker.Stop()
+	}
 	if c.KVStore != nil {
 		c.KVStore.Close()
 	}
@@ -3781,11 +4595,10 @@ func (c *Config) GetLoadedHTTPTransportPlugins() []schemas.HTTPTransportPlugin {
 func (c *Config) rebuildInterfaceCaches() {
 	basePlugins := c.BasePlugins.Load()
 	if basePlugins == nil {
-		// Clear all caches atomically
+		// Clear all caches atomically, except ConfigMarshallers which are preserved.
 		emptyLLM := []schemas.LLMPlugin{}
 		emptyMCP := []schemas.MCPPlugin{}
 		emptyHTTP := []schemas.HTTPTransportPlugin{}
-
 		c.LLMPlugins.Store(&emptyLLM)
 		c.MCPPlugins.Store(&emptyMCP)
 		c.HTTPTransportPlugins.Store(&emptyHTTP)
@@ -3807,12 +4620,49 @@ func (c *Config) rebuildInterfaceCaches() {
 		if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
 			httpTransport = append(httpTransport, httpPlugin)
 		}
+		if cm, ok := p.(schemas.ConfigMarshallerPlugin); ok {
+			// RegisterConfigMarshaller adds/updates atomically without clearing other entries
+			c.RegisterConfigMarshaller(p.GetName(), cm)
+		}
 	}
 
-	// Atomic stores of all caches
 	c.LLMPlugins.Store(&llm)
 	c.MCPPlugins.Store(&mcp)
 	c.HTTPTransportPlugins.Store(&httpTransport)
+}
+
+// RegisterConfigMarshaller registers a config marshaller for a plugin by name without
+// adding the plugin to BasePlugins. Use this to register marshallers for disabled plugins
+// at startup so their stored configs can still be redacted/expanded via the API.
+func (c *Config) RegisterConfigMarshaller(name string, cm schemas.ConfigMarshallerPlugin) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin)
+		if old != nil {
+			maps.Copy(newMap, *old)
+		}
+		newMap[name] = cm
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
+}
+
+// RemoveConfigMarshaller explicitly removes a plugin's config marshaller.
+// Call this only when a plugin is permanently deleted, not when it is disabled.
+func (c *Config) RemoveConfigMarshaller(name string) {
+	for {
+		old := c.ConfigMarshallers.Load()
+		if old == nil {
+			return
+		}
+		newMap := make(map[string]schemas.ConfigMarshallerPlugin, len(*old))
+		maps.Copy(newMap, *old)
+		delete(newMap, name)
+		if c.ConfigMarshallers.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
 }
 
 // IsPluginLoaded checks if a plugin with the given name is currently loaded.
@@ -4697,7 +5547,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	// Track new environment variables
 	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, clientConfig)
 	// Config with processed env vars
-	if err := c.client.AddMCPClient(clientConfig); err != nil {
+	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
@@ -4800,6 +5650,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
+	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -5018,6 +5869,15 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 	if config.OauthClientSecret != nil {
 		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
+	// Redact TLS CA cert PEM if present
+	if config.TLSConfig != nil {
+		tlsCopy := *config.TLSConfig
+		if config.TLSConfig.CACertPEM != nil {
+			tlsCopy.CACertPEM = config.TLSConfig.CACertPEM.Redacted()
+		}
+		configCopy.TLSConfig = &tlsCopy
 	}
 
 	return &configCopy

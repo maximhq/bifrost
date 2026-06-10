@@ -1,15 +1,17 @@
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { baseRoutingFields } from "@/lib/config/celFieldsRouting";
 import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingRule } from "@/lib/types/routingRules";
-import { getScopeLabel } from "@/lib/utils/routingRules";
+import { getScopeLabel } from "@/lib/utils/labels";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -20,6 +22,9 @@ interface Props {
 	rule: RoutingRule | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -36,9 +41,15 @@ function formatRuleValue(value: any): string {
 }
 
 function useScopeName(scope: string, scopeId?: string): string | undefined {
-	const { data: teamsData } = useGetTeamsQuery(undefined, { skip: scope !== "team" || !scopeId });
-	const { data: customersData } = useGetCustomersQuery(undefined, { skip: scope !== "customer" || !scopeId });
-	const { data: vksData } = useGetVirtualKeysQuery(undefined, { skip: scope !== "virtual_key" || !scopeId });
+	const { data: teamsData } = useGetTeamsQuery(undefined, {
+		skip: scope !== "team" || !scopeId,
+	});
+	const { data: customersData } = useGetCustomersQuery(undefined, {
+		skip: scope !== "customer" || !scopeId,
+	});
+	const { data: vksData } = useGetVirtualKeysQuery(undefined, {
+		skip: scope !== "virtual_key" || !scopeId,
+	});
 
 	return useMemo(() => {
 		if (!scopeId) return undefined;
@@ -100,7 +111,10 @@ function ConditionRow({ rule }: { rule: RuleType }) {
 	const bareKeyValue =
 		!keyMatch && (isHeader || isParam) && value
 			? value.includes(":")
-				? { key: value.slice(0, value.indexOf(":")), val: value.slice(value.indexOf(":") + 1) }
+				? {
+						key: value.slice(0, value.indexOf(":")),
+						val: value.slice(value.indexOf(":") + 1),
+					}
 				: { key: value, val: "" }
 			: null;
 	const keyName = keyMatch?.[1] ?? bareKeyValue?.key;
@@ -234,36 +248,53 @@ function FallbackChain({ fallbacks }: { fallbacks: string[] }) {
 
 // ─── main sheet ──────────────────────────────────────────────────────────────
 
-export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
+export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, hasPrev = false, hasNext = false }: Props) {
 	const targets = rule?.targets ?? [];
 	const fallbacks = rule?.fallbacks ?? [];
 	const hasQuery = rule?.query && (rule.query.rules?.length ?? 0) > 0;
 	const scopeName = useScopeName(rule?.scope ?? "global", rule?.scope_id);
+
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
+	});
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl" data-testid="routing-rule-info">
 				{rule && (
 					<>
-						<SheetHeader className="flex flex-col items-start gap-1 p-0">
-							<div className="flex w-full flex-wrap items-center gap-2">
-								<SheetTitle className="text-base">{rule.name}</SheetTitle>
-								<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
-								{rule.chain_rule && (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Badge variant="outline" className="cursor-default gap-1">
-												<GitMerge className="h-3 w-3" />
-												Chain Rule
-											</Badge>
-										</TooltipTrigger>
-										<TooltipContent className="max-w-64">
-											After this rule matches, routing rules are re-evaluated using the resolved provider/model as the new context.
-										</TooltipContent>
-									</Tooltip>
-								)}
+						<SheetHeader className="flex flex-row items-start justify-between gap-1 p-0">
+							<div className="flex flex-col items-start gap-1">
+								<div className="flex w-full flex-wrap items-center gap-2">
+									<SheetTitle className="text-base">{rule.name}</SheetTitle>
+									<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
+									{rule.chain_rule && (
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Badge variant="outline" className="cursor-default gap-1">
+													<GitMerge className="h-3 w-3" />
+													Chain Rule
+												</Badge>
+											</TooltipTrigger>
+											<TooltipContent className="max-w-64">
+												After this rule matches, routing rules are re-evaluated using the resolved provider/model as the new context.
+											</TooltipContent>
+										</Tooltip>
+									)}
+								</div>
+								{rule.description && <SheetDescription className="mt-0.5 text-sm">{rule.description}</SheetDescription>}
 							</div>
-							{rule.description && <SheetDescription className="mt-0.5 text-sm">{rule.description}</SheetDescription>}
+							<SheetNavigationButtons
+								hasPrev={hasPrev}
+								hasNext={hasNext}
+								onNavigate={(dir) => onNavigate?.(dir)}
+								prevKeys={prevKeys}
+								nextKeys={nextKeys}
+								entityLabel="rule"
+							/>
 						</SheetHeader>
 
 						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">
@@ -342,11 +373,19 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 							<div className="grid grid-cols-2 gap-4">
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
-									<span className="text-sm">{formatDistanceToNow(new Date(rule.created_at), { addSuffix: true })}</span>
+									<span className="text-sm">
+										{formatDistanceToNow(new Date(rule.created_at), {
+											addSuffix: true,
+										})}
+									</span>
 								</div>
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Last Updated</p>
-									<span className="text-sm">{formatDistanceToNow(new Date(rule.updated_at), { addSuffix: true })}</span>
+									<span className="text-sm">
+										{formatDistanceToNow(new Date(rule.updated_at), {
+											addSuffix: true,
+										})}
+									</span>
 								</div>
 							</div>
 						</div>

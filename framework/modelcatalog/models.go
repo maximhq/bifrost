@@ -196,17 +196,13 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
 func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels schemas.WhiteList) bool {
-	isCustomProvider := false
-	hasListModelsEndpointDisabled := false
-	if providerConfig != nil {
-		isCustomProvider = providerConfig.CustomProviderConfig != nil
-		hasListModelsEndpointDisabled = !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
-	}
-
 	// Case 1: ["*"] = allow all models; use catalog to determine support
 	// Empty allowedModels = deny all (fail-safe deny-by-default)
 	if allowedModels.IsUnrestricted() {
-		if isCustomProvider && hasListModelsEndpointDisabled {
+		// Providers whose models the catalog cannot enumerate (custom without list-models,
+		// or keyless self-hosted vLLM/Ollama/SGL) cannot be cross-checked against catalog
+		// membership, so a wildcard allow-list permits any model for them.
+		if mc.IsCatalogOpaqueProvider(provider, providerConfig) {
 			return true
 		}
 		supportedProviders := mc.GetProvidersForModel(model)
@@ -242,6 +238,28 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	}
 
 	return false
+}
+
+// IsCatalogOpaqueProvider reports whether the catalog cannot enumerate the models a provider
+// serves, so a wildcard ("*") allow-list must be honored as allow-all rather than cross-checked
+// against catalog membership. True for custom providers and for native providers the catalog has
+// no model list for (keyless self-hosted vLLM/Ollama/SGL, or providers without list-models
+// support). Shared by OSS governance and enterprise load-balancing so the rule has one definition.
+func (mc *ModelCatalog) IsCatalogOpaqueProvider(provider schemas.ModelProvider, providerConfig *configstore.ProviderConfig) bool {
+	if providerConfig != nil && providerConfig.CustomProviderConfig != nil {
+		// A custom provider is opaque only when it cannot list its models. If it supports the
+		// list-models endpoint, the catalog can enumerate its models, so it is NOT opaque.
+		return !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
+	}
+	if mc == nil {
+		return false
+	}
+	// Only an emptiness check is needed, so read modelPool directly under the
+	// read lock rather than calling GetModelsForProvider, which allocates and
+	// copies the full slice on this request-path check.
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	return len(mc.modelPool[provider]) == 0
 }
 
 // GetBaseModelName returns the canonical base model name for a given model string.

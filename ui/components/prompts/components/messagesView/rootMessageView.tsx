@@ -14,7 +14,18 @@ import ErrorMessageView from "./errorMessageView";
  * @returns A React element that renders the messages list and provides handlers for message changes, removals, tool submissions, and variable updates.
  */
 export function MessagesView() {
-	const { messages, setMessages: onUpdateMessages, setVariables, isStreaming, supportsVision, handleSubmitToolResult } = usePromptContext();
+	const {
+		messages,
+		setMessages: onUpdateMessages,
+		setVariables,
+		isStreaming,
+		supportsVision,
+		handleSubmitToolResult,
+		handleExecuteToolCall,
+		handleSubmitAllToolResults,
+		handleExecuteAllToolCalls,
+		fetchToolResult,
+	} = usePromptContext();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const prevLengthRef = useRef(messages.length);
 	const prevLastIdRef = useRef(messages[messages.length - 1]?.id);
@@ -107,6 +118,10 @@ export function MessagesView() {
 									onChange={(s) => handleMessageChange(index, s)}
 									onRemove={canRemove ? () => handleRemoveMessage(index) : undefined}
 									onSubmitToolResult={(toolCallId, content) => handleSubmitToolResult(index, toolCallId, content)}
+									onExecuteToolCall={(toolCall) => handleExecuteToolCall(index, toolCall)}
+									onSubmitAllToolResults={(results) => handleSubmitAllToolResults(index, results)}
+									onExecuteAllToolCalls={(toolCalls) => handleExecuteAllToolCalls(index, toolCalls)}
+									fetchToolResult={fetchToolResult}
 									respondedToolCallIds={respondedIds}
 								/>
 							);

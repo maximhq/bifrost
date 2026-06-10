@@ -79,7 +79,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "completion"
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		baseType = "chat"
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		baseType = "responses"
 	case schemas.EmbeddingRequest:
 		baseType = "embedding"
@@ -319,14 +319,15 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
 	return &PricingEntry{
-		BaseModel:       pricing.BaseModel,
-		Provider:        pricing.Provider,
-		Mode:            pricing.Mode,
-		ContextLength:   pricing.ContextLength,
-		MaxInputTokens:  pricing.MaxInputTokens,
-		MaxOutputTokens: pricing.MaxOutputTokens,
-		Architecture:    pricing.Architecture,
-		PricingOptions:  options,
+		BaseModel:            pricing.BaseModel,
+		Provider:             pricing.Provider,
+		Mode:                 pricing.Mode,
+		ContextLength:        pricing.ContextLength,
+		MaxInputTokens:       pricing.MaxInputTokens,
+		MaxOutputTokens:      pricing.MaxOutputTokens,
+		Architecture:         pricing.Architecture,
+		AdditionalAttributes: pricing.AdditionalAttributes,
+		PricingOptions:       options,
 	}
 }
 

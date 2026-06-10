@@ -1,0 +1,302 @@
+# Paths for RBAC role and permission management.
+
+roles:
+  get:
+    operationId: listRoles
+    summary: List roles
+    description: Returns all roles visible to the caller, scoped by data access control.
+    tags:
+      - RBAC
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/RolesListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createRole
+    summary: Create role
+    description: |
+      Creates a custom role with the specified data access control scope.
+      If `dac` is omitted, defaults to `all-data`.
+    tags:
+      - RBAC
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rbac.yaml#/CreateRoleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Role created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/RoleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+roles-by-id:
+  get:
+    operationId: getRole
+    summary: Get role by ID
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/RoleResponse'
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateRole
+    summary: Update role
+    description: |
+      Partial update. Omitted fields preserve the current value.
+      Notable: omitting `dac` preserves the current scope (does not default to `all-data`).
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rbac.yaml#/UpdateRoleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Role updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/RoleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteRole
+    summary: Delete role
+    description: |
+      Deletes a custom role. Built-in system roles cannot be deleted and return 403.
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Role deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/MessageResponse'
+      '403':
+        description: Cannot delete system role
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+                  example: cannot delete system role
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+roles-permissions:
+  get:
+    operationId: getRolePermissions
+    summary: List permissions assigned to a role
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/PermissionsListResponse'
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateRolePermissions
+    summary: Replace the permission set on a role
+    description: |
+      Replaces the permission set assigned to the role.
+      Send the complete list of permission IDs that should be active for the role.
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rbac.yaml#/UpdateRolePermissionsRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Permissions updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+resources:
+  get:
+    operationId: listResources
+    summary: List RBAC resources
+    description: Returns the set of resource names that permissions can target.
+    tags:
+      - RBAC
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/ResourcesListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+operations:
+  get:
+    operationId: listOperations
+    summary: List RBAC operations
+    description: Returns the set of operation names that permissions can grant.
+    tags:
+      - RBAC
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/OperationsListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+permissions:
+  get:
+    operationId: listPermissions
+    summary: List all RBAC permissions
+    description: Returns every (resource, operation) pair that can be granted to a role.
+    tags:
+      - RBAC
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/PermissionsListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-assign-role:
+  put:
+    operationId: assignUserRole
+    summary: Assign a role to a user
+    description: |
+      Assigns a role to a user, including the role's data access scope.
+      Triggers a per-user governance reload so the new scope takes effect on the next request.
+    tags:
+      - RBAC
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/rbac.yaml#/AssignUserRoleRequest'
+    responses:
+      '200':
+        description: Role assigned
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/rbac.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Role not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

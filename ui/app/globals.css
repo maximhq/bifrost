@@ -390,6 +390,11 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	@apply rounded-sm!;
 }
 
+/* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */
+[data-sonner-toaster] {
+	pointer-events: auto !important;
+}
+
 /* Move Sonner toast close button to top-right */
 [data-sonner-toaster][dir="ltr"],
 [data-sonner-toaster] {

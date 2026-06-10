@@ -215,21 +215,28 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 		}
 	}
 
+	// Check per-user-scoped model config rate limits and budgets. Mirrors the
+	// VK-scoped block in EvaluateVirtualKeyRequest. Gated on model being present —
+	// MCP tool execution (no model) is excluded naturally by this guard.
+	if request.Model != "" {
+		if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("User-level model rate limit exceeded: %s", reasonFromErr(err, decision)),
+			}
+		}
+		if decision, err := r.store.CheckScopedModelBudget(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil); err != nil || isBudgetViolation(decision) {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("User-level model budget exceeded: %s", reasonFromErr(err, decision)),
+			}
+		}
+	}
+
 	return &EvaluationResult{
 		Decision: DecisionAllow,
 		Reason:   "User-level checks passed",
 	}
-}
-
-// isModelRequired checks if the requested model is required for this request
-func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
-	// Here we will have to check for some requests which do not need model
-	// For example, batches, container, files, videos, passthrough requests
-	// For these requests, we will only check for provider filtering
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
-		return false
-	}
-	return true
 }
 
 // EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
@@ -272,8 +279,10 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 			VirtualKey: vk,
 		}
 	}
-	// 3. Check model filtering
-	if r.isModelRequired(requestType) && !r.isModelAllowed(vk, provider, model) {
+	// 3. Check model filtering. Most request types always carry a model and are always checked.
+	// Passthrough forwards raw provider routes where a model may or may not be resolvable for some request types.
+	isPassthrough := requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest
+	if (IsModelRequiredForRequest(requestType) || (isPassthrough && model != "")) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
@@ -296,6 +305,27 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		// 5. Check budget hierarchy (VK → Team → Customer)
 		if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
 			return budgetResult
+		}
+
+		// 6. Check per-VK-scoped model config rate limits and budgets. These aggregate with
+		// the global model checks already enforced in EvaluateModelAndProviderRequest — the
+		// request must satisfy both (most-restrictive wins). Gated on a model being present,
+		// mirroring the global model checks.
+		if model != "" {
+			if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil, nil); err != nil || isRateLimitViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level rate limit check failed (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
+			if decision, err := r.store.CheckScopedModelBudget(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil); err != nil || isBudgetViolation(decision) {
+				return &EvaluationResult{
+					Decision:   decision,
+					Reason:     fmt.Sprintf("Model-level budget exceeded (virtual key scope): %s", reasonFromErr(err, decision)),
+					VirtualKey: vk,
+				}
+			}
 		}
 	}
 
@@ -322,29 +352,37 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 }
 
-// isModelAllowed checks if the requested model is allowed for this VK
+// isModelAllowed checks if the requested model is allowed for this VK.
+// Blacklisted models win over allowed models (same semantics as provider-key enforcement).
+// Two-pass: blacklist scan across all matching configs first, then allowlist scan.
 func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
 	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
 		return false
 	}
 
+	// Pass 1: if any matching provider config blacklists the model, block immediately.
+	for _, pc := range vk.ProviderConfigs {
+		if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, model) {
+			return false
+		}
+	}
+
+	// Pass 2: allowlist check — model is allowed if any matching config permits it.
 	for _, pc := range vk.ProviderConfigs {
 		if pc.Provider == string(provider) {
-			// Delegate model allowance check to model catalog
-			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
-			// and provider-prefixed allowed_models entries
 			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
 				providerConfig, ok := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
 				providerConfigPtr := &providerConfig
 				if !ok {
 					providerConfigPtr = nil
 				}
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels)
+				if r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels) {
+					return true
+				}
+			} else if pc.AllowedModels.IsAllowed(model) {
+				return true
 			}
-			// Fallback when model catalog is not available: simple string matching
-			// ["*"] = allow all models; [] = deny all models
-			return pc.AllowedModels.IsAllowed(model)
 		}
 	}
 

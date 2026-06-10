@@ -1,0 +1,123 @@
+---
+title: "Header-Based Authentication"
+sidebarTitle: "Headers"
+description: "Configure static HTTP headers (API keys, bearer tokens, custom auth) shared across all requests to an MCP server."
+icon: "key"
+---
+
+## Overview
+
+`auth_type: "headers"` attaches a fixed set of HTTP headers to every request Bifrost makes to the upstream MCP server. Use it for shared API keys, bearer tokens, or any other static authentication scheme.
+
+The same headers are used regardless of which caller (which VK, which user, which session) is hitting Bifrost — this is **server-level** auth. If you need each end-user to supply their own credentials, use [Per-User Headers](./per-user-headers) instead.
+
+This auth type is only valid for **HTTP** and **SSE** connections.
+
+---
+
+## When to use
+
+- Shared API key the whole team uses
+- Internal MCP servers with a single bearer token
+- Custom header-based schemes (`X-Tenant-ID`, `X-Region`, etc.)
+- Anything where you'd add headers to a `curl` command
+
+For per-user OAuth see [OAuth 2.0](./oauth) (admin authenticates once) or [Per-User OAuth](./per-user-oauth) (each user authenticates).
+
+---
+
+## Configuration
+
+Header values support environment-variable references — use `env.MY_VAR` (or the UI's env-var picker) to keep secrets out of the config file. Values are encrypted at rest when `BIFROST_ENCRYPTION_KEY` is set.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **MCP Gateway** in the sidebar
+2. Click **New MCP Server**
+3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+4. Set **Auth Type** to **Headers**
+5. Add one row per header in the **Headers** table:
+   - **Header name** (e.g., `Authorization`, `X-API-Key`)
+   - **Value** — either a literal string or an environment-variable reference
+6. Configure tool execution as needed
+7. Click **Create**
+
+<Frame>
+  <img src="/media/ui-mcp-auth-headers-form.png" alt="MCP client form with Auth Type set to Headers and two static header rows configured" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "web-search",
+    "connection_type": "http",
+    "connection_string": "https://mcp.example.com/mcp",
+    "auth_type": "headers",
+    "headers": {
+      "Authorization": { "value": "Bearer your-api-key" },
+      "X-Tenant-ID":   { "value": "acme-corp" }
+    },
+    "tools_to_execute": ["*"]
+  }'
+```
+
+To reference an environment variable instead of a literal:
+
+```json
+"Authorization": { "env_var": "MCP_API_KEY", "from_env": true }
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "web-search",
+        "connection_type": "http",
+        "connection_string": "https://mcp.example.com/mcp",
+        "auth_type": "headers",
+        "headers": {
+          "Authorization": { "value": "Bearer your-api-key" },
+          "X-Tenant-ID":   { "value": "acme-corp" }
+        },
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+Use `{ "env_var": "MCP_API_KEY", "from_env": true }` for env references — same shape as the API tab.
+
+</Tab>
+</Tabs>
+
+---
+
+## Header lifecycle
+
+- **At connect time**, Bifrost opens a persistent transport with these headers attached. The same transport is reused for every tool call.
+- **`Authorization`** is treated specially — even if you set it via `headers`, the credential-store layer overrides it with the OAuth bearer for `auth_type=oauth` clients. For `headers` clients there is no override, so the literal value goes through.
+- **Editing** headers on an existing MCP client triggers a connection reset so the new headers take effect immediately. The MCP client's `connection_type`, `auth_type`, and `connection_string` are immutable after creation.
+
+---
+
+## Combining with `per_user_headers`
+
+`per_user_headers` clients support a **static admin headers** section in addition to the per-user values. Use it for tenant headers or any constant that should accompany every per-user request. See [Per-User Headers — Static admin headers](./per-user-headers#static-admin-headers).
+
+---
+
+## Next Steps
+
+- [OAuth 2.0](./oauth) — when the upstream provides OAuth and you want token refresh
+- [Per-User Headers](./per-user-headers) — when each user has their own key
+- [Connecting to MCP Servers](../connecting-to-servers) — connection-type details

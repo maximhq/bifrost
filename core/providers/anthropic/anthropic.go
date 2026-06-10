@@ -100,7 +100,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
@@ -330,7 +330,7 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(schemas.Anthropic, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+			return provider.listModelsByKey(ctx, schemas.Key{Models: schemas.WhiteList{"*"}}, request)
 		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
@@ -631,6 +631,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -713,7 +714,6 @@ func HandleAnthropicChatCompletionStreaming(
 
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
@@ -726,6 +726,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string
 		var isAccumulatingStructuredOutput bool
+		var consumedStructuredOutput bool // true once the SO tool block has been fully streamed as content
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
@@ -825,9 +826,11 @@ func HandleAnthropicChatCompletionStreaming(
 				mappedReason := ConvertAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
 
-				// Override finish reason for structured output
-				// When structured output is used, tool_use stop reason should appear as "stop" to the client
-				if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+				// Override finish reason for structured output only when the SO tool
+				// was consumed into content AND no real tool calls were also emitted.
+				// streamState.nextToolCallIndex > 0 means real tool_use blocks were seen.
+				if consumedStructuredOutput && streamState.nextToolCallIndex == 0 &&
+					*finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 					stopReason := string(schemas.BifrostFinishReasonStop)
 					finishReason = &stopReason
 				}
@@ -884,6 +887,7 @@ func HandleAnthropicChatCompletionStreaming(
 				// Check for content block stop
 				if event.Type == AnthropicStreamEventTypeContentBlockStop && isAccumulatingStructuredOutput {
 					isAccumulatingStructuredOutput = false
+					consumedStructuredOutput = true
 					continue
 				}
 			}
@@ -1103,6 +1107,7 @@ func HandleAnthropicResponsesStream(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
+	startTime := time.Now()
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -1186,7 +1191,6 @@ func HandleAnthropicResponsesStream(
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
@@ -2477,6 +2481,11 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	return response, nil
 }
 
+// Compaction is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
+}
+
 // VideoGeneration is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
@@ -2593,12 +2602,17 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, bifrostErr
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
+	}
+
+	var passthroughUsage *schemas.BifrostPassthroughUsage
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+		passthroughUsage = ExtractAnthropicPassthroughUsage(req.Path, req.Body, body)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -2608,7 +2622,9 @@ func (provider *AnthropicProvider) Passthrough(
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
+			PassthroughPath:         req.Path,
 		},
+		PassthroughUsage: passthroughUsage,
 	}
 
 	return bifrostResponse, nil
@@ -2674,7 +2690,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 	}
 
-	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	bodyStream := resp.BodyStream()
@@ -2686,71 +2702,32 @@ func (provider *AnthropicProvider) PassthroughStream(
 		)
 	}
 
-	// Wrap reader with idle timeout to detect stalled streams.
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	rawBodyStream := bodyStream
-	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(bodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx), ctx)
-
-	// Cancellation must close the raw stream to unblock reads.
-	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
-
-	extraFields := schemas.BifrostResponseExtraFields{
-		ProviderResponseHeaders: headers,
+	strippedPath := req.Path
+	if idx := strings.IndexByte(strippedPath, '?'); idx >= 0 {
+		strippedPath = strippedPath[:idx]
 	}
-	statusCode := resp.StatusCode()
-
-	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-	go func() {
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
-		defer func() {
-			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, req.Body)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger, postHookSpanFinalizer, req.Body)
-			}
-			close(ch)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer stopIdleTimeout()
-		defer stopCancellation()
-
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := bodyStream.Read(buf)
-			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  statusCode,
-						Headers:     headers,
-						Body:        chunk,
-						ExtraFields: extraFields,
-					},
-				}, ch, postHookSpanFinalizer)
-			}
-			if readErr == io.EOF {
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
-					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  statusCode,
-						Headers:     headers,
-						ExtraFields: extraFields,
-					},
-				}, ch, postHookSpanFinalizer)
-				return
-			}
-			if readErr != nil {
-				if ctx.Err() != nil {
-					return // let defer handle cancel/timeout
+	var messagesUsage *AnthropicPassthroughStreamUsage
+	if strings.HasSuffix(strippedPath, "/messages") {
+		messagesUsage = &AnthropicPassthroughStreamUsage{}
+	}
+	return providerUtils.StreamPassthrough(
+		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
+		providerUtils.PassthroughStreamParams{
+			StatusCode:       resp.StatusCode(),
+			Headers:          headers,
+			Path:             req.Path,
+			RawRequest:       req.Body,
+			CancellationBody: req.Body,
+			StartTime:        startTime,
+			Logger:           provider.logger,
+			HasUsage:         HasAnthropicPassthroughUsage,
+			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+				if messagesUsage != nil {
+					return messagesUsage.ObserveEvent(event)
 				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger, postHookSpanFinalizer)
-				return
-			}
-		}
-	}()
-	return ch, nil
+				return ExtractAnthropicPassthroughUsage(req.Path, req.Body, event)
+			},
+		},
+	), nil
 }

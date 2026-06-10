@@ -1,0 +1,617 @@
+# Paths for Access Profile management.
+
+access-profiles:
+  get:
+    operationId: listAccessProfiles
+    summary: List access profiles
+    description: Returns access profiles visible to the caller.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        schema:
+          type: integer
+      - name: search
+        in: query
+        schema:
+          type: string
+      - name: tags
+        in: query
+        description: Comma-separated list of tags to filter on.
+        schema:
+          type: string
+      - name: is_active
+        in: query
+        schema:
+          type: boolean
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createAccessProfile
+    summary: Create access profile
+    description: |
+      Creates a new access profile template. The profile is inactive until attached to a role.
+      No size limits are enforced on create; the limits apply on update.
+    tags:
+      - Access Profiles
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/CreateAccessProfileRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Profile created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: A profile with the same name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-by-id:
+  get:
+    operationId: getAccessProfile
+    summary: Get access profile by ID
+    description: Returns the profile plus its role attachments and the count of users holding a copy.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileDetailResponse'
+      '404':
+        description: Profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateAccessProfile
+    summary: Update access profile
+    description: |
+      Partial update. Omitted fields preserve the current value.
+      `rate_limit: null` explicitly clears the existing rate limit.
+      Size limits enforced: max 100 provider_configs, max 100 budgets, max 50 tags.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/UpdateAccessProfileRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Profile updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Profile not found
+      '409':
+        description: A profile with the same name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteAccessProfile
+    summary: Delete access profile
+    description: Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Profile deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/MessageResponse'
+      '404':
+        description: Profile not found
+      '409':
+        description: Profile has active user copies; detach users first.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-activate:
+  put:
+    operationId: activateAccessProfile
+    summary: Activate access profile
+    description: Sets the profile active. Idempotent.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Profile is active.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileResponse'
+      '404':
+        description: Profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-deactivate:
+  put:
+    operationId: deactivateAccessProfile
+    summary: Deactivate access profile
+    description: Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Profile is inactive.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileResponse'
+      '404':
+        description: Profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-clone:
+  post:
+    operationId: cloneAccessProfile
+    summary: Clone an access profile
+    description: Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/CloneProfileRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Cloned profile created.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AccessProfileResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Source profile not found
+      '409':
+        description: A profile with the same name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-propagate:
+  post:
+    operationId: propagateAccessProfile
+    summary: Propagate template changes to user copies
+    description: |
+      Pushes selected fields from the template to every user that holds a copy.
+      Use `dry_run: true` to preview the impact. By default, accumulated usage is preserved.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/PropagateRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Propagation result.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/PropagateResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-roles:
+  post:
+    operationId: attachRolesToAccessProfile
+    summary: Attach roles to access profile
+    description: |
+      Attaches one or more roles. Setting `is_default: true` makes the profile the role's default
+      for new users. `apply_to_existing: true` provisions the profile to users already in the role.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/AttachRolesRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Roles attached.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AttachRolesResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-role-by-id:
+  delete:
+    operationId: detachRoleFromAccessProfile
+    summary: Detach role from access profile
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Role detached.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/MessageResponse'
+      '404':
+        description: Role attachment not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-versions:
+  get:
+    operationId: listAccessProfileVersions
+    summary: List version snapshots for an access profile
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/VersionListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-version-by-number:
+  get:
+    operationId: getAccessProfileVersion
+    summary: Get a single version snapshot
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/VersionResponse'
+      '404':
+        description: Version not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-audit-logs-by-id:
+  get:
+    operationId: listAccessProfileAuditLogsById
+    summary: List audit log entries for a single profile
+    tags:
+      - Access Profiles
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: limit
+        in: query
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        schema:
+          type: integer
+      - name: action
+        in: query
+        description: One of create, update, delete, propagate, attach_role, detach_role, clone, activate, deactivate.
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AuditLogListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+access-profiles-audit-logs-all:
+  get:
+    operationId: listAccessProfileAuditLogs
+    summary: List workspace-wide audit log entries
+    tags:
+      - Access Profiles
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        schema:
+          type: integer
+      - name: action
+        in: query
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AuditLogListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-access-profiles:
+  get:
+    operationId: listUserAccessProfiles
+    summary: List access profiles held by a user
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/UserAccessProfileListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-access-profile-by-id:
+  delete:
+    operationId: detachUserAccessProfile
+    summary: Detach a user's access profile
+    description: Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Profile detached.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/DetachUserProfileResponse'
+      '404':
+        description: User access profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-access-profile-virtual-keys:
+  post:
+    operationId: addUserAccessProfileVirtualKey
+    summary: Add an extra virtual key under a user's access profile
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key created.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyResponse'
+      '404':
+        description: User access profile not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-access-profile-virtual-key-by-id:
+  delete:
+    operationId: deleteUserAccessProfileVirtualKey
+    summary: Delete a virtual key from a user's access profile
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: vk_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key deleted.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/MessageResponse'
+      '404':
+        description: Virtual key not found for this user
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

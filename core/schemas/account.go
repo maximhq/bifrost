@@ -193,8 +193,7 @@ const (
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
-	Endpoint   EnvVar  `json:"endpoint"`              // Azure service endpoint URL
-	APIVersion *EnvVar `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+	Endpoint EnvVar `json:"endpoint"` // Azure service endpoint URL
 
 	ClientID     *EnvVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
 	ClientSecret *EnvVar  `json:"client_secret,omitempty"` // Azure client secret for authentication

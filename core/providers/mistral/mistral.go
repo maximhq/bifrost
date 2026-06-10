@@ -51,7 +51,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
@@ -424,6 +424,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 	req.SetBody(body.Bytes())
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if err != nil {
@@ -493,7 +494,6 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := -1
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		for {
@@ -780,6 +780,11 @@ func (provider *MistralProvider) FileContent(_ *schemas.BifrostContext, _ []sche
 // CountTokens is not supported by the Mistral provider.
 func (provider *MistralProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Mistral provider.
+func (provider *MistralProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ImageGeneration is not supported by the Mistral provider.

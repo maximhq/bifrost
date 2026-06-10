@@ -22,6 +22,7 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Image Generation | ✅ | - | `/v1/images/generations` |
+| Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -32,6 +33,63 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 <Note>
 **Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream xAI API. These return `UnsupportedOperationError`.
 </Note>
+
+## Setup & Configuration
+
+Configure xAI as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![xAI provider dashboard](../../media/provider-dashboard-xai.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **xAI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **xAI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.XAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "xai": {
+      "keys": [
+        {
+          "name": "xai-key-1",
+          "value": "env.XAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.XAI:
+    return []schemas.Key{{
+        Name:   "xai-key-1",
+        Value:  *schemas.NewEnvVar("env.XAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
 
 ---
 
@@ -148,6 +206,16 @@ Responses are unmarshaled directly into `BifrostImageGenerationResponse`.
 # 5. List Models
 
 Lists available xAI models with their capabilities and context lengths.
+
+---
+
+# 6. Context Compaction
+
+xAI supports context compaction via its OpenAI-compatible `/v1/responses/compact` endpoint. Bifrost forwards the request to `https://api.x.ai/v1/responses/compact`.
+
+Request and response format is identical to [OpenAI Context Compaction](/providers/supported-providers/openai#14-context-compaction). The response `output` contains the original user messages plus a final item with `type: "response.compaction"` and `encrypted_content`. Pass this output as `input` to future xAI Responses API calls.
+
+**Endpoint**: `POST /v1/responses/compact`
 
 ---
 

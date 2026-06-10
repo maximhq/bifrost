@@ -114,7 +114,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Setting proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
@@ -312,7 +312,7 @@ func (provider *CohereProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(provider.GetProviderKey(), func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+			return provider.listModelsByKey(ctx, schemas.Key{Models: schemas.WhiteList{"*"}}, request)
 		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
@@ -454,6 +454,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -525,7 +526,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := 0
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		var responseID string
@@ -719,6 +719,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		req.SetBody(jsonBody)
 	}
 
+	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
 	if usedLargePayloadBody {
@@ -792,7 +793,6 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 		chunkIndex := 0
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 
 		// Create stream state for stateful conversions (outside loop to persist across events)
@@ -1211,6 +1211,11 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	return bifrostResponse, nil
+}
+
+// Compaction is not supported by the Cohere provider.
+func (provider *CohereProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Cohere provider.

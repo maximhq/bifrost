@@ -172,9 +172,13 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
 
-	if response.UsageMetadata != nil && response.UsageMetadata.ServiceTier != "" {
-		tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
-		bifrostResp.ServiceTier = &tier
+	if response.UsageMetadata != nil {
+		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+			bifrostResp.ServiceTier = t
+		} else if response.UsageMetadata.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+			bifrostResp.ServiceTier = &tier
+		}
 	}
 
 	// Convert candidates to Responses output messages
@@ -487,7 +491,11 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		if geminiResp.UsageMetadata == nil {
 			geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
 		}
-		geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+		if bifrostResp.ExtraFields.Provider == schemas.Vertex {
+			geminiResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.ServiceTier)
+		} else {
+			geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+		}
 	}
 
 	return geminiResp
@@ -746,7 +754,11 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if streamResp.UsageMetadata == nil {
 					streamResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
 				}
-				streamResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.Response.ServiceTier)
+				if bifrostResp.Response.ExtraFields.Provider == schemas.Vertex {
+					streamResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.Response.ServiceTier)
+				} else {
+					streamResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.Response.ServiceTier)
+				}
 			}
 
 			// Derive finish reason from StopReason when present
@@ -1639,10 +1651,11 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 	})
 
-	// Emit content_part.done
+	// Emit content_part.done with accumulated text
+	partText := fullText
 	part := &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesOutputMessageContentTypeText,
-		Text: schemas.Ptr(""),
+		Text: &partText,
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
@@ -1657,13 +1670,23 @@ func closeGeminiTextItem(state *GeminiResponsesStreamState, sequenceNumber int) 
 		Part:           part,
 	})
 
-	// Emit output_item.done
+	// Emit output_item.done with content blocks
+	itemText := fullText
 	doneItem := &schemas.ResponsesMessage{
 		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Status: schemas.Ptr("completed"),
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &itemText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					},
+				},
+			},
 		},
 	}
 	if itemID != "" {
@@ -1837,9 +1860,13 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
 	}
-	if usage != nil && usage.ServiceTier != "" {
-		tier := mapGeminiServiceTierToBifrost(usage.ServiceTier)
-		completedResp.ServiceTier = &tier
+	if usage != nil {
+		if t := mapGeminiTrafficTypeToBifrost(usage.TrafficType); t != nil {
+			completedResp.ServiceTier = t
+		} else if usage.ServiceTier != "" {
+			tier := mapGeminiServiceTierToBifrost(usage.ServiceTier)
+			completedResp.ServiceTier = &tier
+		}
 	}
 	if state.Model != nil {
 		completedResp.Model = *state.Model

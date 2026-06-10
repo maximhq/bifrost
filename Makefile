@@ -66,7 +66,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index
 
 all: help
 
@@ -386,7 +386,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -403,7 +403,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -471,6 +471,25 @@ clean-test-reports: ## Clean test reports only
 	@$(ECHO) "$(YELLOW)Cleaning test reports...$(NC)"
 	@rm -rf $(TEST_REPORTS_DIR)/
 	@$(ECHO) "$(GREEN)Test reports cleaned$(NC)"
+
+helm-index: ## Repackage helm chart, regenerate index.yaml digest, then remove the .tgz
+	@if ! which helm > /dev/null 2>&1; then \
+		$(ECHO) "$(RED)Error: helm not installed$(NC)"; \
+		exit 1; \
+	fi
+	@CHART_VERSION=$$(grep '^version:' helm-charts/bifrost/Chart.yaml | awk '{print $$2}'); \
+	$(ECHO) "$(YELLOW)Packaging helm chart v$$CHART_VERSION...$(NC)"; \
+	cd helm-charts && \
+	helm package bifrost && \
+	$(ECHO) "$(YELLOW)Regenerating index.yaml digest...$(NC)" && \
+	if [ -f index.yaml ]; then \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION --merge index.yaml; \
+	else \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION; \
+	fi && \
+	$(ECHO) "$(YELLOW)Removing bifrost-$$CHART_VERSION.tgz...$(NC)" && \
+	rm -f bifrost-$$CHART_VERSION.tgz && \
+	$(ECHO) "$(GREEN)Helm index updated$(NC)"
 
 generate-html-reports: ## Convert existing XML reports to HTML
 	@if ! which junit-viewer > /dev/null 2>&1; then \
@@ -1567,6 +1586,13 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 			go work use "$$plugin_dir"; \
 		fi; \
 	done
+	@$(ECHO) "$(YELLOW)Adding test command modules...$(NC)"
+	@for cmd_dir in ./tests/cmd/*/; do \
+		if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+			$(ECHO) "  Adding test cmd: $$(basename $$cmd_dir)"; \
+			go work use "$$cmd_dir"; \
+		fi; \
+	done
 	@$(ECHO) "$(YELLOW)Syncing workspace...$(NC)"
 	@go work sync
 	@$(ECHO) "$(GREEN)✓ Go workspace ready with all local modules$(NC)"
@@ -1587,10 +1613,10 @@ work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true
 	@$(ECHO) "$(GREEN)Removed local go.work files$(NC)"
 
-# Module parameter for mod-tidy (all/core/plugins/framework/transport)
+# Module parameter for mod-tidy (all/core/plugins/framework/transport/tests)
 MODULE ?= all
 
-mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport])
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport|tests])
 	@$(ECHO) "$(GREEN)Running go mod tidy...$(NC)"
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
 		$(ECHO) "$(CYAN)Tidying cli...$(NC)"; \
@@ -1614,6 +1640,15 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 			if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
 				plugin_name=$$(basename $$plugin_dir); \
 				cd $$plugin_dir && go mod tidy && cd ../.. && $(ECHO) "$(GREEN)  ✓ plugins/$$plugin_name$(NC)"; \
+			fi; \
+		done; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "tests" ]; then \
+		$(ECHO) "$(CYAN)Tidying test command modules...$(NC)"; \
+		for cmd_dir in ./tests/cmd/*/; do \
+			if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+				cmd_name=$$(basename $$cmd_dir); \
+				cd $$cmd_dir && go mod tidy && cd ../../.. && $(ECHO) "$(GREEN)  ✓ tests/cmd/$$cmd_name$(NC)"; \
 			fi; \
 		done; \
 	fi
@@ -1858,6 +1893,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					--env-var "baseUrl=$$BASE_URL_VAL" \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
 					--reporters cli,json \
@@ -1904,7 +1941,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s '{collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]?], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: if failed then trimstream else (.response.stream = null) end; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
 			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
@@ -1936,6 +1973,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \
@@ -1955,6 +1994,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra \

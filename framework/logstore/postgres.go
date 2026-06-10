@@ -33,9 +33,8 @@ type PostgresConfig struct {
 }
 
 // defaultMatViewRefreshInterval is used when MatViewRefreshInterval is unset
-// or unparseable. Matches the prior hardcoded value so existing deployments
-// see no behavior change.
-const defaultMatViewRefreshInterval = 30 * time.Second
+// or unparseable.
+const defaultMatViewRefreshInterval = time.Minute
 
 // minMatViewRefreshInterval is a floor to prevent pathological configs that
 // would refresh more often than the refresh itself takes — anything below
@@ -196,6 +195,12 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
 		} else {
 			logger.Info("logstore: metadata GIN index is ready")
+		}
+
+		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+		} else {
+			logger.Info("logstore: team/business-unit GIN indexes are ready")
 		}
 
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {

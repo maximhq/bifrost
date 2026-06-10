@@ -188,6 +188,7 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
+
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -341,6 +342,19 @@ func sqliteDropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 		return fmt.Errorf("failed to drop dump table %s: %w", dumpTable, err)
 	}
 	return nil
+}
+
+// dropColumnSQL returns a dialect-correct `ALTER TABLE ... DROP COLUMN` statement.
+// Postgres supports (and we use) the `IF EXISTS` guard so the drop is a no-op when the
+// column is already gone; SQLite's ALTER TABLE grammar has no `IF EXISTS` clause and
+// errors with `near "EXISTS": syntax error`, so we emit a plain DROP COLUMN there.
+// Callers must still guard the SQLite path with a HasColumn check, since plain DROP
+// COLUMN errors on a missing column.
+func dropColumnSQL(tx *gorm.DB, table, column string) string {
+	if tx.Dialector.Name() == "postgres" {
+		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, column)
+	}
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)
 }
 
 func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
@@ -636,6 +650,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPEnableTempTokenAuthColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
 		return err
 	}
@@ -771,6 +788,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVKAccessProfileIDColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropVKAccessProfileIDColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddFeatureFlagsTable(ctx, db); err != nil {
 		return err
 	}
@@ -786,14 +806,64 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddTempTokensTable(ctx, db); err != nil {
 		return err
 	}
-	// Runs LAST in this batch — the refresh does tx.Find(&clientConfigs)
-	// which GORM projects to every column in TableClientConfig, so it has
-	// to come after every config_client column-add above (otherwise the
-	// SELECT trips on a yet-to-be-added column on upgraded DBs). The refresh
-	// no longer gates on the legacy mcp_external_server_url column still
-	// existing — idempotency is handled by migrator_meta, so ordering
-	// relative to migrationDropMCPExternalServerURL is unconstrained.
+	if err := migrationAddVirtualKeyBlacklistedModelsColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationBackfillVirtualKeyBlacklistedModels(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCreatedByUserIDColumnForVirtualKeys(ctx, db); err != nil {
+		return err
+	}
+	// Must run before migrationRefreshConfigHashAfterMCPExternalServerURLRemoval:
+	// that migration SELECTs config_client using the column list derived from
+	// the TableClientConfig struct, which still declares allow_direct_keys.
+	// Without re-adding the column first, the SELECT fails with
+	// "no such column: allow_direct_keys" on any DB where the earlier
+	// drop_allow_direct_keys_column_ddl migration has run.
+	if err := migrationReAddAllowDirectKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropAzureAPIVersionColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPerUserHeadersTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPerUserHeadersFlowsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientTLSConfigColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAdditionalAttributesToPricing(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelConfigScopeColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMigrateProviderGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddBudgetModelConfigIDColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelConfigCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -1296,6 +1366,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error 
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
 					RequiredHeaders:                       cc.RequiredHeaders,
@@ -3799,6 +3870,483 @@ func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
+// migrationAddModelConfigScopeColumns adds the scope and scope_id columns to
+// governance_model_configs and swaps the unique index from (model_name, provider)
+// to (scope, scope_id, model_name, provider). Existing rows are backfilled to the
+// "global" scope, preserving pre-scope behavior. The new index is created before
+// the old one is dropped so uniqueness is never unenforced during the migration.
+func migrationAddModelConfigScopeColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_scope_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			modelConfig := &tables.TableModelConfig{}
+
+			// Add scope column (NOT NULL DEFAULT 'global' backfills existing rows).
+			if !migrator.HasColumn(modelConfig, "scope") {
+				if err := migrator.AddColumn(modelConfig, "scope"); err != nil {
+					return fmt.Errorf("failed to add scope column: %w", err)
+				}
+			}
+			// Add scope_id column (nullable).
+			if !migrator.HasColumn(modelConfig, "scope_id") {
+				if err := migrator.AddColumn(modelConfig, "scope_id"); err != nil {
+					return fmt.Errorf("failed to add scope_id column: %w", err)
+				}
+			}
+			// Belt-and-suspenders backfill in case the column default did not populate
+			// existing rows on this dialect.
+			if err := tx.Exec("UPDATE governance_model_configs SET scope = ? WHERE scope IS NULL OR scope = ''", tables.ModelConfigScopeGlobal).Error; err != nil {
+				return fmt.Errorf("failed to backfill scope: %w", err)
+			}
+
+			// Create the new composite unique index BEFORE dropping the old one. The
+			// composite index is strictly more selective, so already-unique rows stay
+			// unique under it; this ordering avoids any window where uniqueness is
+			// unenforced. CreateIndex reads the struct tags so it is dialect-safe.
+			if !migrator.HasIndex(modelConfig, "idx_model_scope_provider") {
+				if err := migrator.CreateIndex(modelConfig, "idx_model_scope_provider"); err != nil {
+					return fmt.Errorf("failed to create idx_model_scope_provider: %w", err)
+				}
+			}
+			// Drop the now-superseded (model_name, provider) unique index.
+			if migrator.HasIndex(modelConfig, "idx_model_provider") {
+				if err := migrator.DropIndex(modelConfig, "idx_model_provider"); err != nil {
+					return fmt.Errorf("failed to drop idx_model_provider: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_model_config_scope_columns is non-rollbackable: scope-aware rows and the previous uniqueness invariant cannot be restored safely")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add model config scope columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMigrateProviderGovernanceToModelConfigs folds provider-level governance
+// (config_providers.budget_id / rate_limit_id) into governance_model_configs as
+// (scope='global', provider=<name>, model_name='*') "all models on this provider" rows,
+// reusing the same budget/rate-limit rows. It then NULLs the provider FKs so the old
+// provider-governance enforcement path goes inert (single source of truth = model_configs).
+func migrationMigrateProviderGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_provider_governance_to_model_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Guard: only run once the model-config table + scope columns exist.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			var providers []tables.TableProvider
+			if err := tx.Where("budget_id IS NOT NULL OR rate_limit_id IS NOT NULL").Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to load providers with governance: %w", err)
+			}
+
+			now := time.Now()
+			for i := range providers {
+				p := &providers[i]
+
+				// Load any existing global all-models row for this provider. This keeps the
+				// migration idempotent (a re-run skips re-insert) AND lossless: if a wildcard
+				// row already exists - hand-created via the UI, or left by a partial prior run -
+				// we merge the provider's governance into it instead of skipping, so clearing
+				// the provider FKs below can never silently drop budget/rate-limit ownership.
+				// Select only the columns that exist at this point in the migration sequence
+				// (later columns like calendar_aligned do not yet exist).
+				var existing tables.TableModelConfig
+				err := tx.
+					Where("scope = ? AND scope_id IS NULL AND model_name = ? AND provider = ?",
+						tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, p.Name).
+					Select("id", "budget_id", "rate_limit_id").
+					First(&existing).Error
+				switch {
+				case err == gorm.ErrRecordNotFound:
+					providerName := p.Name
+					// Insert via an explicit column map rather than the live TableModelConfig
+					// struct: GORM derives the INSERT column list from today's struct, so a
+					// column added by a *later* migration (e.g. calendar_aligned, added by
+					// add_model_config_calendar_aligned_column further down the sequence) would
+					// otherwise appear in this INSERT before its column exists and fail boot.
+					// The map pins this historical migration to the columns present at this point.
+					if err := tx.Table((tables.TableModelConfig{}).TableName()).Create(map[string]any{
+						"id":            uuid.NewString(),
+						"model_name":    tables.ModelConfigAllModels,
+						"provider":      providerName,
+						"scope":         tables.ModelConfigScopeGlobal,
+						"budget_id":     p.BudgetID,
+						"rate_limit_id": p.RateLimitID,
+						"created_at":    now,
+						"updated_at":    now,
+					}).Error; err != nil {
+						return fmt.Errorf("failed to create wildcard model config for provider %q: %w", p.Name, err)
+					}
+				case err != nil:
+					return fmt.Errorf("failed to check existing wildcard config for provider %q: %w", p.Name, err)
+				default:
+					// A wildcard row already exists: backfill only the governance slots it lacks,
+					// so we never overwrite values already present. This is commutative and safe
+					// to repeat (a clean re-run finds nothing to fill and writes nothing).
+					updates := map[string]any{}
+					if existing.BudgetID == nil && p.BudgetID != nil {
+						updates["budget_id"] = p.BudgetID
+					}
+					if existing.RateLimitID == nil && p.RateLimitID != nil {
+						updates["rate_limit_id"] = p.RateLimitID
+					}
+					if len(updates) > 0 {
+						updates["updated_at"] = now
+						if err := tx.Table((tables.TableModelConfig{}).TableName()).
+							Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+							return fmt.Errorf("failed to merge provider governance into wildcard model config for provider %q: %w", p.Name, err)
+						}
+					}
+				}
+
+				// Detach governance from the provider (FK rows are reused by the model config above).
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", p.Name).
+					Updates(map[string]any{"budget_id": nil, "rate_limit_id": nil}).Error; err != nil {
+					return fmt.Errorf("failed to clear governance FKs for provider %q: %w", p.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Nothing to reverse if the model-config table/scope columns are gone.
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) || !tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			// Reverse provider-level wildcards:
+			// (scope='global', scope_id IS NULL, model_name='*', provider IS NOT NULL).
+			var wildcards []tables.TableModelConfig
+			if err := tx.Where(
+				"scope = ? AND scope_id IS NULL AND model_name = ? AND provider IS NOT NULL",
+				tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels,
+			).Find(&wildcards).Error; err != nil {
+				return fmt.Errorf("failed to load provider wildcard configs: %w", err)
+			}
+
+			for i := range wildcards {
+				mc := &wildcards[i]
+				// Re-attach the budget/rate-limit FK rows to the provider row.
+				if err := tx.Model(&tables.TableProvider{}).Where("name = ?", *mc.Provider).
+					Updates(map[string]any{"budget_id": mc.BudgetID, "rate_limit_id": mc.RateLimitID}).Error; err != nil {
+					return fmt.Errorf("failed to restore governance FKs for provider %q: %w", *mc.Provider, err)
+				}
+				// Drop the wildcard model config; its FK rows now live on the provider again.
+				if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+					return fmt.Errorf("failed to delete wildcard config for provider %q: %w", *mc.Provider, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running migrate provider governance to model configs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetModelConfigIDColumn adds governance_budgets.model_config_id and
+// backfills it from the legacy single governance_model_configs.budget_id, inverting
+// budget ownership so a model config can own multiple budgets via the FK.
+func migrationAddBudgetModelConfigIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_budget_model_config_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableBudget{}, "model_config_id") {
+				if err := mig.AddColumn(&tables.TableBudget{}, "model_config_id"); err != nil {
+					return fmt.Errorf("failed to add model_config_id column: %w", err)
+				}
+			}
+
+			// Backfill from the legacy single budget_id. Idempotent via the IS NULL guard.
+			if !mig.HasColumn(&tables.TableModelConfig{}, "budget_id") {
+				return nil
+			}
+			var mcs []tables.TableModelConfig
+			if err := tx.Where("budget_id IS NOT NULL").Find(&mcs).Error; err != nil {
+				return fmt.Errorf("failed to load model configs with budgets: %w", err)
+			}
+			for i := range mcs {
+				mc := &mcs[i]
+				if mc.BudgetID == nil {
+					continue
+				}
+				if err := tx.Exec(
+					"UPDATE governance_budgets SET model_config_id = ? WHERE id = ? AND model_config_id IS NULL",
+					mc.ID, *mc.BudgetID,
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill model_config_id for budget %q: %w", *mc.BudgetID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return fmt.Errorf("add_budget_model_config_id_column is non-rollbackable: dropping model_config_id would permanently lose multi-budget ownership data that cannot be recovered from the legacy single budget_id column")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add budget model_config_id column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// ensureVKModelConfig returns the ID of the VK-scoped model config for the given
+// (vkID, provider) pair, creating it if absent.
+func ensureVKModelConfig(tx *gorm.DB, vkID string, provider *string, calendarAligned bool, now time.Time) (string, error) {
+	q := tx.Model(&tables.TableModelConfig{}).
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var existing []tables.TableModelConfig
+	if err := q.Limit(1).Find(&existing).Error; err != nil {
+		return "", fmt.Errorf("failed to look up VK model config: %w", err)
+	}
+	if len(existing) > 0 {
+		return existing[0].ID, nil
+	}
+	mc := tables.TableModelConfig{
+		ID:              uuid.NewString(),
+		ModelName:       tables.ModelConfigAllModels,
+		Provider:        provider,
+		Scope:           tables.ModelConfigScopeVirtualKey,
+		ScopeID:         &vkID,
+		CalendarAligned: calendarAligned,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := tx.Create(&mc).Error; err != nil {
+		return "", fmt.Errorf("failed to create VK model config: %w", err)
+	}
+	return mc.ID, nil
+}
+
+// migrationMigrateVirtualKeyGovernanceToModelConfigs folds VK-level governance into
+// model_configs as VK-scoped all-models wildcard rows:
+//   - VK top-level budgets/rate-limit -> (scope=virtual_key, scope_id=vk, model_name='*', provider=NULL)
+//   - per-provider-config budgets/rate-limit -> (..., provider=<that provider>)
+func migrationMigrateVirtualKeyGovernanceToModelConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "migrate_virtual_key_governance_to_model_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Required tables/columns must exist (scope columns + the new owner FK).
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) ||
+				!tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") ||
+				!tx.Migrator().HasColumn(&tables.TableBudget{}, "model_config_id") {
+				return nil
+			}
+
+			var vks []tables.TableVirtualKey
+			if err := tx.Preload("Budgets").Preload("ProviderConfigs").Preload("ProviderConfigs.Budgets").
+				Find(&vks).Error; err != nil {
+				return fmt.Errorf("failed to load virtual keys: %w", err)
+			}
+
+			now := time.Now()
+			for i := range vks {
+				vk := &vks[i]
+
+				// VK top-level governance -> all-providers wildcard.
+				if len(vk.Budgets) > 0 || vk.RateLimitID != nil {
+					mcID, err := ensureVKModelConfig(tx, vk.ID, nil, vk.CalendarAligned, now)
+					if err != nil {
+						return err
+					}
+					for _, b := range vk.Budgets {
+						if err := tx.Exec(
+							"UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL WHERE id = ? AND model_config_id IS NULL",
+							mcID, b.ID,
+						).Error; err != nil {
+							return fmt.Errorf("failed to reparent VK budget %q: %w", b.ID, err)
+						}
+					}
+					if vk.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *vk.RateLimitID, mcID).Error; err != nil {
+							return fmt.Errorf("failed to move VK rate limit to model config: %w", err)
+						}
+						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?", vk.ID).Error; err != nil {
+							return fmt.Errorf("failed to clear VK rate limit FK: %w", err)
+						}
+					}
+				}
+
+				// Per-provider-config governance -> provider-specific wildcard.
+				for j := range vk.ProviderConfigs {
+					pc := &vk.ProviderConfigs[j]
+					if len(pc.Budgets) == 0 && pc.RateLimitID == nil {
+						continue
+					}
+					provider := pc.Provider
+					mcID, err := ensureVKModelConfig(tx, vk.ID, &provider, vk.CalendarAligned, now)
+					if err != nil {
+						return err
+					}
+					for _, b := range pc.Budgets {
+						if err := tx.Exec(
+							"UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL WHERE id = ? AND model_config_id IS NULL",
+							mcID, b.ID,
+						).Error; err != nil {
+							return fmt.Errorf("failed to reparent provider-config budget %q: %w", b.ID, err)
+						}
+					}
+					if pc.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?", *pc.RateLimitID, mcID).Error; err != nil {
+							return fmt.Errorf("failed to move provider-config rate limit to model config: %w", err)
+						}
+						if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = NULL WHERE id = ?", pc.ID).Error; err != nil {
+							return fmt.Errorf("failed to clear provider-config rate limit FK: %w", err)
+						}
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableModelConfig{}) ||
+				!tx.Migrator().HasColumn(&tables.TableModelConfig{}, "scope") {
+				return nil
+			}
+
+			// Only the VK-scoped all-models wildcards this migration creates.
+			var mcs []tables.TableModelConfig
+			if err := tx.Where("scope = ? AND model_name = ?",
+				tables.ModelConfigScopeVirtualKey, tables.ModelConfigAllModels).Find(&mcs).Error; err != nil {
+				return fmt.Errorf("failed to load VK wildcard model configs: %w", err)
+			}
+
+			for i := range mcs {
+				mc := &mcs[i]
+				if mc.ScopeID == nil {
+					continue
+				}
+				var budgets []tables.TableBudget
+				if err := tx.Where("model_config_id = ?", mc.ID).Find(&budgets).Error; err != nil {
+					return fmt.Errorf("failed to load budgets for model config %q: %w", mc.ID, err)
+				}
+
+				if mc.Provider == nil {
+					// VK top-level: restore VK ownership + rate limit.
+					for _, b := range budgets {
+						if err := tx.Exec("UPDATE governance_budgets SET virtual_key_id = ?, model_config_id = NULL WHERE id = ?", *mc.ScopeID, b.ID).Error; err != nil {
+							return fmt.Errorf("failed to restore VK budget %q: %w", b.ID, err)
+						}
+					}
+					if mc.RateLimitID != nil {
+						if err := tx.Exec("UPDATE governance_virtual_keys SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, *mc.ScopeID).Error; err != nil {
+							return fmt.Errorf("failed to restore VK rate limit: %w", err)
+						}
+					}
+				} else {
+					// Provider-specific: find the matching provider config to restore onto.
+					var pcs []tables.TableVirtualKeyProviderConfig
+					if err := tx.Where("virtual_key_id = ? AND provider = ?", *mc.ScopeID, *mc.Provider).
+						Limit(1).Find(&pcs).Error; err != nil {
+						return fmt.Errorf("failed to find provider config for VK %q provider %q: %w", *mc.ScopeID, *mc.Provider, err)
+					}
+					if len(pcs) > 0 {
+						pcID := pcs[0].ID
+						for _, b := range budgets {
+							if err := tx.Exec("UPDATE governance_budgets SET provider_config_id = ?, model_config_id = NULL WHERE id = ?", pcID, b.ID).Error; err != nil {
+								return fmt.Errorf("failed to restore provider-config budget %q: %w", b.ID, err)
+							}
+						}
+						if mc.RateLimitID != nil {
+							if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET rate_limit_id = ? WHERE id = ?", *mc.RateLimitID, pcID).Error; err != nil {
+								return fmt.Errorf("failed to restore provider-config rate limit: %w", err)
+							}
+						}
+					}
+				}
+
+				if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
+					return fmt.Errorf("failed to delete VK wildcard model config %q: %w", mc.ID, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running migrate virtual key governance to model configs migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigCalendarAlignedColumn adds governance_model_configs.calendar_aligned
+// and backfills VK-scoped wildcards from their owning virtual key. Budgets folded out of a
+// calendar-aligned VK then keep snapping resets to calendar boundaries.
+func migrationAddModelConfigCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
+				}
+			}
+
+			// Backfill VK-scoped configs from their owning VK.
+			type vkRow struct {
+				ID              string
+				CalendarAligned bool
+			}
+			var rows []vkRow
+			if err := tx.Table("governance_virtual_keys").Select("id, calendar_aligned").Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to load virtual keys for calendar_aligned backfill: %w", err)
+			}
+			for _, r := range rows {
+				if !r.CalendarAligned {
+					continue // default is already false
+				}
+				if err := tx.Exec(
+					"UPDATE governance_model_configs SET calendar_aligned = ? WHERE scope = ? AND scope_id = ?",
+					true, tables.ModelConfigScopeVirtualKey, r.ID,
+				).Error; err != nil {
+					return fmt.Errorf("failed to backfill calendar_aligned for VK %q: %w", r.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableModelConfig{}, "calendar_aligned") {
+				if err := mig.DropColumn(&tables.TableModelConfig{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add model config calendar_aligned column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddAllowedHeadersJSONColumn adds the allowed_headers_json column to the client config table
 func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -5125,9 +5673,16 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 			if tx.Dialector.Name() != "postgres" {
 				return nil
 			}
+			// azure_api_version was removed in v1 API migration; only widen it if it
+			// still exists (existing DBs that haven't run the drop migration yet).
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT").Error; err != nil {
+					return fmt.Errorf("failed to widen column azure_api_version: %w", err)
+				}
+			}
+
 			stmts := []string{
 				// config_keys table - all encrypted EnvVar fields
-				"ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN azure_client_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN azure_tenant_id TYPE TEXT",
 				"ALTER TABLE config_keys ALTER COLUMN vertex_project_id TYPE TEXT",
@@ -5212,7 +5767,11 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 // and backfills existing rows: any provider config with no keys in the join table previously meant
 // "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
 func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+	// opts is a value copy: migrator.DefaultOptions is a shared global pointer,
+	// so mutating it in place would disable transactions for other migrations.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "add_allow_all_keys_to_provider_config",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -5322,6 +5881,35 @@ func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp disable auto tool inject migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPEnableTempTokenAuthColumn adds the mcp_enable_temp_token_auth column to the client config table.
+func migrationAddMCPEnableTempTokenAuthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_enable_temp_token_auth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth") {
+				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_enable_temp_token_auth"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp enable temp token auth migration: %s", err.Error())
 	}
 	return nil
 }
@@ -6371,6 +6959,7 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						MCPCodeModeBindingLevel:         cc.MCPCodeModeBindingLevel,
 						MCPToolSyncInterval:             cc.MCPToolSyncInterval,
 						MCPDisableAutoToolInject:        cc.MCPDisableAutoToolInject,
+						MCPEnableTempTokenAuth:          cc.MCPEnableTempTokenAuth,
 						AsyncJobResultTTL:               cc.AsyncJobResultTTL,
 						LoggingHeaders:                  cc.LoggingHeaders,
 						RequiredHeaders:                 cc.RequiredHeaders,
@@ -6629,7 +7218,7 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 				// Drop the legacy calendar_aligned column from governance_budgets.
 				// Plain column with no FK references — not a correctness risk if left behind,
 				// but log a warning so it's not invisible.
-				if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN IF EXISTS calendar_aligned").Error; err != nil {
+				if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 					log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 				}
 			}
@@ -6689,8 +7278,9 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0) // restore default
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -6823,8 +7413,9 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 		if err != nil {
 			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
 		sqlDB.SetMaxOpenConns(1)
-		defer sqlDB.SetMaxOpenConns(0)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
 
 		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
 			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
@@ -6837,6 +7428,100 @@ func migrationAddTeamBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) err
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_team_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigBudgetsFKConstraint adds the missing
+// governance_budgets.model_config_id -> governance_model_configs(id)
+// ON DELETE CASCADE foreign key (defined on TableModelConfig.Budgets via
+// foreignKey:ModelConfigID;constraint:OnDelete:CASCADE).
+//
+// migrationAddMultiBudgetTables created the equivalent cascade FKs for VK- and
+// ProviderConfig-owned budgets but never the model-config edge, and
+// migrationAddBudgetModelConfigIDColumn added the column without a constraint.
+// As a result deleting a model config never cascaded to its multi-budget rows,
+// so they leaked (orphaned governance_budgets whose model_config_id points at a
+// since-deleted config). This makes that cleanup structurally sound at the DB
+// level, underneath the existing application-level cleanup in
+// DeleteModelConfigsForScope/DeleteModelConfig. (The single owned rate-limit is
+// intentionally left to application cleanup — rate-limits use the opposite
+// owner.rate_limit_id convention, so reversing it just for model configs would
+// introduce a one-off ownership split for a one-row-per-config leak surface.)
+func migrationAddModelConfigBudgetsFKConstraint(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_budgets_fk_constraint",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Pre-clean: budgets whose model_config_id already references a
+			// missing config would violate the FK we're about to add and block
+			// its creation. They are exactly the rows the cascade would have
+			// removed, so delete them — but only when nothing live still
+			// references them via the legacy governance_model_configs.budget_id
+			// (a NO ACTION FK), so this DELETE can't trip that constraint.
+			if err := tx.Exec(`
+				DELETE FROM governance_budgets
+				WHERE model_config_id IS NOT NULL
+				  AND model_config_id NOT IN (SELECT id FROM governance_model_configs)
+				  AND id NOT IN (
+				      SELECT budget_id FROM governance_model_configs WHERE budget_id IS NOT NULL
+				  )
+			`).Error; err != nil {
+				return fmt.Errorf("failed to pre-clean orphaned model-config budgets: %w", err)
+			}
+
+			// Create the cascade FK (no-op if a prior fresh-DB migrate already made it).
+			if !mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for ModelConfig -> Budgets: %w", err)
+				}
+			}
+			return nil
+		},
+		// Partially non-rollbackable: dropping the FK restores the previous
+		// schema, but the orphaned governance_budgets rows removed by the
+		// pre-clean are gone permanently. That loss is intentional — they were
+		// exactly the dead rows the missing cascade had leaked — so the schema
+		// rollback below is still provided rather than hard-failing.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasConstraint(&tables.TableModelConfig{}, "Budgets") {
+				if err := mg.DropConstraint(&tables.TableModelConfig{}, "Budgets"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables:
+	// CreateConstraint rebuilds governance_budgets via DROP+RENAME inside a
+	// transaction, which fails while other tables hold FKs into it and
+	// foreign_keys is ON. PRAGMA foreign_keys can't change inside a transaction,
+	// so disable it (pinned to one connection) before the migrator opens its tx.
+	// Postgres supports ALTER TABLE ADD CONSTRAINT natively and needs none of this.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_config_budgets_fk_constraint migration: %s", err.Error())
 	}
 	return nil
 }
@@ -8294,6 +8979,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 					MCPCodeModeBindingLevel:               cc.MCPCodeModeBindingLevel,
 					MCPToolSyncInterval:                   cc.MCPToolSyncInterval,
 					MCPDisableAutoToolInject:              cc.MCPDisableAutoToolInject,
+					MCPEnableTempTokenAuth:                cc.MCPEnableTempTokenAuth,
 					MCPExternalClientURL:                  schemas.NewEnvVar(cc.MCPExternalClientURL),
 					HeaderFilterConfig:                    cc.HeaderFilterConfig,
 					AsyncJobResultTTL:                     cc.AsyncJobResultTTL,
@@ -8337,14 +9023,14 @@ func migrationDropLegacyCalendarAlignedColumns(ctx context.Context, db *gorm.DB)
 		ID: "drop_legacy_calendar_aligned_columns",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Use raw `ALTER TABLE ... DROP COLUMN IF EXISTS` instead of GORM's Migrator.DropColumn,
-			// which on SQLite does a full table rebuild that aborts on pre-existing FK violations;
-			// since these unconstrained boolean columns are safe to leave behind, we log a warning
-			// rather than fail boot.
-			if err := tx.Exec("ALTER TABLE governance_budgets DROP COLUMN calendar_aligned").Error; err != nil {
+			// Use a raw `ALTER TABLE ... DROP COLUMN` (dialect-aware via dropColumnSQL) instead of
+			// GORM's Migrator.DropColumn, which on SQLite does a full table rebuild that aborts on
+			// pre-existing FK violations; since these unconstrained boolean columns are safe to
+			// leave behind, we log a warning rather than fail boot.
+			if err := tx.Exec(dropColumnSQL(tx, "governance_budgets", "calendar_aligned")).Error; err != nil {
 				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_budgets: %v", err)
 			}
-			if err := tx.Exec("ALTER TABLE governance_rate_limits DROP COLUMN calendar_aligned").Error; err != nil {
+			if err := tx.Exec(dropColumnSQL(tx, "governance_rate_limits", "calendar_aligned")).Error; err != nil {
 				log.Printf("[Migration] warning: could not drop legacy calendar_aligned column from governance_rate_limits: %v", err)
 			}
 			return nil
@@ -8415,41 +9101,7 @@ func migrationAddTeamCalendarAlignedColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddVKAccessProfileIDColumn adds access_profile_id to governance_virtual_keys
-// so that existing VKs can be attached directly to an access profile template (enterprise feature).
-func migrationAddVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_vk_access_profile_id_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if !mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				if err := mig.AddColumn(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to add access_profile_id column to governance_virtual_keys: %w", err)
-				}
-			}
-			if !mig.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_access_profile_id") {
-				if err := mig.CreateIndex(&tables.TableVirtualKey{}, "AccessProfileID"); err != nil {
-					return fmt.Errorf("failed to create index on governance_virtual_keys.access_profile_id: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mig := tx.Migrator()
-			if mig.HasColumn(&tables.TableVirtualKey{}, "access_profile_id") {
-				return mig.DropColumn(&tables.TableVirtualKey{}, "access_profile_id")
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
-	}
-	return nil
-}
-
+// migrationAddModelParametersURLColumn adds the model_parameters_url column to framework_configs.
 func migrationAddModelParametersURLColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_model_parameters_url_column",
@@ -8536,6 +9188,590 @@ func migrationAddTempTokensTable(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_temp_tokens_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyBlacklistedModelsColumn adds the blacklisted_models JSON column
+// to governance_virtual_key_provider_configs, matching the provider-key blacklist pattern.
+// This migration performs the DDL only. The data backfill and config_hash recompute are
+// done by migrationBackfillVirtualKeyBlacklistedModels so the ALTER's ACCESS EXCLUSIVE
+// lock is not held across the backfill SELECT + UPDATE, which can deadlock Postgres.
+func migrationAddVirtualKeyBlacklistedModelsColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_provider_config_blacklisted_models_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to add blacklisted_models column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_provider_config_blacklisted_models_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillVirtualKeyBlacklistedModels backfills empty JSON arrays into the
+// blacklisted_models column added by migrationAddVirtualKeyBlacklistedModelsColumn and
+// recomputes config_hash for every virtual key so they do not appear stale after upgrade.
+// It is a separate migration from the column-add so the DDL's ACCESS EXCLUSIVE lock is
+// never held across this SELECT + UPDATE backfill.
+func migrationBackfillVirtualKeyBlacklistedModels(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_vk_provider_config_blacklisted_models",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Backfill empty arrays for existing rows. Idempotent via the WHERE clause.
+			if err := tx.Exec("UPDATE governance_virtual_key_provider_configs SET blacklisted_models = '[]' WHERE blacklisted_models IS NULL OR blacklisted_models = ''").Error; err != nil {
+				return fmt.Errorf("failed to backfill blacklisted_models: %w", err)
+			}
+
+			// Recompute config_hash for all VKs affected by the backfill so they do
+			// not appear stale after upgrade. The hash is deterministic, so this is
+			// safe to re-run.
+			var virtualKeys []tables.TableVirtualKey
+			if err := tx.
+				Preload("ProviderConfigs").
+				Preload("ProviderConfigs.Keys").
+				Preload("MCPConfigs").
+				Find(&virtualKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+			}
+			for _, vk := range virtualKeys {
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_vk_provider_config_blacklisted_models migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVKAccessProfileIDColumn adds the access_profile_id column to governance_virtual_keys.
+func migrationAddVKAccessProfileIDColumn(_ context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropVKAccessProfileIDColumn drops the access_profile_id column and its
+// index from governance_virtual_keys, reverting migrationAddVKAccessProfileIDColumn.
+func migrationDropVKAccessProfileIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_vk_access_profile_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// DROP INDEX IF EXISTS avoids aborting the Postgres transaction when
+			// the index was never created (e.g. fresh installs where the add
+			// migration ran as a no-op).
+			if err := tx.Exec("DROP INDEX IF EXISTS idx_governance_virtual_keys_access_profile_id").Error; err != nil {
+				return fmt.Errorf("failed to drop index idx_governance_virtual_keys_access_profile_id: %w", err)
+			}
+			// Use raw ALTER TABLE instead of GORM's DropColumn: GORM's SQLite
+			// DropColumn does a full table rebuild inside a transaction where
+			// PRAGMA foreign_keys cannot be disabled, causing FK checks on
+			// unrelated columns to fail against test data.
+			// ALTER TABLE DROP COLUMN (SQLite 3.35+) modifies the schema in place.
+			if tx.Migrator().HasColumn("governance_virtual_keys", "access_profile_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN access_profile_id").Error; err != nil {
+					return fmt.Errorf("failed to drop access_profile_id column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models") {
+				if err := mg.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "blacklisted_models"); err != nil {
+					return fmt.Errorf("failed to drop blacklisted_models column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_vk_access_profile_id_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserHeadersTables creates the mcp_per_user_header_credentials
+// table and adds the per_user_header_keys_json column to config_mcp_clients.
+// Mirrors the partial-unique-index pattern from
+// migrationAddOAuthAuthModeColumns so the per-user-headers credentials are
+// keyed by (auth_mode, identity, mcp_client_id) the same way per-user OAuth
+// tokens are. Forward-only on data — no rows exist yet.
+func migrationAddPerUserHeadersTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_per_user_header_credentials_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1) config_mcp_clients.per_user_header_keys_json (admin-defined
+			//    schema of required header names; nullable / empty for all
+			//    other auth types).
+			if !mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				if err := mg.AddColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
+					return fmt.Errorf("add per_user_header_keys_json column to config_mcp_clients: %w", err)
+				}
+			}
+
+			// 2) mcp_per_user_header_credentials table.
+			if !mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
+					return fmt.Errorf("create mcp_per_user_header_credentials table: %w", err)
+				}
+			}
+
+			// 3) Partial unique indexes per auth_mode — matches the
+			//    oauth_user_tokens layout so the cascade / orphan logic stays
+			//    parallel.
+			partialUniques := []string{
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_user_mcp
+					ON mcp_per_user_header_credentials (user_id, mcp_client_id)
+					WHERE auth_mode = 'user' AND user_id IS NOT NULL AND user_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_vk_mcp
+					ON mcp_per_user_header_credentials (virtual_key_id, mcp_client_id)
+					WHERE auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_session_mcp
+					ON mcp_per_user_header_credentials (session_id, mcp_client_id)
+					WHERE auth_mode = 'session' AND session_id IS NOT NULL AND session_id != ''`,
+			}
+			for _, stmt := range partialUniques {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create partial unique index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+
+			// 4) Status-scoped partial indexes for cheap UI / cleanup queries.
+			statusIndexes := []string{
+				`CREATE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_orphaned
+					ON mcp_per_user_header_credentials (status)
+					WHERE status = 'orphaned'`,
+				`CREATE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_needs_update
+					ON mcp_per_user_header_credentials (mcp_client_id)
+					WHERE status = 'needs_update'`,
+			}
+			for _, stmt := range statusIndexes {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create status partial index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, name := range []string{
+				"idx_mcp_per_user_header_credentials_user_mcp",
+				"idx_mcp_per_user_header_credentials_vk_mcp",
+				"idx_mcp_per_user_header_credentials_session_mcp",
+				"idx_mcp_per_user_header_credentials_orphaned",
+				"idx_mcp_per_user_header_credentials_needs_update",
+			} {
+				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+					return fmt.Errorf("drop %s: %w", name, err)
+				}
+			}
+			if mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := mg.DropTable(&tables.TableMCPPerUserHeaderCredential{}); err != nil {
+					return fmt.Errorf("drop mcp_per_user_header_credentials: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableMCPClient{}, "per_user_header_keys_json") {
+				if err := mg.DropColumn(&tables.TableMCPClient{}, "PerUserHeaderKeysJSON"); err != nil {
+					return fmt.Errorf("drop per_user_header_keys_json column from config_mcp_clients: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_per_user_header_credentials_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserHeadersFlowsTable creates the
+// mcp_per_user_header_flows table. Pending submission flow rows that
+// mirror oauth_user_sessions for the per-user-headers surface — the
+// resolver creates one when the inline-401 fires; the submit endpoint
+// deletes the row on success; the sweep worker reaps expired pending
+// rows. Lives in its own migration so it can land on DBs that already
+// applied migrationAddPerUserHeadersTables (which only created the
+// credentials table).
+func migrationAddPerUserHeadersFlowsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_per_user_header_flows_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				if err := mg.CreateTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
+					return fmt.Errorf("create mcp_per_user_header_flows table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPPerUserHeaderFlow{}) {
+				if err := mg.DropTable(&tables.TableMCPPerUserHeaderFlow{}); err != nil {
+					return fmt.Errorf("drop mcp_per_user_header_flows: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_per_user_header_flows_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCreatedByUserIDColumnForVirtualKeys adds the created_by_user_id column to the governance_virtual_keys table.
+func migrationAddCreatedByUserIDColumnForVirtualKeys(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_created_by_user_id_column_for_virtual_keys",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN created_by_user_id VARCHAR(255)").Error; err != nil {
+					return fmt.Errorf("failed to add created_by_user_id column to governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "created_by_user_id") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN created_by_user_id").Error; err != nil {
+					return fmt.Errorf("failed to drop created_by_user_id column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_created_by_user_id_column_for_virtual_keys migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropAzureAPIVersionColumn adds the created_by_user_id column to the governance_virtual_keys table
+func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_azure_api_version_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN azure_api_version").Error; err != nil {
+					return fmt.Errorf("failed to drop azure_api_version column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "azure_api_version") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN azure_api_version TEXT").Error; err != nil {
+					return fmt.Errorf("failed to re-add azure_api_version column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_azure_api_version_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationReAddAllowDirectKeysColumn re-adds the allow_direct_keys column to config_client.
+// The column was originally added then dropped in v1.5.0 when the direct key bypass feature
+// was removed. It is re-added here as the feature is being restored with header-gated access.
+func migrationReAddAllowDirectKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "re_add_allow_direct_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN allow_direct_keys BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return fmt.Errorf("failed to re-add allow_direct_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "allow_direct_keys") {
+				if err := tx.Migrator().DropColumn(&tables.TableClientConfig{}, "allow_direct_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_direct_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running re_add_allow_direct_keys_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientTLSConfigColumn adds the tls_config_json column to the config_mcp_clients table.
+func migrationAddMCPClientTLSConfigColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_tls_config_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
+				if err := tx.Exec("ALTER TABLE config_mcp_clients ADD COLUMN tls_config_json TEXT").Error; err != nil {
+					return fmt.Errorf("failed to add tls_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableMCPClient{}, "tls_config_json") {
+				if err := tx.Exec("ALTER TABLE config_mcp_clients DROP COLUMN tls_config_json").Error; err != nil {
+					return fmt.Errorf("failed to drop tls_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_tls_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAdditionalAttributesToPricing adds the additional_attributes
+// column to governance_model_pricing. The column stores editorial per-model
+// metadata (e.g. description) as a JSON blob. It is intentionally excluded
+// from UpsertModelPrices' update list so the 24-hour pricing sync never
+// overwrites it.
+func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_additional_attributes_to_pricing",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				if err := tx.Migrator().AddColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
+					return fmt.Errorf("failed to add additional_attributes column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableModelPricing{}, "additional_attributes") {
+				if err := tx.Migrator().DropColumn(&tables.TableModelPricing{}, "AdditionalAttributesJSON"); err != nil {
+					return fmt.Errorf("failed to drop additional_attributes column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_additional_attributes_to_pricing migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerCalendarAlignedColumn adds calendar_aligned to governance_customers
+// so customer-level calendar alignment can be persisted. No backfill is needed: the
+// legacy per-budget/per-rate-limit calendar_aligned columns were dropped by
+// drop_legacy_calendar_aligned_columns before this migration runs, and calendar_aligned
+// never worked for customers, so there is no prior behavior to preserve.
+func migrationAddCustomerCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_customer_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				if err := mig.AddColumn(&tables.TableCustomer{}, "CalendarAligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to governance_customers: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableCustomer{}, "calendar_aligned") {
+				return mig.DropColumn(&tables.TableCustomer{}, "calendar_aligned")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_customer_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCustomerBudgetsToBudgetsTable pivots customer budgets from a single-FK on
+// governance_customers.budget_id to multi-budget ownership via governance_budgets.customer_id,
+// mirroring how team budgets were restructured in migrationAddTeamBudgetsToBudgetsTable.
+func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_customer_budgets_to_budgets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add customer_id FK column on governance_budgets.
+			if !mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "CustomerID"); err != nil {
+					return fmt.Errorf("failed to add customer_id column to governance_budgets: %w", err)
+				}
+			}
+
+			// Create index on the new FK column (AddColumn doesn't create indexes from struct tags).
+			if !mg.HasIndex(&tables.TableBudget{}, "idx_governance_budgets_customer_id") {
+				if err := mg.CreateIndex(&tables.TableBudget{}, "CustomerID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_budgets.customer_id: %w", err)
+				}
+			}
+
+			// Backfill: set customer_id from legacy governance_customers.budget_id (if column still exists).
+			// The column is intentionally kept; a future migration can drop it once all instances
+			// have migrated and the column is confirmed unused.
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if legacyExists {
+				// Preflight: fail if any customer-referenced budget is already owned by another entity.
+				var conflictCount int64
+				if err := tx.Raw(`
+					SELECT COUNT(*) FROM governance_budgets b
+					WHERE (b.virtual_key_id IS NOT NULL OR b.provider_config_id IS NOT NULL OR b.team_id IS NOT NULL OR b.model_config_id IS NOT NULL)
+					  AND EXISTS (SELECT 1 FROM governance_customers c WHERE c.budget_id = b.id)
+				`).Scan(&conflictCount).Error; err != nil {
+					return fmt.Errorf("failed to check for multi-owner customer budget conflicts: %w", err)
+				}
+				if conflictCount > 0 {
+					return fmt.Errorf(
+						"cannot migrate customer budgets: %d budget row(s) referenced by a customer are already owned by another entity; resolve manually before re-running",
+						conflictCount,
+					)
+				}
+
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET customer_id = (
+						SELECT id FROM governance_customers
+						WHERE governance_customers.budget_id = governance_budgets.id
+					) WHERE customer_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_customers
+						WHERE governance_customers.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill customer budget customer_id: %w", err)
+				}
+			}
+
+			// Create FK constraint with CASCADE delete (defined on TableCustomer.Budgets).
+			if !mg.HasConstraint(&tables.TableCustomer{}, "Budgets") {
+				if err := mg.CreateConstraint(&tables.TableCustomer{}, "Budgets"); err != nil {
+					return fmt.Errorf("failed to create FK constraint for Customer -> Budgets: %w", err)
+				}
+			}
+
+			// Refresh config_hash for customers whose budgets just got linked. GenerateCustomerHash
+			// now includes sorted budget IDs, so hashes written before multi-budget support are stale.
+			var customersToRehash []tables.TableCustomer
+			if err := tx.Preload("Budgets").Find(&customersToRehash).Error; err != nil {
+				return fmt.Errorf("failed to fetch customers for hash refresh: %w", err)
+			}
+			for _, c := range customersToRehash {
+				if len(c.Budgets) == 0 {
+					continue
+				}
+				hash, err := GenerateCustomerHash(c)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for customer %s: %w", c.ID, err)
+				}
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", c.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for customer %s: %w", c.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "customer_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "customer_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddMultiBudgetTables: GORM's
+	// CreateConstraint (Customer -> Budgets) rebuilds governance_budgets via DROP+RENAME,
+	// which fails when other tables hold FKs into it and foreign_keys is ON. PRAGMA
+	// foreign_keys cannot change inside a transaction, so disable it on a pinned single
+	// connection before the migrator opens its transaction, then restore it.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
 	}
 	return nil
 }

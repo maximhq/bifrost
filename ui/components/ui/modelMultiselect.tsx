@@ -91,7 +91,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	const arrayValue = value as string[];
 	const selectedOptions: ModelOption[] = isSingleSelect
 		? stringValue
-			? [{ label: stringValue, value: stringValue }]
+			? [stringValue === "*" ? ALL_MODELS_OPTION : { label: stringValue, value: stringValue }]
 			: []
 		: arrayValue.map((model) => (model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }));
 

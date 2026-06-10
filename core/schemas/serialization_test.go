@@ -843,11 +843,11 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 			Type:     ChatToolTypeFunction,
 			Function: &ChatToolFunction{Name: "get_weather"},
 			// Mixed state: server-tool + custom fields also populated.
-			Custom:        &ChatToolCustom{},
-			Name:          "leaked_name",
-			MaxUses:       Ptr(5),
+			Custom:         &ChatToolCustom{},
+			Name:           "leaked_name",
+			MaxUses:        Ptr(5),
 			DisplayWidthPx: Ptr(1280),
-			MCPServerName: "leaked_server",
+			MCPServerName:  "leaked_server",
 		}
 		data, err := Marshal(tool)
 		require.NoError(t, err)
@@ -874,8 +874,8 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 		raw := string(data)
 
 		assert.Contains(t, raw, `"type":"custom"`)
-		assert.Contains(t, raw, `"my_custom"`)    // custom tool retains top-level Name
-		assert.Contains(t, raw, `"format"`)       // custom's format field
+		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)    // custom's format field
 		assert.NotContains(t, raw, `"function"`)
 		assert.NotContains(t, raw, `"should_be_stripped"`)
 		assert.NotContains(t, raw, `"max_uses"`)
@@ -883,9 +883,9 @@ func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
 
 	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
 		tool := ChatTool{
-			Type:    "web_search_20260209",
-			Name:    "web_search",
-			MaxUses: Ptr(5),
+			Type:           "web_search_20260209",
+			Name:           "web_search",
+			MaxUses:        Ptr(5),
 			AllowedCallers: []string{"direct"},
 			// Leaks
 			Function: &ChatToolFunction{Name: "should_be_stripped"},
@@ -1369,9 +1369,8 @@ func TestProviderOverride_KeyOmittedFromJSON(t *testing.T) {
 	// presence in the JSON output here — that would lock in unsafe
 	// serialisation. Only assert the credential-bearing Key fields are absent.
 	override := ProviderOverride{
-		Key:              &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
-		BaseURL:          "https://eu.api.openai.com",
-		BaseProviderType: OpenAI,
+		Key:     &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
+		BaseURL: "https://eu.api.openai.com",
 	}
 
 	data, err := json.Marshal(override)
@@ -1390,9 +1389,8 @@ func TestBifrostRequest_ProviderOverrideOmittedFromJSON(t *testing.T) {
 			Model:    "gpt-4o",
 		},
 		ProviderOverride: &ProviderOverride{
-			Key:              &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
-			BaseURL:          "https://override.example.com",
-			BaseProviderType: OpenAI,
+			Key:     &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
+			BaseURL: "https://override.example.com",
 		},
 	}
 
@@ -1423,7 +1421,7 @@ func TestBifrostRequest_NilReceiverGuards(t *testing.T) {
 	// possibly-nil request.
 	assert.NotPanics(t, func() { req.UpdateAPIKey(Key{}) }, "UpdateAPIKey on nil *BifrostRequest must not panic")
 	assert.NotPanics(t, func() { req.UpdateProviderBaseURL("https://x") }, "UpdateProviderBaseURL on nil *BifrostRequest must not panic")
-	assert.NotPanics(t, func() { req.UpdateBaseProviderType(OpenAI) }, "UpdateBaseProviderType on nil *BifrostRequest must not panic")
+	assert.NotPanics(t, func() { req.UpdateProviderNetworkConfig(ProviderNetworkConfigOverride{}) }, "UpdateProviderNetworkConfig on nil *BifrostRequest must not panic")
 
 	// Methods returning errors must surface a non-nil error rather than panicking.
 	if err := req.UpdateProvider(OpenAI); err == nil {
@@ -1439,3 +1437,69 @@ func TestBifrostRequest_NilReceiverGuards(t *testing.T) {
 	}, "Clone on nil *BifrostRequest must not panic")
 }
 
+func TestSonic_ChatTool_DeepCopy_PreservesFullParameterSchema(t *testing.T) {
+	ref := "#/$defs/Preferences"
+	minItems := int64(1)
+	nullable := true
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "suggest_time",
+			Parameters: &ToolFunctionParameters{
+				Type: "object",
+				Properties: NewOrderedMapFromPairs(
+					KV("preferences", NewOrderedMapFromPairs(KV("$ref", ref))),
+				),
+				Required: []string{"preferences"},
+				Defs: NewOrderedMapFromPairs(
+					KV("Preferences", NewOrderedMapFromPairs(
+						KV("type", "object"),
+						KV("properties", NewOrderedMapFromPairs(
+							KV("startHour", NewOrderedMapFromPairs(KV("type", "string"))),
+						)),
+					)),
+				),
+				Ref:      &ref,
+				Items:    NewOrderedMapFromPairs(KV("type", "string")),
+				MinItems: &minItems,
+				AnyOf: []OrderedMap{
+					*NewOrderedMapFromPairs(KV("type", "string")),
+				},
+				Nullable: &nullable,
+			},
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Function)
+	require.NotNil(t, copied.Function.Parameters)
+	data, err := Marshal(copied.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`)
+	assert.Contains(t, s, `"Preferences"`)
+	assert.Contains(t, s, `"$ref":"#/$defs/Preferences"`)
+	assert.Contains(t, s, `"items"`)
+	assert.Contains(t, s, `"anyOf"`)
+	assert.Contains(t, s, `"nullable":true`)
+
+	copied.Function.Parameters.Defs.Set("Mutated", map[string]any{"type": "object"})
+	_, exists := original.Function.Parameters.Defs.Get("Mutated")
+	assert.False(t, exists, "copy must not share $defs map with original")
+}
+
+func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T) {
+	var original ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"$defs":{"Preferences":{"type":"object"}},"type":"object","properties":{"preferences":{"$ref":"#/$defs/Preferences"}}}`), &original))
+	require.NotEmpty(t, original.keyOrder.keys)
+
+	copied := DeepCopyToolFunctionParameters(&original)
+	require.NotNil(t, copied)
+	require.Equal(t, original.keyOrder.keys, copied.keyOrder.keys)
+
+	original.keyOrder.keys[0] = "mutated"
+
+	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
+	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
+}
