@@ -1,7 +1,6 @@
 package tables
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -161,20 +160,11 @@ func (TableOauthToken) TableName() string {
 
 // BeforeSave hook
 func (t *TableOauthToken) BeforeSave(tx *gorm.DB) error {
+	// Ensure token type is set
 	if t.TokenType == "" {
 		t.TokenType = "Bearer"
 	}
-	if VaultIsEnabled() {
-		base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), t.TableName(), t.ID)
-		namer := tx.Statement.DB.NamingStrategy
-		if err := vaultString(tx.Statement.Context, base+"/"+namer.ColumnName("", "AccessToken"), &t.AccessToken); err != nil {
-			return fmt.Errorf("failed to vault oauth access token: %w", err)
-		}
-		if err := vaultString(tx.Statement.Context, base+"/"+namer.ColumnName("", "RefreshToken"), &t.RefreshToken); err != nil {
-			return fmt.Errorf("failed to vault oauth refresh token: %w", err)
-		}
-		t.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if err := encryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to encrypt oauth access token: %w", err)
 		}
@@ -188,15 +178,7 @@ func (t *TableOauthToken) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind hook to decrypt sensitive fields
 func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
-	switch t.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &t.AccessToken); err != nil {
-			return fmt.Errorf("failed to resolve vault oauth access token: %w", err)
-		}
-		if err := resolveVaultString(tx.Statement.Context, &t.RefreshToken); err != nil {
-			return fmt.Errorf("failed to resolve vault oauth refresh token: %w", err)
-		}
-	case EncryptionStatusEncrypted:
+	if t.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to decrypt oauth access token: %w", err)
 		}
@@ -204,18 +186,6 @@ func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt oauth refresh token: %w", err)
 		}
 	}
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (t *TableOauthToken) AfterDelete(tx *gorm.DB) error {
-	if t.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), t.TableName(), t.ID)
-	namer := tx.Statement.DB.NamingStrategy
-	_ = VaultHooks.Remove(tx.Statement.Context, base+"/"+namer.ColumnName("", "AccessToken"))
-	_ = VaultHooks.Remove(tx.Statement.Context, base+"/"+namer.ColumnName("", "RefreshToken"))
 	return nil
 }
 
@@ -268,14 +238,7 @@ func (s *TableOauthUserSession) BeforeSave(tx *gorm.DB) error {
 	if s.Status == "" {
 		s.Status = "pending"
 	}
-	if VaultIsEnabled() && s.CodeVerifier != "" {
-		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), s.TableName(), s.ID,
-			tx.Statement.DB.NamingStrategy.ColumnName("", "CodeVerifier"))
-		if err := vaultString(tx.Statement.Context, path, &s.CodeVerifier); err != nil {
-			return fmt.Errorf("failed to vault oauth user session code verifier: %w", err)
-		}
-		s.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if s.CodeVerifier != "" {
 			if err := encryptString(&s.CodeVerifier); err != nil {
 				return fmt.Errorf("failed to encrypt oauth user session code verifier: %w", err)
@@ -287,43 +250,12 @@ func (s *TableOauthUserSession) BeforeSave(tx *gorm.DB) error {
 }
 
 func (s *TableOauthUserSession) AfterFind(tx *gorm.DB) error {
-	switch s.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &s.CodeVerifier); err != nil {
-			return fmt.Errorf("failed to resolve vault oauth user session code verifier: %w", err)
-		}
-	case EncryptionStatusEncrypted:
-		if s.CodeVerifier != "" {
-			if err := decryptString(&s.CodeVerifier); err != nil {
-				return fmt.Errorf("failed to decrypt oauth user session code verifier: %w", err)
-			}
+	if s.EncryptionStatus == EncryptionStatusEncrypted && s.CodeVerifier != "" {
+		if err := decryptString(&s.CodeVerifier); err != nil {
+			return fmt.Errorf("failed to decrypt oauth user session code verifier: %w", err)
 		}
 	}
 	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (s *TableOauthUserSession) AfterDelete(tx *gorm.DB) error {
-	if s.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), s.TableName(), s.ID,
-		tx.Statement.DB.NamingStrategy.ColumnName("", "CodeVerifier"))
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
-	return nil
-}
-
-// DeleteVaultSecrets removes vault entries for the given session IDs.
-// Called after a batch delete so vault cleanup runs even when AfterDelete can't fire.
-func (TableOauthUserSession) DeleteVaultSecrets(ctx context.Context, ids []string) {
-	if VaultHooks.Remove == nil {
-		return
-	}
-	tableName := TableOauthUserSession{}.TableName()
-	for _, id := range ids {
-		path := fmt.Sprintf("%s/%s/%s/code_verifier", VaultPrefix(), tableName, id)
-		_ = VaultHooks.Remove(ctx, path)
-	}
 }
 
 // TableOauthUserToken stores per-user OAuth credentials.
@@ -365,17 +297,7 @@ func (t *TableOauthUserToken) BeforeSave(tx *gorm.DB) error {
 	if t.TokenType == "" {
 		t.TokenType = "Bearer"
 	}
-	if VaultIsEnabled() {
-		base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), t.TableName(), t.ID)
-		namer := tx.Statement.DB.NamingStrategy
-		if err := vaultString(tx.Statement.Context, base+"/"+namer.ColumnName("", "AccessToken"), &t.AccessToken); err != nil {
-			return fmt.Errorf("failed to vault oauth user access token: %w", err)
-		}
-		if err := vaultString(tx.Statement.Context, base+"/"+namer.ColumnName("", "RefreshToken"), &t.RefreshToken); err != nil {
-			return fmt.Errorf("failed to vault oauth user refresh token: %w", err)
-		}
-		t.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if err := encryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to encrypt oauth user access token: %w", err)
 		}
@@ -388,15 +310,7 @@ func (t *TableOauthUserToken) BeforeSave(tx *gorm.DB) error {
 }
 
 func (t *TableOauthUserToken) AfterFind(tx *gorm.DB) error {
-	switch t.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &t.AccessToken); err != nil {
-			return fmt.Errorf("failed to resolve vault oauth user access token: %w", err)
-		}
-		if err := resolveVaultString(tx.Statement.Context, &t.RefreshToken); err != nil {
-			return fmt.Errorf("failed to resolve vault oauth user refresh token: %w", err)
-		}
-	case EncryptionStatusEncrypted:
+	if t.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&t.AccessToken); err != nil {
 			return fmt.Errorf("failed to decrypt oauth user access token: %w", err)
 		}
@@ -405,30 +319,4 @@ func (t *TableOauthUserToken) AfterFind(tx *gorm.DB) error {
 		}
 	}
 	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (t *TableOauthUserToken) AfterDelete(tx *gorm.DB) error {
-	if t.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), t.TableName(), t.ID)
-	namer := tx.Statement.DB.NamingStrategy
-	_ = VaultHooks.Remove(tx.Statement.Context, base+"/"+namer.ColumnName("", "AccessToken"))
-	_ = VaultHooks.Remove(tx.Statement.Context, base+"/"+namer.ColumnName("", "RefreshToken"))
-	return nil
-}
-
-// DeleteVaultSecrets removes vault entries for the given token IDs.
-// Called after a batch delete so vault cleanup runs even when AfterDelete can't fire.
-func (TableOauthUserToken) DeleteVaultSecrets(ctx context.Context, ids []string) {
-	if VaultHooks.Remove == nil {
-		return
-	}
-	tableName := TableOauthUserToken{}.TableName()
-	for _, id := range ids {
-		base := fmt.Sprintf("%s/%s/%s", VaultPrefix(), tableName, id)
-		_ = VaultHooks.Remove(ctx, base+"/access_token")
-		_ = VaultHooks.Remove(ctx, base+"/refresh_token")
-	}
 }
