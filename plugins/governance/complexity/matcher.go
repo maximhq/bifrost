@@ -66,7 +66,7 @@ type textSignalCounts struct {
 	taskShiftCount            int
 }
 
-func newCompiledKeywordMatcher() *compiledKeywordMatcher {
+func newCompiledKeywordMatcher(keywords KeywordConfig) *compiledKeywordMatcher {
 	entries := make(map[string]compiledKeyword)
 	addKeywords := func(keywords []string, mask compiledKeywordMask) {
 		for _, kw := range keywords {
@@ -88,19 +88,19 @@ func newCompiledKeywordMatcher() *compiledKeywordMatcher {
 		}
 	}
 
-	addKeywords(codeKeywords, maskCode)
-	addKeywords(strongReasoningKeywords, maskReasoning|maskStrongReasoning)
-	addKeywords(weakReasoningKeywords, maskReasoning)
-	addKeywords(technicalKeywords, maskTechnical)
-	addKeywords(simpleKeywords, maskSimple)
-	addKeywords(enumTriggers, maskEnum)
-	addKeywords(comprehensivenessMarkers, maskComprehensive)
-	addKeywords(elaborationMarkers, maskElaboration)
-	addKeywords(limitingQualifiers, maskLimiter)
-	addKeywords(referentialPhrases, maskReferentialPhrase)
-	addKeywords(referentialReferenceWords, maskReferentialReference)
-	addKeywords(referentialActionWords, maskReferentialAction)
-	addKeywords(taskShiftPhrases, maskTaskShift)
+	addKeywords(keywords.CodeKeywords, maskCode)
+	addKeywords(keywords.StrongReasoningKeywords, maskReasoning|maskStrongReasoning)
+	addKeywords(keywords.WeakReasoningKeywords, maskReasoning)
+	addKeywords(keywords.TechnicalKeywords, maskTechnical)
+	addKeywords(keywords.SimpleKeywords, maskSimple)
+	addKeywords(keywords.EnumTriggers, maskEnum)
+	addKeywords(keywords.ComprehensivenessMarkers, maskComprehensive)
+	addKeywords(keywords.ElaborationMarkers, maskElaboration)
+	addKeywords(keywords.LimitingQualifiers, maskLimiter)
+	addKeywords(keywords.ReferentialPhrases, maskReferentialPhrase)
+	addKeywords(keywords.ReferentialReferenceWords, maskReferentialReference)
+	addKeywords(keywords.ReferentialActionWords, maskReferentialAction)
+	addKeywords(keywords.TaskShiftPhrases, maskTaskShift)
 
 	matcher := &compiledKeywordMatcher{}
 	for _, entry := range entries {

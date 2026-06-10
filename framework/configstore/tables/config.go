@@ -8,8 +8,10 @@ const (
 	ConfigIsAuthEnabledKey          = "is_auth_enabled"
 	ConfigDisableAuthOnInferenceKey = "disable_auth_on_inference"
 	ConfigProxyKey                  = "proxy_config"
-	ConfigRestartRequiredKey        = "restart_required"
-	ConfigHeaderFilterKey           = "header_filter_config"
+	// ConfigComplexityAnalyzerConfigKey stores the persisted analyzer config JSON.
+	ConfigComplexityAnalyzerConfigKey = "complexity_analyzer_config"
+	ConfigRestartRequiredKey          = "restart_required"
+	ConfigHeaderFilterKey             = "header_filter_config"
 )
 
 // Keys for the ClientConfig.MetadataJSON blob.

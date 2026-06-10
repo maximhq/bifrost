@@ -3,15 +3,29 @@ package complexity
 import "math"
 
 // ComplexityAnalyzer computes complexity scores from normalized text input.
-// It is stateless and safe for concurrent use.
+// It holds immutable tierBoundaries and matcher configuration after construction,
+// so it is safe for concurrent use.
 type ComplexityAnalyzer struct {
-	matcher *compiledKeywordMatcher
+	tierBoundaries TierBoundaries
+	matcher        *compiledKeywordMatcher
 }
 
-// NewComplexityAnalyzer creates a stateless analyzer with built-in defaults.
+// NewComplexityAnalyzer creates an analyzer with built-in defaults.
 func NewComplexityAnalyzer() *ComplexityAnalyzer {
+	return NewComplexityAnalyzerWithConfig(nil)
+}
+
+// NewComplexityAnalyzerWithConfig creates an analyzer with runtime config.
+func NewComplexityAnalyzerWithConfig(config *AnalyzerConfig) *ComplexityAnalyzer {
+	resolved, err := ValidateAndNormalize(config)
+	if err != nil || resolved == nil {
+		defaults := DefaultAnalyzerConfig()
+		resolved = &defaults
+	}
+	keywords := mergeEditableKeywordsOntoDefaults(resolved.Keywords)
 	return &ComplexityAnalyzer{
-		matcher: newCompiledKeywordMatcher(),
+		tierBoundaries: resolved.TierBoundaries,
+		matcher:        newCompiledKeywordMatcher(keywords),
 	}
 }
 
@@ -177,11 +191,11 @@ func isReferentialFollowup(signals textSignalCounts, lastMsgScore, convScore flo
 
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {
 	switch {
-	case score < simpleMediumBoundary:
+	case score < a.tierBoundaries.SimpleMedium:
 		return TierSimple
-	case score < mediumComplexBoundary:
+	case score < a.tierBoundaries.MediumComplex:
 		return TierMedium
-	case score < complexReasoningBoundary:
+	case score < a.tierBoundaries.ComplexReasoning:
 		return TierComplex
 	default:
 		return TierReasoning

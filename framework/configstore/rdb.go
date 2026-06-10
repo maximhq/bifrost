@@ -4810,6 +4810,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, nil
 	}
 	var authConfig *AuthConfig
+	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
@@ -4826,6 +4827,18 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				isEnabled = entry.Value == "true"
 			case tables.ConfigDisableAuthOnInferenceKey:
 				disableAuthOnInference = entry.Value == "true"
+			case tables.ConfigComplexityAnalyzerConfigKey:
+				if strings.TrimSpace(entry.Value) == "" {
+					continue
+				}
+				decoded, err := DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexityAnalyzerConfig = decoded
 			}
 		}
 		if username != nil && password != nil {
@@ -4838,17 +4851,55 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:      virtualKeys,
-		Teams:            teams,
-		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
-		ModelConfigs:     modelConfigs,
-		Providers:        providers,
-		RoutingRules:     routingRules,
-		PricingOverrides: pricingOverrides,
-		AuthConfig:       authConfig,
+		VirtualKeys:              virtualKeys,
+		Teams:                    teams,
+		Customers:                customers,
+		Budgets:                  budgets,
+		RateLimits:               rateLimits,
+		ModelConfigs:             modelConfigs,
+		Providers:                providers,
+		RoutingRules:             routingRules,
+		PricingOverrides:         pricingOverrides,
+		AuthConfig:               authConfig,
+		ComplexityAnalyzerConfig: complexityAnalyzerConfig,
 	}, nil
+}
+
+// GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
+func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
+	configEntry, err := s.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry == nil || strings.TrimSpace(configEntry.Value) == "" {
+		return nil, nil
+	}
+	return DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+}
+
+// UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
+func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
+	}
+
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	}, tx...)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
