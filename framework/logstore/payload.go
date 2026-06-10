@@ -464,6 +464,27 @@ func extractResponsesMessageText(msg *schemas.ResponsesMessage) string {
 	return ""
 }
 
+// dropNonTextContentBlocks returns a copy of msg with non-text content blocks
+// (images, audio, files) removed, so attachment payloads never land in the DB
+// row. The copy leaves msg untouched because the caller's parsed slice backs
+// the full payload that is uploaded to object storage. Messages with plain
+// string content (or no content) are returned as-is.
+func dropNonTextContentBlocks(msg schemas.ChatMessage) schemas.ChatMessage {
+	if msg.Content == nil || msg.Content.ContentBlocks == nil {
+		return msg
+	}
+	textBlocks := make([]schemas.ChatContentBlock, 0, len(msg.Content.ContentBlocks))
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Type == schemas.ChatContentBlockTypeText {
+			textBlocks = append(textBlocks, block)
+		}
+	}
+	content := *msg.Content
+	content.ContentBlocks = textBlocks
+	msg.Content = &content
+	return msg
+}
+
 // findLastUserMessageIndex returns the index of the last ChatMessage with
 // role "user", or -1 if none exists. Used by both BuildInputContentSummary
 // and prepareDBEntry to avoid scanning the slice twice.
