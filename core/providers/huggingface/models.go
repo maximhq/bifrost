@@ -70,14 +70,14 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	for _, m := range pipeline.BackfillModels(included) {
 		rawID := strings.TrimPrefix(m.ID, string(providerKey)+"/")
 		// Allowlist entries selected from a previous ListModels response already
-		// carry an inference-provider segment (e.g. "featherless-ai/org/model").
-		// Prepending another segment here duplicates the provider in the compound
-		// ID and breaks request routing (#4215).
-		if first, _, found := strings.Cut(rawID, "/"); found && isKnownInferenceProvider(first) {
+		// carry an inference-provider segment (e.g. "featherless-ai/org/model")
+		// or the "auto" policy. Prepending another segment here duplicates the
+		// provider in the compound ID and breaks request routing (#4215).
+		if first, _, found := strings.Cut(rawID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
 			if !strings.EqualFold(first, string(inferenceProvider)) {
-				// The entry belongs to a different inference provider's listing;
-				// that provider's pass emits it, so skip it here to avoid
-				// duplicating the entry once per inference provider.
+				// The entry belongs to a different inference provider's listing
+				// (or names the "auto" policy, which no pass owns); skip it here
+				// to avoid duplicating the entry once per inference provider.
 				continue
 			}
 			m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
@@ -91,10 +91,10 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	return bifrostResponse
 }
 
-// isKnownInferenceProvider reports whether segment names one of the supported
-// inference providers (case-insensitive).
-func isKnownInferenceProvider(segment string) bool {
-	return slices.ContainsFunc(INFERENCE_PROVIDERS, func(p inferenceProvider) bool {
+// isKnownInferenceProviderOrPolicy reports whether segment names one of the
+// supported inference providers or the "auto" policy (case-insensitive).
+func isKnownInferenceProviderOrPolicy(segment string) bool {
+	return slices.ContainsFunc(PROVIDERS_OR_POLICIES, func(p inferenceProvider) bool {
 		return strings.EqualFold(segment, string(p))
 	})
 }

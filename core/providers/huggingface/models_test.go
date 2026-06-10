@@ -56,6 +56,21 @@ func TestToBifrostListModelsResponse_AllowlistWithInferenceProviderSegment(t *te
 	})
 }
 
+// Allowlist entries prefixed with the "auto" policy must not be re-prefixed
+// with an inference provider either: "auto" is owned by no provider pass, so
+// the entry is skipped in every pass. It stays routable via requests because
+// splitIntoModelProvider recognizes "auto" as a valid policy segment.
+func TestToBifrostListModelsResponse_AllowlistWithAutoPolicySegment(t *testing.T) {
+	t.Parallel()
+
+	response := &HuggingFaceListModelsResponse{Models: nil}
+	allowlist := schemas.WhiteList{"auto/deepseek-ai/DeepSeek-V4-Pro"}
+
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Data, "an auto-policy entry must not be re-prefixed with an inference provider")
+}
+
 // Entries without an inference-provider segment keep the existing backfill
 // behavior: the current inference provider is prepended.
 func TestToBifrostListModelsResponse_BackfillWithoutInferenceProviderSegment(t *testing.T) {
