@@ -171,6 +171,11 @@ providers:
     batch_list: "gemini-2.5-flash"
     batch_retrieve: "gemini-2.5-flash"
     batch_cancel: "gemini-2.5-flash"
+    file_upload: "gemini-2.5-flash"
+    file_list: "gemini-2.5-flash"
+    file_retrieve: "gemini-2.5-flash"
+    file_delete: "gemini-2.5-flash"
+    file_content: "gemini-2.5-flash"
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -478,11 +483,11 @@ provider_scenarios:
     batch_cancel: false
     batch_inline: false  # Gemini uses inline requests for batch (synchronous)
     batch_s3: false  # Gemini does not use S3 for batch
-    file_upload: false
-    file_list: false
-    file_retrieve: false
-    file_delete: false
-    file_content: false  # Gemini doesn't support direct file download
+    file_upload: true  # Vertex uploads files to a customer GCS bucket
+    file_list: true  # Vertex lists files in the GCS bucket
+    file_retrieve: true  # Vertex retrieves GCS object metadata
+    file_delete: true  # Vertex deletes GCS objects
+    file_content: true  # Vertex downloads GCS object content
     count_tokens: false
 
   bedrock:

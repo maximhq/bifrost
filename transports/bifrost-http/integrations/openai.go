@@ -1728,7 +1728,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -1794,6 +1800,10 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 					for i, file := range resp.Data {
 						resp.Data[i].ID = base64.StdEncoding.EncodeToString([]byte(file.ID))
 					}
+				case schemas.Vertex:
+					for i, file := range resp.Data {
+						resp.Data[i].ID = base64.RawURLEncoding.EncodeToString([]byte(file.ID))
+					}
 				}
 				return resp, nil
 			},
@@ -1841,7 +1851,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -1893,7 +1909,13 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
 				case schemas.Bedrock:
+					// s3:// ids contain slashes that break single-segment path routing;
+					// encode to an opaque id (StdEncoding, as originally shipped for Bedrock).
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					// gs:// ids: RawURLEncoding is fully path-safe (no /, +, or = padding),
+					// so the id never needs percent-encoding. Matches the native handler.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				default:
 					return resp, nil
 				}
@@ -2120,6 +2142,28 @@ func extractFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 				}
 			}
 
+			// Extract GCS storage config for Vertex (bracket notation: storage_config[gcs][bucket])
+			if listReq.Provider == schemas.Vertex {
+				if gcsBucket := string(ctx.QueryArgs().Peek("storage_config[gcs][bucket]")); gcsBucket != "" {
+					if listReq.StorageConfig == nil {
+						listReq.StorageConfig = &schemas.FileStorageConfig{}
+					}
+					if listReq.StorageConfig.GCS == nil {
+						listReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+					}
+					listReq.StorageConfig.GCS.Bucket = gcsBucket
+				}
+				if gcsPrefix := string(ctx.QueryArgs().Peek("storage_config[gcs][prefix]")); gcsPrefix != "" {
+					if listReq.StorageConfig == nil {
+						listReq.StorageConfig = &schemas.FileStorageConfig{}
+					}
+					if listReq.StorageConfig.GCS == nil {
+						listReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+					}
+					listReq.StorageConfig.GCS.Prefix = gcsPrefix
+				}
+			}
+
 			// Extract purpose filter
 			if purpose := string(ctx.QueryArgs().Peek("purpose")); purpose != "" {
 				listReq.Purpose = schemas.FilePurpose(purpose)
@@ -2171,7 +2215,15 @@ func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		}
 
 		var storageConfig *schemas.FileStorageConfig
-		if provider == schemas.Bedrock {
+		if provider == schemas.Vertex {
+			// Vertex file ids are RawURL-base64-encoded gs:// URIs (see file response
+			// converters); decode back. The bucket is parsed from the gs:// URI by the
+			// provider, so no storage config is needed. This branch is provider-gated,
+			// so no extra gs:// guard is needed.
+			if decodedFileID, err := base64.RawURLEncoding.DecodeString(fileIDStr); err == nil {
+				fileIDStr = string(decodedFileID)
+			}
+		} else if provider == schemas.Bedrock {
 			// Check fileIDStr is base64 encoded
 			if decodedFileID, err := base64.StdEncoding.DecodeString(fileIDStr); err == nil {
 				fileIDStr = string(decodedFileID)
@@ -2303,6 +2355,28 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 				uploadReq.StorageConfig.S3 = &schemas.S3StorageConfig{}
 			}
 			uploadReq.StorageConfig.S3.Prefix = s3PrefixValues[0]
+		}
+	}
+
+	// Extract GCS storage config for Vertex (bracket notation: storage_config[gcs][bucket])
+	if uploadReq.Provider == schemas.Vertex {
+		if gcsBucketValues := form.Value["storage_config[gcs][bucket]"]; len(gcsBucketValues) > 0 && gcsBucketValues[0] != "" {
+			if uploadReq.StorageConfig == nil {
+				uploadReq.StorageConfig = &schemas.FileStorageConfig{}
+			}
+			if uploadReq.StorageConfig.GCS == nil {
+				uploadReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+			}
+			uploadReq.StorageConfig.GCS.Bucket = gcsBucketValues[0]
+		}
+		if gcsPrefixValues := form.Value["storage_config[gcs][prefix]"]; len(gcsPrefixValues) > 0 && gcsPrefixValues[0] != "" {
+			if uploadReq.StorageConfig == nil {
+				uploadReq.StorageConfig = &schemas.FileStorageConfig{}
+			}
+			if uploadReq.StorageConfig.GCS == nil {
+				uploadReq.StorageConfig.GCS = &schemas.GCSStorageConfig{}
+			}
+			uploadReq.StorageConfig.GCS.Prefix = gcsPrefixValues[0]
 		}
 	}
 

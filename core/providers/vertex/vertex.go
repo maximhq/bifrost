@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3563,10 +3564,25 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 	req.Header.Set("X-Upload-Content-Type", contentType)
 	req.SetBody(metaJSON)
 
-	// content_length is optional but helps GCS validate the upload size.
+	// content_length is optional but helps GCS validate the upload size. Depending
+	// on the transport it may arrive as a JSON number (float64) or a form-field
+	// string, so accept both numeric and string forms.
 	if request.ExtraParams != nil {
-		if cl, ok := request.ExtraParams["content_length"].(float64); ok && cl > 0 {
-			req.Header.Set("X-Upload-Content-Length", fmt.Sprintf("%d", int64(cl)))
+		var contentLength int64
+		switch cl := request.ExtraParams["content_length"].(type) {
+		case float64:
+			contentLength = int64(cl)
+		case int:
+			contentLength = int64(cl)
+		case int64:
+			contentLength = cl
+		case string:
+			if parsed, err := strconv.ParseInt(strings.TrimSpace(cl), 10, 64); err == nil {
+				contentLength = parsed
+			}
+		}
+		if contentLength > 0 {
+			req.Header.Set("X-Upload-Content-Length", fmt.Sprintf("%d", contentLength))
 		}
 	}
 
