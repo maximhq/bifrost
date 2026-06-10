@@ -635,6 +635,10 @@ func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params con
 	return nil, 0, nil
 }
 
+func (m *MockConfigStore) GetMCPLibraryPaginated(ctx context.Context, params configstore.MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
 	if m.mcpConfig == nil {
 		return nil
