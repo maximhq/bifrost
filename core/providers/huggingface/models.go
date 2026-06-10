@@ -68,13 +68,35 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	// Backfill: use standard pipeline. Note that backfilled HF entries use a simplified
 	// compound ID since we don't know which inferenceProvider to assign them to.
 	for _, m := range pipeline.BackfillModels(included) {
-		// Re-wrap the backfill ID to include the inferenceProvider segment
 		rawID := strings.TrimPrefix(m.ID, string(providerKey)+"/")
-		m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+		// Allowlist entries selected from a previous ListModels response already
+		// carry an inference-provider segment (e.g. "featherless-ai/org/model").
+		// Prepending another segment here duplicates the provider in the compound
+		// ID and breaks request routing (#4215).
+		if first, _, found := strings.Cut(rawID, "/"); found && isKnownInferenceProvider(first) {
+			if !strings.EqualFold(first, string(inferenceProvider)) {
+				// The entry belongs to a different inference provider's listing;
+				// that provider's pass emits it, so skip it here to avoid
+				// duplicating the entry once per inference provider.
+				continue
+			}
+			m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
+		} else {
+			// Re-wrap the backfill ID to include the inferenceProvider segment
+			m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, m)
 	}
 
 	return bifrostResponse
+}
+
+// isKnownInferenceProvider reports whether segment names one of the supported
+// inference providers (case-insensitive).
+func isKnownInferenceProvider(segment string) bool {
+	return slices.ContainsFunc(INFERENCE_PROVIDERS, func(p inferenceProvider) bool {
+		return strings.EqualFold(segment, string(p))
+	})
 }
 
 func deriveSupportedMethods(pipeline string, tags []string) []string {
