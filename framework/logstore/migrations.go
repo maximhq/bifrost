@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/framework/migrator"
@@ -20,10 +22,10 @@ func isValidJSON(s string) bool {
 
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
-	// to serialize migrations across cluster nodes.
-	// This is the SAME key used by configstore migrations to ensure
-	// all migrations are fully serialized.
-	migrationAdvisoryLockKey = 1000001
+	// to serialize logstore migrations across cluster nodes.
+	// This is a DIFFERENT key from configstore's migration lock so that
+	// logstore and configstore migrations can proceed independently.
+	migrationAdvisoryLockKey = 1000003
 
 	// indexAdvisoryLockKey serializes the background index build across
 	// cluster nodes. It is intentionally a DIFFERENT key from migrationAdvisoryLockKey
@@ -48,6 +50,13 @@ const (
 	maintenanceUpdateBatchSize = 10_000
 )
 
+// skipAdvisoryLocks returns true when BIFROST_SKIP_ADVISORY_LOCKS=true,
+// allowing pods to bypass advisory lock acquisition during startup to break
+// OOM-restart loops where lingering DB sessions hold stale locks.
+func skipAdvisoryLocks() bool {
+	return strings.EqualFold(os.Getenv("BIFROST_SKIP_ADVISORY_LOCKS"), "true")
+}
+
 // advisoryLock holds a dedicated connection and the advisory lock key.
 // This ensures the lock is held on the same connection throughout its lifetime,
 // preventing race conditions caused by GORM's connection pooling.
@@ -63,6 +72,14 @@ type advisoryLock struct {
 // For non-PostgreSQL databases, returns a no-op lock.
 func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, lockKey int64, label string) (*advisoryLock, error) {
 	if db.Dialector.Name() != "postgres" {
+		return &advisoryLock{}, nil
+	}
+
+	// Skip advisory lock acquisition entirely when BIFROST_SKIP_ADVISORY_LOCKS=true.
+	// Use this to break OOM-restart loops where a crashed pod's lingering DB
+	// session holds the lock and every new pod blocks waiting for it.
+	if strings.EqualFold(os.Getenv("BIFROST_SKIP_ADVISORY_LOCKS"), "true") {
+		log.Printf("[logstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping %s advisory lock", label)
 		return &advisoryLock{}, nil
 	}
 
@@ -166,6 +183,13 @@ func acquireIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
 // triggerMigrations runs all registered logstore schema migrations in order under a
 // PostgreSQL advisory lock (shared with configstore) so only one node migrates at a time.
 func triggerMigrations(ctx context.Context, db *gorm.DB) error {
+	// Skip all migrations when BIFROST_SKIP_ADVISORY_LOCKS=true to break
+	// OOM-restart loops. The pod will start with whatever schema already exists.
+	if skipAdvisoryLocks() {
+		log.Printf("[logstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping all migrations")
+		return nil
+	}
+
 	// Acquire advisory lock to serialize migrations across cluster nodes.
 	// Uses the same key as configstore to ensure all migrations are serialized.
 	lock, err := acquireMigrationLock(ctx, db)

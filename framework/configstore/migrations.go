@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,6 +50,14 @@ type migrationLock struct {
 // For non-PostgreSQL databases, returns a no-op lock.
 func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, error) {
 	if db.Dialector.Name() != "postgres" {
+		return &migrationLock{}, nil
+	}
+
+	// Skip advisory lock acquisition entirely when BIFROST_SKIP_ADVISORY_LOCKS=true.
+	// Use this to break OOM-restart loops where a crashed pod's lingering DB
+	// session holds the lock and every new pod blocks waiting for it.
+	if strings.EqualFold(os.Getenv("BIFROST_SKIP_ADVISORY_LOCKS"), "true") {
+		log.Printf("[configstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping migration advisory lock")
 		return &migrationLock{}, nil
 	}
 
@@ -395,6 +404,13 @@ func dropLegacyBudgetColumn(tx *gorm.DB, tableName string) error {
 
 // Migrate performs the necessary database migrations.
 func triggerMigrations(ctx context.Context, db *gorm.DB) error {
+	// Skip all migrations when BIFROST_SKIP_ADVISORY_LOCKS=true to break
+	// OOM-restart loops. The pod will start with whatever schema already exists.
+	if strings.EqualFold(os.Getenv("BIFROST_SKIP_ADVISORY_LOCKS"), "true") {
+		log.Printf("[configstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping all migrations")
+		return nil
+	}
+
 	// Acquire advisory lock to serialize migrations across cluster nodes.
 	// This prevents race conditions when multiple nodes start simultaneously
 	// and try to create the same tables in parallel.

@@ -180,7 +180,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	// Each function is idempotent and acquires its own advisory lock for
 	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
 	go func() {
-		if db.Dialector.Name() != "postgres" {
+		if db.Dialector.Name() != "postgres" || skipAdvisoryLocks() {
+			if skipAdvisoryLocks() {
+				logger.Info("logstore: BIFROST_SKIP_ADVISORY_LOCKS=true \u2014 skipping index builds")
+			}
 			return
 		}
 		// Acquire advisory lock to serialize GIN index builds across cluster nodes.
@@ -218,7 +221,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {
-		if db.Dialector.Name() != "postgres" {
+		if db.Dialector.Name() != "postgres" || skipAdvisoryLocks() {
+			if skipAdvisoryLocks() {
+				logger.Info("logstore: BIFROST_SKIP_ADVISORY_LOCKS=true \u2014 skipping matview creation and refresh")
+			}
 			return
 		}
 		if err := ensureMatViews(context.Background(), db); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -428,7 +429,10 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	defer conn.Close()
 
 	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
+	if skipAdvisoryLocks() {
+		log.Printf("[logstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping matview creation advisory lock")
+		acquired = true
+	} else if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
 		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
 	}
 	if !acquired {
@@ -436,7 +440,9 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 	defer func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		if !skipAdvisoryLocks() {
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		}
 	}()
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
@@ -710,15 +716,20 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 
 	// Try to acquire advisory lock; skip refresh if another replica holds it.
 	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
+	if skipAdvisoryLocks() {
+		log.Printf("[logstore] BIFROST_SKIP_ADVISORY_LOCKS=true — skipping matview refresh advisory lock")
+		acquired = true
+	} else if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
 		return fmt.Errorf("failed to try advisory lock for matview refresh: %w", err)
 	}
 	if !acquired {
 		return nil // another replica is refreshing
 	}
 	defer func() {
-		// Release lock explicitly; connection close would also release session-scoped locks.
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		if !skipAdvisoryLocks() {
+			// Release lock explicitly; connection close would also release session-scoped locks.
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		}
 	}()
 
 	for _, view := range allMatViewNames() {
