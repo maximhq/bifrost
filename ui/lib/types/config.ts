@@ -433,6 +433,8 @@ export interface FrameworkConfig {
 	pricing_url: string;
 	pricing_sync_interval: number;
 	model_parameters_url: string;
+	mcp_library_url?: string;
+	mcp_library_sync_interval?: number;
 }
 
 // Auth config
