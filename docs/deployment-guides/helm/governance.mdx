@@ -384,6 +384,33 @@ bifrost:
 
 ---
 
+## Complexity Router Configuration
+
+If you use `complexity_tier` in routing rules, you can seed the analyzer thresholds and keyword lists from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+
+Omit this block, or leave `complexityAnalyzerConfig: null`, to use the built-in defaults.
+
+```yaml
+bifrost:
+  governance:
+    complexityAnalyzerConfig:
+      tier_boundaries:
+        simple_medium: 0.15
+        medium_complex: 0.35
+        complex_reasoning: 0.60
+      keywords:
+        code_keywords: ["function", "class", "api", "debug", "deploy"]
+        reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+        technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
+        simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+```
+
+<Note>
+When this block is present, it is reapplied from the generated `config.json` on restart. Runtime UI and API edits still hot-reload immediately, but Helm values remain the source of truth for the next rollout.
+</Note>
+
+---
+
 ## Full Example
 
 ```yaml

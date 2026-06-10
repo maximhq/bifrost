@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming [2.1.23]
+
+- Added `bifrost.governance.complexityAnalyzerConfig` to configure complexity router analyzer boundaries and keyword lists from Helm. The value renders into `governance.complexity_analyzer_config` in the generated `config.json` and remains opt-in, so existing installs are unchanged unless the value is set.
+
 ### 2.1.22
 
 - Added `bifrost.governance.roles` array to `values.yaml`, `values.schema.json`, and `_helpers.tpl`. Each role requires a `name` and accepts optional `description`, `dac` (`own-data` | `team-data` | `all-data`, default `all-data`), `access_profile`, and `permissions[]` (`resource` + `operation`).
@@ -23,7 +27,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `plugin_span_filter` (`mode`: `include`/`exclude`, `plugins` array) to the Datadog plugin config in `values.yaml`, `values.schema.json`, and `_helpers.tpl`. Selects which plugin hook spans are exported to Datadog; omit to export all. Each observability connector keeps its own independent filter.
 - Added the `bigquery` plugin (BigQuery traces) to the chart — `values.yaml`, `values.schema.json`, and `_helpers.tpl`. Supports `project_id`, `dataset_id`, `table_id`, `location`, `service_account_key` (literal or `env.VAR`; omit for Application Default Credentials), `create_table_if_not_exists`, `flush_interval_seconds`, `buffer_size`, `custom_labels`, `disable_content_logging`, `request_headers`, and `plugin_span_filter`. Includes the same `version` validation guard as the other built-in plugins.
 - The `pluginSpanFilter` schema definition is shared across the OTEL, Datadog, and BigQuery plugin configs (one reusable `$defs` shape rather than per-connector copies). This is a schema-definition naming detail only — the user-facing `plugin_span_filter` config key is unchanged.
-
 
 ### 2.1.21
 
