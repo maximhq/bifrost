@@ -66,11 +66,13 @@ type OCRPageDimensions struct {
 }
 
 // OCRPage represents a single processed page from an OCR response.
+// Per the Mistral contract, images is always an array and dimensions always
+// present (nullable), so neither field is omitempty.
 type OCRPage struct {
 	Index      int                `json:"index"`
 	Markdown   string             `json:"markdown"`
-	Images     []OCRPageImage     `json:"images,omitempty"`
-	Dimensions *OCRPageDimensions `json:"dimensions,omitempty"`
+	Images     []OCRPageImage     `json:"images"`
+	Dimensions *OCRPageDimensions `json:"dimensions"`
 }
 
 // OCRUsageInfo represents usage information from an OCR response.
