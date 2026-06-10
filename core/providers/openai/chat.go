@@ -78,6 +78,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
 			openaiReq.applyMistralCompatibility()
+		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
+			*openaiReq.Reasoning.Effort == "none" {
+			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
+			// minimax-m2, ...) reject reasoning_effort "none" — only
+			// minimal/low/medium/high are accepted. Drop it so the model uses its
+			// default. (Mistral on Vertex does accept "none" and is handled above;
+			// // proprietary OpenAI/Azure GPT-5.1+ keep "none" via their own cases.)
+			openaiReq.Reasoning.Effort = nil
 		}
 		return openaiReq
 	case schemas.Fireworks:
