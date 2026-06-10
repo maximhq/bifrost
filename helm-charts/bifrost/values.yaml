@@ -660,6 +660,16 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
+    complexityAnalyzerConfig: null
+      # tier_boundaries:
+      #   simple_medium: 0.15
+      #   medium_complex: 0.35
+      #   complex_reasoning: 0.60
+      # keywords:
+      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
+      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
+      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
     authConfig:
       adminUsername: ""
       adminPassword: ""
