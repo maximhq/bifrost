@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -122,6 +123,164 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+type mockComplexityGovernanceManager struct {
+	GovernanceManager
+	reloadedConfig *complexity.AnalyzerConfig
+	reloadCalls    int
+	reloadErr      error
+}
+
+func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
+	m.reloadCalls++
+	m.reloadedConfig = config
+	return m.reloadErr
+}
+
+func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
+	t.Helper()
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal complexity analyzer config: %v", err)
+	}
+	return string(body)
+}
+
+func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected default boundaries, got %+v", resp.TierBoundaries)
+	}
+	if len(resp.Keywords.CodeKeywords) == 0 {
+		t.Fatalf("expected default code keywords")
+	}
+}
+
+func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.TierBoundaries.SimpleMedium = 0.12
+	cfg.TierBoundaries.MediumComplex = 0.34
+	cfg.TierBoundaries.ComplexReasoning = 0.78
+	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
+
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.reloadCalls != 1 {
+		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
+	}
+	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.ComplexReasoning != 0.78 {
+		t.Fatalf("expected reload with normalized config, got %+v", manager.reloadedConfig)
+	}
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || len(stored.Keywords.CodeKeywords) != 2 || stored.Keywords.CodeKeywords[0] != "api" {
+		t.Fatalf("expected normalized stored keywords, got %+v", stored)
+	}
+}
+
+func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	valid := complexity.DefaultAnalyzerConfig()
+	validBody := testComplexityAnalyzerPayload(t, valid)
+	invalidBoundaries := valid
+	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
+	emptyKeywords := valid
+	emptyKeywords.Keywords.CodeKeywords = nil
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "unknown field"},
+		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
+		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
+		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestRequestCtx(tt.body)
+			handler.updateComplexityAnalyzerConfig(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			}
+			if !strings.Contains(string(ctx.Response.Body()), tt.want) {
+				t.Fatalf("expected response to contain %q, got %s", tt.want, string(ctx.Response.Body()))
+			}
+		})
+	}
+}
+
+func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.TierBoundaries.ComplexReasoning = 0.80
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed custom config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.reloadCalls != 1 {
+		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected stored defaults, got %+v", stored)
+	}
 }
 
 func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {

@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -2363,6 +2364,23 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
 	}
+
+	// File config stays authoritative for analyzer tuning when present.
+	if configData.Governance.ComplexityAnalyzerConfig != nil {
+		normalized, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
+		if err != nil {
+			logger.Error("invalid complexity analyzer config in config file: %v", err)
+		} else if normalized != nil {
+			current := config.GovernanceConfig.ComplexityAnalyzerConfig
+			config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
+			if config.ConfigStore != nil && (current == nil || !reflect.DeepEqual(current, normalized)) {
+				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+					logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+				}
+			}
+		}
+	}
+
 	// Sync pricing overrides into the model catalog in one batch to avoid
 	// rebuilding the lookup map on every iteration.
 	if config.ModelCatalog != nil {
@@ -3404,6 +3422,18 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			override.ConfigHash = overrideHash
 			if err := config.ConfigStore.CreatePricingOverride(ctx, override, tx); err != nil {
 				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
+			}
+		}
+
+		if config.GovernanceConfig.ComplexityAnalyzerConfig != nil {
+			normalized, err := complexity.ValidateAndNormalize(config.GovernanceConfig.ComplexityAnalyzerConfig)
+			if err != nil {
+				logger.Warn("invalid complexity analyzer config in config file: %v", err)
+			} else if normalized != nil {
+				config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
+				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized, tx); err != nil {
+					return fmt.Errorf("failed to create complexity analyzer config: %w", err)
+				}
 			}
 		}
 
