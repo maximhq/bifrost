@@ -1160,14 +1160,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		for providerName, providerCfgInFile := range configData.Providers {
 			provider := schemas.ModelProvider(strings.ToLower(providerName))
 			existingCfg, exists := providersInConfigStore[provider]
-			if err = processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders); err != nil {
-				logger.Warn("failed to process provider %s: %v", providerName, err)
-				// Preserve the existing persisted config so a single bad file entry
-				// does not prune the provider (and its DB-only keys) from the store.
-				if exists {
-					authoritativeProviders[provider] = existingCfg
-				}
-			}
+			processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders)
 		}
 		providersInConfigStore = authoritativeProviders
 	} else {
@@ -1279,10 +1272,10 @@ func processAuthoritativeProvider(
 	existingCfg configstore.ProviderConfig,
 	exists bool,
 	providers map[schemas.ModelProvider]configstore.ProviderConfig,
-) error {
+) {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
-		return err
+		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
 	}
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -1293,7 +1286,7 @@ func processAuthoritativeProvider(
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
-			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
+			logger.Warn("invalid aliases for key %q in provider %s (writing through): %v", providerKeyInFile.Name, provider, err)
 		}
 	}
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -1307,7 +1300,6 @@ func processAuthoritativeProvider(
 		providerCfgInFile.Description = existingCfg.Description
 	}
 	providers[provider] = providerCfgInFile
-	return nil
 }
 
 // mergeProviderWithHash merges provider config using hash-based reconciliation
