@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -2186,7 +2187,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
 func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
-	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
@@ -2210,6 +2211,14 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 	if req.Metadata != nil && req.Metadata.UserID != nil {
 		params.User = req.Metadata.UserID
+		key := strings.TrimSpace(*req.Metadata.UserID)
+		if key != "" {
+			if len(key) > 64 {
+				sum := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+				key = sum
+			}
+			params.PromptCacheKey = &key
+		}
 	}
 	if req.ContextManagement != nil {
 		params.ExtraParams["context_management"] = req.ContextManagement
@@ -2393,8 +2402,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
 		}
-		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
-		if !IsOpus47Plus(bifrostReq.Model) {
+		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
+		// top_k with a 400 error.
+		if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -2465,9 +2475,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if IsOpus47Plus(bifrostReq.Model) {
-					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+				if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+					// Preserve a co-present effort — these models support
+					// output_config.effort, and the budget is otherwise dropped.
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
 				} else {
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
 					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
@@ -2514,7 +2529,11 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 								BudgetTokens: schemas.Ptr(budgetTokens),
 							}
 						}
-					} else {
+					} else if !IsFableFamily(bifrostReq.Model) {
+						// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
+						// adaptive thinking is always on and cannot be disabled. Omit
+						// the thinking param entirely for that family; all other
+						// models take the explicit disabled path.
 						anthropicReq.Thinking = &AnthropicThinking{
 							Type: "disabled",
 						}
@@ -2529,7 +2548,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					} else {
 						anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 					}
-				} else if IsOpus47Plus(bifrostReq.Model) {
+				} else if IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -2570,13 +2589,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
-				if !IsOpus47Plus(bifrostReq.Model) {
+				if !IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 					anthropicReq.TopK = topK
 				}
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 				delete(anthropicReq.ExtraParams, "speed")
-				anthropicReq.Speed = speed
+				if SupportsFastMode(bifrostReq.Model) {
+					anthropicReq.Speed = speed
+				}
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(anthropicReq.ExtraParams, "stop")
@@ -5277,7 +5298,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		// Dynamic filtering (web_search_20260209) available on Anthropic + Azure for Opus 4.6+.
 		features, ok := ProviderFeatures[provider]
 		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model)) {
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || IsOpus47Plus(model) || IsFableFamily(model)) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{

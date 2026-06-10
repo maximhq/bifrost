@@ -196,7 +196,7 @@ func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
 func TestResolveBedrockDeployment(t *testing.T) {
 	key := schemas.Key{
 		Aliases: schemas.KeyAliases{
-			"cohere-rerank": "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+			"cohere-rerank": {ModelID: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0"},
 		},
 	}
 
@@ -211,7 +211,7 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	key := schemas.Key{
 		Aliases: schemas.KeyAliases{
-			"cohere-rerank": "cohere.rerank-v3-5:0",
+			"cohere-rerank": {ModelID: "cohere.rerank-v3-5:0"},
 		},
 	}
 

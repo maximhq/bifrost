@@ -30,8 +30,8 @@ type TableMCPClient struct {
 	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
-	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
@@ -57,13 +57,13 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig      `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList          `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
+	StdioConfig               *schemas.MCPStdioConfig     `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig       `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList           `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList           `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.EnvVar   `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList           `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64          `gorm:"-" json:"tool_pricing"`
 	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
 	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
 	PerUserHeaderKeys         []string                    `gorm:"-" json:"per_user_header_keys"`
@@ -194,7 +194,31 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
-	if encrypt.IsEnabled() {
+	if VaultIsEnabled() {
+		connPath := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID,
+			tx.Statement.DB.NamingStrategy.ColumnName("", "ConnectionString"))
+		headersPath := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID,
+			tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON"))
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+			cs := *c.ConnectionString
+			if err := vaultEnvVar(tx.Statement.Context, connPath, &cs); err != nil {
+				return fmt.Errorf("failed to vault mcp connection string: %w", err)
+			}
+			c.ConnectionString = &cs
+		} else {
+			// Field cleared or switched to env-var — remove any stale vault entry.
+			removeVaultEnvVar(tx.Statement.Context, connPath, c.ConnectionString)
+		}
+		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
+			if err := vaultString(tx.Statement.Context, headersPath, &c.HeadersJSON); err != nil {
+				return fmt.Errorf("failed to vault mcp headers: %w", err)
+			}
+		} else {
+			// Headers cleared — remove any stale vault entry.
+			removeVaultString(tx.Statement.Context, headersPath, &c.HeadersJSON)
+		}
+		c.EncryptionStatus = EncryptionStatusVault
+	} else if encrypt.IsEnabled() {
 		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
 			// Copy to avoid encrypting the shared ConnectionString through the pointer
 			cs := *c.ConnectionString
@@ -221,7 +245,19 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
 // and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == "encrypted" {
+	switch c.EncryptionStatus {
+	case EncryptionStatusVault:
+		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
+			if err := resolveVaultString(tx.Statement.Context, &c.HeadersJSON); err != nil {
+				return fmt.Errorf("failed to resolve vault mcp headers: %w", err)
+			}
+		}
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+			if err := resolveVaultEnvVar(tx.Statement.Context, c.ConnectionString); err != nil {
+				return fmt.Errorf("failed to resolve vault mcp connection string: %w", err)
+			}
+		}
+	case EncryptionStatusEncrypted:
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
 			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
 			if err != nil {
@@ -291,5 +327,17 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// AfterDelete hook for best-effort vault cleanup on row deletion.
+func (c *TableMCPClient) AfterDelete(tx *gorm.DB) error {
+	if c.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
+		return nil
+	}
+	connField := tx.Statement.DB.NamingStrategy.ColumnName("", "ConnectionString")
+	headersField := tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON")
+	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID, connField))
+	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID, headersField))
 	return nil
 }

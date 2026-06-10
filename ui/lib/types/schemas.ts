@@ -227,6 +227,51 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Model family enum schema — must mirror schemas.ModelFamily in Go.
+export const modelFamilySchema = z.enum([
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+]);
+
+// AliasConfig schema — mirrors schemas.AliasConfig with the embedded
+// provider sub-configs flattened to top-level optional fields (matches Go's
+// embedded-pointer-struct JSON output).
+const aliasConfigObjectSchema = z.object({
+	model_id: z.string().trim().min(1, "Model ID is required"),
+	model_name: z.string().trim().optional(),
+	model_family: modelFamilySchema.optional(),
+	description: z.string().optional(),
+	region: envVarSchema.optional(),
+	// Azure overrides
+	api_version: z.string().optional(),
+	anthropic_version: z.string().optional(),
+	endpoint: envVarSchema.optional(),
+	// Vertex overrides
+	project_id: envVarSchema.optional(),
+	project_number: envVarSchema.optional(),
+	// Bedrock overrides
+	inference_profile_arn: envVarSchema.optional(),
+	// Replicate overrides
+	use_deployments_endpoint: z.boolean().optional(),
+});
+
+// The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
+// for aliases that only carry ModelID — see AliasConfig.MarshalJSON. Accept
+// both shapes here so edit-time validation doesn't reject hydrated state.
+export const aliasConfigSchema = z.preprocess(
+	(value) => (typeof value === "string" ? { model_id: value } : value),
+	aliasConfigObjectSchema,
+);
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -253,7 +298,7 @@ export const modelProviderKeySchema = z
 				return num;
 			})
 			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		aliases: z.record(z.string(), z.string()).optional(),
+		aliases: z.record(z.string(), aliasConfigSchema).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
@@ -327,6 +372,7 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -379,6 +425,7 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
@@ -739,6 +786,8 @@ export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({
+		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
+		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
 		trace_type: z
@@ -759,8 +808,13 @@ export const otelConfigSchema = z
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: envVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
+		request_headers: z.array(z.string()).default([]),
+		disable_content_logging: z.boolean().default(false),
 	})
 	.superRefine((data, ctx) => {
+		// A disabled profile is not sent anywhere, so skip all validation for it.
+		if (data.enabled === false) return;
+
 		const protocol = data.protocol;
 		const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
 
@@ -810,6 +864,15 @@ export const otelConfigSchema = z
 			return true;
 		};
 
+		// Collector address is required for an enabled profile.
+		if (!isEnvVarSet(data.collector_url)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["collector_url"],
+				message: "Collector address is required",
+			});
+		}
+
 		// Validate collector_url format — skip format check for env var references
 		const collectorUrl = (data.collector_url?.value || "").trim();
 		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
@@ -835,28 +898,18 @@ export const otelConfigSchema = z
 		}
 	});
 
-// OTEL form schema for the OtelFormFragment
-export const otelFormSchema = z
-	.object({
-		enabled: z.boolean().default(true),
-		otel_config: otelConfigSchema,
-	})
-	.superRefine((data, ctx) => {
-		if (data.enabled) {
-			if (!isEnvVarSet(data.otel_config.collector_url)) {
-				ctx.addIssue({
-					code: "custom",
-					path: ["otel_config", "collector_url"],
-					message: "Collector address is required",
-				});
-			}
-		}
-	});
+// OTEL form schema for the OtelFormFragment. The plugin itself is gated by `enabled`;
+// it carries one or more export profiles, each independently enable-able.
+export const otelFormSchema = z.object({
+	enabled: z.boolean().default(true),
+	profiles: z.array(otelConfigSchema).min(1, "At least one profile is required"),
+});
 
 // Maxim Configuration Schema
 export const maximConfigSchema = z.object({
 	api_key: z.string().default(""),
 	log_repo_id: z.string().optional(),
+	request_headers: z.array(z.string()).default([]),
 });
 
 // Maxim form schema for the MaximFormFragment

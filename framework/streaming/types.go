@@ -141,9 +141,10 @@ type StreamAccumulator struct {
 	TerminalErrorChunkIndex int
 
 	// Passthrough streaming accumulation
-	PassthroughBody []byte // Accumulated body bytes from passthrough streaming chunks
-	PassthroughStatusCode int // Status code from passthrough response
-	PassthroughHeaders map[string]string // Headers from passthrough response
+	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
+	PassthroughStatusCode int               // Status code from passthrough response
+	PassthroughHeaders    map[string]string // Headers from passthrough response
+	PassthroughPath       string            // Stripped provider path, e.g. "/v1/chat/completions"
 
 	IsComplete     bool
 	FinalTimestamp time.Time
@@ -243,6 +244,7 @@ type ProcessedStreamResponse struct {
 	Provider       schemas.ModelProvider
 	RequestedModel string // original model requested by the caller
 	ResolvedModel  string // actual model used by the provider (equals RequestedModel when no alias mapping exists)
+	RoutingInfo    schemas.RoutingInfo
 	Data           *AccumulatedData
 	RawRequest     *interface{}
 }

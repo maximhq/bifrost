@@ -1,6 +1,5 @@
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { HeadersTable, type CellRenderParams } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Separator } from "@/components/ui/separator";
@@ -12,35 +11,10 @@ import { isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
+import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
-
-/** Normalize form value (object or legacy JSON string) for the alias map editor. */
-function normalizeAliasesValue(v: Record<string, string> | string | undefined | null): Record<string, string> {
-	if (v == null) {
-		return {};
-	}
-	if (typeof v === "string") {
-		const t = v.trim();
-		if (!t) {
-			return {};
-		}
-		try {
-			const p = JSON.parse(t) as unknown;
-			if (typeof p === "object" && p !== null && !Array.isArray(p)) {
-				return Object.fromEntries(Object.entries(p as Record<string, unknown>).map(([k, val]) => [k, String(val ?? "")]));
-			}
-		} catch {
-			return {};
-		}
-		return {};
-	}
-	if (typeof v === "object" && !Array.isArray(v)) {
-		return Object.fromEntries(Object.entries(v).map(([k, val]) => [k, typeof val === "string" ? val : String(val ?? "")]));
-	}
-	return {};
-}
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex"];
 
 interface Props {
 	control: Control<any>;
@@ -346,34 +320,22 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						control={control}
 						name={`key.aliases`}
 						render={({ field }) => (
-							<FormItem data-testid="apikey-aliases-field">
-								<FormLabel>Aliases (Optional)</FormLabel>
+							<FormItem data-testid="apikey-deployments-field">
+								<FormLabel>Deployments (Optional)</FormLabel>
 								<FormDescription>
-									Map each request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
-									ID, etc.) or just a custom name, e.g. &quot;claude-sonnet-4-5&quot; -&gt; &quot;custom-claude-4.5-sonnet&quot;.
+									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
+									ID, etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides — these power
+									cost/pricing logs and family-based routing.
 								</FormDescription>
 								<FormControl>
-									<div data-testid="apikey-aliases-table">
-										<HeadersTable
-											label=""
-											value={normalizeAliasesValue(field.value)}
+									<div data-testid="apikey-deployments-table">
+										<DeploymentsTable
+											providerName={providerName}
+											value={field.value}
 											onChange={(next) => {
 												form.clearErrors("key.aliases");
 												field.onChange(Object.keys(next).length > 0 ? next : {});
 											}}
-											keyPlaceholder="Request model name"
-											valuePlaceholder="Deployment / profile / resource ID"
-											renderValueInput={({ value: cellValue, onChange, placeholder, disabled }: CellRenderParams) => (
-												<ModelMultiselect
-													isSingleSelect
-													provider={providerName}
-													value={cellValue}
-													onChange={onChange}
-													placeholder={placeholder ?? "Deployment / profile / resource ID"}
-													disabled={disabled}
-													unfiltered={true}
-												/>
-											)}
 										/>
 									</div>
 								</FormControl>
@@ -383,7 +345,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</>
 			)}
-			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
+			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -662,6 +624,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							)}
 						/>
 					)}
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
 			{isReplicate && (

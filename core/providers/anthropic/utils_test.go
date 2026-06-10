@@ -1479,6 +1479,31 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 }
 
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
+	t.Run("diagnostics_gated_via_feature_map", func(t *testing.T) {
+		// diagnostics is an undocumented Claude Code session-continuity field
+		// (diagnostics.previous_message_id). Only Anthropic direct keeps it;
+		// every other provider strips it fail-closed via Diagnostics=false.
+		const body = `{"model":"claude-opus-4-7","diagnostics":{"previous_message_id":null}}`
+		// Anthropic keeps it.
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-7")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "diagnostics") {
+			t.Errorf("expected diagnostics to be kept for Anthropic, got: %s", string(result))
+		}
+		// Azure, Bedrock, Vertex strip it.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			result, err := StripUnsupportedFieldsFromRawBody([]byte(body), provider, "claude-opus-4-7")
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", provider, err)
+			}
+			if providerUtils.JSONFieldExists(result, "diagnostics") {
+				t.Errorf("expected diagnostics to be stripped for %s, got: %s", provider, string(result))
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
@@ -2200,6 +2225,11 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Fable/Mythos family: adaptive thinking is always on.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
@@ -2213,6 +2243,70 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 			got := SupportsAdaptiveThinking(tt.model)
 			if got != tt.expected {
 				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsFableFamily pins the Fable/Mythos family predicate. These models share
+// Opus 4.7+'s adaptive-only / no-sampling surface and additionally reject
+// thinking:{type:"disabled"}.
+func TestIsFableFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
+		{"anthropic.claude-mythos-5-v1", true},
+		// Not Fable/Mythos.
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsFableFamily(tt.model); got != tt.expected {
+				t.Errorf("IsFableFamily(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
+// and sampling-parameter surfaces: Opus 4.7+ OR the Fable/Mythos family.
+func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Opus 4.7+.
+		{"claude-opus-4-8", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.8-20260601", true},
+		// Fable/Mythos.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
+		{"claude-opus-4-6", false},
+		{"claude-sonnet-4-6", false},
+		// Other.
+		{"claude-opus-4-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
+				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2240,6 +2334,13 @@ func TestSupportsMidConversationSystem(t *testing.T) {
 		// Not supported: other model families.
 		{schemas.Anthropic, "claude-sonnet-4-8", false},
 		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Supported: Fable/Mythos family (Anthropic provider). Fable post-dates
+		// Opus 4.8 and supports mid-conversation system messages.
+		{schemas.Anthropic, "claude-fable-5", true},
+		{schemas.Anthropic, "claude-mythos-5", true},
+		// Not supported off the Anthropic provider, even for Fable.
+		{schemas.Bedrock, "claude-fable-5", false},
+		{schemas.Vertex, "claude-fable-5", false},
 		// Defensive cases.
 		{schemas.Anthropic, "", false},
 		{"", "claude-opus-4-8", false},
@@ -2278,6 +2379,10 @@ func TestSupportsFastMode(t *testing.T) {
 		{"claude-haiku-4-5", false},
 		{"claude-opus-4-5", false},
 		{"claude-opus-4-1", false},
+		// Fable/Mythos do NOT support fast mode (Opus 4.6/4.7/4.8 only).
+		{"claude-fable-5", false},
+		{"claude-mythos-5", false},
+		{"claude-mythos-preview", false},
 		// Defensive cases.
 		{"", false},
 		{"some-non-claude-model", false},
@@ -2302,7 +2407,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		expected bool
 	}{
 		// Supported per docs.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
@@ -2622,6 +2730,11 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		// Fable/Mythos family uses the new generation, like Opus 4.8.
+		{"claude-fable-5", ComputerUseGen20251124},
+		{"claude-mythos-5", ComputerUseGen20251124},
+		{"claude-mythos-preview", ComputerUseGen20251124},
+		{"global.anthropic.claude-fable-5", ComputerUseGen20251124},
 		{"claude-sonnet-4-5", ComputerUseGen20250124},
 		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
 		{"claude-haiku-4-5", ComputerUseGen20250124},
@@ -2952,8 +3065,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},
@@ -2970,6 +3083,113 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 			if budget != tc.wantBudget {
 				t.Errorf("max effort with maxTokens=%d: got budget=%d, want %d",
 					tc.maxTokens, budget, tc.wantBudget)
+			}
+		})
+	}
+}
+
+func TestStripEmptyThinkingBlocks(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantUnchanged bool
+		wantMsgConts  []int // expected content-array length per message; -1 = string content, skip
+	}{
+		{
+			name:         "strips block with empty thinking and empty signature",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips block with non-empty thinking but empty signature (OpenAI/Gemini cross-provider replay)",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"I need to solve this step by step","signature":""}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "keeps valid Anthropic block with non-empty thinking and signature",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"I am reasoning about the answer","signature":"abc123"}]}]}`,
+			wantMsgConts: []int{1},
+		},
+		{
+			// Blocks where thinking="" are also stripped — Anthropic rejects them with
+			// "each thinking block must contain thinking", even if the signature is valid.
+			name:         "strips block with empty thinking even if signature is non-empty",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:          "no thinking blocks, body returned unchanged",
+			input:         `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:         "mixed: strips invalid, keeps valid thinking and text blocks",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"some reasoning","signature":""},{"type":"thinking","thinking":"valid","signature":"sig1"},{"type":"text","text":"answer"}]}]}`,
+			wantMsgConts: []int{2},
+		},
+		{
+			name:          "redacted_thinking type is not affected",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name: "multiple messages: strips invalid in first, keeps valid in second",
+			input: `{"messages":[` +
+				`{"role":"assistant","content":[{"type":"thinking","thinking":"reason","signature":""}]},` +
+				`{"role":"assistant","content":[{"type":"thinking","thinking":"valid","signature":"sig1"},{"type":"text","text":"hi"}]}` +
+				`]}`,
+			wantMsgConts: []int{0, 2},
+		},
+		{
+			name:          "no messages field, body returned unchanged",
+			input:         `{"model":"claude-opus-4-8","max_tokens":1024}`,
+			wantUnchanged: true,
+		},
+		{
+			name:         "string content (not array) is skipped without error",
+			input:        `{"messages":[{"role":"user","content":"hello world"}]}`,
+			wantMsgConts: []int{-1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripEmptyThinkingBlocks([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantUnchanged && string(out) != tt.input {
+				t.Errorf("expected body unchanged\ngot:  %s\nwant: %s", string(out), tt.input)
+			}
+			if tt.wantMsgConts == nil {
+				return
+			}
+
+			var result struct {
+				Messages []struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
+				t.Fatalf("output is not valid JSON: %v", jsonErr)
+			}
+			for mi, wantLen := range tt.wantMsgConts {
+				if mi >= len(result.Messages) {
+					t.Fatalf("message index %d out of range (%d messages in output)", mi, len(result.Messages))
+				}
+				if wantLen == -1 {
+					continue
+				}
+				var blocks []json.RawMessage
+				if jsonErr := json.Unmarshal(result.Messages[mi].Content, &blocks); jsonErr != nil {
+					t.Fatalf("messages[%d].content is not a JSON array: %v", mi, jsonErr)
+				}
+				if len(blocks) != wantLen {
+					t.Errorf("messages[%d] content block count: got %d, want %d\noutput: %s",
+						mi, len(blocks), wantLen, string(out))
+				}
 			}
 		})
 	}

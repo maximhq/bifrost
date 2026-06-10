@@ -24,6 +24,7 @@ import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogByIdQuery } from "@/lib/store";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
@@ -233,27 +234,66 @@ export function MCPLogDetailSheet({
 							<LogEntryDetailsView
 								className="col-span-2 w-full"
 								label="Tool Name"
-								value={<span className="font-mono text-sm">{displayLog.tool_name}</span>}
+								value={
+									<Link
+										to="/workspace/mcp-logs"
+										search={{ tool_names: [displayLog.tool_name] }}
+										className="font-mono text-sm text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="mcplogdetails-tool-name-link"
+									>
+										{displayLog.tool_name}
+									</Link>
+								}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
 								label="Server"
 								value={
 									displayLog.server_label ? (
-										<Badge variant="secondary" className="font-mono">
-											{displayLog.server_label}
-										</Badge>
+										<Link
+											to="/workspace/mcp-logs"
+											search={{ server_labels: [displayLog.server_label] }}
+											data-testid="mcplogdetails-server-link"
+										>
+											<Badge variant="secondary" className="font-mono hover:underline">
+												{displayLog.server_label}
+											</Badge>
+										</Link>
 									) : (
 										"-"
 									)
 								}
 							/>
-							{displayLog.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={displayLog.virtual_key.name} />}
+							{displayLog.virtual_key && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Virtual Key"
+									value={
+										<Link
+											to="/workspace/governance/virtual-keys"
+											search={{ selected_vk: displayLog.virtual_key.id }}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="mcplogdetails-virtual-key-link"
+										>
+											{displayLog.virtual_key.name}
+										</Link>
+									}
+								/>
+							)}
 							{displayLog.llm_request_id && (
 								<LogEntryDetailsView
 									className="col-span-3 w-full"
 									label="LLM Request ID"
-									value={<span className="font-mono text-xs">{displayLog.llm_request_id}</span>}
+									value={
+										<Link
+											to="/workspace/logs"
+											search={{ selected_log: displayLog.llm_request_id }}
+											className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="mcplogdetails-llm-request-id-link"
+										>
+											{displayLog.llm_request_id}
+										</Link>
+									}
 								/>
 							)}
 						</div>

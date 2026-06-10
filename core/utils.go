@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -134,17 +135,17 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
-// validateRequest validates the given request.
-func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
+// validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
+func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg("provider is required")
+		return newBifrostErrorFromMsg("could not auto resolve a provider for the request, please specify a provider explicitly")
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg("model is required")
+		return newBifrostErrorFromMsg("could not auto resolve a model for the request, please specify a model explicitly")
 	}
 	return nil
 }
@@ -211,6 +212,32 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 	}
 
 	return false
+}
+
+// routingErrorSummary produces a sanitized, audit-safe one-line summary of a
+// BifrostError for emission to the per-request routing engine log trail.
+// It deliberately omits the upstream provider message — which can echo back
+// API keys, tokens, or user input — and surfaces only the error type and HTTP
+// status code. Used by the core fallback orchestrator so the routing log
+// records *why* a fallback was triggered without leaking secrets into log
+// storage or the UI.
+func routingErrorSummary(e *schemas.BifrostError) string {
+	if e == nil {
+		return "unknown error"
+	}
+	parts := make([]string, 0, 2)
+	if e.Error != nil && e.Error.Type != nil && *e.Error.Type != "" {
+		parts = append(parts, *e.Error.Type)
+	} else if e.Type != nil && *e.Type != "" {
+		parts = append(parts, *e.Type)
+	}
+	if e.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("HTTP %d", *e.StatusCode))
+	}
+	if len(parts) == 0 {
+		return "request failed"
+	}
+	return strings.Join(parts, " ")
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -413,6 +440,18 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 	return
 }
 
+// GetResponseRoutingInfo extracts the RoutingInfo recorded on a completed
+// attempt — from the accumulated response, or the error when the attempt failed.
+func GetResponseRoutingInfo(result *schemas.BifrostResponse, err *schemas.BifrostError) schemas.RoutingInfo {
+	if result != nil {
+		return result.GetExtraFields().RoutingInfo
+	}
+	if err != nil {
+		return err.ExtraFields.RoutingInfo
+	}
+	return schemas.RoutingInfo{}
+}
+
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
 // Returns empty string if marshaling fails.
 func MarshalUnsafe(v any) string {
@@ -474,8 +513,10 @@ func RedactSensitiveString(s string) string {
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
 }
 
-// ValidateExternalURL validates a URL for security concerns (SSRF protection)
-func ValidateExternalURL(urlStr string) error {
+// ValidateExternalURL validates a URL for security concerns (SSRF protection).
+// When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
+// Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
+func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
@@ -493,66 +534,32 @@ func ValidateExternalURL(urlStr string) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Block localhost and loopback addresses
-	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
-	}
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
 	}
-	// Check if any resolved IP is private
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
+		if ip.IsLoopback() {
+			continue
+		}
+		// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
+		}
+		if network.IsLinkLocal(ip) {
+			return fmt.Errorf("link-local IP addresses are not allowed")
+		}
+		if !allowPrivateNetwork && network.IsPrivateIP(ip) {
 			return fmt.Errorf("private IP addresses are not allowed")
 		}
 	}
 	return nil
 }
 
-// isLocalhost checks if a hostname is localhost or a loopback address
-func isLocalhost(hostname string) bool {
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "::"
-}
-
-// isPrivateIP checks if an IP address is in a private range
-func isPrivateIP(ip net.IP) bool {
-	// Private IPv4 ranges
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // Link-local
-		"127.0.0.0/8",    // Loopback
-	}
-	for _, cidr := range privateRanges {
-		_, subnet, _ := net.ParseCIDR(cidr)
-		if subnet.Contains(ip) {
-			return true
-		}
-	}
-	// Check for private IPv6
-	if ip.To4() == nil {
-		// Check for IPv6 loopback and link-local
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return true
-		}
-		// Check for IPv6 unique local addresses (fc00::/7)
-		if len(ip) == 16 && (ip[0]&0xfe) == 0xfc {
-			return true
-		}
-	}
-	return false
-}
-
-// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return schemas.SanitizePluginSpanName(name)
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.

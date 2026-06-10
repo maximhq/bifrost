@@ -38,33 +38,6 @@ type GenAIRouter struct {
 	*GenericRouter
 }
 
-// genAIModelGetter extracts the model name for GenAI routes.
-// For request types populated by extractAndSetModelAndRequestType (the PreCallback),
-// the model is already clean on the struct. For BifrostVideoRetrieveRequest (which has
-// no model field), the provider-scoped model is extracted from the operation_id suffix
-// (format: "op123:openai/gpt-4o") since the route pins the provider via operation_id.
-func genAIModelGetter(ctx *fasthttp.RequestCtx, req interface{}) (string, error) {
-	switch r := req.(type) {
-	case *gemini.GeminiGenerationRequest:
-		return r.Model, nil
-	case *gemini.GeminiEmbeddingRequest:
-		return r.Model, nil
-	case *gemini.GeminiVideoGenerationRequest:
-		return r.Model, nil
-	case *gemini.GeminiBatchCreateRequest:
-		return r.Model, nil
-	case *schemas.BifrostVideoRetrieveRequest:
-		// operation_id encodes the full model string: "op123:gpt-4o" or "op123:openai/gpt-4o".
-		operationID, _ := ctx.UserValue("operation_id").(string)
-		parts := strings.Split(operationID, ":")
-		if len(parts) >= 2 && parts[len(parts)-1] != "" {
-			return parts[len(parts)-1], nil
-		}
-		return "", nil
-	}
-	return "", nil
-}
-
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
@@ -81,7 +54,6 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostVideoRetrieveRequest{}
 		},
-		GetRequestModel: genAIModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if videoRetrieveReq, ok := req.(*schemas.BifrostVideoRetrieveRequest); ok {
 				return &schemas.BifrostRequest{
@@ -120,7 +92,6 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return &gemini.GeminiGenerationRequest{}
 		},
-		GetRequestModel: genAIModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
@@ -705,6 +676,220 @@ func CreateGenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 	return routes
 }
 
+// CreateVertexBatchRouteConfigs creates route configurations for the native Vertex AI
+// batchPredictionJobs API (as used by the aiplatform JobServiceClient). Unlike the Gemini
+// Developer batches surface, Vertex batch prediction is GCS-backed and addressed by the
+// regional resource path projects/{project}/locations/{location}/batchPredictionJobs.
+// Key/project selection happens in Bifrost from the vertex key config, so the project and
+// location in the path are placeholders used only for routing the request shape.
+func CreateVertexBatchRouteConfigs(pathPrefix string) []RouteConfig {
+	var routes []RouteConfig
+
+	collectionPath := pathPrefix + "/v1/projects/{project}/locations/{location}/batchPredictionJobs"
+	itemPath := collectionPath + "/{batch_id}"
+
+	// Create batch prediction job - POST .../batchPredictionJobs
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   collectionPath,
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCreateRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &vertex.VertexBatchPredictionJob{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if job, ok := req.(*vertex.VertexBatchPredictionJob); ok {
+				createReq := vertex.ToBifrostBatchCreateRequest(job)
+				// The native body is already a Vertex BatchPredictionJob; carry it verbatim
+				// so BigQuery IO, non-JSONL formats and multi-URI inputs round-trip losslessly.
+				createReq.RawRequestBody = getGenAIRawRequestBody(ctx)
+				return &BatchRequest{
+					Type:          schemas.BatchCreateRequest,
+					CreateRequest: createReq,
+				}, nil
+			}
+			return nil, errors.New("invalid vertex batch create request type")
+		},
+		BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return vertex.ToVertexBatchCreateResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		// Native Vertex batch bodies pass through verbatim (see RawRequestBody above).
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			return nil
+		},
+	})
+
+	// List batch prediction jobs - GET .../batchPredictionJobs
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   collectionPath,
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchListRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchListRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+				return &BatchRequest{Type: schemas.BatchListRequest, ListRequest: listReq}, nil
+			}
+			return nil, errors.New("invalid vertex batch list request type")
+		},
+		BatchListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return vertex.ToVertexBatchListResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractVertexBatchPathParams,
+	})
+
+	// Retrieve batch prediction job - GET .../batchPredictionJobs/{batch_id}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   itemPath,
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchRetrieveRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
+				return &BatchRequest{Type: schemas.BatchRetrieveRequest, RetrieveRequest: retrieveReq}, nil
+			}
+			return nil, errors.New("invalid vertex batch retrieve request type")
+		},
+		BatchRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return vertex.ToVertexBatchRetrieveResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractVertexBatchPathParams,
+	})
+
+	// Cancel batch prediction job - POST .../batchPredictionJobs/{batch_id}:cancel
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   itemPath,
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCancelRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchCancelRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
+				return &BatchRequest{Type: schemas.BatchCancelRequest, CancelRequest: cancelReq}, nil
+			}
+			return nil, errors.New("invalid vertex batch cancel request type")
+		},
+		BatchCancelResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			// Vertex batchPredictionJobs.cancel returns google.protobuf.Empty.
+			return map[string]interface{}{}, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractVertexBatchPathParams,
+	})
+
+	// Delete batch prediction job - DELETE .../batchPredictionJobs/{batch_id}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   itemPath,
+		Method: "DELETE",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchDeleteRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchDeleteRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if deleteReq, ok := req.(*schemas.BifrostBatchDeleteRequest); ok {
+				return &BatchRequest{Type: schemas.BatchDeleteRequest, DeleteRequest: deleteReq}, nil
+			}
+			return nil, errors.New("invalid vertex batch delete request type")
+		},
+		BatchDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchDeleteResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			// Vertex batchPredictionJobs.delete returns a long-running Operation.
+			return map[string]interface{}{"done": true}, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractVertexBatchPathParams,
+	})
+
+	return routes
+}
+
+// extractVertexBatchPathParams pins the provider to Vertex and extracts the bare batch_id
+// (stripping any :cancel action suffix) for the native Vertex batch routes. The job ID is
+// passed bare so the provider resolves project/region from its key config.
+func extractVertexBatchPathParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	batchID, _ := ctx.UserValue("batch_id").(string)
+	batchID = strings.TrimSuffix(batchID, ":cancel")
+
+	switch r := req.(type) {
+	case *schemas.BifrostBatchListRequest:
+		r.Provider = schemas.Vertex
+		if pageSizeStr := string(ctx.QueryArgs().Peek("pageSize")); pageSizeStr != "" {
+			if pageSize, err := strconv.Atoi(pageSizeStr); err == nil {
+				r.Limit = pageSize
+			}
+		}
+		if pageToken := string(ctx.QueryArgs().Peek("pageToken")); pageToken != "" {
+			r.After = &pageToken
+		}
+	case *schemas.BifrostBatchRetrieveRequest:
+		if batchID == "" {
+			return errors.New("batch_id is required")
+		}
+		r.Provider = schemas.Vertex
+		r.BatchID = batchID
+	case *schemas.BifrostBatchCancelRequest:
+		if batchID == "" {
+			return errors.New("batch_id is required")
+		}
+		r.Provider = schemas.Vertex
+		r.BatchID = batchID
+	case *schemas.BifrostBatchDeleteRequest:
+		if batchID == "" {
+			return errors.New("batch_id is required")
+		}
+		r.Provider = schemas.Vertex
+		r.BatchID = batchID
+	}
+	return nil
+}
+
 // extractGeminiBatchIDFromPath extracts batch_id from path parameters for Gemini
 func extractGeminiBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	provider := getProviderFromHeader(ctx, schemas.Gemini)
@@ -825,12 +1010,6 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &vertex.VertexRankRequest{}
-		},
-		GetRequestModel: func(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
-			if r, ok := req.(*vertex.VertexRankRequest); ok && r.Model != nil {
-				return *r.Model, nil
-			}
-			return "", nil
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
@@ -1145,6 +1324,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logg
 	routes := CreateGenAIRouteConfigs("/genai")
 	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateVertexBatchRouteConfigs("/genai")...)
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
 
 	return &GenAIRouter{

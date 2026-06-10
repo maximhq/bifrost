@@ -412,6 +412,51 @@ Each APM trace includes comprehensive LLM operation metadata:
 
 ---
 
+## Plugin Span Filtering
+
+By default every plugin's pre- and post-hook execution generates a span, which can bloat APM traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the Datadog plugin config to control which plugin spans are exported. This affects only the exported APM trace spans — plugin execution and metrics are unchanged.
+
+**Via config.json** (inside the Datadog plugin config):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "datadog",
+      "enabled": true,
+      "config": {
+        "service_name": "bifrost",
+        "agent_addr": "localhost:8126",
+        "enable_traces": true,
+        "plugin_span_filter": {
+          "mode": "exclude",
+          "plugins": ["logging", "compat", "telemetry"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**Via the UI**: Open the **Observability** page, select the **Datadog** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+
+**Filter modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `exclude` | Export spans for all plugins **except** those listed |
+| `include` | Export spans **only** for the listed plugins |
+
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. Note that some plugins are registered under a different name than their config key: the enterprise prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` (not `prompts`/`governance`). Common names include `telemetry`, `logging`, `otel`, `semantic_cache`, `compat`, `maxim`, `enterprise-prompts`, `enterprise-governance`, `datadog`, `bigquery`, `guardrails`, `adaptive-loadbalancer`, and `model-catalog-resolver`. The exact set depends on which plugins are loaded in your deployment.
+
+When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected. The filter applies to APM trace spans only; it does not change DogStatsD metrics, which are never derived from plugin spans.
+
+<Note>
+  Each observability connector has its own independent `plugin_span_filter` — filtering plugin spans for Datadog does not affect OTEL, BigQuery, or any other connector. `plugin_span_filter` follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set a higher `version` on the Datadog plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+</Note>
+
+---
+
 ## Supported Request Types
 
 The Datadog plugin captures all Bifrost request types:

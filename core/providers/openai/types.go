@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 const MinMaxCompletionTokens = 16
@@ -87,6 +88,10 @@ type OpenAIChatRequest struct {
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 
+	// Provider is the originating provider, used for provider-specific marshalling
+	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
+	Provider schemas.ModelProvider `json:"-"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -133,10 +138,17 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	}
 	type Alias OpenAIChatRequest
 
+	// OpenRouter forwards Anthropic-style cache_control breakpoints to the
+	// underlying model, so we must preserve cache_control (on content blocks
+	// and tools) when targeting OpenRouter. Everything else (citations,
+	// file types, Anthropic server tools, Anthropic-only tool flags) is still
+	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
+	keepCacheControl := req.Provider == schemas.OpenRouter
+
 	// First pass: check if we need to modify any messages
 	needsCopy := false
 	for _, msg := range req.Messages {
-		if hasFieldsToStripInChatMessage(msg) {
+		if hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 			needsCopy = true
 			break
 		}
@@ -147,7 +159,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if needsCopy {
 		processedMessages = make([]OpenAIMessage, len(req.Messages))
 		for i, msg := range req.Messages {
-			if !hasFieldsToStripInChatMessage(msg) {
+			if !hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 				// No modification needed, use original
 				processedMessages[i] = msg
 				continue
@@ -161,10 +173,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.File != nil && block.File.FileType != nil)
+					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil))
 					if needsBlockCopy {
 						blockCopy := block
-						blockCopy.CacheControl = nil
+						if stripBlockCacheControl {
+							blockCopy.CacheControl = nil
+						}
 						blockCopy.Citations = nil
 						// Strip FileType and FileURL from file block
 						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
@@ -196,7 +211,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if len(req.Tools) > 0 {
 		needsToolChange := false
 		for _, tool := range req.Tools {
-			if tool.CacheControl != nil || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
+			stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+			if stripToolCacheControl || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
 				needsToolChange = true
 				break
 			}
@@ -210,12 +226,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				if isAnthropicServerToolShape(tool) {
 					continue
 				}
-				if tool.CacheControl == nil && !hasAnthropicOnlyToolFlags(tool) {
+				stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+				if !stripToolCacheControl && !hasAnthropicOnlyToolFlags(tool) {
 					processedTools = append(processedTools, tool)
 					continue
 				}
 				toolCopy := tool
-				toolCopy.CacheControl = nil
+				if stripToolCacheControl {
+					toolCopy.CacheControl = nil
+				}
 				toolCopy.DeferLoading = nil
 				toolCopy.AllowedCallers = nil
 				toolCopy.InputExamples = nil
@@ -340,7 +359,11 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
+			data, err := providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
+			if err != nil {
+				return nil, err
+			}
+			return stripCompactionItemSummary(data, r.OpenAIResponsesRequestInputArray), nil
 		}
 
 		// Only copy messages that have CacheControl
@@ -498,9 +521,29 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		return providerUtils.MarshalSorted(messagesCopy)
+		data, err := providerUtils.MarshalSorted(messagesCopy)
+		if err != nil {
+			return nil, err
+		}
+		return stripCompactionItemSummary(data, messagesCopy), nil
 	}
 	return providerUtils.MarshalSorted(nil)
+}
+
+// stripCompactionItemSummary removes the "summary" field from compaction input items.
+// OpenAI's Responses API rejects "summary" on a compaction item ("Unknown parameter:
+// input[N].summary"). Bifrost has no first-class compaction item model, so the item's
+// encrypted_content rides the embedded *ResponsesReasoning, whose (no-omitempty) Summary
+// re-injects "summary": null. Reasoning items legitimately carry summary and are left intact.
+func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) []byte {
+	for i, msg := range items {
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction {
+			if updated, err := sjson.DeleteBytes(data, fmt.Sprintf("%d.summary", i)); err == nil {
+				data = updated
+			}
+		}
+	}
+	return data
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
@@ -550,10 +593,10 @@ func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 		t.Type == schemas.ResponsesToolTypeMemory
 }
 
-func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
+func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
-			if block.CacheControl != nil {
+			if block.CacheControl != nil && !keepCacheControl {
 				return true
 			}
 			if block.Citations != nil {
@@ -706,7 +749,8 @@ type OpenAIResponsesRequest struct {
 	schemas.ResponsesParameters
 	Stream *bool `json:"stream,omitempty"`
 
-	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	// Bifrost specific fields (not serialized to wire)
+	Provider    schemas.ModelProvider  `json:"-"` // originating provider, used for provider-specific filtering
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }

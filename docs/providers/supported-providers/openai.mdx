@@ -24,6 +24,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 | Video Generation | ✅ | - | `/v1/videos` |
+| Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 
 ## Setup & Configuration
@@ -69,28 +70,7 @@ Configure OpenAI as a provider.
 
 </Tab>
 <Tab title="API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-  "provider": "openai",
-  "keys": [
-    {
-      "name": "openai-key-1",
-      "value": "env.OPENAI_API_KEY",
-      "models": [
-        "*"
-      ],
-      "weight": 1.0
-    }
-  ],
-  "openai_config": {
-    "disable_store": false
-  }
-}'
-```
-
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
 </Tab>
 <Tab title="Go SDK">
 
@@ -573,6 +553,27 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | Delete | `DELETE /v1/videos/{id}` | Removes video job |
 | List jobs | `GET /v1/videos` | Query params: `after`, `limit`, `order` |
 | Remix | `POST /v1/videos/{id}/remix` | Body: `{"prompt": "..."}` |
+
+---
+
+# 14. Context Compaction
+
+Compresses a conversation into an opaque encrypted item that can be reused in future Responses API calls, reducing token costs for long-running conversations.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `input` | string/array | ✅* | Conversation to compact. Required unless `previous_response_id` is set. Accepts the same format as the Responses API `input` field, including prior compaction items (`type: "response.compaction"`). |
+| `previous_response_id` | string | ✅* | ID of a previously stored response to compact instead of sending full input. |
+| `instructions` | string | ❌ | System instructions preserved across the compacted context. |
+| `prompt_cache_key` | string | ❌ | Prompt caching key. |
+| `prompt_cache_retention` | string | ❌ | Cache retention duration. |
+| `service_tier` | string | ❌ | Service tier preference. |
+| `fallbacks` | array | ❌ | Bifrost fallback model list. |
+
+**Endpoint**: `POST /v1/responses/compact`
 
 ---
 

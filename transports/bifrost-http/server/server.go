@@ -64,6 +64,7 @@ type ServerCallbacks interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
+	GetLoadedPluginNames() []string
 	NormalizePluginConfig(name string, config map[string]any) (map[string]any, error)
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
@@ -100,6 +101,9 @@ type ServerCallbacks interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	// MCP related callbacks
@@ -380,6 +384,17 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return nil, err
 	}
+	// Fetch VK-scoped model configs up front, alongside the VK load, so that a DB
+	// failure here aborts before we mutate any in-memory state. Reloading these
+	// reflects governance changes made via the VK sheet (syncVKGovernanceToModelConfigs)
+	// in memory immediately — both on the node that handled the update and on peers
+	// that receive this reload via the cluster gossip broadcast.
+	mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(
+		ctx, tables.ModelConfigScopeVirtualKey, []string{id},
+	)
+	if err != nil {
+		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
+	}
 	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
 		for _, existingVK := range governanceData.VirtualKeys {
 			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
@@ -388,7 +403,23 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 			}
 		}
 	}
-	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	store := governancePlugin.GetGovernanceStore()
+	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
+	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
+	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
+	// an access profile has its VK-scoped governance model configs deleted).
+	// Without this their stale budgets keep enforcing.
+	staleIDs := make(map[string]bool)
+	for _, mcID := range store.ScopedModelConfigIDs(tables.ModelConfigScopeVirtualKey, id) {
+		staleIDs[mcID] = true
+	}
+	for i := range mcs {
+		delete(staleIDs, mcs[i].ID)
+		store.UpdateModelConfigInMemory(ctx, &mcs[i])
+	}
+	for mcID := range staleIDs {
+		store.DeleteModelConfigInMemory(ctx, mcID)
+	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
 }
@@ -507,10 +538,16 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		return preloadedMC, nil
 	}
 
-	// Sync updated usage values back to database if they changed
-	if updatedMC.Budget != nil && preloadedMC.Budget != nil {
-		if updatedMC.Budget.CurrentUsage != preloadedMC.Budget.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedMC.Budget.ID, updatedMC.Budget.CurrentUsage); err != nil {
+	// Sync updated budget usage values back to database if they changed (per budget ID,
+	// since a model config may own multiple budgets).
+	preloadedUsage := make(map[string]float64, len(preloadedMC.Budgets))
+	for i := range preloadedMC.Budgets {
+		preloadedUsage[preloadedMC.Budgets[i].ID] = preloadedMC.Budgets[i].CurrentUsage
+	}
+	for i := range updatedMC.Budgets {
+		b := &updatedMC.Budgets[i]
+		if old, ok := preloadedUsage[b.ID]; ok && old != b.CurrentUsage {
+			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, b.ID, b.CurrentUsage); err != nil {
 				logger.Error("failed to sync budget usage to database: %v", err)
 			}
 		}
@@ -591,84 +628,23 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 
-	// Read current key count from in-memory store (providerInfo.Keys is not preloaded from DB)
-	inMemoryKeys, _ := s.Config.GetProviderKeysRaw(provider)
+	// In-memory store holds the latest schemas.Key slice after the most recent
+	// CRUD write — read from there to avoid re-fetching + re-converting from DB.
+	inMemoryKeys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	}
 	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
-	// Getting allowed models from all provider keys (needed before model listing)
-	providerKeys, err := s.Config.ConfigStore.GetKeysByProvider(ctx, string(provider))
-	if err != nil {
-		return nil, fmt.Errorf("failed to update provider model catalog: failed to get keys by provider: %s", err)
-	}
-
-	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
-	defer bfCtx.Cancel()
-
-	// Run filtered and unfiltered model listing concurrently
-	var (
-		allModels        *schemas.BifrostListModelsResponse
-		bifrostErr       *schemas.BifrostError
-		unfilteredModels *schemas.BifrostListModelsResponse
-		listModelsErr    *schemas.BifrostError
-		listWg           sync.WaitGroup
-	)
-	listWg.Add(2)
-	go func() {
-		defer listWg.Done()
-		allModels, bifrostErr = s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-			Provider: provider,
-		})
-	}()
-	go func() {
-		defer listWg.Done()
-		unfilteredModels, listModelsErr = s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-			Provider:   provider,
-			Unfiltered: true,
-		})
-	}()
-	listWg.Wait()
-
-	if allModels != nil && len(allModels.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-		s.updateKeyStatus(ctx, allModels.KeyStatuses)
-	}
-	if bifrostErr != nil {
-		if len(bifrostErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-			s.updateKeyStatus(ctx, bifrostErr.ExtraFields.KeyStatuses)
-		}
-
-		if hasNoKeys {
-			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
-		} else {
-			logger.Warn("failed to update provider model catalog: failed to list all models: %s. We are falling back onto the static datasheet", bifrost.GetErrorMessage(bifrostErr))
-		}
-		// In case of error, we return an empty list of models, and fallback onto the static datasheet
-		allModels = &schemas.BifrostListModelsResponse{
-			Data: make([]schemas.Model, 0),
-		}
-	}
-	modelsInKeys := make([]schemas.Model, 0)
-	for _, key := range providerKeys {
-		if key.Models.IsUnrestricted() {
-			continue
-		}
-		for _, model := range key.Models {
-			modelsInKeys = append(modelsInKeys, schemas.Model{
-				ID: string(provider) + "/" + model,
-			})
-		}
-	}
-	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
-	if listModelsErr != nil {
-		if hasNoKeys {
-			logger.Warn("unfiltered model discovery skipped for provider %s: no keys configured", provider)
-		} else {
-			logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-		}
+	// Refresh keyconfig from the current key list, then drop any stale live
+	// entries (for keys removed in this update) before refetching per-key.
+	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, inMemoryKeys)
+	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
+	if hasNoKeys {
+		logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
 	} else {
-		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModels)
+		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
 	return updatedProvider, nil
 }
@@ -693,9 +669,82 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
+	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
+	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
 
 	return nil
+}
+
+// OnKeyAdded refreshes the keyconfig snapshot and fetches list-models for the
+// new key only — 2 calls instead of ReloadProvider's 2×N. Called by the key
+// handler after a successful AddProviderKey write.
+func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not found")
+	}
+	keys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	}
+	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	// Keyless providers: empty keyID sentinel.
+	keyID := key.ID
+	if isKeylessProvider(provider, s.Config) {
+		keyID = ""
+	}
+	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+	return nil
+}
+
+// OnKeyUpdated invalidates the affected key's live entries (the gate may have
+// changed even when Value didn't), refreshes the keyconfig, then refetches
+// for just that key. 2 calls regardless of N keys on the provider.
+func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not found")
+	}
+	keys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	}
+	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	keyID := key.ID
+	if isKeylessProvider(provider, s.Config) {
+		keyID = ""
+	}
+	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
+	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+	return nil
+}
+
+// OnKeyDeleted invalidates the deleted key's live entries and refreshes the
+// keyconfig. No list-models calls — the provider's remaining keys' cached
+// entries stay valid.
+func (s *BifrostHTTPServer) OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not found")
+	}
+	keys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	}
+	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
+	return nil
+}
+
+// isKeylessProvider returns true when the provider's config marks it
+// keyless. Used to pick the live-cache key for OnKey* helpers: keyless
+// providers cache under the empty-string sentinel.
+func isKeylessProvider(provider schemas.ModelProvider, cfg *lib.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	pc, err := cfg.GetProviderConfigRaw(provider)
+	if err != nil || pc == nil || pc.CustomProviderConfig == nil {
+		return false
+	}
+	return pc.CustomProviderConfig.IsKeyLess
 }
 
 // GetGovernanceData returns the governance data
@@ -862,51 +911,120 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, s.Config.FrameworkConfig.Pricing)
 }
 
-func (s *BifrostHTTPServer) populateModelPoolWithListModels(ctx context.Context) error {
-	// Fetching keys for all providers and allowed models first
-	// Based on allowed models we will set the data in the model catalog
+// RefreshLiveModelsForProvider runs filtered + unfiltered list-models for the
+// provider, fanning out per key in parallel so the live cache ends up with
+// per-(provider, keyID) entries. Keyless providers cache under the "" sentinel.
+//
+// Callers are responsible for invalidating stale entries first when keys
+// have been removed from the provider's set.
+func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, provider schemas.ModelProvider, keys []schemas.Key) {
+	if len(keys) == 0 {
+		// Empty key slice + non-keyless provider would write under the "" sentinel
+		// reserved for keyless providers — colliding with the keyless namespace and
+		// triggering an unauthenticated fetch for a provider that requires a key.
+		if !isKeylessProvider(provider, s.Config) {
+			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
+			return
+		}
+		s.FetchAndStoreLiveForKey(ctx, provider, "")
+		return
+	}
 	var wg sync.WaitGroup
-	for provider, providerConfig := range s.Config.Providers {
+	for _, key := range keys {
 		wg.Add(1)
-		go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
+		go func(keyID string) {
 			defer wg.Done()
-			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-			defer bfCtx.Cancel()
-			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider: provider,
-			})
-			if listModelsErr != nil {
-				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			}
-			allowedModels := make([]schemas.Model, 0)
-			for _, key := range providerConfig.Keys {
-				if key.Models.IsUnrestricted() {
-					continue
-				}
-				for _, model := range key.Models {
-					allowedModels = append(allowedModels, schemas.Model{
-						ID: string(provider) + "/" + model,
-					})
-				}
-			}
-			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider:   provider,
-				Unfiltered: true,
-			})
-			if listModelsErr != nil {
-				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			} else {
-				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
-			}
-		}(provider, providerConfig)
+			s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+		}(key.ID)
 	}
 	wg.Wait()
-	return nil
 }
 
-// ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
+// FetchAndStoreLiveForKey issues the filtered and unfiltered list-models
+// calls for one (provider, keyID) in parallel and writes the results into
+// the catalog. Errors are logged and surfaced via updateKeyStatus when the
+// provider returns per-key statuses, but they do not abort the other call.
+// keyID="" scopes to "no specific key" — used for keyless providers and as
+// the legacy sentinel. Always validates keys for the providers that opt into
+// the check (today: OpenRouter, whose /v1/models is unauthenticated) so the
+// routing graph is the same at boot, after a key add, and after a reload —
+// stale-but-routable behavior would diverge otherwise.
+func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) {
+	// Skip the fetch entirely when the provider has disabled list_models via
+	// allowed_requests — every per-(provider,keyID) call would just bounce with
+	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
+	if s.Config != nil {
+		if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
+			pc.CustomProviderConfig != nil &&
+			!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+			return
+		}
+	}
+	// One BifrostContext per goroutine. BifrostContext.SetValue mutates state
+	// in place, so the request-scoped metadata core sets during a routing pass
+	// (RequestID, FallbackIndex, span IDs, ...) would otherwise bleed between
+	// the filtered and unfiltered calls and conflate them in logs/billing.
+	newListModelsCtx := func() *schemas.BifrostContext {
+		c := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
+		c.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+		c.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+		return c
+	}
+
+	var keyIDPtr *string
+	if keyID != "" {
+		keyIDPtr = &keyID
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		bfCtx := newListModelsCtx()
+		defer bfCtx.Cancel()
+		resp, bfErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+			Provider: provider,
+			KeyID:    keyIDPtr,
+		})
+		if bfErr != nil {
+			logger.Warn("filtered list-models failed for provider %s key %s: %v: falling back onto the static datasheet", provider, keyID, bifrost.GetErrorMessage(bfErr))
+			if len(bfErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+				s.updateKeyStatus(ctx, bfErr.ExtraFields.KeyStatuses)
+			}
+			return
+		}
+		if resp == nil {
+			return
+		}
+		s.Config.ModelCatalog.UpsertLiveFromResponse(provider, keyID, false, resp)
+		if len(resp.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+			s.updateKeyStatus(ctx, resp.KeyStatuses)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		bfCtx := newListModelsCtx()
+		defer bfCtx.Cancel()
+		resp, bfErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+			Provider:   provider,
+			KeyID:      keyIDPtr,
+			Unfiltered: true,
+		})
+		if bfErr != nil {
+			logger.Warn("unfiltered list-models failed for provider %s key %s: %v: falling back onto the static datasheet", provider, keyID, bifrost.GetErrorMessage(bfErr))
+			return
+		}
+		if resp == nil {
+			return
+		}
+		s.Config.ModelCatalog.UpsertLiveFromResponse(provider, keyID, true, resp)
+	}()
+	wg.Wait()
+}
+
+// ForceReloadPricing triggers an immediate pricing sync and resets the sync
+// timer. No longer triggers a list-models refresh — pricing reload is now
+// pricing-only.
 func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 	if s.Config == nil {
 		return fmt.Errorf("server config not initialized")
@@ -915,12 +1033,13 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		if err := s.Config.ModelCatalog.ForceReloadPricing(ctx); err != nil {
 			return fmt.Errorf("failed to force reload pricing: %w", err)
 		}
-		return s.populateModelPoolWithListModels(ctx)
 	}
 	return nil
 }
 
-// ReloadPricingFromDBAndPopulateModelPool reloads the pricing from DB and populates the model pool
+// ReloadPricingFromDBAndPopulateModelPool reloads the pricing from DB. The
+// list-models refresh that used to follow is gone — pricing reload is now
+// pricing-only.
 func (s *BifrostHTTPServer) ReloadPricingFromDBAndPopulateModelPool(ctx context.Context) error {
 	if s.Config == nil {
 		return fmt.Errorf("server config not initialized")
@@ -929,7 +1048,6 @@ func (s *BifrostHTTPServer) ReloadPricingFromDBAndPopulateModelPool(ctx context.
 		if err := s.Config.ModelCatalog.ReloadFromDB(ctx); err != nil {
 			return fmt.Errorf("failed to reload pricing from DB: %w", err)
 		}
-		return s.populateModelPoolWithListModels(ctx)
 	}
 	return nil
 }
@@ -1039,6 +1157,15 @@ func (s *BifrostHTTPServer) GetUnfilteredModelsForProvider(provider schemas.Mode
 // Delegates to Config for centralized plugin status management
 func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus {
 	return s.Config.GetPluginStatus()
+}
+
+// GetLoadedPluginNames returns the sanitized names of all currently loaded plugins,
+// matching the names embedded in their trace span names.
+func (s *BifrostHTTPServer) GetLoadedPluginNames() []string {
+	if s.Config == nil {
+		return []string{}
+	}
+	return s.Config.GetLoadedPluginNames()
 }
 
 // NormalizePluginConfig implements handlers.PluginsLoader. It looks up the plugin
@@ -1483,54 +1610,23 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
 	// but this ensures order consistency if the loading path changes in the future)
 	s.Client.ReorderPlugins(s.Config.GetPluginOrder())
-	// List all models and add to model catalog with per-provider status tracking
+	// Seed the catalog: push the initial keyconfig snapshot and fetch per-key
+	// live models for every provider concurrently.
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
-		// Fetching keys for all providers and allowed models first
-		// Based on allowed models we will set the data in the model catalog
+		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(s.Config.Providers))
+		for provider, providerConfig := range s.Config.Providers {
+			snapshot[provider] = providerConfig.Keys
+		}
+		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
+
 		var wg sync.WaitGroup
 		for provider, providerConfig := range s.Config.Providers {
 			wg.Add(1)
-			go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
+			go func(p schemas.ModelProvider, keys []schemas.Key) {
 				defer wg.Done()
-				bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-				bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-				defer bfCtx.Cancel()
-
-				modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-					Provider: provider,
-				})
-				if modelData != nil && len(modelData.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-					s.updateKeyStatus(ctx, modelData.KeyStatuses)
-				}
-				if listModelsErr != nil {
-					if len(listModelsErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-						s.updateKeyStatus(ctx, listModelsErr.ExtraFields.KeyStatuses)
-					}
-					logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-				}
-				allowedModels := make([]schemas.Model, 0)
-				for _, key := range providerConfig.Keys {
-					if key.Models.IsUnrestricted() {
-						continue
-					}
-					for _, model := range key.Models {
-						allowedModels = append(allowedModels, schemas.Model{
-							ID: string(provider) + "/" + model,
-						})
-					}
-				}
-				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-					Provider:   provider,
-					Unfiltered: true,
-				})
-				if listModelsErr != nil {
-					logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-				} else {
-					s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
-				}
-			}(provider, providerConfig)
+				s.RefreshLiveModelsForProvider(ctx, p, keys)
+			}(provider, providerConfig.Keys)
 		}
 		wg.Wait()
 	}

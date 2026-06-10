@@ -85,6 +85,64 @@ func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
 	return db
 }
 
+// multiValueDimensionFilterSQL builds a Postgres predicate matching logs by a
+// dimension that is single-valued on the scalar column (the primary, set by the
+// VK path / pre-migration rows) and multi-valued on the JSON-array column (the
+// full set, set by the enterprise user/AP path). It ORs the scalar `IN` (btree
+// index) with array containment per id (partial jsonb_path_ops GIN index). The
+// `IS NOT NULL AND IS JSON ARRAY` guard matches the partial index predicate so
+// the planner uses the GIN. Returns the parenthesised SQL and its args.
+func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (string, []interface{}) {
+	arrConds := make([]string, len(ids))
+	args := []interface{}{ids}
+	for i, id := range ids {
+		arrConds[i] = arrayCol + "::jsonb @> ?::jsonb"
+		frag, _ := sonic.Marshal([]string{id})
+		args = append(args, string(frag))
+	}
+	sql := fmt.Sprintf("(%s IN ? OR (%s IS NOT NULL AND %s IS JSON ARRAY AND (%s)))",
+		scalarCol, arrayCol, arrayCol, strings.Join(arrConds, " OR "))
+	return sql, args
+}
+
+// teamOrBUFanoutFrom returns a Postgres FROM subquery (aliased AS logs) that fans
+// each log row out to one row per associated team / business unit, exposing
+// derived `dim_id` and `dim_name` columns alongside all original log columns
+// (l.*) so DAC scope and filters still resolve. Rows with the JSON-array column
+// set are unnested (id+name aligned by ordinality); rows without it (pre-upgrade
+// or VK-team logs) fall back to the scalar id/name — so historical logs keep
+// contributing. The two branches are mutually exclusive, so no row is counted
+// twice for the same dimension value. Returns ("", false) for non-fan-out
+// dimensions. idCol is the scalar id column ("team_id" / "business_unit_id"),
+// which both the ranking and histogram dimensions resolve to. No bind args: all
+// identifiers are internal constants.
+func teamOrBUFanoutFrom(idCol string) (string, bool) {
+	var arrIDs, arrNames, scalarName string
+	switch idCol {
+	case "team_id":
+		arrIDs, arrNames, scalarName = "team_ids", "team_names", "team_name"
+	case "business_unit_id":
+		arrIDs, arrNames, scalarName = "business_unit_ids", "business_unit_names", "business_unit_name"
+	case "customer_id":
+		arrIDs, arrNames, scalarName = "customer_ids", "customer_names", "customer_name"
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(`(
+	SELECT l.*, fan.dim_id AS dim_id, fan.dim_name AS dim_name
+	FROM logs l
+	CROSS JOIN LATERAL (
+		SELECT t.value AS dim_id, COALESCE(n.value, '') AS dim_name
+		FROM jsonb_array_elements_text(l.%[1]s::jsonb) WITH ORDINALITY AS t(value, ord)
+		LEFT JOIN jsonb_array_elements_text(l.%[2]s::jsonb) WITH ORDINALITY AS n(value, ord) ON n.ord = t.ord
+		WHERE l.%[1]s IS NOT NULL AND l.%[1]s IS JSON ARRAY
+		UNION ALL
+		SELECT l.%[3]s, COALESCE(l.%[4]s, '')
+		WHERE l.%[1]s IS NULL OR l.%[1]s IS NOT JSON ARRAY
+	) AS fan
+) AS logs`, arrIDs, arrNames, idCol, scalarName), true
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
@@ -121,16 +179,31 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
-		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		}
 	}
 	if len(filters.CustomerIDs) > 0 {
-		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		}
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		}
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
@@ -232,7 +305,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("to_tsvector('simple', content_summary) @@ plainto_tsquery('simple', ?)", filters.ContentSearch)
+			// Must match the idx_logs_content_summary_fts expression exactly (incl. the
+			// left() cap) so the planner uses the GIN expression index.
+			baseQuery = baseQuery.Where(fmt.Sprintf("to_tsvector('simple', left(content_summary, %d)) @@ plainto_tsquery('simple', ?)", ftsInputCharLimit), filters.ContentSearch)
 		} else {
 			baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
 		}
@@ -2003,7 +2078,25 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
 	}
 
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
+	// Multi-valued team / business-unit dimensions fan out over the JSON array
+	// (with scalar fallback for old / VK-team logs) so a request credits every
+	// team/BU it touches. Postgres-only; this forces the live path — the
+	// matview-accelerated equivalent is deferred to the partitioning work.
+	fanoutFrom := ""
+	if s.db.Dialector.Name() == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(idCol); isFanout {
+			fanoutFrom = f
+			idCol, nameCol = "dim_id", "dim_name"
+		}
+	}
+	baseTable := func(q *gorm.DB) *gorm.DB {
+		if fanoutFrom != "" {
+			return q.Table(fanoutFrom)
+		}
+		return q.Model(&Log{})
+	}
+
+	if fanoutFrom == "" && s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) {
 		return s.getDimensionRankingsFromMatView(ctx, filters, dimension)
 	}
 
@@ -2022,7 +2115,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		COALESCE(SUM(cost), 0) as total_cost
 	`, idCol, nameExpr)
 
-	currentQuery := s.ScopedDB(ctx).Model(&Log{})
+	currentQuery := baseTable(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
 	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
@@ -2051,6 +2144,27 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		}, nil
 	}
 
+	// For fan-out dimensions the per-row counts credit a request to every
+	// dimension value it touches, so their sum overstates real traffic. Compute
+	// both requestCounts in one pass over the same fanned population (identical
+	// predicate chain) so actual <= attributed always holds — summing the
+	// (limit-capped) rankings client-side could undercount attributed below it.
+	var requestCounts struct {
+		ActualRequests     int64 `gorm:"column:actual_requests"`
+		AttributedRequests int64 `gorm:"column:attributed_requests"`
+	}
+	if fanoutFrom != "" {
+		requestsCountsQuery := baseTable(s.ScopedDB(ctx))
+		requestsCountsQuery = s.applyFilters(requestsCountsQuery, filters)
+		requestsCountsQuery = requestsCountsQuery.Where("status IN ?", []string{"success", "error"})
+		requestsCountsQuery = requestsCountsQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
+		if err := requestsCountsQuery.
+			Select("COUNT(DISTINCT id) as actual_requests, COUNT(*) as attributed_requests").
+			Scan(&requestCounts).Error; err != nil {
+			return nil, fmt.Errorf("failed to get dimension ranking totals for %s: %w", dimension, err)
+		}
+	}
+
 	prevMap := make(map[string]DimensionRankingEntry)
 	if filters.StartTime != nil && filters.EndTime != nil {
 		duration := filters.EndTime.Sub(*filters.StartTime)
@@ -2061,7 +2175,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
 
-		prevQuery := s.ScopedDB(ctx).Model(&Log{})
+		prevQuery := baseTable(s.ScopedDB(ctx))
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
 		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
 		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
@@ -2129,7 +2243,12 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		}
 	}
 
-	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
+	return &DimensionRankingResult{
+		Rankings:                rankings,
+		Dimension:               dimension,
+		TotalActualRequests:     requestCounts.ActualRequests,
+		TotalAttributedRequests: requestCounts.AttributedRequests,
+	}, nil
 }
 
 // pctChange computes the percentage change from old to new.
@@ -2663,12 +2782,29 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
-		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
-	}
 	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
-	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	// NOTE: under fan-out the per-bucket *total* cost is the attributed total
+	// (≥ real, since a shared request counts toward each of its teams/BUs); the
+	// per-dimension breakdown is exact. Surface it as "attributed" in the UI.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
@@ -2758,12 +2894,26 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
-		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
-	}
 	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
-	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	// Team / business-unit dimensions fan out over the JSON array (scalar
+	// fallback for old / VK-team logs). Postgres-only; forces the live path.
+	fanoutFrom := ""
+	if dialect == "postgres" {
+		if f, isFanout := teamOrBUFanoutFrom(dimCol); isFanout {
+			fanoutFrom = f
+			dimCol = "dim_id"
+		}
+	}
+	if fanoutFrom == "" && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
+	}
+	baseQuery := s.ScopedDB(ctx)
+	if fanoutFrom != "" {
+		baseQuery = baseQuery.Table(fanoutFrom)
+	} else {
+		baseQuery = baseQuery.Model(&Log{})
+	}
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
 
@@ -3085,6 +3235,7 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"customer_id":        {},
 	"customer_name":      {},
 	"user_id":            {},
+	"user_name":          {},
 	"business_unit_id":   {},
 	"business_unit_name": {},
 }
@@ -3441,7 +3592,12 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 		// Search in both arguments and result fields
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("(to_tsvector('simple', arguments) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', result) @@ plainto_tsquery('simple', ?))", filters.ContentSearch, filters.ContentSearch)
+			// Must match idx_mcp_logs_arguments_fts / idx_mcp_logs_result_fts expressions
+			// exactly (incl. the left() cap) so the planner uses the GIN expression indexes.
+			baseQuery = baseQuery.Where(
+				fmt.Sprintf("(to_tsvector('simple', left(arguments, %d)) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', left(result, %d)) @@ plainto_tsquery('simple', ?))", ftsInputCharLimit, ftsInputCharLimit),
+				filters.ContentSearch, filters.ContentSearch,
+			)
 		} else {
 			search := "%" + filters.ContentSearch + "%"
 			baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", search, search)

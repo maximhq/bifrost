@@ -202,6 +202,9 @@ false
 
 {{- define "bifrost.config" -}}
 {{- $config := dict "$schema" "https://www.getbifrost.ai/schema" }}
+{{- if .Values.bifrost.sourceOfTruth }}
+{{- $_ := set $config "source_of_truth" .Values.bifrost.sourceOfTruth }}
+{{- end }}
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
@@ -443,6 +446,18 @@ false
 {{- end }}
 {{- $_ := set $governance "business_units" $businessUnits }}
 {{- end }}
+{{- if .Values.bifrost.governance.roles }}
+{{- $roles := list }}
+{{- range .Values.bifrost.governance.roles }}
+{{- $role := dict "name" .name }}
+{{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
+{{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
+{{- $roles = append $roles $role }}
+{{- end }}
+{{- $_ := set $governance "roles" $roles }}
+{{- end }}
 {{- if .Values.bifrost.governance.virtualKeys }}
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
@@ -494,7 +509,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -1114,6 +1129,12 @@ false
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
+{{- if hasKey $inputConfig "profiles" }}
+{{- $_ := set $otelConfig "profiles" $inputConfig.profiles }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- else }}
 {{- if $inputConfig.service_name }}
 {{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
 {{- end }}
@@ -1144,6 +1165,13 @@ false
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $otelConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
 {{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
@@ -1169,8 +1197,54 @@ false
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
 {{- $plugin := dict "enabled" true "name" "datadog" "config" $datadogConfig }}
 {{- if hasKey .Values.bifrost.plugins.datadog "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.datadog.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
+{{- end }}
+{{- if .Values.bifrost.plugins.bigquery.enabled }}
+{{- $bigqueryConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.bigquery.config | default dict }}
+{{- if $inputConfig.project_id }}
+{{- $_ := set $bigqueryConfig "project_id" $inputConfig.project_id }}
+{{- end }}
+{{- if $inputConfig.dataset_id }}
+{{- $_ := set $bigqueryConfig "dataset_id" $inputConfig.dataset_id }}
+{{- end }}
+{{- if $inputConfig.table_id }}
+{{- $_ := set $bigqueryConfig "table_id" $inputConfig.table_id }}
+{{- end }}
+{{- if $inputConfig.location }}
+{{- $_ := set $bigqueryConfig "location" $inputConfig.location }}
+{{- end }}
+{{- if $inputConfig.service_account_key }}
+{{- $_ := set $bigqueryConfig "service_account_key" $inputConfig.service_account_key }}
+{{- end }}
+{{- if hasKey $inputConfig "create_table_if_not_exists" }}
+{{- $_ := set $bigqueryConfig "create_table_if_not_exists" $inputConfig.create_table_if_not_exists }}
+{{- end }}
+{{- if hasKey $inputConfig "flush_interval_seconds" }}
+{{- $_ := set $bigqueryConfig "flush_interval_seconds" $inputConfig.flush_interval_seconds }}
+{{- end }}
+{{- if hasKey $inputConfig "buffer_size" }}
+{{- $_ := set $bigqueryConfig "buffer_size" $inputConfig.buffer_size }}
+{{- end }}
+{{- if $inputConfig.custom_labels }}
+{{- $_ := set $bigqueryConfig "custom_labels" $inputConfig.custom_labels }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $bigqueryConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.request_headers }}
+{{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if $inputConfig.plugin_span_filter }}
+{{- $_ := set $bigqueryConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- $plugin := dict "enabled" true "name" "bigquery" "config" $bigqueryConfig }}
+{{- if hasKey .Values.bifrost.plugins.bigquery "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.bigquery.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- /* Custom plugins */ -}}
@@ -1281,6 +1355,13 @@ Call this template at the beginning of deployment/stateful templates
 */}}
 {{- define "bifrost.validate" -}}
 
+{{/* Validate bifrost.sourceOfTruth enum */}}
+{{- if .Values.bifrost.sourceOfTruth }}
+{{- if and (ne .Values.bifrost.sourceOfTruth "split") (ne .Values.bifrost.sourceOfTruth "config.json") }}
+{{- fail (printf "ERROR: bifrost.sourceOfTruth must be 'split' or 'config.json', got: %s" .Values.bifrost.sourceOfTruth) }}
+{{- end }}
+{{- end }}
+
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if and .Values.bifrost.plugins.telemetry.enabled (hasKey .Values.bifrost.plugins.telemetry "version") (lt (int .Values.bifrost.plugins.telemetry.version) 1) }}
 {{- fail "ERROR: bifrost.plugins.telemetry.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
@@ -1324,6 +1405,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (gt (int .Values.bifrost.plugins.datadog.version) 32767) }}
 {{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
 {{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (hasKey .Values.bifrost.plugins.bigquery "version") (lt (int .Values.bifrost.plugins.bigquery.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (hasKey .Values.bifrost.plugins.bigquery "version") (gt (int .Values.bifrost.plugins.bigquery.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.version must be <= 32767." }}
+{{- end }}
+{{- if and .Values.bifrost.plugins.bigquery.enabled (not (.Values.bifrost.plugins.bigquery.config | default dict).project_id) }}
+{{- fail "ERROR: bifrost.plugins.bigquery.config.project_id is required when the BigQuery plugin is enabled." }}
+{{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
@@ -1340,14 +1430,44 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate OTEL plugin when enabled */}}
 {{- if .Values.bifrost.plugins.otel.enabled }}
-{{- if not .Values.bifrost.plugins.otel.config.collector_url }}
+{{- $otelInputConfig := .Values.bifrost.plugins.otel.config | default dict }}
+{{- if hasKey $otelInputConfig "profiles" }}
+{{- if not $otelInputConfig.profiles }}
+{{- fail "ERROR: bifrost.plugins.otel.config.profiles must contain at least one profile when OTEL plugin is enabled." }}
+{{- end }}
+{{- range $idx, $profile := $otelInputConfig.profiles }}
+{{- $profileEnabled := true }}
+{{- if hasKey $profile "enabled" }}
+{{- $profileEnabled = $profile.enabled }}
+{{- end }}
+{{- if $profileEnabled }}
+{{- if not $profile.collector_url }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required for enabled OTEL profiles." $idx) }}
+{{- end }}
+{{- if not $profile.trace_type }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required. Supported values: genai_extension, vercel, open_inference" $idx) }}
+{{- end }}
+{{- if not $profile.protocol }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].protocol is required. Supported values: http, grpc" $idx) }}
+{{- end }}
+{{- if and $profile.metrics_enabled (not $profile.metrics_endpoint) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].metrics_endpoint is required when metrics_enabled is true." $idx) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- else }}
+{{- if not $otelInputConfig.collector_url }}
 {{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.trace_type }}
+{{- if not $otelInputConfig.trace_type }}
 {{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported values: genai_extension, vercel, open_inference" }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.protocol }}
+{{- if not $otelInputConfig.protocol }}
 {{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- end }}
+{{- if and $otelInputConfig.metrics_enabled (not $otelInputConfig.metrics_endpoint) }}
+{{- fail "ERROR: bifrost.plugins.otel.config.metrics_endpoint is required when metrics_enabled is true." }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -1573,6 +1693,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $vk.name }}
 {{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].name is required for virtual key '%s'." $idx $vk.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance roles */}}
+{{- if .Values.bifrost.governance.roles }}
+{{- range $idx, $role := .Values.bifrost.governance.roles }}
+{{- if not $role.name }}
+{{- fail (printf "ERROR: bifrost.governance.roles[%d].name is required." $idx) }}
 {{- end }}
 {{- end }}
 {{- end }}

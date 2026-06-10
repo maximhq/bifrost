@@ -372,6 +372,15 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	var err error
 
+	// diagnostics — undocumented Claude Code field; gated through the feature
+	// map like every other field. Only Anthropic direct keeps it (fail-closed).
+	if !features.Diagnostics && providerUtils.JSONFieldExists(jsonBody, "diagnostics") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "diagnostics")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw diagnostics: %w", err)
+		}
+	}
+
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
 		if !features.FastMode || !SupportsFastMode(model) {
@@ -664,6 +673,35 @@ func IsOpus47Plus(model string) bool {
 		strings.Contains(model, "4-8") || strings.Contains(model, "4.8")
 }
 
+// IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
+// Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
+// (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
+// reject thinking:{type:"disabled"} — adaptive thinking is always on and must
+// not be explicitly disabled. The thinking param should be omitted entirely
+// rather than sent as disabled.
+//
+// Sources:
+//   - https://platform.claude.com/docs/en/build-with-claude/effort
+//     ("Claude Fable 5 and Claude Mythos 5 use adaptive thinking, which is
+//     always on ... thinking: {type: "disabled"} is rejected.")
+//   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
+//     (fast mode is NOT supported on Fable — Opus 4.6/4.7/4.8 only; this is why
+//     Fable is kept separate from IsOpus47Plus, which gates SupportsFastMode).
+func IsFableFamily(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
+}
+
+// IsAdaptiveOnlyThinkingModel returns true for models where budget_tokens
+// extended thinking is removed (adaptive is the only thinking-on mode) and
+// temperature/top_p/top_k are rejected with a 400. Covers Opus 4.7+ and the
+// Fable/Mythos family. Use this — not IsOpus47Plus — for the thinking and
+// sampling-parameter gates so Fable is handled correctly. (Fast mode is gated
+// on IsOpus47Plus instead, since Fable does not support speed:"fast".)
+func IsAdaptiveOnlyThinkingModel(model string) bool {
+	return IsOpus47Plus(model) || IsFableFamily(model)
+}
+
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
 // Currently supported on Claude Opus 4.5 and Opus 4.6.
 func SupportsNativeEffort(model string) bool {
@@ -676,9 +714,9 @@ func SupportsNativeEffort(model string) bool {
 }
 
 // SupportsEffortParameter returns true if the model accepts the
-// output_config.effort parameter. Supported models: Claude Mythos Preview,
-// Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.
-// All other models reject effort with a 400:
+// output_config.effort parameter. Supported models: Claude Fable 5,
+// Claude Mythos 5, Claude Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6,
+// Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
@@ -686,9 +724,11 @@ func SupportsNativeEffort(model string) bool {
 // support the effort knob without supporting adaptive thinking (Opus 4.5),
 // and adaptive thinking is a distinct surface (thinking.type:"adaptive")
 // from effort. Future models may shift either flag independently.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
 	m := strings.ToLower(model)
-	if strings.Contains(m, "mythos") {
+	if IsFableFamily(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
@@ -734,7 +774,9 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex — and only for Claude Opus 4.8+. No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ and the Claude Fable/Mythos family
+// (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
+// it as well). No beta header is required.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
@@ -742,6 +784,9 @@ func SupportsMidConversationSystem(provider schemas.ModelProvider, model string)
 		return false
 	}
 	m := strings.ToLower(model)
+	if IsFableFamily(m) {
+		return true
+	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
 }
@@ -762,11 +807,13 @@ func SupportsFastMode(model string) bool {
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, and Claude Opus 4.7+.
-// On Opus 4.7+ adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
-// coexists with the deprecated budget_tokens-based extended thinking.
+// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.7+, and
+// the Claude Fable/Mythos family. On Opus 4.7+ and Fable/Mythos adaptive is the only
+// thinking-on mode; on Opus 4.6 and Sonnet 4.6 it coexists with the deprecated
+// budget_tokens-based extended thinking. On Fable/Mythos adaptive is always on and
+// thinking:{type:"disabled"} is rejected (see IsFableFamily).
 func SupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) {
+	if IsOpus47Plus(model) || IsFableFamily(model) {
 		return true
 	}
 	model = strings.ToLower(model)
@@ -793,8 +840,8 @@ const (
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
 func ComputerUseGeneration(model string) string {
 	m := strings.ToLower(model)
-	// Opus 4.7+ falls into the new generation.
-	if IsOpus47Plus(m) {
+	// Opus 4.7+ and the Fable/Mythos family use the new generation.
+	if IsOpus47Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
 	}
 	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
@@ -823,7 +870,7 @@ func ComputerUseGeneration(model string) string {
 //   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
 func TextEditorGeneration(model string) string {
 	m := strings.ToLower(model)
-	if IsOpus47Plus(m) {
+	if IsOpus47Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
 	}
 	if strings.Contains(m, "opus") {
@@ -1220,8 +1267,11 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
-// StripEmptyThinkingBlocks removes thinking content blocks where
-// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+// StripEmptyThinkingBlocks removes thinking content blocks that would be
+// rejected by Anthropic: those with an empty "thinking" field, or those
+// with an empty "signature" field. An empty signature means the block came
+// from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
+// always does), so it is unsafe to replay to Anthropic.
 func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
@@ -1235,7 +1285,8 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 		}
 		var toStrip []int
 		for ci, block := range contentResult.Array() {
-			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+			if block.Get("type").String() == "thinking" &&
+				(block.Get("thinking").String() == "" || block.Get("signature").String() == "") {
 				toStrip = append(toStrip, ci)
 			}
 		}
@@ -1245,7 +1296,6 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
 			}
-
 		}
 	}
 	return jsonBody, nil

@@ -236,11 +236,11 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 // Naming follows the existing `x-bf-*` request-side convention (see
 // `x-bf-vk`, `x-bf-key-id`, etc.).
 const (
-	HeaderBifrostProvider       = "x-bifrost-provider"
-	HeaderBifrostOriginalModel  = "x-bifrost-original-model"
-	HeaderBifrostResolvedModel  = "x-bifrost-resolved-model"
-	HeaderBifrostFallbackIndex  = "x-bifrost-fallback-index"
-	HeaderBifrostRequestType    = "x-bifrost-request-type"
+	HeaderBifrostProvider      = "x-bifrost-provider"
+	HeaderBifrostOriginalModel = "x-bifrost-original-model"
+	HeaderBifrostResolvedModel = "x-bifrost-resolved-model"
+	HeaderBifrostFallbackIndex = "x-bifrost-fallback-index"
+	HeaderBifrostRequestType   = "x-bifrost-request-type"
 )
 
 // applyBifrostResponseHeaders writes both the upstream provider response
@@ -335,8 +335,8 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 	return true
 }
 
-// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
-func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest.
+func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, req interface{}, bifrostReq *schemas.BifrostRequest) error {
 	// Check if the request has a fallbacks field ([]string)
 	fallbacks, err := g.extractFallbacksFromRequest(req)
 	if err != nil {

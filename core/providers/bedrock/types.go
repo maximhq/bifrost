@@ -509,31 +509,88 @@ type BedrockConverseTrace struct {
 	Guardrail *BedrockGuardrailTrace `json:"guardrail,omitempty"` // Guardrail trace details
 }
 
-// BedrockGuardrailTrace represents detailed guardrail trace information.
-// Bedrock uses two different shapes depending on the call path:
-//   - Converse (non-streaming): actionReason + inputAssessment (map keyed by guardrail ID)
-//   - ConverseStream: action (enum) + inputAssessments / outputAssessments (arrays)
-//
-// Both shapes are captured here so the struct round-trips faithfully in both cases.
+// BedrockGuardrailTrace represents guardrail trace information returned by Bedrock Converse / ConverseStream.
+// Both paths use the same shape: inputAssessment is map[guardrailId]Assessment,
+// outputAssessments is map[guardrailId][]Assessment.
 type BedrockGuardrailTrace struct {
-	// Converse (non-streaming) fields
-	ActionReason    *string                        `json:"actionReason,omitempty"`    // Human-readable reason the guardrail acted
-	InputAssessment map[string]interface{}         `json:"inputAssessment,omitempty"` // Map of guardrail ID → assessment detail
-	ModelOutput     []interface{}                  `json:"modelOutput,omitempty"`     // Model output after guardrail evaluation
-
-	// ConverseStream fields
-	Action            *string                      `json:"action,omitempty"`            // Action taken by guardrail (NONE | INTERVENED)
-	InputAssessments  []BedrockGuardrailAssessment `json:"inputAssessments,omitempty"`  // Input assessments (streaming)
-	OutputAssessments []BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Output assessments (streaming)
-	Trace             *BedrockGuardrailTraceDetail `json:"trace,omitempty"`             // Detailed trace information
+	ActionReason      *string                                 `json:"actionReason,omitempty"`      // Human-readable reason the guardrail acted
+	InputAssessment   map[string]BedrockGuardrailAssessment   `json:"inputAssessment,omitempty"`   // Map of guardrail ID → single assessment
+	OutputAssessments map[string][]BedrockGuardrailAssessment `json:"outputAssessments,omitempty"` // Map of guardrail ID → array of assessments
+	ModelOutput       []interface{}                           `json:"modelOutput,omitempty"`       // Model output after guardrail evaluation
+	Action            *string                                 `json:"action,omitempty"`            // Action taken by guardrail (NONE | INTERVENED)
+	Trace             *BedrockGuardrailTraceDetail            `json:"trace,omitempty"`             // Detailed trace information
 }
 
 // BedrockGuardrailAssessment represents a guardrail assessment
 type BedrockGuardrailAssessment struct {
-	TopicPolicy         *BedrockGuardrailTopicPolicy         `json:"topicPolicy,omitempty"`         // Topic policy assessment
-	ContentPolicy       *BedrockGuardrailContentPolicy       `json:"contentPolicy,omitempty"`       // Content policy assessment
-	WordPolicy          *BedrockGuardrailWordPolicy          `json:"wordPolicy,omitempty"`          // Word policy assessment
-	SensitiveInfoPolicy *BedrockGuardrailSensitiveInfoPolicy `json:"sensitiveInfoPolicy,omitempty"` // Sensitive information policy assessment
+	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails           `json:"appliedGuardrailDetails,omitempty"`
+	AutomatedReasoningPolicy  *BedrockGuardrailAutomatedReasoningPolicy  `json:"automatedReasoningPolicy,omitempty"`
+	ContentPolicy             *BedrockGuardrailContentPolicy             `json:"contentPolicy,omitempty"`
+	ContextualGroundingPolicy *BedrockGuardrailContextualGroundingPolicy `json:"contextualGroundingPolicy,omitempty"`
+	InvocationMetrics         *BedrockGuardrailInvocationMetrics         `json:"invocationMetrics,omitempty"`
+	SensitiveInfoPolicy       *BedrockGuardrailSensitiveInfoPolicy       `json:"sensitiveInformationPolicy,omitempty"`
+	TopicPolicy               *BedrockGuardrailTopicPolicy               `json:"topicPolicy,omitempty"`
+	WordPolicy                *BedrockGuardrailWordPolicy                `json:"wordPolicy,omitempty"`
+}
+
+// BedrockGuardrailAppliedDetails holds metadata about the specific guardrail that was applied
+type BedrockGuardrailAppliedDetails struct {
+	GuardrailArn       *string  `json:"guardrailArn,omitempty"`
+	GuardrailID        *string  `json:"guardrailId,omitempty"`
+	GuardrailOrigin    []string `json:"guardrailOrigin,omitempty"`
+	GuardrailOwnership *string  `json:"guardrailOwnership,omitempty"`
+	GuardrailVersion   *string  `json:"guardrailVersion,omitempty"`
+}
+
+// BedrockGuardrailAutomatedReasoningPolicy represents an automated reasoning policy assessment
+type BedrockGuardrailAutomatedReasoningPolicy struct {
+	Findings []interface{} `json:"findings,omitempty"`
+}
+
+// BedrockGuardrailContextualGroundingPolicy represents a contextual grounding policy assessment
+type BedrockGuardrailContextualGroundingPolicy struct {
+	Filters []BedrockGuardrailContextualGroundingFilter `json:"filters,omitempty"`
+}
+
+// BedrockGuardrailContextualGroundingFilter represents a single contextual grounding filter result
+type BedrockGuardrailContextualGroundingFilter struct {
+	Type      *string  `json:"type,omitempty"`
+	Action    *string  `json:"action,omitempty"`
+	Score     *float64 `json:"score,omitempty"`
+	Threshold *float64 `json:"threshold,omitempty"`
+	Detected  *bool    `json:"detected,omitempty"`
+}
+
+// BedrockGuardrailInvocationMetrics holds latency and usage metrics for a guardrail invocation
+type BedrockGuardrailInvocationMetrics struct {
+	GuardrailCoverage          *BedrockGuardrailCoverage `json:"guardrailCoverage,omitempty"`
+	GuardrailProcessingLatency *int64                    `json:"guardrailProcessingLatency,omitempty"`
+	Usage                      *BedrockGuardrailUsage    `json:"usage,omitempty"`
+}
+
+// BedrockGuardrailCoverage holds coverage statistics for a guardrail invocation
+type BedrockGuardrailCoverage struct {
+	Images         *BedrockGuardrailCoverageCount `json:"images,omitempty"`
+	TextCharacters *BedrockGuardrailCoverageCount `json:"textCharacters,omitempty"`
+}
+
+// BedrockGuardrailCoverageCount holds guarded/total counts for a coverage dimension
+type BedrockGuardrailCoverageCount struct {
+	Guarded *int64 `json:"guarded,omitempty"`
+	Total   *int64 `json:"total,omitempty"`
+}
+
+// BedrockGuardrailUsage holds token/unit consumption for a guardrail invocation
+type BedrockGuardrailUsage struct {
+	AutomatedReasoningPolicies          *int64 `json:"automatedReasoningPolicies,omitempty"`
+	AutomatedReasoningPolicyUnits       *int64 `json:"automatedReasoningPolicyUnits,omitempty"`
+	ContentPolicyImageUnits             *int64 `json:"contentPolicyImageUnits,omitempty"`
+	ContentPolicyUnits                  *int64 `json:"contentPolicyUnits,omitempty"`
+	ContextualGroundingPolicyUnits      *int64 `json:"contextualGroundingPolicyUnits,omitempty"`
+	SensitiveInformationPolicyFreeUnits *int64 `json:"sensitiveInformationPolicyFreeUnits,omitempty"`
+	SensitiveInformationPolicyUnits     *int64 `json:"sensitiveInformationPolicyUnits,omitempty"`
+	TopicPolicyUnits                    *int64 `json:"topicPolicyUnits,omitempty"`
+	WordPolicyUnits                     *int64 `json:"wordPolicyUnits,omitempty"`
 }
 
 // BedrockGuardrailTopicPolicy represents topic policy assessment

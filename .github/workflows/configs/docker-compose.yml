@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine    
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     environment:
       POSTGRES_USER: bifrost
       POSTGRES_PASSWORD: bifrost_password
@@ -28,7 +28,7 @@ services:
         ipv4_address: 172.38.0.11
 
   weaviate:
-    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4@sha256:920463cf9a9b2b8d38e5b925d63f6928fa703277c93df11d5a75fc75e1fff758
     command:
         - --host
         - 0.0.0.0
@@ -57,7 +57,7 @@ services:
 
   # Redis Stack instance for vector store tests
   redis-stack:
-    image: redis/redis-stack:7.4.0-v6
+    image: redis/redis-stack:7.4.0-v6@sha256:b6567ad2e9c0658bbf6c40657ee0576df4b82cb674763f8ae6d0c52046ef87f1
     command: redis-stack-server --protected-mode no
     ports:
         - "6379:6379"
@@ -75,7 +75,7 @@ services:
 
   # Qdrant instance for vector store tests
   qdrant:
-    image: qdrant/qdrant:v1.16.0
+    image: qdrant/qdrant:v1.16.0@sha256:1005201498cf927d835383d0f918b17d8c9da7db58550f169f694455e42d78f4
     ports:
         - "6333:6333"  # REST API
         - "6334:6334"  # gRPC API

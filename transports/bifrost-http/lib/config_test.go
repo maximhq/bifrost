@@ -636,6 +636,16 @@ func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params con
 }
 
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
+	if m.mcpConfig == nil {
+		return nil
+	}
+	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpConfig.ClientConfigs))
+	for _, client := range m.mcpConfig.ClientConfigs {
+		if client == nil || client.ID != id {
+			filtered = append(filtered, client)
+		}
+	}
+	m.mcpConfig.ClientConfigs = filtered
 	return nil
 }
 
@@ -735,7 +745,7 @@ func (m *MockConfigStore) UpdateCustomer(ctx context.Context, customer *tables.T
 	return nil
 }
 
-func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -764,7 +774,7 @@ func (m *MockConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam
 	return nil
 }
 
-func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -957,6 +967,13 @@ func (m *MockConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.Table
 }
 
 func (m *MockConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*gorm.DB) error {
+	filtered := make([]*tables.TablePlugin, 0, len(m.plugins))
+	for _, plugin := range m.plugins {
+		if plugin == nil || plugin.Name != name {
+			filtered = append(filtered, plugin)
+		}
+	}
+	m.plugins = filtered
 	return nil
 }
 
@@ -1098,11 +1115,19 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetModelConfigsPaginated(ctx context.Context, params configstore.ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
 	return nil, 0, nil
 }
 
-func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	return nil, nil
 }
 
@@ -1122,16 +1147,20 @@ func (m *MockConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs [
 	return nil
 }
 
-func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
+func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error {
 	return nil
 }
 
 // Budget/Rate limit usage
-func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
+func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
+func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1483,6 +1512,40 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
+}
+
+// TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
+func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
+	var configData ConfigData
+	if err := json.Unmarshal([]byte(`{}`), &configData); err != nil {
+		t.Fatalf("failed to unmarshal config data: %v", err)
+	}
+	require.Equal(t, SourceOfTruthSplit, configData.SourceOfTruth)
+	require.False(t, configData.isConfigJSONSourceOfTruth())
+	require.False(t, configData.sectionPresent("providers"))
+}
+
+// TestConfigDataSourceOfTruthTracksSectionPresence verifies present empty sections are distinguishable from missing sections.
+func TestConfigDataSourceOfTruthTracksSectionPresence(t *testing.T) {
+	var configData ConfigData
+	if err := json.Unmarshal([]byte(`{"source_of_truth":"config.json","providers":{},"mcp":{},"governance":{"budgets":[]}}`), &configData); err != nil {
+		t.Fatalf("failed to unmarshal config data: %v", err)
+	}
+	require.True(t, configData.isConfigJSONSourceOfTruth())
+	require.True(t, configData.sectionPresent("providers"))
+	require.True(t, configData.sectionPresent("mcp"))
+	require.True(t, configData.sectionPresent("governance"))
+	require.True(t, configData.governanceSectionPresent("budgets"))
+	require.False(t, configData.governanceSectionPresent("teams"))
+}
+
+// TestConfigSchemaSourceOfTruthValidation verifies source_of_truth is schema validated.
+func TestConfigSchemaSourceOfTruthValidation(t *testing.T) {
+	valid := []byte(`{"source_of_truth":"config.json"}`)
+	require.NoError(t, ValidateConfigSchema(valid))
+
+	invalid := []byte(`{"source_of_truth":"database"}`)
+	require.Error(t, ValidateConfigSchema(invalid))
 }
 
 // Test fixtures
@@ -2096,7 +2159,7 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 		},
 	}
 
-	cfg := &Config{ConfigStore: store}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
 	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
@@ -2118,6 +2181,42 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
 	require.NotEmpty(t, byName["echo_http"].ConfigHash)
 	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
+}
+
+// TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched verifies missing mcp does not prune DB MCP clients.
+func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
+	}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+
+	loadMCPConfig(context.Background(), cfg, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	require.Equal(t, "db-client", cfg.MCPConfig.ClientConfigs[0].Name)
+}
+
+// TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB verifies present empty mcp removes DB MCP clients.
+func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
+	}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP:           &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Empty(t, cfg.MCPConfig.ClientConfigs)
+	require.Empty(t, store.mcpConfig.ClientConfigs)
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -2596,7 +2695,7 @@ func TestGenerateKeyHash(t *testing.T) {
 		Value:   *schemas.NewEnvVar("sk-123"),
 		Models:  []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight:  1.5,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 	}
 
 	hashWithAliases, err := configstore.GenerateKeyHash(keyWithAliases)
@@ -5040,7 +5139,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5051,7 +5150,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5073,7 +5172,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5084,7 +5183,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
 			},
@@ -5106,7 +5205,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5117,7 +5216,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-3.5-turbo": "gpt-35-turbo-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-3.5-turbo": {ModelID: "gpt-35-turbo-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -5205,7 +5304,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5218,7 +5317,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5242,7 +5341,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5255,7 +5354,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"), // Changed!
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5279,7 +5378,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5292,7 +5391,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("differentSecretKey/NEWKEY/bPxRfiCYEXAMPLEKEY"), // Changed!
@@ -5316,7 +5415,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5329,7 +5428,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5353,7 +5452,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5367,7 +5466,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5392,7 +5491,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5405,7 +5504,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile", "claude-3.5": "claude-35-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}, "claude-3.5": {ModelID: "claude-35-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5495,7 +5594,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5509,7 +5608,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey:    *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey:    *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5535,7 +5634,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar(""),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				SecretKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
@@ -5549,7 +5648,7 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar(""),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "claude-3-inference-profile"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5575,7 +5674,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:    "azure-openai-key",
 		Value:   *schemas.NewEnvVar("azure-api-key-initial"),
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
@@ -5609,7 +5708,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:    "azure-openai-key",
 		Value:   *schemas.NewEnvVar("azure-api-key-dashboard-edited"), // Changed via dashboard!
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+		Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 		},
@@ -5641,7 +5740,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-initial"), // Original value from file
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -5677,7 +5776,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-initial"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
 				},
@@ -5783,7 +5882,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:    "aws-bedrock-key",
 		Value:   *schemas.NewEnvVar(""), // Empty for Bedrock with IAM or AccessKey auth
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5818,7 +5917,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:    "aws-bedrock-key-eu",
 		Value:   *schemas.NewEnvVar(""),
 		Weight:  1,
-		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"),
@@ -5845,7 +5944,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -5884,7 +5983,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6012,7 +6111,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6055,7 +6154,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-123"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -6121,7 +6220,7 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -6190,7 +6289,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				},
@@ -6218,7 +6317,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("original-key-from-file"), // Different value than DB!
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
 				},
@@ -6274,7 +6373,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
 					SecretKey: *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
@@ -6304,7 +6403,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
@@ -6392,7 +6491,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Name:    "azure-openai-key",
 				Value:   *schemas.NewEnvVar("azure-api-key-123"),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4o": "gpt-4o-deployment"},
+				Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
 				},
@@ -6476,7 +6575,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 				Name:    "aws-bedrock-key",
 				Value:   *schemas.NewEnvVar(""),
 				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
+				Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
@@ -7537,6 +7636,59 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	// Verify both in DB
 	verifyProviderInDB(t, config2.ConfigStore, schemas.OpenAI, 1)
 	verifyProviderInDB(t, config2.ConfigStore, schemas.Anthropic, 1)
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned verifies config.json SOT removes DB-only providers and keys.
+func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	existingProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	openaiConfig := existingProviders[schemas.OpenAI]
+	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+		ID:     uuid.NewString(),
+		Name:   "dashboard-openai-key",
+		Value:  *schemas.NewEnvVar("sk-dashboard-openai"),
+		Weight: 1,
+	})
+	existingProviders[schemas.OpenAI] = openaiConfig
+	existingProviders[schemas.Anthropic] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:     uuid.NewString(),
+			Name:   "anthropic-key-1",
+			Value:  *schemas.NewEnvVar("sk-anthropic-123"),
+			Weight: 1,
+		}},
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+	}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders))
+	config1.Close(ctx)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1)
+	require.Contains(t, dbProviders, schemas.OpenAI)
+	require.NotContains(t, dbProviders, schemas.Anthropic)
+	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
+	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
 }
 
 // TestSQLite_Provider_RoundTrip tests load -> modify via DB -> reload same file -> no changes
@@ -11551,11 +11703,12 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 func TestGenerateCustomerHash(t *testing.T) {
 	initTestLogger()
 
-	budgetID := "budget-1"
 	customer1 := tables.TableCustomer{
-		ID:       "customer-1",
-		Name:     "Test Customer",
-		BudgetID: &budgetID,
+		ID:   "customer-1",
+		Name: "Test Customer",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100, ResetDuration: "1M"},
+		},
 	}
 
 	hash1, err := configstore.GenerateCustomerHash(customer1)
@@ -11588,21 +11741,55 @@ func TestGenerateCustomerHash(t *testing.T) {
 		t.Error("Different Name should produce different hash")
 	}
 
-	// Different BudgetID should produce different hash
-	newBudgetID := "budget-2"
+	// Different budget ID should produce different hash
 	customer4 := customer1
-	customer4.BudgetID = &newBudgetID
-	hash4, _ := configstore.GenerateCustomerHash(customer4)
+	customer4.Budgets = []tables.TableBudget{{ID: "budget-2", MaxLimit: 100, ResetDuration: "1M"}}
+	hash4, err := configstore.GenerateCustomerHash(customer4)
+	if err != nil {
+		t.Fatalf("failed to generate customer4 hash: %v", err)
+	}
 	if hash1 == hash4 {
-		t.Error("Different BudgetID should produce different hash")
+		t.Error("Different budget ID should produce different hash")
 	}
 
-	// Nil BudgetID should produce different hash
+	// No budgets should produce different hash
 	customer5 := customer1
-	customer5.BudgetID = nil
-	hash5, _ := configstore.GenerateCustomerHash(customer5)
+	customer5.Budgets = nil
+	hash5, err := configstore.GenerateCustomerHash(customer5)
+	if err != nil {
+		t.Fatalf("failed to generate customer5 hash: %v", err)
+	}
 	if hash1 == hash5 {
-		t.Error("Nil BudgetID should produce different hash")
+		t.Error("No budgets should produce different hash")
+	}
+
+	// Multi-budget hash must be order-independent
+	customerA := tables.TableCustomer{
+		ID:   "customer-order",
+		Name: "Order Test",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-x", MaxLimit: 100, ResetDuration: "1M"},
+			{ID: "budget-y", MaxLimit: 200, ResetDuration: "1Y"},
+		},
+	}
+	customerB := tables.TableCustomer{
+		ID:   "customer-order",
+		Name: "Order Test",
+		Budgets: []tables.TableBudget{
+			{ID: "budget-y", MaxLimit: 200, ResetDuration: "1Y"},
+			{ID: "budget-x", MaxLimit: 100, ResetDuration: "1M"},
+		},
+	}
+	hashA, err := configstore.GenerateCustomerHash(customerA)
+	if err != nil {
+		t.Fatalf("failed to generate hashA: %v", err)
+	}
+	hashB, err := configstore.GenerateCustomerHash(customerB)
+	if err != nil {
+		t.Fatalf("failed to generate hashB: %v", err)
+	}
+	if hashA != hashB {
+		t.Error("multi-budget hash should be order-independent")
 	}
 
 	t.Log("✓ Customer hash generation works correctly for all fields")
@@ -12056,6 +12243,10 @@ type mockLLMPlugin struct {
 	mockPlugin
 }
 
+func (p *mockLLMPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
@@ -12384,6 +12575,37 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
 }
 
+// TestSourceOfTruthConfigJSON_PluginsMissingLeavesDBUntouched verifies missing plugins does not prune DB plugins.
+func TestSourceOfTruthConfigJSON_PluginsMissingLeavesDBUntouched(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.plugins = []*tables.TablePlugin{{Name: "db-plugin", Enabled: true, Config: map[string]any{"setting": "db"}}}
+	config := &Config{ConfigStore: store}
+
+	loadPlugins(context.Background(), config, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
+
+	require.Len(t, config.PluginConfigs, 1)
+	require.Equal(t, "db-plugin", config.PluginConfigs[0].Name)
+	require.Len(t, store.plugins, 1)
+}
+
+// TestSourceOfTruthConfigJSON_PluginsPresentEmptyPrunesDB verifies present empty plugins removes DB plugins.
+func TestSourceOfTruthConfigJSON_PluginsPresentEmptyPrunesDB(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.plugins = []*tables.TablePlugin{{Name: "db-plugin", Enabled: true, Config: map[string]any{"setting": "db"}}}
+	config := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Plugins:       []*schemas.PluginConfig{},
+	}
+
+	loadPlugins(context.Background(), config, configData)
+
+	require.Empty(t, config.PluginConfigs)
+	require.Empty(t, store.plugins)
+}
+
 // ===================================================================================
 // CLIENT CONFIG HASH TESTS
 // ===================================================================================
@@ -12670,6 +12892,100 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	}
 
 	t.Log("✓ All dashboard-added entities preserved on reload")
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning verifies config.json SOT prunes DB-only rows across sections.
+func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}, tempDir)
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{{ID: "mcp-file", Name: "file_mcp", ConnectionType: schemas.MCPConnectionTypeHTTP}},
+	}
+	configData.Plugins = []*schemas.PluginConfig{{Name: "file-plugin", Enabled: true, Config: map[string]any{"setting": "file"}}}
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{{ID: "budget-file", MaxLimit: 100.0, ResetDuration: "1d"}},
+		RateLimits: []tables.TableRateLimit{{ID: "rl-file", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}},
+		Customers:  []tables.TableCustomer{{ID: "customer-file", Name: "File Customer"}},
+		Teams:      []tables.TableTeam{{ID: "team-file", Name: "File Team"}},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	openaiConfig := dbProviders[schemas.OpenAI]
+	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+		ID:     uuid.NewString(),
+		Name:   "dashboard-openai-key",
+		Value:  *schemas.NewEnvVar("sk-dashboard-openai"),
+		Weight: 1,
+	})
+	dbProviders[schemas.OpenAI] = openaiConfig
+	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewEnvVar("sk-anthropic"), Weight: 1}},
+	}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders))
+
+	require.NoError(t, config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:             "mcp-dashboard",
+		Name:           "dashboard_mcp",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	require.NoError(t, config1.ConfigStore.UpsertPlugin(ctx, &tables.TablePlugin{
+		Name:    "dashboard-plugin",
+		Enabled: true,
+		Config:  map[string]any{"setting": "dashboard"},
+		Version: 1,
+	}))
+	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{ID: "budget-dashboard", MaxLimit: 500.0, ResetDuration: "1w"}))
+	dashboardTokenMax := int64(2000)
+	require.NoError(t, config1.ConfigStore.CreateRateLimit(ctx, &tables.TableRateLimit{ID: "rl-dashboard", TokenMaxLimit: &dashboardTokenMax, TokenResetDuration: &tokenDur}))
+	require.NoError(t, config1.ConfigStore.CreateCustomer(ctx, &tables.TableCustomer{ID: "customer-dashboard", Name: "Dashboard Customer"}))
+	require.NoError(t, config1.ConfigStore.CreateTeam(ctx, &tables.TableTeam{ID: "team-dashboard", Name: "Dashboard Team"}))
+	config1.Close(ctx)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	dbProviders, err = config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1)
+	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
+	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+
+	mcpConfig, err := config2.ConfigStore.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, mcpConfig.ClientConfigs, 1)
+	require.Equal(t, "file_mcp", mcpConfig.ClientConfigs[0].Name)
+
+	pluginRows, err := config2.ConfigStore.GetPlugins(ctx)
+	require.NoError(t, err)
+	require.Len(t, pluginRows, 1)
+	require.Equal(t, "file-plugin", pluginRows[0].Name)
+
+	gov, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, gov.Budgets, 1)
+	require.Equal(t, "budget-file", gov.Budgets[0].ID)
+	require.Len(t, gov.RateLimits, 1)
+	require.Equal(t, "rl-file", gov.RateLimits[0].ID)
+	require.Len(t, gov.Customers, 1)
+	require.Equal(t, "customer-file", gov.Customers[0].ID)
+	require.Len(t, gov.Teams, 1)
+	require.Equal(t, "team-file", gov.Teams[0].ID)
 }
 
 func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) {
@@ -13721,7 +14037,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          *schemas.NewEnvVar("azure-key-value"),
 			Weight:         ptrFloat64(1.0),
 			AzureKeyConfig: azureConfig,
-			Aliases:        schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases:        schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 		}
 
 		schemaKey := schemas.Key{
@@ -14673,7 +14989,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
@@ -14687,7 +15003,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
@@ -14817,7 +15133,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -14829,7 +15145,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15216,7 +15532,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15227,7 +15543,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15247,7 +15563,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15258,7 +15574,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15278,7 +15594,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v1"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v1"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15289,7 +15605,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v2"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment-v2"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15319,7 +15635,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:    "azure-key",
 			Value:   *schemas.NewEnvVar("azure-api-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
@@ -15342,7 +15658,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15355,7 +15671,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15377,7 +15693,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}, "claude-3.5": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15390,7 +15706,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15412,7 +15728,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15425,7 +15741,7 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:    "bedrock-key",
 			Value:   *schemas.NewEnvVar("bedrock-key"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"},
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"}},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
@@ -15450,7 +15766,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15462,7 +15778,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15483,7 +15799,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}, "gemini-1.5-pro": {ModelID: "gemini-15-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15495,7 +15811,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15516,7 +15832,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v1"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v1"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15528,7 +15844,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v2"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint-v2"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
@@ -15560,7 +15876,7 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:    "vertex-key",
 			Value:   *schemas.NewEnvVar("vertex-creds"),
 			Weight:  1,
-			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
+			Aliases: schemas.KeyAliases{"gemini-pro": {ModelID: "gemini-pro-endpoint"}},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),

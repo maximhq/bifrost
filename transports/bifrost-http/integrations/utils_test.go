@@ -60,7 +60,7 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 		},
 	}
 
-	err := router.extractAndParseFallbacks(geminiReq, bifrostReq)
+	err := router.extractAndParseFallbacks(newTestBifrostContext(), geminiReq, bifrostReq)
 
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq.ResponsesRequest)

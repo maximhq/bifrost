@@ -290,6 +290,47 @@
               "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
             }
           }
+        },
+        {
+          "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig + trace (outputAssessments regression)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression: Bifrost 1.4.6 crashed with mismatch type []bedrock.BedrockGuardrailAssessment",
+                  "// when trace:enabled caused Bedrock to return outputAssessments as a map keyed by guardrail ID.",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('trace.guardrail.outputAssessments is a map not an array', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.trace, 'expected trace in response').to.exist;",
+                  "  pm.expect(j.trace.guardrail, 'expected trace.guardrail').to.exist;",
+                  "  var oa = j.trace.guardrail.outputAssessments;",
+                  "  if (oa !== undefined) {",
+                  "    pm.expect(typeof oa).to.equal('object');",
+                  "    pm.expect(Array.isArray(oa), 'outputAssessments must not be an array').to.be.false;",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"What is the capital of France?\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 256 },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": ["{{baseUrl}}"],
+              "path": ["bedrock", "model", "{{bedrockModel}}", "converse"]
+            }
+          }
         }
       ]
     },
@@ -435,8 +476,8 @@
             { "name": "gemini/gemini-2.5-flash",        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "gemini/gemini-2.5-flash-lite",   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "gemini/gemini-3.1-pro-preview",          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-3.1-pro-preview\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-            { "name": "gemini/gemini-2.0-flash",        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.0-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-            { "name": "gemini/gemini-2.0-flash-lite",   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.0-flash-lite\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+            { "name": "gemini/gemini-2.5-flash",        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+            { "name": "gemini/gemini-2.5-flash-lite",   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-lite\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "gemini/gemini-3-flash-preview",   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-3-flash-preview\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "gemini/gemini-3.1-flash-lite-preview", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-lite-preview\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "gemini/gemini-flash-latest",     "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-flash-latest\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
@@ -448,7 +489,7 @@
           "item": [
             { "name": "vertex/gemini-2.5-pro",                      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-pro\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "vertex/gemini-2.5-flash",                    "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
-            { "name": "vertex/gemini-2.0-flash",                    "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.0-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
+            { "name": "vertex/gemini-2.5-flash",                    "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "vertex/claude-opus-4-7",            "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "vertex/gemini-2.5-flash-lite",          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-lite\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
             { "name": "[PREVIEW] vertex/gemini-3-flash-preview",           "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-3-flash-preview\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
@@ -475,7 +516,8 @@
                 { "name": "bedrock/global.anthropic.claude-opus-4-7",       "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "bedrock/us.amazon.nova-lite-v1:0",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
-                { "name": "azure/gpt-4o",                                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
+                { "name": "azure/gpt-4o",                                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
+                { "name": "xai/grok-4-0709",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Hello\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
               ]
             },
             {
@@ -592,7 +634,8 @@
                 { "name": "gemini/gemini-2.5-flash",                        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "vertex/gemini-2.5-flash",                        "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
                 { "name": "bedrock/us.amazon.nova-lite-v1:0",               "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
-                { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
+                { "name": "azure/gpt-4o-mini",                              "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } },
+                { "name": "xai/grok-4-0709",                                "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}" }, "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] } } }
               ]
             },
             {
@@ -676,7 +719,7 @@
                 { "name": "[SKIP] anthropic/claude-haiku-4-5 (no embedding endpoint)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}" }, "url": { "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5:embedContent", "host": ["{{baseUrl}}"], "path": ["genai", "v1beta", "models", "anthropic", "claude-haiku-4-5:embedContent"] } } },
                 { "name": "vertex/text-embedding-005",                      "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}" }, "url": { "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-005:embedContent", "host": ["{{baseUrl}}"], "path": ["genai", "v1beta", "models", "vertex", "text-embedding-005:embedContent"] } } },
                 { "name": "bedrock/amazon.titan-embed-text-v2:0",           "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}" }, "url": { "raw": "{{baseUrl}}/genai/v1beta/models/bedrock/amazon.titan-embed-text-v2:0:embedContent", "host": ["{{baseUrl}}"], "path": ["genai", "v1beta", "models", "bedrock", "amazon.titan-embed-text-v2:0:embedContent"] } } },
-                { "name": "azure/text-embedding-ada-002",                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}" }, "url": { "raw": "{{baseUrl}}/genai/v1beta/models/azure/text-embedding-ada-002:embedContent", "host": ["{{baseUrl}}"], "path": ["genai", "v1beta", "models", "azure", "text-embedding-3-small:embedContent"] } } }
+                { "name": "azure/text-embedding-ada-002",                   "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"content\": { \"parts\": [{ \"text\": \"Hello world\" }] }\n}" }, "url": { "raw": "{{baseUrl}}/genai/v1beta/models/azure/text-embedding-ada-002:embedContent", "host": ["{{baseUrl}}"], "path": ["genai", "v1beta", "models", "azure", "text-embedding-ada-002:embedContent"] } } }
               ]
             }
           ]
@@ -815,6 +858,216 @@
                 { "name": "8.6.4.A native chat → anthropic/claude-opus-4-8 (thinking)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"max_tokens\": 2048,\n  \"thinking\": { \"type\": \"adaptive\" }\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.A native chat → gemini/gemini-2.5-flash (reasoning_effort translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}" }, "url": { "raw": "{{baseUrl}}/v1/chat/completions", "host": ["{{baseUrl}}"], "path": ["v1", "chat", "completions"] } } },
                 { "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 1024 }\n}" }, "url": { "raw": "{{baseUrl}}/anthropic/v1/messages", "host": ["{{baseUrl}}"], "path": ["anthropic", "v1", "messages"] } } }
+              ]
+            },
+            {
+              "name": "8.6.5 xAI x_search (server-side tool)",
+              "description": "xAI-native x_search tool tests via the native /v1/responses endpoint.\n\nThe x_search tool is a server-side search tool exclusive to xAI (grok models). When invoked the model internally calls x_semantic_search and/or x_keyword_search, returning custom_tool_call output items. The final message output_text content block carries url_citation annotations pointing at the source tweets/posts.\n\nDocs: https://docs.x.ai/developers/tools/x-search\n\nCovered here:\n  8.6.5.A – basic x_search, no extra params → verifies custom_tool_call items + final message\n  8.6.5.B – x_search with allowed_x_handles filter → tool_choice=required, verifies sub-tool name\n  8.6.5.C – x_search with from_date/to_date → date-range filtering passes through\n  8.6.5.D – x_search with all optional params (exact bug-report repro)\n  8.6.5.E – x_search streaming → custom_tool_call_input events flow through the SSE stream\n  8.6.5.F – x_search with url_citation annotations → verifies annotations array in output_text block",
+              "item": [
+                {
+                  "name": "8.6.5.A x_search basic (no params)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search: output contains at least one custom_tool_call', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call in output').to.be.above(0);",
+                          "  calls.forEach(function(c) {",
+                          "    pm.expect(c.name, 'sub-tool name must start with x_').to.match(/^x_/);",
+                          "  });",
+                          "});",
+                          "pm.test('x_search: output contains a final message with text', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'expected a message item in output').to.exist;",
+                          "  var hasText = (msg.content || []).some(function(c) { return c.type === 'output_text' && c.text && c.text.length > 0; });",
+                          "  pm.expect(hasText, 'message should contain non-empty output_text').to.be.true;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about artificial intelligence on X today?\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.B x_search with allowed_x_handles (tool_choice=required)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search handles: at least one custom_tool_call present', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'tool_choice=required must produce ≥1 custom_tool_call').to.be.above(0);",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What has xAI been posting about recently?\",\n  \"tools\": [{ \"type\": \"x_search\", \"allowed_x_handles\": [\"xai\", \"grok\"] }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.C x_search with from_date/to_date",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search date range: custom_tool_call present', function () {",
+                          "  var j = pm.response.json();",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call').to.be.above(0);",
+                          "});",
+                          "pm.test('x_search date range: final message has content', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'expected a message item').to.exist;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What were people saying about machine learning on X recently?\",\n  \"tools\": [{ \"type\": \"x_search\", \"from_date\": \"2025-12-01\", \"to_date\": \"2025-12-15\" }],\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.D x_search all optional params (bug-report repro)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('x_search all params: tool present in request and custom_tool_call in output', function () {",
+                          "  var j = pm.response.json();",
+                          "  pm.expect(j.output, 'output should be a non-empty array').to.be.an('array').with.length.above(0);",
+                          "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
+                          "  pm.expect(calls.length, 'tool_choice=required must yield ≥1 custom_tool_call').to.be.above(0);",
+                          "});",
+                          "pm.test('x_search all params: usage reports x_search_calls > 0', function () {",
+                          "  var j = pm.response.json();",
+                          "  pm.expect(j.usage, 'response must include usage').to.exist;",
+                          "  if (j.usage.server_side_tool_usage_details) {",
+                          "    pm.expect(j.usage.server_side_tool_usage_details.x_search_calls, 'x_search_calls should be > 0').to.be.above(0);",
+                          "  }",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Find recent tweets about artificial intelligence developments.\",\n  \"tools\": [{\n    \"type\": \"x_search\",\n    \"allowed_x_handles\": [\"xai\", \"openai\", \"GoogleAI\"],\n    \"from_date\": \"2025-12-10\",\n    \"to_date\": \"2025-12-15\",\n    \"enable_image_understanding\": false,\n    \"enable_video_understanding\": false\n  }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.E x_search streaming",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Streaming responses return text/event-stream — the collection-level content check skips those.",
+                          "// We verify only that Bifrost emits a 200 and the SSE prefix.",
+                          "pm.test('x_search stream: 200 with SSE content-type', function () {",
+                          "  pm.expect(pm.response.code).to.equal(200);",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.expect(ct, 'expected text/event-stream').to.include('text/event-stream');",
+                          "});",
+                          "pm.test('x_search stream: body includes x_search tool event', function () {",
+                          "  var body = pm.response.text() || '';",
+                          "  var hasToolEvent = body.indexOf('custom_tool_call_input') !== -1 || body.indexOf('\"type\":\"custom_tool_call\"') !== -1;",
+                          "  pm.expect(hasToolEvent, 'expected x_search tool event (custom_tool_call_input or custom_tool_call) in SSE body').to.be.true;",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about xAI on X?\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 500,\n  \"stream\": true\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                },
+                {
+                  "name": "8.6.5.F x_search url_citation annotations",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// x_search grounds its answer in real X posts and surfaces them as url_citation",
+                          "// annotations on the output_text content block. Verify the annotation array is",
+                          "// present and each entry has the required url/start_index/end_index fields.",
+                          "pm.test('x_search citations: output_text block has url_citation annotations', function () {",
+                          "  var j = pm.response.json();",
+                          "  var msg = (j.output || []).find(function(o) { return o.type === 'message'; });",
+                          "  pm.expect(msg, 'output must contain a message item').to.exist;",
+                          "  var textBlock = (msg.content || []).find(function(c) { return c.type === 'output_text'; });",
+                          "  pm.expect(textBlock, 'message must have an output_text block').to.exist;",
+                          "  pm.expect(textBlock.annotations, 'output_text must have annotations array').to.be.an('array').with.length.above(0);",
+                          "  textBlock.annotations.forEach(function(a) {",
+                          "    pm.expect(a.type, 'annotation type must be url_citation').to.equal('url_citation');",
+                          "    pm.expect(a.url, 'url_citation must have a url').to.be.a('string').with.length.above(0);",
+                          "    pm.expect(a).to.have.property('start_index');",
+                          "    pm.expect(a).to.have.property('end_index');",
+                          "  });",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [{ "key": "Content-Type", "value": "application/json" }],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"What are people saying about xAI on X? Summarise with sources.\",\n  \"tools\": [{ \"type\": \"x_search\" }],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 600\n}"
+                    },
+                    "url": { "raw": "{{baseUrl}}/v1/responses", "host": ["{{baseUrl}}"], "path": ["v1", "responses"] }
+                  }
+                }
               ]
             }
           ]
@@ -1601,6 +1854,61 @@
               }
             }
           ]
+        },
+        {
+          "name": "Context Compaction cross-cut",
+          "item": [
+            {
+              "name": "Compaction via native Bifrost API (openai/gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"openai/gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/responses/compact","host":["{{baseUrl}}"],"path":["v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (OpenAI gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (Azure gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"azure/{{azureDeployment}}\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction (xAI grok-4.3)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"xai/grok-4.3\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ]\n}"},
+                "url": {"raw":"{{baseUrl}}/v1/responses/compact","host":["{{baseUrl}}"],"path":["v1","responses","compact"]}
+              }
+            },
+            {
+              "name": "Compaction with instructions (OpenAI gpt-4o)",
+              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Compaction: object is response.compaction', function () { var j = pm.response.json(); pm.expect(j.object).to.equal('response.compaction'); }); pm.test('Compaction: output is non-empty array', function () { var j = pm.response.json(); pm.expect(j.output).to.be.an('array').and.not.empty; }); pm.test('Compaction: last output item has type response.compaction and encrypted_content', function () { var j = pm.response.json(); var last = j.output[j.output.length - 1]; pm.expect(last.type).to.equal('compaction'); pm.expect(last.encrypted_content).to.be.a('string').and.not.empty; }); pm.test('Compaction: usage is present', function () { var j = pm.response.json(); pm.expect(j.usage).to.be.an('object'); pm.expect(j.usage.input_tokens).to.be.a('number'); }); }"]}}],
+              "request": {
+                "method": "POST",
+                "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{openaiKey}}"}],
+                "body": {"mode":"raw","raw":"{\n  \"model\": \"gpt-4o\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"What is the capital of France?\"},\n    {\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"},\n    {\"role\": \"user\", \"content\": \"What is the population of Paris?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"},\n    {\"role\": \"user\", \"content\": \"What is Paris known for?\"},\n    {\"role\": \"assistant\", \"content\": \"Paris is known for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, world-class cuisine, fashion, and its rich history as a cultural and political center of Europe.\"}\n  ],\n  \"instructions\": \"You are a helpful geography assistant. Be concise.\"\n}"},
+                "url": {"raw":"{{baseUrl}}/openai/v1/responses/compact","host":["{{baseUrl}}"],"path":["openai","v1","responses","compact"]}
+              }
+            }
+          ]
         }
       ]
     },
@@ -2277,8 +2585,341 @@
             { "name": "Cross-cut: anthropic/claude-opus-4-7 mid-conv system (fallback: merged to top-level)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},\n    {\"role\":\"user\",\"content\":\"Hello\"},\n    {\"role\":\"assistant\",\"content\":\"Hi!\"},\n    {\"role\":\"user\",\"content\":\"How are you?\"},\n    {\"role\":\"system\",\"content\":\"Respond only in one word.\"}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
             { "name": "Cross-cut: anthropic/claude-opus-4-8 mid-conv system drop-in /anthropic (ends array)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"Respond only in one word.\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}}
           ]
+        },
+        {
+          "name": "Cross-Cut Round 30: Fable 5 / Mythos Feature Gating",
+          "description": "Verifies the Fable 5 / Mythos (claude-fable-5, claude-mythos-5) request-surface gating added to the Anthropic converters.\nFable/Mythos behave like Opus 4.7+ (adaptive-only thinking; temperature/top_p/top_k removed) AND additionally reject thinking:{type:\"disabled\"} (adaptive is always on).\nGating covered: adaptive thinking, budget_tokens→adaptive, sampling-param strip, disabled→omitted (typed path only), effort high/xhigh/max, structured outputs, task budgets, computer-use new-gen tools, web_search dynamic filtering, mid-conversation system messages, and fast-mode NOT supported (speed stripped).\nScripts are guarded on code<400 so the suite tolerates accounts without Fable access (same convention as the [PREVIEW] items).",
+          "item": [
+            { "name": "Native Fable 5: adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: output_config effort high", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"high\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: output_config effort xhigh", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"xhigh\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: output_config effort max", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\"effort\": \"max\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve x^2 - 5x + 6 = 0\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: output_config format json_schema (structured outputs)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 800,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a city\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: speed:fast stripped (fast mode unsupported, no beta header)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 800,\n  \"speed\": \"fast\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: task_budget (beta task-budgets-2026-03-13)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"task-budgets-2026-03-13"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"output_config\": {\"task_budget\": {\"type\":\"tokens\",\"total\":20000}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Plan and solve a multi-step task.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: computer use new-gen tools (computer-use-2025-11-24)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: web_search dynamic filtering (web_search_20260209)", "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Find recent AI papers.\"}],\n  \"tools\": [{\"type\":\"web_search_20260209\",\"name\":\"web_search\",\"max_uses\":3}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: mid-conv system message (ends array)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"Respond only in one word.\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Fable 5: mid-conv system message (before assistant)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-fable-5\",\n  \"max_tokens\": 512,\n  \"system\": [{\"type\":\"text\",\"text\":\"You are a helpful assistant.\"}],\n  \"messages\": [\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}]},\n    {\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"From now on be very concise.\"}]},\n    {\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"}]},\n    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}]}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Native Mythos 5: adaptive thinking (family parity)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Anthropic drop-in: content block present', function () { var j = pm.response.json(); var hasContent = Array.isArray(j.content) && j.content.some(function(b) { return b.type === 'text' && b.text; }); pm.expect(hasContent, 'expected text content block').to.be.true; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-mythos-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}}},
+            { "name": "Cross-cut: anthropic/claude-fable-5 adaptive thinking", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"adaptive\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-fable-5 enabled thinking → adaptive (budget_tokens removed)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\"type\":\"enabled\",\"budget_tokens\":2000},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve in steps\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-fable-5 disabled thinking → omitted (no 400)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"thinking\": {\"type\":\"disabled\"},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-fable-5 sampling params stripped (temperature/top_p/top_k)", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7,\n  \"top_p\": 0.9,\n  \"top_k\": 5,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}},
+            { "name": "Cross-cut: anthropic/claude-fable-5 mid-conv system", "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || ''; pm.expect(c).to.be.a('string').and.not.empty; }); }"]}}], "request": { "method": "POST", "header": [{"key":"Content-Type","value":"application/json"}], "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},\n    {\"role\":\"user\",\"content\":\"Hello\"},\n    {\"role\":\"assistant\",\"content\":\"Hi!\"},\n    {\"role\":\"user\",\"content\":\"How are you?\"},\n    {\"role\":\"system\",\"content\":\"Respond only in one word.\"}\n  ]\n}"}, "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}}}
+          ]
         }
 
+      ]
+    },
+    {
+      "name": "13. OpenRouter Prompt Caching (cache_control)",
+      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) \u2014 these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
+      "item": [
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control on tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}, \"cache_control\": {\"type\": \"ephemeral\"}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Anthropic Claude: cache_control 1h ttl",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\", \"ttl\": \"1h\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Google Gemini Flash: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/google/gemini-2.5-flash\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Google Gemini Pro: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/google/gemini-2.5-pro\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI GPT-4o: cache_control ignored (no 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/openai/gpt-4o\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter DeepSeek: cache_control ignored (no 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/deepseek/deepseek-chat\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter Qwen: cache_control on system block",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 400) { pm.test('cache_control forwarded: response ok + usage present', function () { var j = pm.response.json(); pm.expect(j.usage || {}).to.be.an('object'); }); } pm.test('cache_control not rejected (no 400)', function () { pm.expect(pm.response.code).to.not.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/qwen/qwen-2.5-72b-instruct\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
       ]
     }
   ]

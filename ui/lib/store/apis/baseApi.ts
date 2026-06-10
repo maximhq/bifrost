@@ -180,6 +180,7 @@ export const baseApi = createApi({
     "AuditLogs",
     "UserGovernance",
     "LargePayloadConfig",
+    "LoadBalancerConfig",
     "Folders",
     "Prompts",
     "Versions",

@@ -115,7 +115,7 @@ func main() {
     // Initialize OTel plugin
     otelPlugin, err := otel.Init(ctx, &otel.Config{
         ServiceName:  "bifrost",
-        CollectorURL: "http://localhost:4318",
+        CollectorURL: "http://localhost:4318/v1/traces",
         TraceType:    otel.TraceTypeGenAIExtension,
         Protocol:     otel.ProtocolHTTP,
         Headers: map[string]string{
@@ -153,7 +153,7 @@ For Gateway mode, configure via `config.json`:
       "name": "otel",
       "config": {
         "service_name": "bifrost",
-        "collector_url": "http://localhost:4318",
+        "collector_url": "http://localhost:4318/v1/traces",
         "trace_type": "genai_extension",
         "protocol": "http",
         "headers": {
@@ -165,7 +165,7 @@ For Gateway mode, configure via `config.json`:
 }
 ```
 
-If you need to connect to an OTEL collector that requires TLS, configure `tls_ca_cert`:
+If you need to connect to an OTEL collector that requires TLS, configure `tls_ca_cert` and set insecure mode to `false`:
 
 ```json
 {
@@ -178,6 +178,7 @@ If you need to connect to an OTEL collector that requires TLS, configure `tls_ca
         "collector_url": "localhost:4317",
         "trace_type": "genai_extension",
         "protocol": "grpc",
+        "insecure": false,
         "tls_ca_cert": "/path/to/your/ca.cert",
         "headers": {
           "Authorization": "env.OTEL_API_KEY"
@@ -189,6 +190,65 @@ If you need to connect to an OTEL collector that requires TLS, configure `tls_ca
 ```
 
 </Tab>
+<Tab title="config.json (v1.5.8+)">
+
+For Gateway mode, configure via `config.json`:
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "enabled": true,
+            "collector_url": "http://localhost:4318/v1/traces",
+            "trace_type": "genai_extension",
+            "protocol": "http",
+            "headers": {
+              "Authorization": "env.OTEL_API_KEY"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+If you need to connect to an OTEL collector that requires TLS, configure `tls_ca_cert` and set insecure mode to `false`:
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "enabled": true,
+            "collector_url": "localhost:4317",
+            "trace_type": "genai_extension",
+            "protocol": "grpc",
+            "insecure": false,
+            "tls_ca_cert": "/path/to/your/ca.cert",
+            "headers": {
+              "Authorization": "env.OTEL_API_KEY"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+</Tab>
+
 </Tabs>
 
 ---
@@ -221,12 +281,12 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: tempo
-    command: [ "-config.file=/etc/tempo.yaml" ]
+    command: ["-target=all", "-config.file=/etc/tempo.yaml"]
     configs:
       - source: tempo-config
         target: /etc/tempo.yaml
     ports:
-      - "3200:3200"   # tempo HTTP API
+      - "3200:3200" # Tempo HTTP API
     expose:
       - "4317"        # OTLP gRPC (internal)
     volumes:
@@ -236,14 +296,14 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
-    depends_on:
-      - otel-collector
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
       - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+      - "--enable-feature=native-histograms"
     ports:
       - "9090:9090"
     volumes:
@@ -251,6 +311,8 @@ services:
     configs:
       - source: prometheus-config
         target: /etc/prometheus/prometheus.yml
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
   grafana:
@@ -264,9 +326,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "grafana-pyroscope-app,grafana-exploretraces-app,grafana-metricsdrilldown-app"
-      GF_PLUGINS_ENABLE_ALPHA: "true"
       GF_INSTALL_PLUGINS: ""
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
     ports:
       - "4000:3000"
     volumes:
@@ -296,12 +357,12 @@ configs:
           namespace: otel
           const_labels:
             source: otelcol
-            
+
         otlp/tempo:
           endpoint: tempo:4317
           tls:
             insecure: true
-            
+
         debug:
           verbosity: detailed
 
@@ -346,7 +407,7 @@ configs:
             protocols:
               grpc:
                 endpoint: 0.0.0.0:4317
-
+                
       ingester:
         max_block_duration: 5m
         trace_idle_period: 10s
@@ -716,7 +777,7 @@ Uses HTTP/1.1 or HTTP/2 with JSON or Protobuf encoding:
 
 ```json
 {
-  "collector_url": "http://localhost:4318",
+  "collector_url": "http://localhost:4318/v1/traces",
   "protocol": "http"
 }
 ```
@@ -778,8 +839,37 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
   ]
 }
 ```
+</Tab>
+
+<Tab title="HTTP Protocol (v1.5+)">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "enabled": true,
+            "collector_url": "http://otel-collector:4318/v1/traces",
+            "trace_type": "genai_extension",
+            "protocol": "http",
+            "metrics_enabled": true,
+            "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+            "metrics_push_interval": 15
+          }
+        ]
+      }
+    }
+  ]
+}
+```
 
 </Tab>
+
 <Tab title="gRPC Protocol">
 
 ```json
@@ -801,8 +891,36 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
   ]
 }
 ```
-
 </Tab>
+
+<Tab title="gRPC Protocol (v1.5+)">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "enabled": true,
+            "collector_url": "otel-collector:4317",
+            "trace_type": "genai_extension",
+            "protocol": "grpc",
+            "metrics_enabled": true,
+            "metrics_endpoint": "otel-collector:4317",
+            "metrics_push_interval": 15
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+</Tab>
+
 </Tabs>
 
 ### Pushed Metrics
@@ -938,7 +1056,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the Plugins page and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
 
 **Filter modes:**
 
@@ -947,7 +1065,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 | `exclude` | Export spans for all plugins **except** those listed |
 | `include` | Export spans **only** for the listed plugins |
 
-**Built-in plugin names** (for reference): `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, `maxim`.
+**Plugin names:** list each plugin using the exact name shown for it in the **Configure Plugin Tracing** sheet — this is the same name that appears in the span (`plugin.<name>.<stage>`), and it is what the filter matches against. The built-in OSS plugins are `telemetry`, `prompts`, `logging`, `governance`, `otel`, `semantic_cache`, `compat`, and `maxim`. In enterprise deployments some plugins are registered under a different name than their config key — for example the prompts and governance plugins appear as `enterprise-prompts` and `enterprise-governance` — so always copy the name from the tracing sheet rather than assuming the config key.
 
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 
