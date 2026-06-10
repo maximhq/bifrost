@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -120,11 +121,16 @@ func (m *MCPManager) RunWithPluginPipeline(
 	if pipeline == nil {
 		resp, opErr := op(req)
 		if opErr != nil {
-			return resp, &schemas.BifrostError{
+			bErr := &schemas.BifrostError{
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: opErr.Error()},
 				ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 			}
+			var authRequiredErr *schemas.MCPAuthRequiredError
+			if errors.As(opErr, &authRequiredErr) {
+				bErr.ExtraFields.MCPAuthRequired = authRequiredErr
+			}
+			return resp, bErr
 		}
 		return resp, nil
 	}
@@ -195,6 +201,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: opErr.Error()},
 			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
+		}
+		var authRequiredErr *schemas.MCPAuthRequiredError
+		if errors.As(opErr, &authRequiredErr) {
+			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
 		}
 	}
 
