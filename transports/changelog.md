@@ -1,0 +1,2 @@
+- fix: sync provider config allow_all_keys and blacklisted_models from config.json (closes #4640)
+- [feat]: add preserve_cache_control config schema for custom providers [@GreyKa-x](https://github.com/GreyKa-x)
