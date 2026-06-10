@@ -66,6 +66,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/profiling"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
 )
 
@@ -140,6 +141,8 @@ func main() {
 	// Configure logger from flags
 	logger.SetOutputType(schemas.LoggerOutputType(server.LogOutputStyle))
 	logger.SetLevel(schemas.LogLevel(server.LogLevel))
+	// Start profiling
+	profiling.Start()
 	// Setting up logger
 	lib.SetLogger(logger)
 	bifrostServer.SetLogger(logger)
