@@ -242,10 +242,12 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
-	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	// Non-text content blocks (image/audio/file attachments) are dropped so
+	// the DB row stays lightweight; the full message lives in object storage.
 	var lastUserMessage string
 	if idx >= 0 {
-		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+		msg := dropNonTextContentBlocks(dbEntry.InputHistoryParsed[idx])
+		lastUserMessage, _ = sonic.MarshalString([]schemas.ChatMessage{msg})
 	}
 
 	ClearPayloadFiltered(dbEntry, excluded)
