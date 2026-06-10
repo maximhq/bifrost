@@ -5,7 +5,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
 import { Link } from "@tanstack/react-router";
 import { BookIcon, Globe, Library, Radio, Terminal } from "lucide-react";
-import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
 
 const MAX_VISIBLE_TAGS = 3;
 export const MCP_ICON_FALLBACK = "/images/mcp.svg";

@@ -4,8 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
 import { Link } from "@tanstack/react-router";
-import { BookIcon, Check, Download, Library, LogIn } from "lucide-react";
-import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
+import { BookIcon, Check, Download, LogIn } from "lucide-react";
 import { authLabel, MCP_ICON_FALLBACK, transportIcon, transportLabel } from "./mcpLibraryServerCard";
 
 interface MCPLibraryServersTableProps {
@@ -82,24 +81,6 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 								</TableCell>
 								<TableCell className="text-right">
 									<div className="flex justify-end gap-2">
-										{canDelete && (
-											<div className="hidden group-hover:block">
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															variant="outline"
-															size="icon"
-															onClick={() => setServerToDelete(server)}
-															aria-label={`Remove ${server.name} from library`}
-															data-testid={`mcp-library-table-delete-${server.slug}`}
-														>
-															<Trash2 className="h-4 w-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Remove from library</TooltipContent>
-												</Tooltip>
-											</div>
-										)}
 										{server.docs_url && (
 											<Tooltip>
 												<TooltipTrigger asChild>

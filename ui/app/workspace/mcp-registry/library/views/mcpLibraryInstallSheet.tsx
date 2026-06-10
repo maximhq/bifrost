@@ -466,7 +466,6 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 									<HeadersTable
 										value={envVars}
 										onChange={setEnvVars}
-										fixedKeys={server.stdio_config.envs}
 										keyPlaceholder="Variable name"
 										valuePlaceholder="Value (or host env)"
 										label=""
