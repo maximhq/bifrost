@@ -123,6 +123,15 @@ func DetectAppFromUserAgent(userAgent string) string {
 	return UserAgentAppOther
 }
 
+// AppKeyFromName returns the canonical policy key for a detected app name.
+func AppKeyFromName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == UserAgentAppOther {
+		return ""
+	}
+	return strings.Join(strings.Fields(strings.ToLower(name)), "-")
+}
+
 // MatchUserAgent reports whether a User-Agent matches a pattern using the given match type.
 // An empty matchType defaults to UserAgentMappingMatchTypeContains.
 //
