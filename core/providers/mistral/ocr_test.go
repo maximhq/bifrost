@@ -196,7 +196,9 @@ func TestToBifrostOCRResponse(t *testing.T) {
 				require.Len(t, result.Pages, 1)
 				assert.Equal(t, 0, result.Pages[0].Index)
 				assert.Equal(t, "# Hello World\n\nThis is a test document.", result.Pages[0].Markdown)
-				assert.Nil(t, result.Pages[0].Images)
+				// Non-nil so it serializes as [] per the Mistral contract.
+				assert.NotNil(t, result.Pages[0].Images)
+				assert.Empty(t, result.Pages[0].Images)
 				assert.Nil(t, result.Pages[0].Dimensions)
 				assert.Nil(t, result.UsageInfo)
 				assert.Nil(t, result.DocumentAnnotation)
