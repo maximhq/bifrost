@@ -2662,6 +2662,13 @@
                         }
                       },
                       "additionalProperties": false
+                    },
+                    "key_ids": {
+                      "type": "array",
+                      "description": "Key names (or UUIDs) allowed for this provider. Use [\"*\"] to allow all keys; empty array denies all.",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": ["provider_name"],

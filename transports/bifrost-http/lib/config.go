@@ -2122,6 +2122,19 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			teamsToAdd = append(teamsToAdd, configData.Governance.Teams[i])
 		}
 	}
+	// Build provider key name→UUID map once for resolveVKProviderKeyIDs below.
+	// Use config.Providers (post-processed, UUIDs assigned) not configData.Providers (raw parse).
+	providerKeysByName := make(map[string]map[string]string) // provider → name → UUID
+	for providerName, providerCfg := range config.Providers {
+		nameMap := make(map[string]string, len(providerCfg.Keys))
+		for _, k := range providerCfg.Keys {
+			if k.Name != "" && k.ID != "" {
+				nameMap[k.Name] = k.ID
+			}
+		}
+		providerKeysByName[strings.ToLower(string(providerName))] = nameMap
+	}
+
 	// Merge VirtualKeys by ID with hash comparison
 	virtualKeysToAdd := make([]configstoreTables.TableVirtualKey, 0)
 	virtualKeysToUpdate := make([]configstoreTables.TableVirtualKey, 0)
@@ -2164,6 +2177,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
 						ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
+					configData.Governance.VirtualKeys[i].ProviderConfigs = resolveVKProviderKeyIDs(
+						providerKeysByName, configData.Governance.VirtualKeys[i].ProviderConfigs)
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -2194,6 +2209,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			// Resolve MCP client names to IDs for config file mcp_configs
 			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
 				ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
+			configData.Governance.VirtualKeys[i].ProviderConfigs = resolveVKProviderKeyIDs(
+				providerKeysByName, configData.Governance.VirtualKeys[i].ProviderConfigs)
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])
 		}
 	}
@@ -2392,15 +2409,25 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
+			providerKeysByName := make(map[string]map[string]string, len(config.Providers))
+			for providerName, providerCfg := range config.Providers {
+				nameMap := make(map[string]string, len(providerCfg.Keys))
+				for _, k := range providerCfg.Keys {
+					if k.Name != "" && k.ID != "" {
+						nameMap[k.Name] = k.ID
+					}
+				}
+				providerKeysByName[strings.ToLower(string(providerName))] = nameMap
+			}
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
 			for i := range configData.Governance.VirtualKeys {
 				vk := &configData.Governance.VirtualKeys[i]
 				keep[vk.ID] = true
-				// Unchanged VKs never went through resolveMCPConfigClientIDs in
-				// mergeGovernanceConfig, so their MCPConfigs may still carry
-				// mcp_client_name with MCPClientID==0. Resolve before reconciling
-				// to avoid creating/deleting client-id 0 associations.
+				// Unchanged VKs never went through resolveMCPConfigClientIDs /
+				// resolveVKProviderKeyIDs in mergeGovernanceConfig, so their configs
+				// may still carry unresolved names. Resolve before reconciling.
 				vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
+				vk.ProviderConfigs = resolveVKProviderKeyIDs(providerKeysByName, vk.ProviderConfigs)
 				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.ProviderConfigs, vk.MCPConfigs); err != nil {
 					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
 				}
@@ -4156,6 +4183,43 @@ func resolveMCPConfigClientIDs(
 	}
 
 	return resolvedConfigs
+}
+
+// resolveVKProviderKeyIDs resolves key name references inside a virtual key's provider configs.
+// providerKeysByName is a pre-built map of provider → (name → UUID) from configData.Providers,
+// built once before the VK loop to avoid repeated DB calls. Entries whose key_id already looks
+// like a UUID (not found by name) are passed through for CreateVirtualKeyProviderConfig to handle.
+func resolveVKProviderKeyIDs(
+	providerKeysByName map[string]map[string]string,
+	providerConfigs []configstoreTables.TableVirtualKeyProviderConfig,
+) []configstoreTables.TableVirtualKeyProviderConfig {
+	if len(providerKeysByName) == 0 {
+		return providerConfigs
+	}
+	for i := range providerConfigs {
+		pc := &providerConfigs[i]
+		if pc.AllowAllKeys || len(pc.Keys) == 0 {
+			continue
+		}
+		byName := providerKeysByName[strings.ToLower(pc.Provider)]
+		if len(byName) == 0 {
+			continue
+		}
+		resolved := make([]configstoreTables.TableKey, 0, len(pc.Keys))
+		for _, stub := range pc.Keys {
+			if stub.KeyID == "" {
+				continue
+			}
+			if uuid, ok := byName[stub.KeyID]; ok {
+				resolved = append(resolved, configstoreTables.TableKey{KeyID: uuid})
+			} else {
+				// Already a UUID or unknown — pass through for DB resolution.
+				resolved = append(resolved, stub)
+			}
+		}
+		pc.Keys = resolved
+	}
+	return providerConfigs
 }
 
 // reconcileVirtualKeyAssociations reconciles ProviderConfigs and MCPConfigs associations

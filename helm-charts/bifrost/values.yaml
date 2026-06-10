@@ -861,6 +861,7 @@ bifrost:
     #     - provider_name: "openai"
     #       all_models_allowed: false
     #       allowed_models: ["gpt-4o", "gpt-4o-mini"]
+    #       key_ids: ["*"]               # ["*"] = all keys; [] = deny all; ["key-name"] = specific key by name or UUID
     #   mcp_tool_groups:
     #     - tool_group_id: 1
     #   mcp_servers:
