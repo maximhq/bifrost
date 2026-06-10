@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -76,7 +77,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	return bifrostReq
 }
 
-func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiResponsesRequest(ctx context.Context, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -116,7 +117,11 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input)
+		resolvedInput, err := resolveResponsesAudioURLs(ctx, bifrostReq.Input)
+		if err != nil {
+			return nil, err
+		}
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(ctx, resolvedInput)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +221,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	return bifrostResp
 }
 
-func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
+func ToGeminiResponsesResponse(ctx context.Context, bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -312,7 +317,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				// Handle content blocks
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(ctx, block)
 						if err == nil && part != nil {
 							currentParts = append(currentParts, part)
 						}
@@ -523,7 +528,7 @@ func NewBifrostToGeminiStreamState() *BifrostToGeminiStreamState {
 	}
 }
 
-func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse, state *BifrostToGeminiStreamState) *GenerateContentResponse {
+func ToGeminiResponsesStreamResponse(ctx context.Context, bifrostResp *schemas.BifrostResponsesStreamResponse, state *BifrostToGeminiStreamState) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -729,7 +734,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		// Handle content parts that contain images, audio, or files
 		if bifrostResp.Part != nil {
-			part, err := convertContentBlockToGeminiPart(*bifrostResp.Part)
+			part, err := convertContentBlockToGeminiPart(ctx, *bifrostResp.Part)
 			if err == nil && part != nil {
 				candidate.Content.Parts = append(candidate.Content.Parts, part)
 			}
@@ -2967,8 +2972,44 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	return config
 }
 
+// resolveResponsesAudioURLs walks messages and, for any input audio block that
+// has a URL but no Data, downloads the audio and populates Data. This MUST run
+// before convertResponsesMessagesToGeminiContents so converters stay pure.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage) ([]schemas.ResponsesMessage, error) {
+	resolved := make([]schemas.ResponsesMessage, len(messages))
+	copy(resolved, messages)
+
+	for msgIndex := range resolved {
+		if resolved[msgIndex].Content == nil || len(resolved[msgIndex].Content.ContentBlocks) == 0 {
+			continue
+		}
+
+		content := *resolved[msgIndex].Content
+		content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(resolved[msgIndex].Content.ContentBlocks))
+		copy(content.ContentBlocks, resolved[msgIndex].Content.ContentBlocks)
+		resolved[msgIndex].Content = &content
+
+		for blockIndex := range content.ContentBlocks {
+			block := &content.ContentBlocks[blockIndex]
+			if block.Audio == nil || block.Audio.Data != "" || block.Audio.URL == "" {
+				continue
+			}
+
+			audio := *block.Audio
+			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			}
+			audio.Data = audioData
+			block.Audio = &audio
+		}
+	}
+
+	return resolved, nil
+}
+
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
+func convertResponsesMessagesToGeminiContents(ctx context.Context, messages []schemas.ResponsesMessage) ([]Content, *Content, error) {
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -2980,7 +3021,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			}
 			if messages[0].Content.ContentBlocks != nil {
 				for _, block := range messages[0].Content.ContentBlocks {
-					part, err := convertContentBlockToGeminiPart(block)
+					part, err := convertContentBlockToGeminiPart(ctx, block)
 					if err != nil {
 						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 					}
@@ -3037,7 +3078,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				}
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(ctx, block)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 						}
@@ -3239,7 +3280,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(ctx, block)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
 						}
@@ -3260,7 +3301,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part
-func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*Part, error) {
+func convertContentBlockToGeminiPart(ctx context.Context, block schemas.ResponsesMessageContentBlock) (*Part, error) {
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText,
 		schemas.ResponsesOutputMessageContentTypeText:
@@ -3347,8 +3388,10 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 
 	case schemas.ResponsesInputMessageContentBlockTypeAudio:
 		if block.Audio != nil {
+			audioData := block.Audio.Data
+
 			// Decode base64 audio data (handles both standard and URL-safe base64)
-			decodedData, err := decodeBase64StringToBytes(block.Audio.Data)
+			decodedData, err := decodeBase64StringToBytes(audioData)
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode base64 audio data: %w", err)
 			}

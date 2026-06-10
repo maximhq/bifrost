@@ -1807,13 +1807,49 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
-// convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+// resolveAudioURLs walks messages and, for any InputAudio block that has a URL
+// but no Data, downloads the audio and populates Data. This MUST run before
+// convertBifrostMessagesToGemini so the converter sees only resolved payloads.
+func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
+	resolved := make([]schemas.ChatMessage, len(messages))
+	copy(resolved, messages)
+
+	for msgIndex := range resolved {
+		if resolved[msgIndex].Content == nil || len(resolved[msgIndex].Content.ContentBlocks) == 0 {
+			continue
+		}
+
+		content := *resolved[msgIndex].Content
+		content.ContentBlocks = make([]schemas.ChatContentBlock, len(resolved[msgIndex].Content.ContentBlocks))
+		copy(content.ContentBlocks, resolved[msgIndex].Content.ContentBlocks)
+		resolved[msgIndex].Content = &content
+
+		for blockIndex := range content.ContentBlocks {
+			block := &content.ContentBlocks[blockIndex]
+			if block.InputAudio == nil || block.InputAudio.Data != "" || block.InputAudio.URL == "" {
+				continue
+			}
+
+			audio := *block.InputAudio
+			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			}
+			audio.Data = audioData
+			block.InputAudio = &audio
+		}
+	}
+
+	return resolved, nil
+}
+
+// convertBifrostMessagesToGemini converts Bifrost messages to Gemini format.
+func convertBifrostMessagesToGemini(ctx context.Context, messages []schemas.ChatMessage) ([]Content, *Content, error) {
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		content := convertSystemChatMessageToGeminiUserContent(messages[0])
 		if len(content.Parts) > 0 {
-			return []Content{content}, nil
+			return []Content{content}, nil, nil
 		}
 	}
 
@@ -2036,8 +2072,10 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							})
 						}
 					} else if block.InputAudio != nil {
+						audioData := block.InputAudio.Data
+
 						// Decode the audio data (handles both standard and URL-safe base64)
-						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
+						decodedData, err := decodeBase64StringToBytes(audioData)
 						if err != nil || len(decodedData) == 0 {
 							continue
 						}
@@ -2164,7 +2202,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		}
 	}
 
-	return contents, systemInstruction
+	return contents, systemInstruction, nil
 }
 
 func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {

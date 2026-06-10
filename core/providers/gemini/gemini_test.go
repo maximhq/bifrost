@@ -353,7 +353,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 }
 
 func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
-	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{
 			{
@@ -395,7 +395,7 @@ func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
 
-	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleAssistant,
@@ -1143,7 +1143,7 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -1178,7 +1178,7 @@ func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
@@ -1227,7 +1227,7 @@ func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
@@ -1468,7 +1468,7 @@ func TestStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -1737,7 +1737,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -2204,7 +2204,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -2502,7 +2502,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -2791,7 +2791,7 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(context.Background(), tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -3165,7 +3165,7 @@ func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -3334,7 +3334,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 				},
 			}
 
-			result, err := gemini.ToGeminiChatCompletionRequest(req)
+			result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), req)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
@@ -3434,7 +3434,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 				},
 			}
 
-			result, err := gemini.ToGeminiResponsesRequest(req)
+			result, err := gemini.ToGeminiResponsesRequest(context.Background(), req)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
@@ -3477,7 +3477,7 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 				Reasoning: &schemas.ChatReasoning{Effort: &effort},
 			},
 		}
-		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), req)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
@@ -3494,7 +3494,7 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 				Reasoning: &schemas.ChatReasoning{Effort: &effort},
 			},
 		}
-		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), req)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
@@ -3528,7 +3528,7 @@ func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
 	assert.Equal(t, "minimal", *bifrostReq.Params.Reasoning.Effort)
 	assert.Nil(t, bifrostReq.Params.Reasoning.MaxTokens, "thinkingLevel must not populate reasoning max_tokens")
 
-	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	roundTrip, err := gemini.ToGeminiResponsesRequest(context.Background(), bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, roundTrip)
 	require.NotNil(t, roundTrip.GenerationConfig.ThinkingConfig)
@@ -3562,7 +3562,7 @@ func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T
 	require.NotNil(t, bifrostResp.StopReason)
 	assert.Equal(t, "length", *bifrostResp.StopReason)
 
-	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	out := gemini.ToGeminiResponsesResponse(context.Background(), bifrostResp)
 	require.NotNil(t, out)
 	require.Len(t, out.Candidates, 1)
 	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
@@ -3587,7 +3587,7 @@ func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T
 		},
 	}
 
-	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	out := gemini.ToGeminiResponsesResponse(context.Background(), bifrostResp)
 	require.NotNil(t, out)
 	require.NotNil(t, out.UsageMetadata)
 
@@ -3800,7 +3800,7 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 			require.NotNil(t, bifrostReq.Params)
 			require.NotNil(t, bifrostReq.Params.ToolChoice, "ToolChoice must be set")
 
-			roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+			roundTrip, err := gemini.ToGeminiResponsesRequest(context.Background(), bifrostReq)
 			require.NoError(t, err)
 			require.NotNil(t, roundTrip)
 			require.NotNil(t, roundTrip.ToolConfig)

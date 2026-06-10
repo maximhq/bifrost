@@ -1347,6 +1347,7 @@ type ChatInputImage struct {
 // Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
 type ChatInputAudio struct {
 	Data   string  `json:"data"`
+	URL    string  `json:"url,omitempty"`
 	Format *string `json:"format,omitempty"`
 }
 

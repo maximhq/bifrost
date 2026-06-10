@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -9,7 +10,7 @@ import (
 )
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiChatCompletionRequest(ctx context.Context, bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -72,7 +73,14 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 	}
 	// Convert chat completion messages to Gemini format
-	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
+	resolvedInput, err := resolveAudioURLs(ctx, bifrostReq.Input)
+	if err != nil {
+		return nil, err
+	}
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(ctx, resolvedInput)
+	if err != nil {
+		return nil, err
+	}
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}
