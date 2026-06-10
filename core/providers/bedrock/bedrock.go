@@ -1920,6 +1920,18 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 	}
 
+	// Bedrock Cohere embed models omit token usage from the response body and instead
+	// return it in the X-Amzn-Bedrock-Input-Token-Count response header. Backfill Usage
+	// from that header when the body did not provide it. (#3917)
+	if bifrostResponse.Usage == nil {
+		if inputTokens, ok := inputTokensFromHeaders(providerResponseHeaders); ok {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+				PromptTokens: inputTokens,
+				TotalTokens:  inputTokens,
+			}
+		}
+	}
+
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -1978,6 +1990,17 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
 	bifrostResponse := response.ToBifrostRerankResponse(request.Documents, returnDocuments)
 	bifrostResponse.Model = request.Model
+
+	// Bedrock returns rerank input token usage only in the X-Amzn-Bedrock-Input-Token-Count
+	// response header (it is absent from the body); backfill Usage from it. (#3917)
+	if bifrostResponse.Usage == nil {
+		if inputTokens, ok := inputTokensFromHeaders(providerResponseHeaders); ok {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+				PromptTokens: inputTokens,
+				TotalTokens:  inputTokens,
+			}
+		}
+	}
 
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
