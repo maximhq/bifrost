@@ -205,6 +205,80 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking, minimax-m2)
+// reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
+// Vertex case should drop a "none" effort for these models while preserving it for
+// Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		keepsEffort bool
+	}{
+		{
+			name:        "MaaS model drops none effort",
+			model:       "moonshotai/kimi-k2-thinking-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "minimax MaaS model drops none effort",
+			model:       "minimaxai/minimax-m2-maas",
+			keepsEffort: false,
+		},
+		{
+			name:        "Mistral on Vertex keeps none effort",
+			model:       "mistral-large",
+			keepsEffort: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("none"),
+					},
+				},
+			}
+
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			if out == nil {
+				t.Fatal("expected OpenAI chat request")
+			}
+
+			if tt.keepsEffort {
+				if out.Reasoning == nil || out.Reasoning.Effort == nil || *out.Reasoning.Effort != "none" {
+					t.Fatalf("expected reasoning effort to be preserved as \"none\", got %+v", out.Reasoning)
+				}
+				return
+			}
+
+			// Effort must be dropped so reasoning_effort is omitted from the payload.
+			if out.Reasoning != nil && out.Reasoning.Effort != nil {
+				t.Fatalf("expected reasoning effort to be dropped, got %q", *out.Reasoning.Effort)
+			}
+
+			// Verify the marshalled body does not contain reasoning_effort.
+			body, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("failed to marshal request: %v", err)
+			}
+			if strings.Contains(string(body), "reasoning_effort") {
+				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
+			}
+		})
+	}
+}
+
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name     string
