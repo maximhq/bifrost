@@ -7,6 +7,7 @@ description: "Helm v2.1.21 changelog - 2026-06-04"
 
 ## Changelog
 
-- Added `per_user_oauth` and `per_user_headers` to the MCP connection `authType` enum in `values.schema.json` (`bifrost.mcp.clientConfigs[].authType`). These per-user auth modes were already supported by the application but were previously rejected at chart validation time.
+- Add `per_user_oauth`/`per_user_headers` to `authType` enum in mcpClientConfig
+- Added `scope` and `scope_id` fields to `bifrost.governance.modelConfigs[]` items in `values.yaml` and `values.schema.json`. `scope` accepts `"global"` (default, applies to all traffic) or `"virtual_key"` (applies to a specific virtual key); `scope_id` is required when `scope` is `"virtual_key"` and must reference a virtual key `id`. The `_helpers.tpl` already passes `modelConfigs` through as-is so no template change was needed.
 
 </Update>

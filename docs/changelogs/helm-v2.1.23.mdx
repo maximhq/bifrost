@@ -1,0 +1,13 @@
+---
+title: "v2.1.23"
+description: "Helm v2.1.23 changelog - 2026-06-10"
+---
+
+<Update label="Bifrost Helm" description="v2.1.23">
+
+## Changelog
+
+- Added `bifrost.sourceOfTruth` (`split` | `config.json`, optional). When set to `"config.json"`, sections explicitly present in the file become authoritative on startup — database-only rows for those sections are pruned. Omitting the field preserves the default `"split"` merge behavior.
+- Added `disable_content_logging` to OTEL config (both single-profile and per-profile). When `true`, message content (input/output messages, embeddings, tool definitions, tool call arguments/results) is dropped from exported spans — only metadata (model, tokens, latency) is sent to the collector.
+
+</Update>
