@@ -182,3 +182,55 @@ export interface MCPToolSpec {
 	mcp_client_id: string;
 	tool_names: string[];
 }
+
+// ---------------------------------------------------------------------------
+// MCP Library (synced catalog)
+// ---------------------------------------------------------------------------
+
+/** A single entry from the synced MCP server catalog (`mcp_library` table). */
+export interface MCPLibraryEntry {
+	id: number;
+	slug: string;
+	name: string;
+	description?: string;
+	category?: string;
+	connection_type: MCPConnectionType;
+	connection_url?: string;
+	stdio_config?: MCPStdioConfig;
+	auth_type?: MCPAuthType;
+	required_header_keys?: string[];
+	icon_url?: string;
+	docs_url?: string;
+	publisher?: string;
+	tags?: string[];
+	metadata?: Record<string, unknown>;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface GetMCPLibraryParams {
+	search?: string;
+	category?: string;
+	connection_type?: string;
+	auth_type?: string;
+	tags?: string;
+	sort_by?: string;
+	order?: string;
+	limit?: number;
+	offset?: number;
+}
+
+export interface GetMCPLibraryResponse {
+	servers: MCPLibraryEntry[];
+	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface MCPLibraryFilterData {
+	categories: string[];
+	connection_types: string[];
+	auth_types: string[];
+	tags: string[];
+}

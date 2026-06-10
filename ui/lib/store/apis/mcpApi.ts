@@ -2,6 +2,9 @@ import {
 	CreateMCPClientRequest,
 	GetMCPClientsParams,
 	GetMCPClientsResponse,
+	GetMCPLibraryParams,
+	GetMCPLibraryResponse,
+	MCPLibraryFilterData,
 	OAuthFlowResponse,
 	OAuthStatusResponse,
 	UpdateMCPClientRequest,
@@ -26,6 +29,39 @@ export const mcpApi = baseApi.injectEndpoints({
 			providesTags: ["MCPClients"],
 		}),
 
+		// Get MCP library catalog (synced) with search/filter/sort/pagination
+		getMCPLibrary: builder.query<GetMCPLibraryResponse, GetMCPLibraryParams | void>({
+			query: (params) => ({
+				url: "/mcp/library",
+				params: {
+					...(params?.search && { search: params.search }),
+					...(params?.category && { category: params.category }),
+					...(params?.connection_type && { connection_type: params.connection_type }),
+					...(params?.auth_type && { auth_type: params.auth_type }),
+					...(params?.tags && { tags: params.tags }),
+					...(params?.sort_by && { sort_by: params.sort_by }),
+					...(params?.order && { order: params.order }),
+					...(params?.limit !== undefined && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+				},
+			}),
+			providesTags: ["MCPLibrary"],
+		}),
+
+		// Get distinct facet values for the MCP library filter sidebar
+		getMCPLibraryFilterData: builder.query<MCPLibraryFilterData, void>({
+			query: () => ({ url: "/mcp/library/filterdata" }),
+			providesTags: ["MCPLibrary"],
+		}),
+
+		// Force an immediate MCP library catalog sync
+		forceSyncMCPLibrary: builder.mutation<{ status: string; message: string }, void>({
+			query: () => ({
+				url: "/mcp/library/force-sync",
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPLibrary"],
+		}),
 		// Create new MCP client
 		createMCPClient: builder.mutation<CreateMCPClientResponse, CreateMCPClientRequest>({
 			query: (data) => ({
@@ -151,6 +187,9 @@ export const mcpApi = baseApi.injectEndpoints({
 
 export const {
 	useGetMCPClientsQuery,
+	useGetMCPLibraryQuery,
+	useGetMCPLibraryFilterDataQuery,
+	useForceSyncMCPLibraryMutation,
 	useCreateMCPClientMutation,
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,

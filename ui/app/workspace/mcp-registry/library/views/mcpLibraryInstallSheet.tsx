@@ -1,6 +1,7 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -12,19 +13,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPAuthType } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPLibraryEntry, MCPTLSConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Globe, Info, KeyRound, Radio, ShieldCheck, Terminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { MCPLibraryServer } from "../data";
+import { MCPHeadersAuthorizer } from "../../views/mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "../../views/oauth2Authorizer";
 
 const MCP_ICON_FALLBACK = "/images/mcp.svg";
 
 interface MCPLibraryInstallSheetProps {
-	server: MCPLibraryServer;
+	server: MCPLibraryEntry;
 	open: boolean;
 	onClose: () => void;
 	onInstalled: () => void;
@@ -56,16 +57,18 @@ export function sanitizeServerName(name: string): string {
 	return /^[0-9]/.test(cleaned) || cleaned === "" ? `mcp_${cleaned}` : cleaned;
 }
 
-function buildInitialValues(server: MCPLibraryServer): CreateMCPClientRequest {
+function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
+	const authType = (server.auth_type || "none") as MCPAuthType;
 	const isStdio = server.connection_type === "stdio";
 	return {
 		name: sanitizeServerName(server.name),
 		is_code_mode_client: false,
 		is_ping_available: true,
-		connection_type: "http",
-		connection_string: { value: server.url, env_var: "", from_env: false },
-		auth_type: server.defaultAuthType,
-		headers: server.defaultAuthType === "headers" ? { Authorization: { value: "", env_var: "", from_env: false } } : undefined,
+		connection_type: server.connection_type || "http",
+		connection_string: isStdio ? undefined : server.connection_url ? { value: server.connection_url, env_var: "", from_env: false } : emptyEnvVar,
+		stdio_config: isStdio && server.stdio_config ? server.stdio_config : undefined,
+		auth_type: authType,
+		headers: authType === "headers" ? { Authorization: { value: "", env_var: "", from_env: false } } : undefined,
 	};
 }
 
@@ -270,6 +273,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		if (headersValidationError || hasErrors) return;
 
 		const isStdio = server.connection_type === "stdio";
+		const connectionUrl = server.connection_url || "";
 		const stdioConfig =
 			isStdio && server.stdio_config
 				? {
@@ -283,25 +287,26 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 				: undefined;
 		const payload: CreateMCPClientRequest = {
 			...data,
-			connection_type: "http",
-			connection_string: { value: server.url, env_var: "", from_env: false },
+			connection_type: server.connection_type || "http",
+			connection_string: isStdio ? undefined : { value: connectionUrl, env_var: "", from_env: false },
+			stdio_config: stdioConfig,
 			is_code_mode_client: false,
 			is_ping_available: true,
 			tls_config: !isStdio ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-							client_id: data.oauth_config?.client_id ?? emptyEnvVar,
-							client_secret:
-								data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
-									? data.oauth_config.client_secret
-									: undefined,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-							server_url: server.url,
-						}
+						client_id: data.oauth_config?.client_id ?? emptyEnvVar,
+						client_secret:
+							data.oauth_config?.client_secret?.value || data.oauth_config?.client_secret?.from_env
+								? data.oauth_config.client_secret
+								: undefined,
+						authorize_url: data.oauth_config?.authorize_url || undefined,
+						token_url: data.oauth_config?.token_url || undefined,
+						registration_url: data.oauth_config?.registration_url || undefined,
+						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+						server_url: connectionUrl || undefined,
+					}
 					: undefined,
 			headers:
 				(authType === "headers" || authType === "per_user_headers") && data.headers && Object.keys(data.headers).length > 0
@@ -348,22 +353,58 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		}
 	};
 
+	const iconUrl = server.icon_url || MCP_ICON_FALLBACK;
+	const isStdio = server.connection_type === "stdio";
+	const isOauth = authType === "oauth" || authType === "per_user_oauth";
+	const isPerUserHeaders = authType === "per_user_headers";
+	const displayUrl = server.connection_url || (server.stdio_config ? `${server.stdio_config.command} ${(server.stdio_config.args || []).join(" ")}` : "—");
+	const installButtonLabel = isOauth || isPerUserHeaders ? "Continue" : "Install";
+
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && !oauthFlow && !headersFlow && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-7 pt-8">
-					<SheetTitle>Install {server.name}</SheetTitle>
-					<SheetDescription>Review the connection and choose how Bifrost should authenticate to this MCP server.</SheetDescription>
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
+					<SheetTitle>Install MCP server</SheetTitle>
+					<SheetDescription>Confirm the catalog configuration before adding this server to Bifrost.</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-4 overflow-y-auto px-8">
-							<div className="flex items-center gap-3 rounded-sm border p-3">
-								<img src={server.logo} alt="" className="h-10 w-10 rounded-sm border bg-white object-contain p-1" />
-								<div className="min-w-0">
-									<p className="truncate text-sm font-medium">{server.name}</p>
-									<p className="text-muted-foreground truncate text-xs">{server.url}</p>
+						<div className="flex-1 space-y-6 px-8 pt-5 pb-6">
+							<section className="border-b pb-5">
+								<div className="flex items-start gap-3 rounded-sm border bg-muted/10 p-3">
+									<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm border">
+										<img
+											src={iconUrl}
+											alt=""
+											className="h-full w-full object-contain p-1"
+											onError={(event) => {
+												event.currentTarget.onerror = null;
+												event.currentTarget.src = MCP_ICON_FALLBACK;
+											}}
+										/>
+									</div>
+									<div className="min-w-0 flex-1 space-y-2">
+										<div className="min-w-0">
+											<p className="truncate text-sm font-medium">{server.name}</p>
+											<p className="text-muted-foreground truncate font-mono text-xs">{displayUrl}</p>
+										</div>
+										<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+											<Badge variant="outline" className="bg-background">
+												<TransportIcon connectionType={server.connection_type} />
+												{transportLabel(server.connection_type)}
+											</Badge>
+											<Badge variant="outline" className="bg-background">
+												<ShieldCheck className="size-3.5" />
+												{authLabel(server.auth_type)}
+											</Badge>
+											{server.category && (
+												<Badge variant="secondary" className="max-w-full truncate">
+													{server.category}
+												</Badge>
+											)}
+										</div>
+									</div>
 								</div>
 							</section>
 
@@ -761,7 +802,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							</section>
 						</div>
 
-						<div className="dark:bg-card border-border border-t bg-white px-8 py-4">
+						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
 							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 								<p className="text-muted-foreground text-sm">
 									{isOauth
