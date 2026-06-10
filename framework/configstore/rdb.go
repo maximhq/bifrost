@@ -1609,7 +1609,204 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	return clients, totalCount, nil
 }
 
-// GetMCPClientByID retrieves an MCP client by ID from the database.
+// mcpLibrarySortColumns whitelists the columns the MCP library list endpoint
+// may sort by. Restricting to a fixed set keeps the ORDER BY clause free of
+// caller-supplied identifiers.
+var mcpLibrarySortColumns = map[string]string{
+	"name":       "name",
+	"category":   "category",
+	"publisher":  "publisher",
+	"created_at": "created_at",
+	"updated_at": "updated_at",
+}
+
+// GetMCPLibraryPaginated retrieves MCP library catalog entries with optional
+// search, filtering, sorting, and pagination. Returns the page of rows and the
+// total count matching the filters (before pagination).
+func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
+	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where(
+			"LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(publisher) LIKE ?",
+			search, search, search,
+		)
+	}
+	if len(params.Categories) > 0 {
+		baseQuery = baseQuery.Where("category IN ?", params.Categories)
+	}
+	if len(params.ConnectionTypes) > 0 {
+		baseQuery = baseQuery.Where("connection_type IN ?", params.ConnectionTypes)
+	}
+	if len(params.AuthTypes) > 0 {
+		baseQuery = baseQuery.Where("auth_type IN ?", params.AuthTypes)
+	}
+	// Tags are stored as a JSON-encoded array string; match rows whose JSON
+	// contains any requested tag as a quoted token. This is a substring match
+	// over the serialized array, which is sufficient for the catalog's small,
+	// well-formed tag values and avoids a DB-specific JSON operator. LIKE
+	// metacharacters in the tag are escaped (with an explicit ESCAPE clause) so
+	// a tag containing % or _ matches literally instead of as a wildcard.
+	likeEscaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	for _, tag := range params.Tags {
+		if tag == "" {
+			continue
+		}
+		escapedTag := likeEscaper.Replace(tag)
+		baseQuery = baseQuery.Where(`tags LIKE ? ESCAPE '\'`, `%"`+escapedTag+`"%`)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	sortColumn := "name"
+	if col, ok := mcpLibrarySortColumns[params.SortBy]; ok {
+		sortColumn = col
+	}
+	dir := "ASC"
+	if strings.EqualFold(params.Order, "desc") {
+		dir = "DESC"
+	}
+	// id as a stable tiebreaker so paging is deterministic across equal keys.
+	orderClause := fmt.Sprintf("%s %s, id ASC", sortColumn, dir)
+
+	var entries []tables.TableMCPLibrary
+	if err := baseQuery.
+		Order(orderClause).
+		Offset(offset).
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return nil, 0, err
+	}
+	return entries, totalCount, nil
+}
+
+// GetMCPLibraryFilterData returns the distinct facet values for the MCP library
+// filter sidebar: categories, connection types, auth types, and tags. Empty
+// values are skipped. Tags are stored as JSON arrays, so they are decoded and
+// unioned in Go rather than via a DB-specific JSON operator.
+func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error) {
+	db := s.DB().WithContext(ctx)
+	result := &MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+
+	distinct := func(column string, dst *[]string) error {
+		var values []string
+		if err := db.Model(&tables.TableMCPLibrary{}).
+			Distinct(column).
+			Where(column+" IS NOT NULL AND "+column+" != ?", "").
+			Order(column+" ASC").
+			Pluck(column, &values).Error; err != nil {
+			return err
+		}
+		*dst = append(*dst, values...)
+		return nil
+	}
+
+	if err := distinct("category", &result.Categories); err != nil {
+		return nil, err
+	}
+	if err := distinct("connection_type", &result.ConnectionTypes); err != nil {
+		return nil, err
+	}
+	if err := distinct("auth_type", &result.AuthTypes); err != nil {
+		return nil, err
+	}
+
+	// Tags: gather distinct JSON blobs, decode, and union the values.
+	var tagBlobs []string
+	if err := db.Model(&tables.TableMCPLibrary{}).
+		Distinct("tags").
+		Where("tags IS NOT NULL AND tags != ?", "").
+		Pluck("tags", &tagBlobs).Error; err != nil {
+		return nil, err
+	}
+	tagSet := make(map[string]struct{})
+	for _, blob := range tagBlobs {
+		var tags []string
+		if err := json.Unmarshal([]byte(blob), &tags); err != nil {
+			continue // skip malformed blobs rather than failing the whole request
+		}
+		for _, tag := range tags {
+			if tag == "" {
+				continue
+			}
+			tagSet[tag] = struct{}{}
+		}
+	}
+	for tag := range tagSet {
+		result.Tags = append(result.Tags, tag)
+	}
+	sort.Strings(result.Tags)
+
+	return result, nil
+}
+
+// mcpLibrarySyncUpdateColumns enumerates the columns the MCP library sync may
+// overwrite on conflict. The list is explicit (not UpdateAll) so id/created_at
+// are preserved and any future editorial-only columns can be excluded.
+var mcpLibrarySyncUpdateColumns = []string{
+	"name",
+	"description",
+	"category",
+	"connection_type",
+	"connection_url",
+	"stdio_config",
+	"auth_type",
+	"required_header_keys",
+	"icon_url",
+	"docs_url",
+	"publisher",
+	"tags",
+	"metadata",
+	"updated_at",
+}
+
+// UpsertMCPLibraryEntry creates or updates an MCP library catalog row, keyed by
+// the unique slug. Mirrors UpsertModelPrices: a single atomic ON CONFLICT
+// statement so concurrent syncs across nodes don't deadlock.
+func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "slug"}},
+		DoUpdates: clause.AssignmentColumns(mcpLibrarySyncUpdateColumns),
+		// Atomically protect custom/tombstoned rows: only overwrite an existing
+		// row if it is still a live remote row. This closes the TOCTOU race where
+		// a row turns custom or is soft-deleted between the snapshot taken by
+		// GetProtectedMCPLibrarySlugs and this upsert. INSERTs are unaffected.
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "mcp_library.source = 'remote' AND mcp_library.deleted_at IS NULL"},
+		}},
+	}).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
 	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {

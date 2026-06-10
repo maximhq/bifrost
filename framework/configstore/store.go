@@ -51,6 +51,30 @@ type MCPClientsQueryParams struct {
 	Search string
 }
 
+// MCPLibraryQueryParams holds pagination, filtering, search, and sort
+// parameters for MCP library catalog queries. All fields are optional — an
+// empty struct returns the first default-sized page ordered by name.
+type MCPLibraryQueryParams struct {
+	Limit          int
+	Offset         int
+	Search         string   // matches name/description/publisher (case-insensitive)
+	Categories     []string // exact category filter(s), OR semantics
+	ConnectionTypes []string // exact connection_type filter(s) (http | stdio | sse)
+	AuthTypes      []string // exact auth_type filter(s)
+	Tags           []string // match rows carrying any of these tags
+	SortBy         string // name, category, publisher, created_at, updated_at (default: name)
+	Order          string // asc, desc (default: asc)
+}
+
+// MCPLibraryFilterData holds the distinct facet values surfaced by the filter
+// sidebar on the MCP library page. Populated via GetMCPLibraryFilterData.
+type MCPLibraryFilterData struct {
+	Categories      []string `json:"categories"`
+	ConnectionTypes []string `json:"connection_types"`
+	AuthTypes       []string `json:"auth_types"`
+	Tags            []string `json:"tags"`
+}
+
 // TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
 type TeamsQueryParams struct {
 	Limit      int
@@ -165,6 +189,11 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
+
+	// MCP library catalog (synced, read-only)
+	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
+	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
+	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
 
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error

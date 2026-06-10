@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -69,6 +70,9 @@ func NewMCPHandler(mcpManager MCPManager, governanceManager GovernanceManager, c
 // RegisterRoutes registers all MCP-related routes
 func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/mcp/clients", lib.ChainMiddlewares(h.getMCPClients, middlewares...))
+	r.GET("/api/mcp/library", lib.ChainMiddlewares(h.getMCPLibrary, middlewares...))
+	r.GET("/api/mcp/library/filterdata", lib.ChainMiddlewares(h.getMCPLibraryFilterData, middlewares...))
+	r.POST("/api/mcp/library/force-sync", lib.ChainMiddlewares(h.forceSyncMCPLibrary, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
@@ -110,6 +114,132 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	searchStr := string(ctx.QueryArgs().Peek("search"))
 
 	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
+}
+
+// getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
+// listing of the synced MCP server catalog. All query parameters are optional.
+func (h *MCPHandler) getMCPLibrary(ctx *fasthttp.RequestCtx) {
+	emptyResponse := map[string]interface{}{
+		"servers":     []configstoreTables.TableMCPLibrary{},
+		"count":       0,
+		"total_count": 0,
+		"limit":       0,
+		"offset":      0,
+	}
+	if h.store.ConfigStore == nil {
+		SendJSON(ctx, emptyResponse)
+		return
+	}
+
+	params := configstore.MCPLibraryQueryParams{
+		Search:          string(ctx.QueryArgs().Peek("search")),
+		Categories:      parseCommaSeparated(string(ctx.QueryArgs().Peek("category"))),
+		ConnectionTypes: parseCommaSeparated(string(ctx.QueryArgs().Peek("connection_type"))),
+		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
+		Tags:            parseCommaSeparated(string(ctx.QueryArgs().Peek("tags"))),
+		SortBy:          string(ctx.QueryArgs().Peek("sort_by")),
+		Order:           string(ctx.QueryArgs().Peek("order")),
+	}
+
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+	params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+
+	entries, totalCount, err := h.store.ConfigStore.GetMCPLibraryPaginated(ctx, params)
+	if err != nil {
+		logger.Error("failed to retrieve MCP library entries: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP library entries")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"servers":     entries,
+		"count":       len(entries),
+		"total_count": totalCount,
+		"limit":       params.Limit,
+		"offset":      params.Offset,
+	})
+}
+
+// getMCPLibraryFilterData handles GET /api/mcp/library/filterdata — returns the
+// distinct facet values (categories, connection types, auth types, tags) that
+// drive the MCP library filter sidebar.
+func (h *MCPHandler) getMCPLibraryFilterData(ctx *fasthttp.RequestCtx) {
+	emptyResponse := configstore.MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}
+	if h.store.ConfigStore == nil {
+		SendJSON(ctx, emptyResponse)
+		return
+	}
+
+	data, err := h.store.ConfigStore.GetMCPLibraryFilterData(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve MCP library filter data: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP library filter data")
+		return
+	}
+	SendJSON(ctx, data)
+}
+
+// forceSyncMCPLibrary handles POST /api/mcp/library/force-sync — triggers an
+// immediate sync of the MCP server library catalog from the configured source.
+// Mirrors ConfigHandler.forceSyncPricing → ForceReloadPricing.
+func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	var count int
+	var err error
+	if h.store.ModelCatalog != nil {
+		count, err = h.store.ModelCatalog.ForceReloadMCPLibrary(ctx)
+	} else {
+		// Resolve the effective MCP library URL from framework config (DB → file → default).
+		mcpLibraryURL := modelcatalog.DefaultMCPLibraryURL
+		if h.store.FrameworkConfig != nil && h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.MCPLibraryURL != nil {
+			if u := *h.store.FrameworkConfig.Pricing.MCPLibraryURL; u != "" {
+				mcpLibraryURL = u
+			}
+		}
+		count, err = modelcatalog.SyncMCPLibrary(ctx, mcpLibraryURL, h.store.ConfigStore)
+	}
+	if err != nil {
+		logger.Error("failed to sync MCP library: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to sync MCP library: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": fmt.Sprintf("MCP library sync completed, %d entries synced", count),
+	})
 }
 
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
