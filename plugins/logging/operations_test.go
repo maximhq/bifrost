@@ -99,7 +99,7 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 	}
 }
 
-func TestPreLLMHookSetsAppContextFromHeader(t *testing.T) {
+func TestPreLLMHookSetsAppContextFromDetectedApp(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close(context.Background())
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
@@ -109,7 +109,6 @@ func TestPreLLMHookSetsAppContextFromHeader(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app-context")
 	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
-		"x-bf-app":     "claude-code",
 		"user-agent":   "claude-cli/2.1.168 (external, cli)",
 		"x-bf-vk":      "vk-test",
 		"x-bf-user-id": "user-test",
@@ -128,6 +127,46 @@ func TestPreLLMHookSetsAppContextFromHeader(t *testing.T) {
 	}
 	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
 		t.Fatalf("app context = %q, want claude-code", got)
+	}
+}
+
+// TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader replays the header
+// shape the desktop agent stamps for a Claude Cowork request: Cowork's runtime
+// shares Claude Code's CLI User-Agent, so the logging plugin derives
+// claude-code for the context key. Header-based app enforcement (X-Bf-App)
+// lives in the enterprise agent policy plugin, which prefers the header over
+// this context key.
+func TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-cowork-context")
+	// Captured from the agent's MITM → GATEWAY forwarding of a Cowork request.
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent":                "claude-cli/2.1.170 (external, local-agent, agent-sdk/0.3.170)",
+		"anthropic-client-platform": "desktop_app",
+		"x-app":                     "cli",
+		"x-bf-app":                  "claude-cowork",
+		"x-bifrost-agent":           "bifrost-agent/0.1.0",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-opus-4-8",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code (derived from User-Agent)", got)
 	}
 }
 
@@ -156,6 +195,44 @@ func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
 
 	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
 		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+func TestPreLLMHookSetsAppContextFromCustomMapping(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `custom-wrapper/\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-custom-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "custom-wrapper/42",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "internal-claude-wrapper" {
+		t.Fatalf("app context = %q, want internal-claude-wrapper", got)
 	}
 }
 
