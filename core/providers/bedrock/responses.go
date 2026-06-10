@@ -2217,14 +2217,25 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					// setting it to default max tokens
 					tokenBudget = anthropic.MinimumReasoningMaxTokens
 				}
-				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && tokenBudget < anthropic.MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
-				}
 				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-						"type":          "enabled",
-						"budget_tokens": tokenBudget,
-					})
+					if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							"type": "adaptive",
+						})
+						// Preserve a co-present effort — these models support effort,
+						// and the budget is otherwise dropped.
+						if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+						}
+					} else {
+						if tokenBudget < anthropic.MinimumReasoningMaxTokens {
+							return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+						}
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							"type":          "enabled",
+							"budget_tokens": tokenBudget,
+						})
+					}
 				} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					minBudgetTokens := MinimumReasoningMaxTokens
 					modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -2297,7 +2308,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsOpus47Plus(bifrostReq.Model) {
+							} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Model) {
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -2339,9 +2350,13 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 				} else {
 					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-							"type": "disabled",
-						})
+						if !anthropic.IsFableFamily(bifrostReq.Model) {
+							// Fable/Mythos reject thinking:{type:"disabled"}; omit it
+							// entirely (adaptive thinking is always on for that family).
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+								"type": "disabled",
+							})
+						}
 					} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
