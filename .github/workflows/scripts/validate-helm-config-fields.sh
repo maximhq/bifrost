@@ -656,12 +656,22 @@ bifrost:
       enabled: true
       config:
         service_name: "bifrost-dd"
+        ml_app: "bifrost-ml"
         agent_addr: "dd-agent:8126"
+        dogstatsd_addr: "dd-agent:8125"
         env: "staging"
         version: "1.0.0"
         custom_tags:
           team: "platform"
+        enable_metrics: true
         enable_traces: true
+        enable_llm_obs: true
+        disable_content_logging: false
+        agentless: true
+        api_key: "env.DD_API_KEY"
+        site: "datadoghq.com"
+        request_headers:
+          - "x-bf-session-id"
     custom:
       - name: "my-plugin"
         enabled: true
@@ -727,11 +737,20 @@ assert_field_value 'plugins: otel insecure' '.plugins.[5].config.insecure' 'true
 # Datadog plugin
 assert_field_value 'plugins: datadog name' '.plugins.[6].name' '"datadog"'
 assert_field_value 'plugins: datadog service_name' '.plugins.[6].config.service_name' '"bifrost-dd"'
+assert_field_value 'plugins: datadog ml_app' '.plugins.[6].config.ml_app' '"bifrost-ml"'
 assert_field_value 'plugins: datadog agent_addr' '.plugins.[6].config.agent_addr' '"dd-agent:8126"'
+assert_field_value 'plugins: datadog dogstatsd_addr' '.plugins.[6].config.dogstatsd_addr' '"dd-agent:8125"'
 assert_field_value 'plugins: datadog env' '.plugins.[6].config.env' '"staging"'
 assert_field_value 'plugins: datadog version' '.plugins.[6].config.version' '"1.0.0"'
 assert_field 'plugins: datadog custom_tags' '.plugins.[6].config.custom_tags'
+assert_field_value 'plugins: datadog enable_metrics' '.plugins.[6].config.enable_metrics' 'true'
 assert_field_value 'plugins: datadog enable_traces' '.plugins.[6].config.enable_traces' 'true'
+assert_field_value 'plugins: datadog enable_llm_obs' '.plugins.[6].config.enable_llm_obs' 'true'
+assert_field_value 'plugins: datadog disable_content_logging' '.plugins.[6].config.disable_content_logging' 'false'
+assert_field_value 'plugins: datadog agentless' '.plugins.[6].config.agentless' 'true'
+assert_field_value 'plugins: datadog api_key' '.plugins.[6].config.api_key' '"env.DD_API_KEY"'
+assert_field_value 'plugins: datadog site' '.plugins.[6].config.site' '"datadoghq.com"'
+assert_field 'plugins: datadog request_headers' '.plugins.[6].config.request_headers'
 
 # Custom plugin
 assert_field_value 'plugins: custom name' '.plugins.[7].name' '"my-plugin"'
