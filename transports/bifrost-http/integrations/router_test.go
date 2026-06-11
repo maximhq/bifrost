@@ -49,8 +49,6 @@ func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
 		Message:    `{"action":"rewrite"}`,
 		Timestamp:  1781147283369,
 	}}
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, wantLogs)
-
 	done := make(chan []schemas.PluginLogEntry, 1)
 	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func(logs []schemas.PluginLogEntry) {
 		done <- logs
@@ -71,6 +69,14 @@ func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
 		stream,
 		func() {},
 	)
+
+	slot, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(interface {
+		Store(any)
+	})
+	require.True(t, ok)
+	slot.Store(func() ([]schemas.PluginLogEntry, error) {
+		return wantLogs, nil
+	})
 
 	select {
 	case gotLogs := <-done:
