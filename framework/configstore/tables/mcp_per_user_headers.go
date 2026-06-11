@@ -104,14 +104,7 @@ func (c *TableMCPPerUserHeaderCredential) BeforeSave(tx *gorm.DB) error {
 	if c.HeadersJSON == "" {
 		c.HeadersJSON = "{}"
 	}
-	if VaultIsEnabled() && c.HeadersJSON != "{}" {
-		path := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ID,
-			tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON"))
-		if err := vaultString(tx.Statement.Context, path, &c.HeadersJSON); err != nil {
-			return fmt.Errorf("failed to vault mcp per-user header credential headers: %w", err)
-		}
-		c.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if err := encryptString(&c.HeadersJSON); err != nil {
 			return fmt.Errorf("failed to encrypt mcp per-user header credential headers: %w", err)
 		}
@@ -122,14 +115,7 @@ func (c *TableMCPPerUserHeaderCredential) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind decrypts HeadersJSON when the row is marked encrypted.
 func (c *TableMCPPerUserHeaderCredential) AfterFind(tx *gorm.DB) error {
-	switch c.EncryptionStatus {
-	case EncryptionStatusVault:
-		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
-			if err := resolveVaultString(tx.Statement.Context, &c.HeadersJSON); err != nil {
-				return fmt.Errorf("failed to resolve vault mcp per-user header credential headers: %w", err)
-			}
-		}
-	case EncryptionStatusEncrypted:
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&c.HeadersJSON); err != nil {
 			return fmt.Errorf("failed to decrypt mcp per-user header credential headers: %w", err)
 		}
