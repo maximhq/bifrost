@@ -94,6 +94,7 @@ type TestScenarios struct {
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
 	Compaction                   bool // Server-side compaction (context management)
+	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
 	InterleavedThinking          bool // Interleaved thinking between tool calls (beta)
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
 	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
@@ -136,6 +137,7 @@ type ComprehensiveTestConfig struct {
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
+	ExternalCompactionModel  string                 // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")

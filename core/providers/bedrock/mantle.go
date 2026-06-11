@@ -14,9 +14,9 @@ import (
 )
 
 // isMantleModel reports whether a model should be routed via the Bedrock Mantle endpoint.
-// Accepts "gpt-oss-120b", "openai.gpt-oss-120b", or region-prefixed variants.
+// Accepts "gpt-*", "openai.gpt-*", or region-prefixed variants.
 func isMantleModel(model string) bool {
-	return strings.Contains(model, "gpt-oss")
+	return strings.Contains(model, "gpt-")
 }
 
 // mantleURL builds the Bedrock Mantle endpoint URL for the given region and API path.

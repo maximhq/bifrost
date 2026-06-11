@@ -78,6 +78,24 @@ Skip key selection entirely and pass an empty key to the provider. Useful for pr
 bfCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 ```
 
+### Direct Key
+
+Supply a raw provider API key to use directly, bypassing the registered key pool. Set `BifrostContextKeyDirectKey` to a `schemas.Key` and Bifrost uses it as-is — there is no flag to enable in the SDK (the gateway's `allow_direct_keys` setting only gates the HTTP header path that populates this same key).
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+    ID:     "caller-provided",
+    Name:   "caller-provided",
+    Value:  schemas.EnvVar{Val: "sk-your-real-openai-key"},
+    Models: []string{},
+    Weight: 1.0,
+})
+```
+
+<Warning>
+A direct key bypasses the **key pool** (no weighted selection, no rotation or fallback, no per-key model restrictions) — the key is used exactly as supplied. It does **not** bypass governance: if a virtual key (`BifrostContextKeyVirtualKey`) is set alongside it, that key's budgets, rate limits, allow-lists, and routing are still enforced. Prefer [API Key Selection](#api-key-selection) when you want to reference a Bifrost-managed key instead of passing the secret.
+</Warning>
+
 ### Session Stickiness (Session ID)
 
 Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
@@ -344,6 +362,7 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier for governance |
 | `BifrostContextKeyAPIKeyName` | `string` | Set | Explicit API key name selection |
 | `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
+| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Use a caller-supplied raw provider key directly, bypassing the key pool |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |

@@ -32,6 +32,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
+		&tables.TableModelConfig{},
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
@@ -639,6 +640,178 @@ func TestDeleteVirtualKey(t *testing.T) {
 
 	_, err = store.GetVirtualKey(ctx, "vk-delete")
 	assert.Error(t, err, "Should not find deleted virtual key")
+}
+
+func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-scoped",
+		Name:     "Scoped VK",
+		Value:    "vk-scoped-value",
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	budget := &tables.TableBudget{ID: "b-scoped", MaxLimit: 100, ResetDuration: "1h"}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+	rateLimit := &tables.TableRateLimit{
+		ID:                 "rl-scoped",
+		TokenMaxLimit:      schemas.Ptr(int64(1000)),
+		TokenResetDuration: schemas.Ptr("1h"),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, rateLimit))
+
+	mc := &tables.TableModelConfig{
+		ID:          "mc-scoped",
+		ModelName:   "gpt-4",
+		Scope:       tables.ModelConfigScopeVirtualKey,
+		ScopeID:     schemas.Ptr(vk.ID),
+		BudgetID:    &budget.ID,
+		RateLimitID: &rateLimit.ID,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	// Sanity: the scoped config exists before deletion.
+	_, err := store.GetModelConfigByID(ctx, "mc-scoped")
+	require.NoError(t, err)
+
+	// Deleting the VK must cascade-clean its scoped model config and owned budget/rate-limit.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	_, err = store.GetModelConfigByID(ctx, "mc-scoped")
+	assert.Error(t, err, "scoped model config should be deleted with the VK")
+
+	var budgetCount int64
+	require.NoError(t, store.DB().Model(&tables.TableBudget{}).Where("id = ?", "b-scoped").Count(&budgetCount).Error)
+	assert.Equal(t, int64(0), budgetCount, "owned budget should be deleted")
+
+	var rlCount int64
+	require.NoError(t, store.DB().Model(&tables.TableRateLimit{}).Where("id = ?", "rl-scoped").Count(&rlCount).Error)
+	assert.Equal(t, int64(0), rlCount, "owned rate limit should be deleted")
+}
+
+// TestDeleteVirtualKey_CleansUpMultiBudgetScopedModelConfigs is a regression test for a
+// leak where DeleteVirtualKey cleaned only the legacy single BudgetID column and ignored
+// the modern multi-budget rows owned via TableBudget.ModelConfigID. Those budgets carry no
+// virtual_key_id, so the VK's own budget sweep didn't catch them either — they orphaned.
+func TestDeleteVirtualKey_CleansUpMultiBudgetScopedModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-multibudget",
+		Name:     "MultiBudget VK",
+		Value:    "vk-multibudget-value",
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	rateLimit := &tables.TableRateLimit{
+		ID:                 "rl-mb",
+		TokenMaxLimit:      schemas.Ptr(int64(1000)),
+		TokenResetDuration: schemas.Ptr("1h"),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, rateLimit))
+
+	mc := &tables.TableModelConfig{
+		ID:          "mc-multibudget",
+		ModelName:   "gpt-4",
+		Scope:       tables.ModelConfigScopeVirtualKey,
+		ScopeID:     schemas.Ptr(vk.ID),
+		RateLimitID: &rateLimit.ID,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	// Modern budgets are owned via ModelConfigID (no virtual_key_id), mirroring how the
+	// governance handler creates them.
+	mbBudgetIDs := []string{"b-mb-1", "b-mb-2"}
+	for _, id := range mbBudgetIDs {
+		require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+			ID:            id,
+			MaxLimit:      100,
+			ResetDuration: "1h",
+			ModelConfigID: &mc.ID,
+		}))
+	}
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	_, err := store.GetModelConfigByID(ctx, "mc-multibudget")
+	assert.Error(t, err, "scoped model config should be deleted with the VK")
+
+	for _, id := range mbBudgetIDs {
+		var count int64
+		require.NoError(t, store.DB().Model(&tables.TableBudget{}).Where("id = ?", id).Count(&count).Error)
+		assert.Equal(t, int64(0), count, "modern model-config budget %s should be deleted, not orphaned", id)
+	}
+
+	var rlCount int64
+	require.NoError(t, store.DB().Model(&tables.TableRateLimit{}).Where("id = ?", "rl-mb").Count(&rlCount).Error)
+	assert.Equal(t, int64(0), rlCount, "owned rate limit should be deleted")
+}
+
+// TestCreateModelConfig_RejectsMissingScopeOwner verifies the scope-owner lock in
+// CreateModelConfig: a virtual_key-scoped config whose scope_id points at a non-existent
+// VK is rejected (ErrNotFound) rather than created as an orphan. This is the guard that
+// closes the CreateModelConfig↔DeleteVirtualKey race.
+func TestCreateModelConfig_RejectsMissingScopeOwner(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	mc := &tables.TableModelConfig{
+		ID:        "mc-orphan",
+		ModelName: "gpt-4",
+		Scope:     tables.ModelConfigScopeVirtualKey,
+		ScopeID:   schemas.Ptr("vk-does-not-exist"),
+	}
+	err := store.CreateModelConfig(ctx, mc)
+	assert.ErrorIs(t, err, ErrNotFound, "creating a VK-scoped config for a missing VK should be rejected")
+
+	_, getErr := store.GetModelConfigByID(ctx, "mc-orphan")
+	assert.Error(t, getErr, "rejected config must not have been persisted")
+}
+
+func TestDeleteProvider_CleansUpProviderModelConfigs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	require.NoError(t, store.DB().Create(&tables.TableProvider{Name: "openai", CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableBudget{ID: "pb", MaxLimit: 100, ResetDuration: "1M", LastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&tables.TableRateLimit{ID: "prl", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), TokenLastReset: now, RequestLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+
+	providerName := "openai"
+	mc := &tables.TableModelConfig{
+		ID:          "mc-wildcard",
+		ModelName:   tables.ModelConfigAllModels,
+		Provider:    &providerName,
+		Scope:       tables.ModelConfigScopeGlobal,
+		BudgetID:    schemas.Ptr("pb"),
+		RateLimitID: schemas.Ptr("prl"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	require.NoError(t, store.CreateModelConfig(ctx, mc))
+
+	require.NoError(t, store.DeleteProvider(ctx, schemas.ModelProvider("openai")))
+
+	// The provider's wildcard model config and its owned budget/rate-limit are cleaned up.
+	_, err := store.GetModelConfigByID(ctx, "mc-wildcard")
+	assert.Error(t, err, "provider-scoped model config should be deleted with the provider")
+	for _, q := range []struct {
+		model any
+		id    string
+		label string
+	}{
+		{&tables.TableBudget{}, "pb", "budget"},
+		{&tables.TableRateLimit{}, "prl", "rate limit"},
+	} {
+		var count int64
+		require.NoError(t, store.DB().Model(q.model).Where("id = ?", q.id).Count(&count).Error)
+		assert.Equal(t, int64(0), count, "owned "+q.label+" should be deleted")
+	}
 }
 
 // =============================================================================

@@ -228,6 +228,7 @@
                   "features/governance/virtual-keys",
                   "features/governance/routing",
                   "features/governance/budget-and-limits",
+                  "features/governance/model-limits",
                   "features/governance/mcp-tools",
                   "features/governance/required-headers"
                 ]
@@ -585,6 +586,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.5.11",
+              "changelogs/v1.5.10",
+              "changelogs/v1.5.9",
               "changelogs/v1.5.8",
               {
                 "group": "May 2026",
@@ -761,6 +765,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.4.8",
+              "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
               "changelogs/ent-v1.4.6",
               "changelogs/ent-v1.4.5",
@@ -823,6 +829,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.21",
               "changelogs/helm-v2.1.20",
               "changelogs/helm-v2.1.19",
               "changelogs/helm-v2.1.18",

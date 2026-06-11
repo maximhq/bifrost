@@ -111,6 +111,41 @@ func TestBifrostResponsesResponseUnmarshalTimestamps(t *testing.T) {
 	})
 }
 
+// TestResponsesMessageContentEmptyMarshalsToEmptyString verifies that empty
+// content serializes as "" rather than null, since the OpenAI Responses API
+// rejects null content.
+func TestResponsesMessageContentEmptyMarshalsToEmptyString(t *testing.T) {
+	encoded, err := MarshalSorted(ResponsesMessageContent{})
+	if err != nil {
+		t.Fatalf("marshal empty content: %v", err)
+	}
+	if string(encoded) != `""` {
+		t.Fatalf("expected empty content to marshal to \"\", got %s", encoded)
+	}
+
+	str := "hello"
+	encodedStr, err := MarshalSorted(ResponsesMessageContent{ContentStr: &str})
+	if err != nil {
+		t.Fatalf("marshal string content: %v", err)
+	}
+	if string(encodedStr) != `"hello"` {
+		t.Fatalf("expected string content to round-trip, got %s", encodedStr)
+	}
+
+	role := ResponsesInputMessageRoleUser
+	msg := ResponsesMessage{Role: &role, Content: &ResponsesMessageContent{}}
+	encodedMsg, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal message with empty content: %v", err)
+	}
+	if strings.Contains(string(encodedMsg), `"content":null`) {
+		t.Fatalf("expected no null content in message, got %s", encodedMsg)
+	}
+	if !strings.Contains(string(encodedMsg), `"content":""`) {
+		t.Fatalf("expected empty-string content in message, got %s", encodedMsg)
+	}
+}
+
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	raw := []byte(`{"id":"msg_123","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"}`)
 

@@ -22,6 +22,7 @@
 - feat: add x-bf-api-key-id header support for explicit key selection by ID, with priority over x-bf-api-key name selection
 - fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
 - fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
+- fix: VK budget quota & reload (rotate) APIs now hydrate governance data (model configs and budgets) before returning, so budget information is accurate instead of missing or stale; added proper error handling when fetching model config during hydration
 
 ## Migration Guide
 

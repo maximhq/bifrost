@@ -2,10 +2,6 @@ package otel
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
-	"os"
 
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
@@ -24,33 +20,15 @@ type OtelClientGRPC struct {
 // NewOtelClientGRPC creates a new OpenTelemetry client for gRPC
 func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert string, insecureMode bool) (*OtelClientGRPC, error) {
 	var creds credentials.TransportCredentials
-	// TLS priority: custom CA > system roots > insecure
-	if tlsCACert != "" {
-		// Validate the CA cert path to prevent path traversal attacks
-		if err := validateCACertPath(tlsCACert); err != nil {
-			return nil, err
-		}
-		// Use custom CA certificate with MinVersion
-		caCert, err := os.ReadFile(tlsCACert)
-		if err != nil {
-			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("fail to parse provided CA cert")
-		}
-		tlsConfig := &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}
-		creds = credentials.NewTLS(tlsConfig)
-	} else if insecureMode {
-		// Skip TLS entirely
+
+	// gRPC insecure mode uses plaintext (no TLS at all), not just skip-verify.
+	// buildTLSConfig is bypassed here to preserve that behaviour.
+	if tlsCACert == "" && insecureMode {
 		creds = insecure.NewCredentials()
 	} else {
-		// Use system root CAs with MinVersion
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+		tlsConfig, err := buildTLSConfig(tlsCACert, false)
+		if err != nil {
+			return nil, err
 		}
 		creds = credentials.NewTLS(tlsConfig)
 	}

@@ -1,3 +1,4 @@
+import { BudgetDisplay } from "@/components/budgetDisplay";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -22,11 +23,12 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { resetDurationLabels } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useGetVirtualKeyQuery,
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
@@ -34,6 +36,7 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Link } from "@tanstack/react-router";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -51,8 +54,10 @@ import {
 	RotateCcw,
 	Search,
 	ShieldCheck,
+	ScrollText,
 	Trash2,
 } from "lucide-react";
+import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
@@ -101,26 +106,7 @@ function downloadCSV(content: string) {
 
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { displayBudgets } = useVirtualKeyUsage(vk);
-
-	if (!displayBudgets || displayBudgets.length === 0) {
-		return <span className="text-muted-foreground text-sm">-</span>;
-	}
-
-	return (
-		<div className="flex flex-col gap-0.5">
-			{displayBudgets.map((b, idx) => (
-				<div key={idx} className="flex flex-col">
-					<span className={cn("font-mono text-sm", b.current_usage >= b.max_limit && "text-red-400")}>
-						{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
-					</span>
-					<span className="text-muted-foreground text-xs">
-						Resets {formatResetDuration(b.reset_duration)}
-						{vk.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
-					</span>
-				</div>
-			))}
-		</div>
-	);
+	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
@@ -232,6 +218,16 @@ function VKActionsMenu({
 						Edit
 					</DropdownMenuItem>
 					<DropdownMenuItem
+						asChild
+						className="cursor-pointer"
+						data-testid={`vk-view-logs-btn-${vk.name}`}
+					>
+						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
+							<ScrollText className="h-4 w-4" />
+							View logs
+						</Link>
+					</DropdownMenuItem>
+					<DropdownMenuItem
 						variant="destructive"
 						className="cursor-pointer"
 						disabled={!hasDeleteAccess || isManagedByProfile}
@@ -335,10 +331,22 @@ export default function VirtualKeysTable({
 		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
 		[editingVirtualKeyId, virtualKeys],
 	);
-	const selectedVirtualKey = useMemo(
+	const selectedVkInList = useMemo(
 		() => (selectedVkId ? (virtualKeys.find((vk) => vk.id === selectedVkId) ?? null) : null),
 		[selectedVkId, virtualKeys],
 	);
+	// Deep-link support: another page (e.g. Model Limits) can open a VK via ?vk=<id>.
+	// The target may not be on the current page/filter, so fetch it by id as a fallback.
+	const [vkParam, setVkParam] = useQueryState("vk");
+	const needsVkFetch = !!selectedVkId && !selectedVkInList;
+	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", { skip: !needsVkFetch });
+	const selectedVirtualKey = selectedVkInList ?? (needsVkFetch ? (fetchedVkData?.virtual_key ?? null) : null);
+
+	useEffect(() => {
+		if (!vkParam) return;
+		onSelectedVkChange(vkParam);
+		setVkParam(null); // consume the param; selection is held in parent state from here
+	}, [vkParam, setVkParam, onSelectedVkChange]);
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);

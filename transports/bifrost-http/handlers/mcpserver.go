@@ -276,31 +276,17 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 	h.syncServer(h.globalMCPServer, availableTools, nil)
 	logger.Debug("Synced global MCP server with %d tools", len(availableTools))
 
-	// initialize vkMCPServers map
-	if h.config.ConfigStore != nil {
-		virtualKeys, err := h.config.ConfigStore.GetVirtualKeys(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get virtual keys: %w", err)
-		}
-		h.vkMCPServers = make(map[string]*server.MCPServer)
-		for i := range virtualKeys {
-			vk := &virtualKeys[i]
-			vkServer := server.NewMCPServer(
-				vk.Name,
-				version,
-				server.WithToolCapabilities(true),
-			)
-			server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
-			h.vkMCPServers[vk.Value] = vkServer
-			availableTools, toolFilter := h.fetchToolsForVK(vk)
-			h.syncServer(h.vkMCPServers[vk.Value], availableTools, toolFilter)
-			logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
-		}
-	}
+	// Per-VK MCP servers are created lazily on first request (see
+	// getMCPServerForRequest / ensureVKMCPServer) rather than eagerly here.
+	// Building one server per virtual key previously scaled O(number of keys)
+	// and stalled startup with large key counts (100k+). Resetting the map
+	// invalidates any cached servers so they are rebuilt with the latest tool
+	// configuration on next use.
+	h.vkMCPServers = make(map[string]*server.MCPServer)
 	return nil
 }
 
-func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
+func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.MCPServer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	vkServer, ok := h.vkMCPServers[vk.Value]
@@ -318,6 +304,7 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
 	h.syncServer(vkServer, availableTools, toolFilter)
 	h.vkMCPServers[vk.Value] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
+	return vkServer
 }
 
 func (h *MCPServerHandler) DeleteVKMCPServer(vkValue string) {
@@ -560,9 +547,6 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 // Utility methods
 
 func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	h.config.Mu.RLock()
 	enforceVK := h.config.ClientConfig.EnforceAuthOnInference
 	h.config.Mu.RUnlock()
@@ -579,11 +563,35 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, or x-api-key in your MCP client config")
 	}
 
+	// Fast path: a per-VK server already exists in the cache.
+	h.mu.RLock()
 	vkServer, ok := h.vkMCPServers[vk]
-	if !ok {
+	h.mu.RUnlock()
+	if ok {
+		return vkServer, nil
+	}
+
+	// Slow path: build the per-VK server lazily on first use.
+	return h.ensureVKMCPServer(ctx, vk)
+}
+
+// ensureVKMCPServer lazily builds and caches the MCP server for a virtual key on
+// first use, looking the key up by value via the config store. Per-VK servers
+// are no longer created eagerly at startup, so the first MCP request for a given
+// key materializes it here. Returns "virtual key not found" if the value does
+// not resolve to a known virtual key (or no config store is configured).
+func (h *MCPServerHandler) ensureVKMCPServer(ctx context.Context, vkValue string) (*server.MCPServer, error) {
+	if h.config.ConfigStore == nil {
 		return nil, fmt.Errorf("virtual key not found")
 	}
-	return vkServer, nil
+	vk, err := h.config.ConfigStore.GetVirtualKeyByValue(ctx, vkValue)
+	if err != nil || vk == nil {
+		return nil, fmt.Errorf("virtual key not found")
+	}
+	// SyncVKMCPServer creates (or refreshes) and caches the server under the
+	// handler write lock, returning the live server so a concurrent
+	// SyncAllMCPServers cannot wipe the map out from under us before we read it.
+	return h.SyncVKMCPServer(vk), nil
 }
 
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {

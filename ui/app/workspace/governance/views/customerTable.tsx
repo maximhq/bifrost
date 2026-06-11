@@ -21,12 +21,14 @@ import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
+import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import CustomerSheet from "./customerSheet";
 import { CustomersEmptyState } from "./customersEmptyState";
+import CustomerSheet from "./customerSheet";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -66,13 +68,30 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					disabled={!canUpdate}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
+						e.stopPropagation();
 						e.preventDefault();
 						onEdit(customer);
 						setIsOpen(false);
 					}}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Edit className="h-4 w-4" />
 					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
+					<Link
+						to="/workspace/logs"
+						search={{ customer_ids: [customer.id] }}
+						onClick={(e) => {
+							e.stopPropagation();
+							setIsOpen(false);
+						}}
+						onPointerDown={(e) => e.stopPropagation()}
+					>
+						<ScrollText className="h-4 w-4" />
+						View logs
+					</Link>
 				</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
@@ -83,6 +102,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						onDelete(customer);
 						setIsOpen(false);
 					}}
+					onClick={(e) => e.stopPropagation()}
+					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
@@ -122,6 +143,7 @@ export default function CustomersTable({
 	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
+	const [viewingCustomer, setViewingCustomer] = useState<Customer | null>(null);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -198,6 +220,14 @@ export default function CustomersTable({
 					onSuccess={handleCustomerSaved}
 				/>
 
+				<CustomerDetailSheet
+					open={!!viewingCustomer}
+					onOpenChange={(open) => {
+						if (!open) setViewingCustomer(null);
+					}}
+					customer={viewingCustomer}
+				/>
+
 				<div className="flex flex-col grow">
 					<div className="flex items-center justify-between mb-4">
 						<div>
@@ -248,15 +278,11 @@ export default function CustomersTable({
 										const customerTeams = getTeamsForCustomer(customer.id);
 										const vks = getVirtualKeysForCustomer(customer.id);
 
-										// Budget calculations
-										const isBudgetExhausted =
-											customer.budget?.max_limit &&
-											customer.budget.max_limit > 0 &&
-											customer.budget.current_usage >= customer.budget.max_limit;
-										const budgetPercentage =
-											customer.budget?.max_limit && customer.budget.max_limit > 0
-												? Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)
-												: 0;
+										// Budget calculations (most-exhausted budget drives the row highlight)
+										const budgets = customer.budgets ?? [];
+										const isBudgetExhausted = budgets.some(
+											(b) => b.max_limit > 0 && b.current_usage >= b.max_limit,
+										);
 
 										// Rate limit calculations
 										const isTokenLimitExhausted =
@@ -283,7 +309,20 @@ export default function CustomersTable({
 											<TableRow
 												key={customer.id}
 												data-testid={`customer-row-${customer.name}`}
-												className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
+												className={cn(
+													"group cursor-pointer transition-colors",
+													isExhausted ? "bg-red-500/5 hover:bg-red-500/10" : "hover:bg-muted/50",
+												)}
+												role="button"
+												tabIndex={0}
+												onClick={() => setViewingCustomer(customer)}
+												onKeyDown={(e) => {
+													if (e.target !== e.currentTarget) return;
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														setViewingCustomer(customer);
+													}
+												}}
 											>
 												<TableCell className="max-w-[200px] py-4">
 													<div className="flex flex-col gap-2">
@@ -312,38 +351,48 @@ export default function CustomersTable({
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
-													{customer.budget ? (
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<div className="space-y-2">
-																	<div className="flex items-center justify-between gap-4">
-																		<span className="font-medium">{formatCurrency(customer.budget.max_limit)}</span>
-																		<span className="text-muted-foreground text-xs">
-																			{formatResetDuration(customer.budget.reset_duration)}
-																		</span>
-																	</div>
-																	<Progress
-																		value={budgetPercentage}
-																		className={cn(
-																			"bg-muted/70 dark:bg-muted/30 h-1.5",
-																			isBudgetExhausted
-																				? "[&>div]:bg-red-500/70"
-																				: budgetPercentage > 80
-																					? "[&>div]:bg-amber-500/70"
-																					: "[&>div]:bg-emerald-500/70",
-																		)}
-																	/>
-																</div>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p className="font-medium">
-																	{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
-																</p>
-																<p className="text-primary-foreground/80 text-xs">
-																	Resets {formatResetDuration(customer.budget.reset_duration)}
-																</p>
-															</TooltipContent>
-														</Tooltip>
+													{budgets.length > 0 ? (
+														<div className="space-y-2">
+															{budgets.map((budget) => {
+																const pct = budget.max_limit > 0
+																	? Math.min((budget.current_usage / budget.max_limit) * 100, 100)
+																	: 0;
+																const exhausted = budget.max_limit > 0 && budget.current_usage >= budget.max_limit;
+																return (
+																	<Tooltip key={budget.id}>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1">
+																				<div className="flex items-center justify-between gap-4">
+																					<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
+																					<span className="text-muted-foreground text-xs">
+																						{formatResetDuration(budget.reset_duration)}
+																					</span>
+																				</div>
+																				<Progress
+																					value={pct}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1.5",
+																						exhausted
+																							? "[&>div]:bg-red-500/70"
+																							: pct > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
+																			</div>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				Resets {formatResetDuration(budget.reset_duration)}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																);
+															})}
+														</div>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
 													)}

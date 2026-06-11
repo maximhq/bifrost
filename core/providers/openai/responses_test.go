@@ -226,6 +226,81 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_ReasoningStringContent guards the Codex/GPT-5.5
+// replay path: a reasoning item can arrive with content as a string (notably an
+// empty "" round-tripped through the response path). OpenAI types reasoning.content
+// as an array of reasoning_text blocks and rejects a string with
+// "expected an array ... got a string", so the outbound conversion must drop the
+// empty string and promote a non-empty one to a reasoning_text block.
+func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
+	t.Run("empty string content is dropped", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		if c := result.Input.OpenAIResponsesRequestInputArray[0].Content; c != nil {
+			t.Errorf("expected reasoning Content to be dropped, got %#v", c)
+		}
+
+		// End-to-end: the marshalled request must not carry content:"" on the reasoning item.
+		out, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), `"content":""`) {
+			t.Errorf("reasoning item serialized with empty-string content: %s", string(out))
+		}
+	})
+
+	t.Run("non-empty string content becomes a reasoning_text block", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("thinking")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+		if c == nil || c.ContentStr != nil || len(c.ContentBlocks) != 1 {
+			t.Fatalf("expected a single content block, got %#v", c)
+		}
+		block := c.ContentBlocks[0]
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning ||
+			block.Text == nil || *block.Text != "thinking" {
+			t.Errorf("expected reasoning_text block with text %q, got %#v", "thinking", block)
+		}
+	})
+}
+
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name     string

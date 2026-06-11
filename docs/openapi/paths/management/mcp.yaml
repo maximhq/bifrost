@@ -79,6 +79,8 @@ clients:
     description: Returns a list of all configured MCP clients with their tools and connection state.
     tags:
       - MCP
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -106,6 +108,8 @@ client:
         application/json:
           schema:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client added successfully
@@ -142,6 +146,8 @@ client-by-id:
         application/json:
           schema:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client updated successfully
@@ -167,6 +173,8 @@ client-by-id:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client removed successfully
@@ -193,6 +201,8 @@ client-reconnect:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client reconnected successfully
@@ -224,6 +234,8 @@ client-complete-oauth:
         description: MCP client ID
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: MCP client connected successfully with OAuth
@@ -258,6 +270,8 @@ sessions:
       flow is suppressed to avoid duplicate entries.
     operationId: listMcpSessions
     tags: [MCP]
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Sessions visible to the caller
@@ -297,6 +311,8 @@ session-by-id:
         schema:
           type: string
         description: Session / credential / flow row ID
+    security:
+      - ManagementBearerAuth: []
     responses:
       '204':
         description: Revoked
@@ -335,6 +351,8 @@ session-reauth:
         schema:
           type: string
         description: Session row ID (OAuth token or header credential)
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Fresh flow opened
@@ -362,9 +380,7 @@ per-user-headers-flow:
       `/workspace/mcp-sessions/auth?flow=<id>&kind=headers` landing page to
       render the values form.
 
-      Authorization accepts either a dashboard session OR a short-lived
-      `mcp_headers_auth` temp token bound to the flow ID (carried in the URL
-      fragment by the auth-landing page link).
+      Requires management API authentication via `Authorization: Bearer <API key>`.
     operationId: getPerUserHeadersFlow
     tags: [MCP]
     parameters:
@@ -374,6 +390,8 @@ per-user-headers-flow:
         schema:
           type: string
         description: Flow row ID
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Flow detail
@@ -412,6 +430,8 @@ per-user-headers-flow:
         application/json:
           schema:
             $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Credential persisted
@@ -452,6 +472,8 @@ per-user-headers-credential:
         schema:
           type: string
         description: Credential row primary key
+    security:
+      - ManagementBearerAuth: []
     responses:
       '204':
         description: Revoked

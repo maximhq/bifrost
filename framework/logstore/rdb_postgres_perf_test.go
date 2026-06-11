@@ -183,8 +183,14 @@ func insertPerfMCPLog(t *testing.T, db *gorm.DB, opts mcpLogOpts) {
 // refreshTestMatViews refreshes materialized views after inserting test data.
 // This is needed because matviews are populated at creation time and don't
 // automatically reflect new inserts until explicitly refreshed.
+//
+// The refresh gate is reset first: it's a package-level singleton, so without a
+// reset a prior test leaves it initialized and the eventually-consistent
+// pg_stat_user_tables counter (which lags fresh INSERTs by a few seconds) can
+// make refreshMatViews short-circuit, leaving the matview stale for this test.
 func refreshTestMatViews(t *testing.T, db *gorm.DB) {
 	t.Helper()
+	resetTestMatViewRefreshGate()
 	ctx := context.Background()
 	err := refreshMatViews(ctx, db)
 	require.NoError(t, err, "Failed to refresh materialized views")
