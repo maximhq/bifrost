@@ -406,7 +406,7 @@ bifrost:
 ```
 
 <Note>
-When this block is present, it is reapplied from the generated `config.json` on restart. Runtime UI and API edits still hot-reload immediately, but Helm values remain the source of truth for the next rollout.
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, tier boundaries are replaced from the rendered `config.json`, while keyword lists are merged additively with stored runtime keywords (union with duplicates removed). Use `bifrost.governance.sourceOfTruth: config.json` only when Helm should replace stored governance state.
 </Note>
 
 ---

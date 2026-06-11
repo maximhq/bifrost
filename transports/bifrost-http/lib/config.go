@@ -2358,6 +2358,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	config.GovernanceConfig.PricingOverrides = append(governanceConfig.PricingOverrides, pricingOverridesToAdd...)
 	config.GovernanceConfig.ModelConfigs = append(governanceConfig.ModelConfigs, modelConfigsToAdd...)
 	config.GovernanceConfig.Providers = append(governanceConfig.Providers, providersToAdd...)
+	complexityAnalyzerConfigToUpdate := planComplexityAnalyzerConfigUpdate(config, configData)
 	// Update store with merged config items
 	hasChanges := len(budgetsToAdd) > 0 || len(budgetsToUpdate) > 0 ||
 		len(rateLimitsToAdd) > 0 || len(rateLimitsToUpdate) > 0 ||
@@ -2367,7 +2368,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
 		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0 ||
 		len(modelConfigsToAdd) > 0 || len(modelConfigsToUpdate) > 0 ||
-		len(providersToAdd) > 0 || len(providersToUpdate) > 0
+		len(providersToAdd) > 0 || len(providersToUpdate) > 0 ||
+		complexityAnalyzerConfigToUpdate != nil
+	if config.ConfigStore == nil && complexityAnalyzerConfigToUpdate != nil {
+		config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
+	}
 	if config.ConfigStore != nil && hasChanges {
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
@@ -2378,25 +2383,10 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			routingRulesToAdd, routingRulesToUpdate,
 			pricingOverridesToAdd, pricingOverridesToUpdate,
 			modelConfigsToAdd, modelConfigsToUpdate,
-			providersToAdd, providersToUpdate)
+			providersToAdd, providersToUpdate,
+			complexityAnalyzerConfigToUpdate)
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
-		}
-	}
-
-	// File config stays authoritative for analyzer tuning when present.
-	if configData.Governance.ComplexityAnalyzerConfig != nil {
-		normalized, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
-		if err != nil {
-			logger.Error("invalid complexity analyzer config in config file: %v", err)
-		} else if normalized != nil {
-			current := config.GovernanceConfig.ComplexityAnalyzerConfig
-			config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
-			if config.ConfigStore != nil && (current == nil || !reflect.DeepEqual(current, normalized)) {
-				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
-					logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
-				}
-			}
 		}
 	}
 
@@ -2419,6 +2409,86 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	if configData.isConfigJSONSourceOfTruth() {
 		pruneGovernanceConfigToFile(ctx, config, configData)
 	}
+}
+
+// planComplexityAnalyzerConfigUpdate applies config.json complexity analyzer
+// reconciliation rules and returns the next singleton config when it should be
+// persisted. Store writes happen in updateGovernanceConfigInStore with the rest
+// of the planned governance updates.
+//
+// In split mode, unchanged section hashes preserve runtime UI/API edits. When a
+// section changes in config.json, tier boundaries are replaced and keyword lists
+// are merged additively with the stored runtime lists.
+func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) *configstore.ComplexityAnalyzerConfig {
+	if config == nil || configData == nil || configData.Governance == nil || configData.Governance.ComplexityAnalyzerConfig == nil {
+		return nil
+	}
+	if config.GovernanceConfig == nil {
+		config.GovernanceConfig = &configstore.GovernanceConfig{}
+	}
+
+	fileConfig, fileHashes, ok := complexityAnalyzerConfigFromFile(configData)
+	if !ok {
+		return nil
+	}
+	current := config.GovernanceConfig.ComplexityAnalyzerConfig
+	if configData.isConfigJSONSourceOfTruth() {
+		if current != nil && reflect.DeepEqual(current, fileConfig) {
+			return nil
+		}
+		return fileConfig
+	}
+	if current != nil && current.ConfigHashes.Empty() {
+		normalized := current.Normalized()
+		normalized.ConfigHashes = fileHashes
+		logger.Debug("complexity analyzer config missing section hashes, backfilling without applying config file values")
+		if reflect.DeepEqual(current, &normalized) {
+			return nil
+		}
+		return &normalized
+	}
+	if current != nil && current.ConfigHashes.Equal(fileHashes) {
+		logger.Debug("complexity analyzer config section hashes match, keeping DB config")
+		return nil
+	}
+
+	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileConfig)
+	if err != nil {
+		logger.Warn("failed to merge complexity analyzer config from config file: %v", err)
+		return nil
+	}
+	if current != nil && reflect.DeepEqual(current, merged) {
+		return nil
+	}
+	return merged
+}
+
+// complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
+// returns the canonical section hashes used to detect whether config.json changed.
+func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.ComplexityAnalyzerConfig, configstore.ComplexityAnalyzerConfigHashes, bool) {
+	fileConfig, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
+	if err != nil {
+		logger.Error("invalid complexity analyzer config in config file: %v", err)
+		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
+	}
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	if err != nil {
+		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
+		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
+	}
+	fileConfig.ConfigHashes = fileHashes
+	return fileConfig, fileHashes, true
+}
+
+// mergeComplexityAnalyzerConfigFromFile uses defaults as the first split-mode
+// base so config.json seeds do not erase built-in keyword coverage.
+func mergeComplexityAnalyzerConfigFromFile(current, fileConfig *configstore.ComplexityAnalyzerConfig) (*configstore.ComplexityAnalyzerConfig, error) {
+	base := current
+	if base == nil {
+		defaults := complexity.DefaultAnalyzerConfig()
+		base = &defaults
+	}
+	return configstore.MergeComplexityAnalyzerConfigByHashes(base, fileConfig)
 }
 
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
@@ -2596,6 +2666,7 @@ func updateGovernanceConfigInStore(
 	modelConfigsToUpdate []configstoreTables.TableModelConfig,
 	providersToAdd []configstoreTables.TableProvider,
 	providersToUpdate []configstoreTables.TableProvider,
+	complexityAnalyzerConfigToUpdate *configstore.ComplexityAnalyzerConfig,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -2975,6 +3046,14 @@ func updateGovernanceConfigInStore(
 					provider.BudgetID,
 					provider.RateLimitID,
 				)
+			}
+		}
+
+		if complexityAnalyzerConfigToUpdate != nil {
+			if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, complexityAnalyzerConfigToUpdate, tx); err != nil {
+				logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+			} else {
+				config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
 			}
 		}
 
@@ -3453,6 +3532,11 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			if err != nil {
 				logger.Warn("invalid complexity analyzer config in config file: %v", err)
 			} else if normalized != nil {
+				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(normalized)
+				if err != nil {
+					return fmt.Errorf("failed to generate complexity analyzer config hashes: %w", err)
+				}
+				normalized.ConfigHashes = fileHashes
 				config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
 				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized, tx); err != nil {
 					return fmt.Errorf("failed to create complexity analyzer config: %w", err)
