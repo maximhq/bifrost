@@ -1,0 +1,30 @@
+name: tidy-gosum-and-governance-oneshot
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26.4' }
+      - name: go get governance@dev-sha + tidy
+        working-directory: transports
+        run: |
+          set -euo pipefail
+          DEV_SHA=$(git -C ../ ls-remote https://github.com/maximhq/bifrost.git dev | cut -f1)
+          echo "  upstream/dev tip: $DEV_SHA"
+          go get github.com/maximhq/bifrost/plugins/governance@${DEV_SHA} || true
+          go mod tidy
+      - name: commit + push
+        run: |
+          set -euo pipefail
+          git config user.name 'fork-bot'
+          git config user.email 'fork-bot@users.noreply.github.com'
+          if ! git diff --quiet transports/go.mod transports/go.sum; then
+            git add transports/go.mod transports/go.sum
+            git commit -m "chore(transports): go mod tidy + bump governance to dev pseudo-version"
+            git push
+          fi
