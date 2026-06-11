@@ -44,6 +44,15 @@ type ModelCatalog struct {
 	syncCancel context.CancelFunc
 	done       chan struct{}
 	wg         sync.WaitGroup
+
+	// MCP library sync state. mcpLibraryURL is the configured catalog endpoint
+	// (empty → DefaultMCPLibraryURL). syncMu serializes reads/writes of the URL
+	// AND advances of lastMCPLibrarySyncedAt; the latter is consumed by the
+	// admin API to expose "last sync at" telemetry. All three are read-back
+	// through getMCPLibraryURL / ForceReloadMCPLibrary in mcp_library_sync.go.
+	mcpLibraryURL          string
+	syncMu                 sync.RWMutex
+	lastMCPLibrarySyncedAt time.Time
 }
 
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {

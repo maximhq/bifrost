@@ -77,6 +77,13 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 			if e.Name == "" {
 				continue // skip malformed entries
 			}
+			// Catalog rows are keyed by a slug derived from Name (per the
+			// MCPLibraryEntry doc comment above). Derive once, use as both
+			// the dedup key and the persisted TableMCPLibrary.Slug.
+			slug := Slugify(e.Name)
+			if slug == "" {
+				continue // empty after slugification (e.g. punctuation-only name)
+			}
 			if seen[slug] {
 				continue // deduplicate within the payload
 			}
