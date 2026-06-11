@@ -27,14 +27,7 @@ func (TableVectorStoreConfig) TableName() string { return "config_vector_store" 
 
 // BeforeSave hook to encrypt sensitive config
 func (vs *TableVectorStoreConfig) BeforeSave(tx *gorm.DB) error {
-	if VaultIsEnabled() && vs.Config != nil && *vs.Config != "" {
-		fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Config")
-		path := fmt.Sprintf("%s/%s/%s", VaultPrefix(), vs.TableName(), fieldName)
-		if err := vaultString(tx.Statement.Context, path, vs.Config); err != nil {
-			return fmt.Errorf("failed to vault vector store config: %w", err)
-		}
-		vs.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && vs.Config != nil && *vs.Config != "" {
+	if encrypt.IsEnabled() && vs.Config != nil && *vs.Config != "" {
 		if err := encryptString(vs.Config); err != nil {
 			return fmt.Errorf("failed to encrypt vector store config: %w", err)
 		}
@@ -45,28 +38,10 @@ func (vs *TableVectorStoreConfig) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind hook to decrypt sensitive config
 func (vs *TableVectorStoreConfig) AfterFind(tx *gorm.DB) error {
-	if vs.Config != nil && *vs.Config != "" {
-		switch vs.EncryptionStatus {
-		case EncryptionStatusVault:
-			if err := resolveVaultString(tx.Statement.Context, vs.Config); err != nil {
-				return fmt.Errorf("failed to resolve vault vector store config: %w", err)
-			}
-		case EncryptionStatusEncrypted:
-			if err := decryptString(vs.Config); err != nil {
-				return fmt.Errorf("failed to decrypt vector store config: %w", err)
-			}
+	if vs.EncryptionStatus == EncryptionStatusEncrypted && vs.Config != nil && *vs.Config != "" {
+		if err := decryptString(vs.Config); err != nil {
+			return fmt.Errorf("failed to decrypt vector store config: %w", err)
 		}
 	}
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (vs *TableVectorStoreConfig) AfterDelete(tx *gorm.DB) error {
-	if vs.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	fieldName := tx.Statement.DB.NamingStrategy.ColumnName("", "Config")
-	path := fmt.Sprintf("%s/%s/%s", VaultPrefix(), vs.TableName(), fieldName)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }
