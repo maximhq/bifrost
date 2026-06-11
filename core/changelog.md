@@ -1,0 +1,1 @@
+- [fix]: mistral custom providers can override request paths for all endpoints [@georg-wolflein](https://github.com/georg-wolflein)
