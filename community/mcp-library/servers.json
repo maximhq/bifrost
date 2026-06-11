@@ -23,7 +23,8 @@
         "files",
         "local",
         "storage"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/filesystem.png"
     },
     {
       "name": "GitHub (Remote)",
@@ -42,7 +43,8 @@
         "pull-requests",
         "ci-cd",
         "code"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/github_light.svg"
     },
     {
       "name": "GitHub (Local)",
@@ -75,7 +77,8 @@
         "ci-cd",
         "code",
         "docker"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/github_light.svg"
     },
     {
       "name": "Linear",
@@ -92,7 +95,8 @@
         "projects",
         "comments",
         "project-management"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/linear.svg"
     },
     {
       "name": "Notion",
@@ -109,7 +113,8 @@
         "wiki",
         "knowledge-base",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/notion.svg"
     },
     {
       "name": "Atlassian",
@@ -126,7 +131,8 @@
         "confluence",
         "compass",
         "project-management"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/atlassian.svg"
     },
     {
       "name": "Maxim",
@@ -153,7 +159,8 @@
         "datasets",
         "logs",
         "ai"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/maxim.png"
     },
     {
       "name": "Ahrefs",
@@ -170,7 +177,8 @@
         "backlinks",
         "keywords",
         "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/ahrefs.svg"
     },
     {
       "name": "Calendly",
@@ -187,7 +195,8 @@
         "calendar",
         "meetings",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/calendly.svg"
     },
     {
       "name": "Stripe",
@@ -205,7 +214,8 @@
         "invoices",
         "subscriptions",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/stripe.svg"
     },
     {
       "name": "Vercel",
@@ -223,7 +233,8 @@
         "logs",
         "hosting",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/vercel.svg"
     },
     {
       "name": "Netlify",
@@ -250,25 +261,17 @@
         "hosting",
         "cli",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/netlify.svg"
     },
     {
       "name": "Vanta",
-      "description": "Run the Vanta MCP server locally to retrieve compliance test results, manage security findings, review framework requirements, track vulnerabilities, and access controls, documents, integrations, and risk scenarios. Requires Vanta OAuth credentials.",
+      "description": "Connect AI tools to Vanta to retrieve compliance test results, manage security findings, review framework requirements, track vulnerabilities, and access controls, documents, integrations, and risk scenarios. Hosted remotely by Vanta.",
       "category": "Security",
-      "connection_type": "stdio",
-      "stdio_config": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@vantasdk/vanta-mcp-server"
-        ],
-        "envs": [
-          "VANTA_ENV_FILE"
-        ]
-      },
-      "auth_type": "none",
-      "docs_url": "https://github.com/VantaInc/vanta-mcp-server",
+      "connection_type": "http",
+      "connection_url": "https://mcp.vanta.com/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://help.vanta.com/en/articles/14094979-connecting-to-vanta-mcp",
       "publisher": "Vanta",
       "tags": [
         "vanta",
@@ -277,7 +280,8 @@
         "soc2",
         "iso27001",
         "vulnerabilities"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/vanta.png"
     },
     {
       "name": "Airtable",
@@ -288,6 +292,7 @@
       "auth_type": "oauth",
       "docs_url": "https://support.airtable.com/docs/using-the-airtable-mcp-server",
       "publisher": "Airtable",
+      "icon_url": "/images/mcp-servers/airtable.svg",
       "tags": [
         "airtable",
         "database",
@@ -312,7 +317,8 @@
         "bookings",
         "meetings",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/cal.svg"
     },
     {
       "name": "Asana",
@@ -329,7 +335,8 @@
         "projects",
         "workspaces",
         "project-management"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/asana-logo.svg"
     },
     {
       "name": "Canva",
@@ -346,7 +353,8 @@
         "assets",
         "exports",
         "comments"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/canva.svg"
     },
     {
       "name": "Cloudflare",
@@ -364,7 +372,8 @@
         "d1",
         "r2",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/cloudflare.svg"
     },
     {
       "name": "Figma",
@@ -373,7 +382,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.figma.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Dev-Mode-MCP-Server",
+      "docs_url": "https://developers.figma.com/docs/figma-mcp-server/",
       "publisher": "Figma",
       "tags": [
         "figma",
@@ -381,7 +390,8 @@
         "dev-mode",
         "files",
         "prototyping"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/figma.svg"
     },
     {
       "name": "HubSpot",
@@ -398,7 +408,8 @@
         "sales",
         "marketing",
         "contacts"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/hubspot.png"
     },
     {
       "name": "Neon",
@@ -415,7 +426,8 @@
         "database",
         "sql",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/neon.svg"
     },
     {
       "name": "Railway",
@@ -432,7 +444,8 @@
         "projects",
         "environments",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/railway.svg"
     },
     {
       "name": "Parallel",
@@ -441,7 +454,7 @@
       "connection_type": "http",
       "connection_url": "https://search.parallel.ai/mcp",
       "auth_type": "none",
-      "docs_url": "https://docs.parallel.ai/integrations/mcp-server",
+      "docs_url": "https://docs.parallel.ai/integrations/mcp/quickstart",
       "publisher": "Parallel",
       "tags": [
         "parallel",
@@ -449,7 +462,8 @@
         "web",
         "content-extraction",
         "research"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/parallel.png"
     },
     {
       "name": "Sentry",
@@ -466,7 +480,8 @@
         "debugging",
         "observability",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/sentry.svg"
     },
     {
       "name": "Slack",
@@ -475,7 +490,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.slack.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://docs.slack.dev/mcp",
+      "docs_url": "https://slack.com/intl/en-in/help/articles/48855576908307-Guide-to-the-Slack-MCP-server",
       "publisher": "Slack",
       "tags": [
         "slack",
@@ -483,7 +498,8 @@
         "channels",
         "communication",
         "collaboration"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/slack.svg"
     },
     {
       "name": "Supabase",
@@ -500,7 +516,8 @@
         "database",
         "auth",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/supabase.svg"
     },
     {
       "name": "GitLab",
@@ -518,7 +535,8 @@
         "merge-requests",
         "ci-cd",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/gitlab.svg"
     },
     {
       "name": "Todoist",
@@ -535,7 +553,8 @@
         "projects",
         "to-do",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/todoist.svg"
     },
     {
       "name": "PayPal",
@@ -552,7 +571,8 @@
         "invoicing",
         "subscriptions",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/paypal.svg"
     },
     {
       "name": "Monday",
@@ -569,7 +589,8 @@
         "projects",
         "workflows",
         "project-management"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/monday.png"
     },
     {
       "name": "Honeycomb",
@@ -586,7 +607,8 @@
         "tracing",
         "slo",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/honeycomb.png"
     },
     {
       "name": "Square",
@@ -603,7 +625,8 @@
         "merchants",
         "transactions",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/square.png"
     },
     {
       "name": "ClickUp",
@@ -620,7 +643,8 @@
         "docs",
         "projects",
         "project-management"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/clickup.svg"
     },
     {
       "name": "Intercom",
@@ -637,7 +661,8 @@
         "conversations",
         "contacts",
         "customer-support"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/intercom.png"
     },
     {
       "name": "Miro",
@@ -646,7 +671,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.miro.com/",
       "auth_type": "oauth",
-      "docs_url": "https://developers.miro.com/docs/mcp-server",
+      "docs_url": "https://developers.miro.com/docs/miro-mcp",
       "publisher": "Miro",
       "tags": [
         "miro",
@@ -654,7 +679,8 @@
         "boards",
         "collaboration",
         "design"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/miro.png"
     },
     {
       "name": "Mixpanel",
@@ -663,7 +689,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.mixpanel.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://docs.mixpanel.com/docs/mcp-server",
+      "docs_url": "https://docs.mixpanel.com/docs/mcp",
       "publisher": "Mixpanel",
       "tags": [
         "mixpanel",
@@ -671,7 +697,8 @@
         "product-analytics",
         "events",
         "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/mixpanel.png"
     },
     {
       "name": "Cloudinary",
@@ -688,7 +715,8 @@
         "images",
         "video",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/cloudinary.svg"
     },
     {
       "name": "PlanetScale",
@@ -705,7 +733,8 @@
         "postgres",
         "database",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/planetscale.svg"
     },
     {
       "name": "Box",
@@ -722,7 +751,8 @@
         "storage",
         "documents",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/box.png"
     },
     {
       "name": "Sanity",
@@ -731,7 +761,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.sanity.io",
       "auth_type": "oauth",
-      "docs_url": "https://www.sanity.io/docs/mcp-agent-actions",
+      "docs_url": "https://www.sanity.io/docs/cli-reference/cli-mcp",
       "publisher": "Sanity",
       "tags": [
         "sanity",
@@ -739,24 +769,8 @@
         "content",
         "structured-content",
         "developer-tools"
-      ]
-    },
-    {
-      "name": "Make",
-      "description": "Connect AI tools to Make to run scenarios and manage your Make account and automations. Hosted remotely by Make.",
-      "category": "Automation",
-      "connection_type": "http",
-      "connection_url": "https://mcp.make.com",
-      "auth_type": "oauth",
-      "docs_url": "https://developers.make.com/mcp-server",
-      "publisher": "Make",
-      "tags": [
-        "make",
-        "automation",
-        "scenarios",
-        "workflows",
-        "integrations"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/sanity-light.svg"
     },
     {
       "name": "Postman",
@@ -765,7 +779,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.postman.com/minimal",
       "auth_type": "oauth",
-      "docs_url": "https://learning.postman.com/docs/developer/postman-api/mcp-server/",
+      "docs_url": "https://learning.postman.com/docs/reference/postman-api/postman-mcp-server/overview/",
       "publisher": "Postman",
       "tags": [
         "postman",
@@ -773,7 +787,8 @@
         "collections",
         "testing",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/postman.svg"
     },
     {
       "name": "Mintlify",
@@ -790,7 +805,8 @@
         "docs",
         "search",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/mintlify.svg"
     },
     {
       "name": "Hugging Face",
@@ -807,7 +823,8 @@
         "datasets",
         "spaces",
         "ai"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/hugging_face.svg"
     },
     {
       "name": "Microsoft Learn",
@@ -824,7 +841,8 @@
         "docs",
         "search",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/microsoft.svg"
     },
     {
       "name": "Context7",
@@ -841,7 +859,8 @@
         "libraries",
         "code-examples",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/context7.svg"
     },
     {
       "name": "Exa",
@@ -858,7 +877,8 @@
         "web",
         "research",
         "documentation"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/exa.png"
     },
     {
       "name": "Tavily",
@@ -875,7 +895,8 @@
         "web",
         "research",
         "content-extraction"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/tavily.png"
     },
     {
       "name": "Semrush",
@@ -892,24 +913,8 @@
         "marketing",
         "keywords",
         "analytics"
-      ]
-    },
-    {
-      "name": "Xero",
-      "description": "Connect AI tools to Xero to access your accounting and financial data from any conversation. Hosted remotely by Xero.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://mcp.xero.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://developer.xero.com/documentation/guides/oauth2/mcp/",
-      "publisher": "Xero",
-      "tags": [
-        "xero",
-        "accounting",
-        "finance",
-        "invoicing",
-        "bookkeeping"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/semrush.png"
     },
     {
       "name": "Clerk",
@@ -917,8 +922,8 @@
       "category": "Developer Tools",
       "connection_type": "http",
       "connection_url": "https://mcp.clerk.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://clerk.com/docs/integrations/mcp",
+      "auth_type": "none",
+      "docs_url": "https://clerk.com/docs/guides/ai/mcp/clerk-mcp-server",
       "publisher": "Clerk",
       "tags": [
         "clerk",
@@ -926,7 +931,8 @@
         "users",
         "billing",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/clerk-icon-light.svg"
     },
     {
       "name": "Amplitude",
@@ -943,7 +949,8 @@
         "product-analytics",
         "behavioral",
         "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/amplitude.svg"
     },
     {
       "name": "Hex",
@@ -952,7 +959,7 @@
       "connection_type": "http",
       "connection_url": "https://app.hex.tech/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://learn.hex.tech/docs/explore-data/hex-mcp",
+      "docs_url": "https://learn.hex.tech/docs/api-integrations/mcp-server",
       "publisher": "Hex",
       "tags": [
         "hex",
@@ -960,24 +967,8 @@
         "data-science",
         "notebooks",
         "data"
-      ]
-    },
-    {
-      "name": "Dovetail",
-      "description": "Connect AI tools to Dovetail to turn customer feedback and research into decisions. Hosted remotely by Dovetail.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://dovetail.com/api/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://dovetail.com/help/mcp-server/",
-      "publisher": "Dovetail",
-      "tags": [
-        "dovetail",
-        "research",
-        "feedback",
-        "insights",
-        "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/hex.png"
     },
     {
       "name": "WordPress.com",
@@ -994,24 +985,8 @@
         "websites",
         "content",
         "developer-tools"
-      ]
-    },
-    {
-      "name": "SurveyMonkey",
-      "description": "Connect AI tools to SurveyMonkey to design surveys, collect responses, and analyze results. Hosted remotely by SurveyMonkey.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://mcp.surveymonkey.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://developer.surveymonkey.com/api/v3/",
-      "publisher": "SurveyMonkey",
-      "tags": [
-        "surveymonkey",
-        "surveys",
-        "forms",
-        "feedback",
-        "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/wordpress.svg"
     },
     {
       "name": "Jotform",
@@ -1020,7 +995,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.jotform.com/mcp-app",
       "auth_type": "oauth",
-      "docs_url": "https://www.jotform.com/ai/mcp-server/",
+      "docs_url": "https://www.jotform.com/developers/mcp/",
       "publisher": "Jotform",
       "tags": [
         "jotform",
@@ -1028,24 +1003,8 @@
         "submissions",
         "surveys",
         "productivity"
-      ]
-    },
-    {
-      "name": "Lucid",
-      "description": "Connect AI tools to Lucid to ideate, diagram, and align teams across Lucidchart and Lucidspark. Hosted remotely by Lucid.",
-      "category": "Design",
-      "connection_type": "http",
-      "connection_url": "https://mcp.lucid.app/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://lucid.co/resources/mcp",
-      "publisher": "Lucid Software",
-      "tags": [
-        "lucid",
-        "diagrams",
-        "whiteboard",
-        "collaboration",
-        "design"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/jotform.png"
     },
     {
       "name": "Eraser",
@@ -1054,7 +1013,7 @@
       "connection_type": "http",
       "connection_url": "https://app.eraser.io/api/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://docs.eraser.io/docs/mcp-server",
+      "docs_url": "https://docs.eraser.io/docs/mcp",
       "publisher": "Eraser",
       "tags": [
         "eraser",
@@ -1062,7 +1021,8 @@
         "documentation",
         "architecture",
         "design"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/eraser.png"
     },
     {
       "name": "GoCardless",
@@ -1071,7 +1031,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.gocardless.com",
       "auth_type": "oauth",
-      "docs_url": "https://developer.gocardless.com/docs/mcp-server",
+      "docs_url": "https://developer.gocardless.com/developer-tools/mcp",
       "publisher": "GoCardless",
       "tags": [
         "gocardless",
@@ -1079,24 +1039,8 @@
         "direct-debit",
         "billing",
         "finance"
-      ]
-    },
-    {
-      "name": "IFTTT",
-      "description": "Connect AI tools to IFTTT to connect, control, and automate over 1,000 apps and services. Hosted remotely by IFTTT.",
-      "category": "Automation",
-      "connection_type": "http",
-      "connection_url": "https://ifttt.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://ifttt.com/explore/mcp",
-      "publisher": "IFTTT",
-      "tags": [
-        "ifttt",
-        "automation",
-        "integrations",
-        "workflows",
-        "no-code"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/gocardless.png"
     },
     {
       "name": "Twilio",
@@ -1113,41 +1057,8 @@
         "communications",
         "sms",
         "developer-tools"
-      ]
-    },
-    {
-      "name": "Financial Modeling Prep",
-      "description": "Connect AI tools to Financial Modeling Prep for comprehensive financial datasets covering market and company analysis. Hosted remotely by FMP.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://financialmodelingprep.com/mcp",
-      "auth_type": "none",
-      "docs_url": "https://site.financialmodelingprep.com/developer/docs",
-      "publisher": "Financial Modeling Prep",
-      "tags": [
-        "fmp",
-        "financial-data",
-        "markets",
-        "stocks",
-        "finance"
-      ]
-    },
-    {
-      "name": "Daloopa",
-      "description": "Connect AI tools to Daloopa for financial fundamentals and KPI data sourced from SEC filings, investor presentations, and public financial documents. Hosted remotely by Daloopa.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://mcp.daloopa.com/server/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://daloopa.com/developers",
-      "publisher": "Daloopa",
-      "tags": [
-        "daloopa",
-        "financial-data",
-        "fundamentals",
-        "kpi",
-        "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/twilio.svg"
     },
     {
       "name": "Quartr",
@@ -1156,7 +1067,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.quartr.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://quartr.com/solutions/api",
+      "docs_url": "https://quartr.com/mcp",
       "publisher": "Quartr",
       "tags": [
         "quartr",
@@ -1164,7 +1075,8 @@
         "research",
         "earnings",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/quartr.png"
     },
     {
       "name": "Bigdata.com",
@@ -1184,16 +1096,17 @@
         "news",
         "filings",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/bigdata.png"
     },
     {
       "name": "Fiscal.ai",
       "description": "Connect AI tools to Fiscal.ai for clean public-equity fundamental data and structured company and market context. Hosted remotely by Fiscal.ai.",
       "category": "Finance",
-      "connection_type": "sse",
-      "connection_url": "https://api.fiscal.ai/mcp/sse",
-      "auth_type": "none",
-      "docs_url": "https://fiscal.ai/",
+      "connection_type": "http",
+      "connection_url": "https://api.fiscal.ai/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://docs.fiscal.ai/docs/guides/mcp-integration",
       "publisher": "Fiscal.ai",
       "tags": [
         "fiscal-ai",
@@ -1201,7 +1114,8 @@
         "equities",
         "fundamentals",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/fiscal.png"
     },
     {
       "name": "Ramp",
@@ -1218,7 +1132,8 @@
         "expenses",
         "finance",
         "procurement"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/ramp.png"
     },
     {
       "name": "Ramp Data",
@@ -1235,7 +1150,8 @@
         "benchmarking",
         "finance",
         "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/ramp.png"
     },
     {
       "name": "CoinDesk",
@@ -1243,8 +1159,8 @@
       "category": "Finance",
       "connection_type": "http",
       "connection_url": "https://mcp.coindesk.com/mcp",
-      "auth_type": "none",
-      "docs_url": "https://developers.coindesk.com/",
+      "auth_type": "oauth",
+      "docs_url": "https://mcp.coindesk.com/",
       "publisher": "CoinDesk",
       "tags": [
         "coindesk",
@@ -1252,7 +1168,8 @@
         "market-data",
         "indices",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/coindesk.png"
     },
     {
       "name": "Crypto.com",
@@ -1269,7 +1186,8 @@
         "market-data",
         "trading",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/crypto.png"
     },
     {
       "name": "Rillet",
@@ -1286,24 +1204,8 @@
         "general-ledger",
         "erp",
         "finance"
-      ]
-    },
-    {
-      "name": "Digits",
-      "description": "Connect AI tools to Digits to track and analyze your business finances through connected accounting context. Hosted remotely by Digits.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://api.digits.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://digits.com/",
-      "publisher": "Digits",
-      "tags": [
-        "digits",
-        "accounting",
-        "bookkeeping",
-        "finance",
-        "analytics"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/rillet.png"
     },
     {
       "name": "Carta",
@@ -1320,7 +1222,8 @@
         "equity",
         "fund-administration",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/carta.png"
     },
     {
       "name": "Privacy.com",
@@ -1329,7 +1232,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.privacy.com",
       "auth_type": "oauth",
-      "docs_url": "https://privacy.com/",
+      "docs_url": "https://developers.privacy.com/docs/mcp-server",
       "publisher": "Privacy.com",
       "tags": [
         "privacy",
@@ -1337,7 +1240,8 @@
         "payments",
         "spend",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/privacy.png"
     },
     {
       "name": "Airwallex",
@@ -1345,8 +1249,8 @@
       "category": "Finance",
       "connection_type": "http",
       "connection_url": "https://mcp-demo.airwallex.com/developer",
-      "auth_type": "none",
-      "docs_url": "https://www.airwallex.com/docs",
+      "auth_type": "oauth",
+      "docs_url": "https://www.airwallex.com/docs/developer-tools/ai/agentos/connectors",
       "publisher": "Airwallex",
       "tags": [
         "airwallex",
@@ -1354,7 +1258,8 @@
         "documentation",
         "fintech",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/airwallex.svg"
     },
     {
       "name": "Yahoo Finance",
@@ -1371,7 +1276,8 @@
         "market-data",
         "news",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/yahoo-finance.png"
     },
     {
       "name": "Expedia",
@@ -1388,262 +1294,8 @@
         "flights",
         "hotels",
         "booking"
-      ]
-    },
-    {
-      "name": "Uber",
-      "description": "Connect AI tools to Uber to get price and time estimates for any ride option. Hosted remotely by Uber.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://mcp.uber.com/claude/rides-3p/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.uber.com/",
-      "publisher": "Uber",
-      "tags": [
-        "uber",
-        "rides",
-        "transportation",
-        "travel",
-        "mobility"
-      ]
-    },
-    {
-      "name": "Uber Eats",
-      "description": "Connect AI tools to Uber Eats to explore restaurants and dishes for local food delivery. Hosted remotely by Uber.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.ubereats.com/eats-claude/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.ubereats.com/",
-      "publisher": "Uber",
-      "tags": [
-        "uber-eats",
-        "food-delivery",
-        "restaurants",
-        "lifestyle",
-        "ordering"
-      ]
-    },
-    {
-      "name": "Resy",
-      "description": "Connect AI tools to Resy to find and book restaurants instantly. Hosted remotely by Resy.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://apigw.americanexpress.com/dining/v1/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://resy.com/",
-      "publisher": "Resy",
-      "tags": [
-        "resy",
-        "restaurants",
-        "reservations",
-        "dining",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "DoorDash",
-      "description": "Connect AI tools to DoorDash for food delivery and restaurant reservation workflows. Hosted remotely by DoorDash.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://openapi.doordash.com/mcp/consumer",
-      "auth_type": "oauth",
-      "docs_url": "https://developer.doordash.com/",
-      "publisher": "DoorDash",
-      "tags": [
-        "doordash",
-        "food-delivery",
-        "restaurants",
-        "lifestyle",
-        "ordering"
-      ]
-    },
-    {
-      "name": "Instacart",
-      "description": "Connect AI tools to Instacart to shop for groceries with fast delivery across stores and products. Hosted remotely by Instacart.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://fig-mcp.instacart.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.instacart.com/",
-      "publisher": "Instacart",
-      "tags": [
-        "instacart",
-        "groceries",
-        "delivery",
-        "shopping",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Tripadvisor",
-      "description": "Connect AI tools to Tripadvisor to research accommodations with reviews, ratings, photos, availability, and nearby points of interest. Hosted remotely by Tripadvisor.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://production.ai-mcp-extensibility-prd.tamg.cloud/ogMvjY4De1G7CiHanMOAgddl/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.tripadvisor.com/",
-      "publisher": "Tripadvisor",
-      "tags": [
-        "tripadvisor",
-        "travel",
-        "hotels",
-        "reviews",
-        "booking"
-      ]
-    },
-    {
-      "name": "Trivago",
-      "description": "Connect AI tools to Trivago to search hotels and accommodations by location, dates, and travel context. Hosted remotely by Trivago.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://mcp.trivago.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.trivago.com/",
-      "publisher": "Trivago",
-      "tags": [
-        "trivago",
-        "travel",
-        "hotels",
-        "accommodation",
-        "booking"
-      ]
-    },
-    {
-      "name": "Viator",
-      "description": "Connect AI tools to Viator to discover and book travel experiences around the world. Hosted remotely by Viator.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://exp-app-mcp.prod.ep.viator.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.viator.com/",
-      "publisher": "Viator",
-      "tags": [
-        "viator",
-        "travel",
-        "experiences",
-        "tours",
-        "booking"
-      ]
-    },
-    {
-      "name": "StubHub",
-      "description": "Connect AI tools to StubHub to find tickets for concerts, sports, theater, comedy, festivals, and other live events. Hosted remotely by StubHub.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://open-ai-app.stubhub.net/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.stubhub.com/",
-      "publisher": "StubHub",
-      "tags": [
-        "stubhub",
-        "tickets",
-        "events",
-        "concerts",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "AllTrails",
-      "description": "Connect AI tools to AllTrails to discover hikes, walks, and outdoor routes with curated trail info, reviews, and photos. Hosted remotely by AllTrails.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://www.alltrails.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.alltrails.com/",
-      "publisher": "AllTrails",
-      "tags": [
-        "alltrails",
-        "hiking",
-        "outdoors",
-        "trails",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Strava",
-      "description": "Connect AI tools to Strava to access activities, fitness trends, training load, and goals. Hosted remotely by Strava.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.strava.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://developers.strava.com/",
-      "publisher": "Strava",
-      "tags": [
-        "strava",
-        "fitness",
-        "activities",
-        "training",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Fever",
-      "description": "Connect AI tools to Fever to discover live entertainment events, concerts, and cultural experiences worldwide. Hosted remotely by Fever.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://data-search.apigw.feverup.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://feverup.com/",
-      "publisher": "Fever",
-      "tags": [
-        "fever",
-        "events",
-        "entertainment",
-        "tickets",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Taskrabbit",
-      "description": "Connect AI tools to Taskrabbit to check local service availability and pricing and scope home-service needs. Hosted remotely by Taskrabbit.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.taskrabbit.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.taskrabbit.com/",
-      "publisher": "Taskrabbit",
-      "tags": [
-        "taskrabbit",
-        "services",
-        "home",
-        "tasks",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Thumbtack",
-      "description": "Connect AI tools to Thumbtack to plan home projects and connect with local professionals for repairs and improvements. Hosted remotely by Thumbtack.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.thumbtack.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.thumbtack.com/",
-      "publisher": "Thumbtack",
-      "tags": [
-        "thumbtack",
-        "services",
-        "home",
-        "professionals",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Fathom",
-      "description": "Connect AI tools to Fathom to access meeting recordings, transcripts, and summaries. Hosted remotely by Fathom.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://api.fathom.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.fathom.video/",
-      "publisher": "Fathom",
-      "tags": [
-        "fathom",
-        "meetings",
-        "transcripts",
-        "notes",
-        "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/expedia.png"
     },
     {
       "name": "Granola",
@@ -1660,7 +1312,8 @@
         "notes",
         "transcripts",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/granola-light.svg"
     },
     {
       "name": "Otter.ai",
@@ -1669,7 +1322,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.otter.ai/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://otter.ai/",
+      "docs_url": "https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server",
       "publisher": "Otter.ai",
       "tags": [
         "otter",
@@ -1677,7 +1330,8 @@
         "transcripts",
         "notes",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/otter.png"
     },
     {
       "name": "Grain",
@@ -1694,7 +1348,8 @@
         "transcripts",
         "insights",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/grain.png"
     },
     {
       "name": "Krisp",
@@ -1711,24 +1366,8 @@
         "transcripts",
         "notes",
         "productivity"
-      ]
-    },
-    {
-      "name": "Superhuman Mail",
-      "description": "Connect AI tools to Superhuman to search inboxes, draft replies, schedule meetings, and manage email and calendar. Hosted remotely by Superhuman.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://mcp.mail.superhuman.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://superhuman.com/",
-      "publisher": "Superhuman",
-      "tags": [
-        "superhuman",
-        "email",
-        "calendar",
-        "inbox",
-        "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/krisp.png"
     },
     {
       "name": "Mem",
@@ -1745,7 +1384,8 @@
         "knowledge-base",
         "personal",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/mem.png"
     },
     {
       "name": "Craft",
@@ -1754,7 +1394,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.craft.do/my/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://www.craft.do/",
+      "docs_url": "https://www.craft.do/imagine/guide/mcp/mcp",
       "publisher": "Craft",
       "tags": [
         "craft",
@@ -1762,7 +1402,8 @@
         "documents",
         "knowledge-base",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/craft.png"
     },
     {
       "name": "Workable",
@@ -1771,7 +1412,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.workable.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://workable.readme.io/",
+      "docs_url": "https://workable.readme.io/reference/workable-mcp-server",
       "publisher": "Workable",
       "tags": [
         "workable",
@@ -1779,7 +1420,8 @@
         "recruiting",
         "hr",
         "ats"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/workable.png"
     },
     {
       "name": "Metaview",
@@ -1796,24 +1438,8 @@
         "interviews",
         "hiring",
         "hr"
-      ]
-    },
-    {
-      "name": "ZipRecruiter",
-      "description": "Connect AI tools to ZipRecruiter to search live jobs by title, company, location, salary, work style, and more. Hosted remotely by ZipRecruiter.",
-      "category": "Human Resources",
-      "connection_type": "http",
-      "connection_url": "https://api.ziprecruiter.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.ziprecruiter.com/",
-      "publisher": "ZipRecruiter",
-      "tags": [
-        "ziprecruiter",
-        "jobs",
-        "recruiting",
-        "hiring",
-        "hr"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/metaview.png"
     },
     {
       "name": "Harmonic",
@@ -1830,24 +1456,8 @@
         "enrichment",
         "companies",
         "sales"
-      ]
-    },
-    {
-      "name": "Lusha",
-      "description": "Connect AI tools to Lusha to find and enrich B2B contacts and companies for sales intelligence and prospecting. Hosted remotely by Lusha.",
-      "category": "Sales",
-      "connection_type": "http",
-      "connection_url": "https://mcp.lusha.com/mcp/claude",
-      "auth_type": "oauth",
-      "docs_url": "https://www.lusha.com/",
-      "publisher": "Lusha",
-      "tags": [
-        "lusha",
-        "prospecting",
-        "enrichment",
-        "contacts",
-        "sales"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/harmonic.png"
     },
     {
       "name": "ZoomInfo",
@@ -1856,7 +1466,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.zoominfo.com/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://www.zoominfo.com/",
+      "docs_url": "https://docs.zoominfo.com/docs/zi-api-mcp-overview",
       "publisher": "ZoomInfo",
       "tags": [
         "zoominfo",
@@ -1864,24 +1474,8 @@
         "enrichment",
         "contacts",
         "sales"
-      ]
-    },
-    {
-      "name": "Outreach",
-      "description": "Connect AI tools to Outreach for sales engagement and revenue-team workflows with account, prospect, and outreach context. Hosted remotely by Outreach.",
-      "category": "Sales",
-      "connection_type": "http",
-      "connection_url": "https://api.outreach.io/mcp/",
-      "auth_type": "oauth",
-      "docs_url": "https://www.outreach.io/",
-      "publisher": "Outreach",
-      "tags": [
-        "outreach",
-        "sales-engagement",
-        "prospecting",
-        "crm",
-        "sales"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/zoominfo.png"
     },
     {
       "name": "Sprouts",
@@ -1898,7 +1492,8 @@
         "lead-generation",
         "contacts",
         "sales"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/sprouts.png"
     },
     {
       "name": "Scite",
@@ -1915,7 +1510,8 @@
         "citations",
         "academic",
         "science"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/scite.png"
     },
     {
       "name": "Synthesize Bio",
@@ -1924,7 +1520,7 @@
       "connection_type": "http",
       "connection_url": "https://app.synthesize.bio/api/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://synthesize.bio/",
+      "docs_url": "https://docs.synthesize.bio/platform",
       "publisher": "Synthesize Bio",
       "tags": [
         "synthesize-bio",
@@ -1932,92 +1528,8 @@
         "gene-expression",
         "biotech",
         "research"
-      ]
-    },
-    {
-      "name": "CourtListener",
-      "description": "Connect AI tools to CourtListener for legal research across millions of U.S. court opinions, PACER dockets, judge profiles, and citation data. Hosted remotely by Free Law Project.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.courtlistener.com/",
-      "auth_type": "none",
-      "docs_url": "https://www.courtlistener.com/",
-      "publisher": "Free Law Project",
-      "tags": [
-        "courtlistener",
-        "legal",
-        "court-opinions",
-        "dockets",
-        "research"
-      ]
-    },
-    {
-      "name": "Everlaw",
-      "description": "Connect AI tools to Everlaw to search and explore case data, review evidence, and find documents. Hosted remotely by Everlaw.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://api.everlaw.com/v1/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.everlaw.com/",
-      "publisher": "Everlaw",
-      "tags": [
-        "everlaw",
-        "legal",
-        "ediscovery",
-        "documents",
-        "litigation"
-      ]
-    },
-    {
-      "name": "Midpage",
-      "description": "Connect AI tools to Midpage to conduct legal research and create legal work product. Hosted remotely by Midpage.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://app.midpage.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://midpage.ai/",
-      "publisher": "Midpage",
-      "tags": [
-        "midpage",
-        "legal",
-        "research",
-        "documents",
-        "litigation"
-      ]
-    },
-    {
-      "name": "Ironclad",
-      "description": "Connect AI tools to Ironclad for plain-language search across contracts to find agreement terms, obligations, and related records. Hosted remotely by Ironclad.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.na1.ironcladapp.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://developer.ironcladapp.com/",
-      "publisher": "Ironclad",
-      "tags": [
-        "ironclad",
-        "contracts",
-        "legal",
-        "clm",
-        "agreements"
-      ]
-    },
-    {
-      "name": "Definely",
-      "description": "Connect AI tools to Definely for structured contract review tools for clause analysis and agreement review. Hosted remotely by Definely.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.eu.definely.com/api/proxy/core-mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://definely.com/",
-      "publisher": "Definely",
-      "tags": [
-        "definely",
-        "contracts",
-        "legal",
-        "review",
-        "documents"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/synthesize-bio.png"
     },
     {
       "name": "Legal Data Hunter",
@@ -2034,58 +1546,8 @@
         "research",
         "documents",
         "jurisdictions"
-      ]
-    },
-    {
-      "name": "Descrybe",
-      "description": "Connect AI tools to Descrybe for structured U.S. primary-law context to ground legal research in source material. Hosted remotely by Descrybe.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.descrybe.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://descrybe.ai/",
-      "publisher": "Descrybe",
-      "tags": [
-        "descrybe",
-        "legal",
-        "us-law",
-        "research",
-        "primary-law"
-      ]
-    },
-    {
-      "name": "Lawve AI",
-      "description": "Connect AI tools to Lawve AI for expert-written skills for legal work. Hosted remotely by Lawve AI.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.lawve.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://lawve.ai/",
-      "publisher": "Lawve AI",
-      "tags": [
-        "lawve",
-        "legal",
-        "skills",
-        "documents",
-        "research"
-      ]
-    },
-    {
-      "name": "Courtroom5",
-      "description": "Connect AI tools to Courtroom5 for jurisdiction-aware civil legal guidance for self-represented litigants across U.S. states. Hosted remotely by Courtroom5.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.courtroom5.com/v1",
-      "auth_type": "oauth",
-      "docs_url": "https://courtroom5.com/",
-      "publisher": "Courtroom5",
-      "tags": [
-        "courtroom5",
-        "legal",
-        "litigation",
-        "self-represented",
-        "guidance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/legal-data-hunter.png"
     },
     {
       "name": "Shopify",
@@ -2102,7 +1564,8 @@
         "products",
         "orders",
         "inventory"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/shopify.svg"
     },
     {
       "name": "GoDaddy",
@@ -2110,8 +1573,8 @@
       "category": "Developer Tools",
       "connection_type": "http",
       "connection_url": "https://api.godaddy.com/v1/domains/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://developer.godaddy.com/",
+      "auth_type": "none",
+      "docs_url": "https://developer.godaddy.com/mcp",
       "publisher": "GoDaddy",
       "tags": [
         "godaddy",
@@ -2119,41 +1582,8 @@
         "dns",
         "hosting",
         "developer-tools"
-      ]
-    },
-    {
-      "name": "Goodnotes",
-      "description": "Connect AI tools to Goodnotes to turn AI insights into documents and notes. Hosted remotely by Goodnotes.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://claude-mcp-api.ml.goodnotes.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.goodnotes.com/",
-      "publisher": "Goodnotes",
-      "tags": [
-        "goodnotes",
-        "notes",
-        "documents",
-        "handwriting",
-        "productivity"
-      ]
-    },
-    {
-      "name": "Mermaid Chart",
-      "description": "Connect AI tools to Mermaid Chart to validate Mermaid syntax and render diagrams as high-quality SVGs with interactive previews. Hosted remotely by Mermaid Chart.",
-      "category": "Design",
-      "connection_type": "http",
-      "connection_url": "https://mcp.mermaid.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.mermaidchart.com/",
-      "publisher": "Mermaid Chart",
-      "tags": [
-        "mermaid",
-        "diagrams",
-        "svg",
-        "charts",
-        "design"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/godaddy.svg"
     },
     {
       "name": "Magic Patterns",
@@ -2170,7 +1600,8 @@
         "ui",
         "prototyping",
         "components"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/magic-patterns.png"
     },
     {
       "name": "Excalidraw",
@@ -2187,24 +1618,8 @@
         "whiteboard",
         "sketching",
         "design"
-      ]
-    },
-    {
-      "name": "Trimble SketchUp",
-      "description": "Connect AI tools to SketchUp to generate, refine, and share 3D model concepts from conversational descriptions. Hosted remotely by Trimble.",
-      "category": "Design",
-      "connection_type": "http",
-      "connection_url": "https://api.sketchup.com/mcp/v1/sketchup/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.sketchup.com/",
-      "publisher": "Trimble",
-      "tags": [
-        "sketchup",
-        "3d-modeling",
-        "architecture",
-        "design",
-        "cad"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/excalidraw.png"
     },
     {
       "name": "Netlify (Remote)",
@@ -2221,7 +1636,8 @@
         "hosting",
         "websites",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/netlify.svg"
     },
     {
       "name": "MailerLite",
@@ -2238,7 +1654,8 @@
         "campaigns",
         "newsletters",
         "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/mailerlite.png"
     },
     {
       "name": "Coupler.io",
@@ -2255,7 +1672,8 @@
         "analytics",
         "reporting",
         "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/coupler.png"
     },
     {
       "name": "Lumin",
@@ -2272,7 +1690,8 @@
         "signatures",
         "pdf",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/lumin.png"
     },
     {
       "name": "Clarify",
@@ -2289,24 +1708,8 @@
         "sales",
         "records",
         "contacts"
-      ]
-    },
-    {
-      "name": "Day AI",
-      "description": "Connect AI tools to Day AI to know everything about your prospects and customers with CRMx, providing account and relationship data. Hosted remotely by Day AI.",
-      "category": "Sales",
-      "connection_type": "http",
-      "connection_url": "https://day.ai/api/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://day.ai/",
-      "publisher": "Day AI",
-      "tags": [
-        "day-ai",
-        "crm",
-        "sales",
-        "accounts",
-        "relationships"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/clarify.png"
     },
     {
       "name": "Crossbeam",
@@ -2323,16 +1726,17 @@
         "co-sell",
         "ecosystem",
         "sales"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/crossbeam.png"
     },
     {
       "name": "Pylon",
       "description": "Connect AI tools to Pylon to search and manage support issues, track customer status, and coordinate responses. Hosted remotely by Pylon.",
       "category": "Customer Support",
       "connection_type": "http",
-      "connection_url": "https://mcp.usepylon.com/",
+      "connection_url": "https://mcp.usepylon.com",
       "auth_type": "oauth",
-      "docs_url": "https://usepylon.com/",
+      "docs_url": "https://docs.usepylon.com/pylon-docs/integrations/pylon-mcp",
       "publisher": "Pylon",
       "tags": [
         "pylon",
@@ -2340,7 +1744,8 @@
         "tickets",
         "customer-support",
         "helpdesk"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/pylon.png"
     },
     {
       "name": "Unthread",
@@ -2357,7 +1762,8 @@
         "tickets",
         "sla",
         "customer-support"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/unthread.png"
     },
     {
       "name": "Jam",
@@ -2366,7 +1772,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.jam.dev/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://jam.dev/",
+      "docs_url": "https://jam.dev/docs/jam-mcp",
       "publisher": "Jam",
       "tags": [
         "jam",
@@ -2374,41 +1780,8 @@
         "screen-recording",
         "debugging",
         "developer-tools"
-      ]
-    },
-    {
-      "name": "Monte Carlo",
-      "description": "Connect AI tools to Monte Carlo for data and AI observability, monitoring data reliability, and investigating data quality incidents. Hosted remotely by Monte Carlo.",
-      "category": "Developer Tools",
-      "connection_type": "http",
-      "connection_url": "https://integrations.getmontecarlo.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://docs.getmontecarlo.com/",
-      "publisher": "Monte Carlo",
-      "tags": [
-        "monte-carlo",
-        "data-observability",
-        "data-quality",
-        "monitoring",
-        "developer-tools"
-      ]
-    },
-    {
-      "name": "Polar Analytics",
-      "description": "Connect AI tools to Polar Analytics to bring ecommerce and business data into one analytics workspace. Hosted remotely by Polar Analytics.",
-      "category": "Analytics",
-      "connection_type": "http",
-      "connection_url": "https://api.polaranalytics.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://polaranalytics.com/",
-      "publisher": "Polar Analytics",
-      "tags": [
-        "polar-analytics",
-        "ecommerce",
-        "analytics",
-        "reporting",
-        "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/jam.png"
     },
     {
       "name": "Omni Analytics",
@@ -2425,24 +1798,8 @@
         "semantic-model",
         "data",
         "bi"
-      ]
-    },
-    {
-      "name": "Local Falcon",
-      "description": "Connect AI tools to Local Falcon for AI visibility and local search intelligence including map rankings and regional SEO performance. Hosted remotely by Local Falcon.",
-      "category": "Marketing",
-      "connection_type": "sse",
-      "connection_url": "https://mcp.localfalcon.com",
-      "auth_type": "oauth",
-      "docs_url": "https://www.localfalcon.com/",
-      "publisher": "Local Falcon",
-      "tags": [
-        "local-falcon",
-        "local-seo",
-        "map-rankings",
-        "visibility",
-        "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/omni.png"
     },
     {
       "name": "Similarweb",
@@ -2450,8 +1807,8 @@
       "category": "Marketing",
       "connection_type": "http",
       "connection_url": "https://mcp.similarweb.com",
-      "auth_type": "oauth",
-      "docs_url": "https://developers.similarweb.com/",
+      "auth_type": "headers",
+      "docs_url": "https://developers.similarweb.com/docs/similarweb-mcp",
       "publisher": "Similarweb",
       "tags": [
         "similarweb",
@@ -2459,7 +1816,8 @@
         "market-data",
         "competitive-intelligence",
         "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/similarweb.png"
     },
     {
       "name": "Peec AI",
@@ -2476,7 +1834,8 @@
         "ai-search",
         "visibility",
         "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/peec.png"
     },
     {
       "name": "Motion",
@@ -2493,58 +1852,8 @@
         "creative",
         "meta",
         "marketing"
-      ]
-    },
-    {
-      "name": "Apollo GraphOS",
-      "description": "Connect AI tools to Apollo GraphOS to search Apollo docs, specs, and best practices for GraphQL development. Hosted remotely by Apollo.",
-      "category": "Developer Tools",
-      "connection_type": "http",
-      "connection_url": "https://mcp.apollographql.com",
-      "auth_type": "none",
-      "docs_url": "https://www.apollographql.com/docs/",
-      "publisher": "Apollo GraphQL",
-      "tags": [
-        "apollo",
-        "graphql",
-        "documentation",
-        "api",
-        "developer-tools"
-      ]
-    },
-    {
-      "name": "AdisInsight",
-      "description": "Connect AI tools to AdisInsight for pharmaceutical drug and clinical trial intelligence across pipelines, trials, and regulatory milestones. Hosted remotely by Springer.",
-      "category": "Research",
-      "connection_type": "http",
-      "connection_url": "https://adisinsight-mcp.springer.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://adisinsight.springer.com/",
-      "publisher": "Springer Nature",
-      "tags": [
-        "adisinsight",
-        "pharma",
-        "clinical-trials",
-        "drugs",
-        "research"
-      ]
-    },
-    {
-      "name": "LILT",
-      "description": "Connect AI tools to LILT for high-quality translation with human verification. Hosted remotely by LILT.",
-      "category": "AI Tools",
-      "connection_type": "http",
-      "connection_url": "https://mcp.lilt.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://lilt.com/",
-      "publisher": "LILT",
-      "tags": [
-        "lilt",
-        "translation",
-        "localization",
-        "language",
-        "ai"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/motion.svg"
     },
     {
       "name": "Splice",
@@ -2561,7 +1870,8 @@
         "samples",
         "audio",
         "lifestyle"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/splice.png"
     },
     {
       "name": "Ticket Tailor",
@@ -2570,7 +1880,7 @@
       "connection_type": "http",
       "connection_url": "https://mcp.tickettailor.ai/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://www.tickettailor.com/",
+      "docs_url": "https://developers.tickettailor.com/docs/mcp/",
       "publisher": "Ticket Tailor",
       "tags": [
         "ticket-tailor",
@@ -2578,126 +1888,8 @@
         "tickets",
         "ticketing",
         "lifestyle"
-      ]
-    },
-    {
-      "name": "Wyndham Hotels",
-      "description": "Connect AI tools to Wyndham Hotels to search and compare hotels by city, dates, amenities, and trip needs. Hosted remotely by Wyndham.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://mcp.wyndhamhotels.com/claude/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.wyndhamhotels.com/",
-      "publisher": "Wyndham Hotels & Resorts",
-      "tags": [
-        "wyndham",
-        "travel",
-        "hotels",
-        "accommodation",
-        "booking"
-      ]
-    },
-    {
-      "name": "DirectBooker",
-      "description": "Connect AI tools to DirectBooker to compare hotels and book directly with properties. Hosted remotely by DirectBooker.",
-      "category": "Travel",
-      "connection_type": "http",
-      "connection_url": "https://www.directbooker.ai/claude",
-      "auth_type": "none",
-      "docs_url": "https://www.directbooker.com/",
-      "publisher": "DirectBooker",
-      "tags": [
-        "directbooker",
-        "travel",
-        "hotels",
-        "booking",
-        "accommodation"
-      ]
-    },
-    {
-      "name": "Melon",
-      "description": "Connect AI tools to Melon to browse music charts and personalized music picks. Hosted remotely by Melon.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.melon.com/mcp/",
-      "auth_type": "oauth",
-      "docs_url": "https://www.melon.com/",
-      "publisher": "Melon",
-      "tags": [
-        "melon",
-        "music",
-        "charts",
-        "streaming",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Audible",
-      "description": "Connect AI tools to Audible to discover audiobook recommendations by genre, mood, topic, or natural-language preference. Hosted remotely by Audible.",
-      "category": "Lifestyle",
-      "connection_type": "http",
-      "connection_url": "https://mcp.audible.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.audible.com/",
-      "publisher": "Audible",
-      "tags": [
-        "audible",
-        "audiobooks",
-        "books",
-        "recommendations",
-        "lifestyle"
-      ]
-    },
-    {
-      "name": "Egnyte",
-      "description": "Connect AI tools to Egnyte for governed content collaboration to securely access files and business documents. Hosted remotely by Egnyte.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://mcp-server.egnyte.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.egnyte.com/",
-      "publisher": "Egnyte",
-      "tags": [
-        "egnyte",
-        "files",
-        "documents",
-        "storage",
-        "productivity"
-      ]
-    },
-    {
-      "name": "iManage Work",
-      "description": "Connect AI tools to iManage Work for governed access to knowledge, documents, and matter context for professional teams. Hosted remotely by iManage.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://cloudimanage.com/mcp/work",
-      "auth_type": "oauth",
-      "docs_url": "https://imanage.com/",
-      "publisher": "iManage",
-      "tags": [
-        "imanage",
-        "documents",
-        "knowledge-management",
-        "legal",
-        "matters"
-      ]
-    },
-    {
-      "name": "NetDocuments",
-      "description": "Connect AI tools to NetDocuments for governed document context to search, review, and run matter-aware analysis within existing permissions. Hosted remotely by NetDocuments.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://web-api.us.netdocuments.app/connect/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.netdocuments.com/",
-      "publisher": "NetDocuments",
-      "tags": [
-        "netdocuments",
-        "documents",
-        "legal",
-        "matters",
-        "dms"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/ticket-tailor.png"
     },
     {
       "name": "Google Cloud BigQuery",
@@ -2714,7 +1906,8 @@
         "analytics",
         "sql",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/google-cloud.svg"
     },
     {
       "name": "Enterpret",
@@ -2723,7 +1916,7 @@
       "connection_type": "http",
       "connection_url": "https://wisdom-api.enterpret.com/server/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://www.enterpret.com/",
+      "docs_url": "https://helpcenter.enterpret.com/en/articles/12665166-enterpret-mcp-server",
       "publisher": "Enterpret",
       "tags": [
         "enterpret",
@@ -2731,24 +1924,8 @@
         "customer-insights",
         "themes",
         "productivity"
-      ]
-    },
-    {
-      "name": "aws",
-      "description": "Connect AI tools to AWS to securely access all AWS services through a small, fixed set of tools, with current documentation and authenticated API access. Hosted remotely by AWS.",
-      "category": "Developer Tools",
-      "connection_type": "http",
-      "connection_url": "https://aws-mcp.us-east-1.api.aws/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/mcp-server.html",
-      "publisher": "Amazon Web Services",
-      "tags": [
-        "aws",
-        "cloud",
-        "infrastructure",
-        "documentation",
-        "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/enterpret.png"
     },
     {
       "name": "pg-aiguide",
@@ -2765,7 +1942,8 @@
         "documentation",
         "database",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/tigerdata.png"
     },
     {
       "name": "Send",
@@ -2782,7 +1960,8 @@
         "presentations",
         "decks",
         "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/send.png"
     },
     {
       "name": "Malwarebytes",
@@ -2799,7 +1978,8 @@
         "scam-detection",
         "phishing",
         "safety"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/malwarebytes.png"
     },
     {
       "name": "Era Context",
@@ -2816,41 +1996,8 @@
         "budgeting",
         "money",
         "finance"
-      ]
-    },
-    {
-      "name": "Solve Intelligence",
-      "description": "Connect AI tools to Solve Intelligence to search, draft, and chart patents across patent and non-patent literature. Hosted remotely by Solve Intelligence.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://api.solveintelligence.com/mcp/",
-      "auth_type": "oauth",
-      "docs_url": "https://www.solveintelligence.com/",
-      "publisher": "Solve Intelligence",
-      "tags": [
-        "solve-intelligence",
-        "patents",
-        "ip",
-        "legal",
-        "research"
-      ]
-    },
-    {
-      "name": "Lorikeet",
-      "description": "Connect AI tools to Lorikeet for a concierge-style AI layer supporting complex customer-service workflows. Hosted remotely by Lorikeet.",
-      "category": "Customer Support",
-      "connection_type": "http",
-      "connection_url": "https://api.lorikeetcx.ai/v1/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.lorikeetcx.ai/",
-      "publisher": "Lorikeet",
-      "tags": [
-        "lorikeet",
-        "support",
-        "concierge",
-        "customer-support",
-        "automation"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/era.png"
     },
     {
       "name": "Granted",
@@ -2859,7 +2006,7 @@
       "connection_type": "http",
       "connection_url": "https://grantedai.com/api/mcp/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://grantedai.com/",
+      "docs_url": "https://grantedai.com/developers#mcp",
       "publisher": "Granted",
       "tags": [
         "granted",
@@ -2867,220 +2014,17 @@
         "funding",
         "applications",
         "productivity"
-      ]
-    },
-    {
-      "name": "IBISWorld",
-      "description": "Connect AI tools to IBISWorld for financials, risk data, and analysis across tens of thousands of industries for market sizing and benchmarking. Hosted remotely by IBISWorld.",
-      "category": "Research",
-      "connection_type": "http",
-      "connection_url": "https://mcp.ibisworld.com",
-      "auth_type": "oauth",
-      "docs_url": "https://www.ibisworld.com/",
-      "publisher": "IBISWorld",
-      "tags": [
-        "ibisworld",
-        "industry-research",
-        "market-data",
-        "benchmarking",
-        "research"
-      ]
-    },
-    {
-      "name": "Guidepoint",
-      "description": "Connect AI tools to Guidepoint for access to trusted expert knowledge for research, market, and diligence analysis. Hosted remotely by Guidepoint.",
-      "category": "Research",
-      "connection_type": "http",
-      "connection_url": "https://clapi.guidepoint.io/mcp-server/v1/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.guidepoint.com/",
-      "publisher": "Guidepoint",
-      "tags": [
-        "guidepoint",
-        "expert-network",
-        "research",
-        "diligence",
-        "insights"
-      ]
-    },
-    {
-      "name": "Third Bridge",
-      "description": "Connect AI tools to Third Bridge for expert-led enhanced insights for financial and business analysis. Hosted remotely by Third Bridge.",
-      "category": "Research",
-      "connection_type": "sse",
-      "connection_url": "https://ai.thirdbridge.com/mcp/sse",
-      "auth_type": "oauth",
-      "docs_url": "https://thirdbridge.com/",
-      "publisher": "Third Bridge",
-      "tags": [
-        "third-bridge",
-        "expert-network",
-        "research",
-        "insights",
-        "finance"
-      ]
-    },
-    {
-      "name": "Datasite",
-      "description": "Connect AI tools to Datasite for M&A data-room workflows, diligence content, and transaction collaboration. Hosted remotely by Datasite.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://mcp.global.datasite.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.datasite.com/",
-      "publisher": "Datasite",
-      "tags": [
-        "datasite",
-        "ma",
-        "data-room",
-        "diligence",
-        "finance"
-      ]
-    },
-    {
-      "name": "GovTribe",
-      "description": "Connect AI tools to GovTribe for government procurement and spending data across opportunities, contracts, agencies, and vendors. Hosted remotely by GovTribe.",
-      "category": "Research",
-      "connection_type": "http",
-      "connection_url": "https://govtribe.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://govtribe.com/",
-      "publisher": "GovTribe",
-      "tags": [
-        "govtribe",
-        "government",
-        "procurement",
-        "contracts",
-        "research"
-      ]
-    },
-    {
-      "name": "D&B Risk Analytics",
-      "description": "Connect AI tools to Dun & Bradstreet Risk Analytics to execute risk workflows powered by the D&B Commercial Graph for KYC, KYB, and entity resolution. Hosted remotely by Dun & Bradstreet.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://agents.riskanalytics.dnb.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.dnb.com/",
-      "publisher": "Dun & Bradstreet",
-      "tags": [
-        "dnb",
-        "risk",
-        "kyc",
-        "kyb",
-        "finance"
-      ]
-    },
-    {
-      "name": "ICE Data Services",
-      "description": "Connect AI tools to ICE Data Services for U.S. fixed-income trade and reference data analysis. Hosted remotely by ICE.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://fids-mcp.ice.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.ice.com/data-services",
-      "publisher": "Intercontinental Exchange",
-      "tags": [
-        "ice",
-        "fixed-income",
-        "market-data",
-        "bonds",
-        "finance"
-      ]
-    },
-    {
-      "name": "Verisk Underwriting Intelligence",
-      "description": "Connect AI tools to Verisk for conversational access to ISO Loss Cost insights for underwriters, actuaries, and product teams. Hosted remotely by Verisk.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://gatewaymcp.verisk.com/underwriting/intelligencemcp/v1",
-      "auth_type": "oauth",
-      "docs_url": "https://www.verisk.com/",
-      "publisher": "Verisk",
-      "tags": [
-        "verisk",
-        "insurance",
-        "underwriting",
-        "actuarial",
-        "finance"
-      ]
-    },
-    {
-      "name": "Verisk XactRestore",
-      "description": "Connect AI tools to Verisk XactRestore for natural-language estimating to create rooms, adjust line items, and surface pricing for restoration professionals. Hosted remotely by Verisk.",
-      "category": "Finance",
-      "connection_type": "sse",
-      "connection_url": "https://xactrestore-xactremodelserver-usw2-prod.propsol.io/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.verisk.com/",
-      "publisher": "Verisk",
-      "tags": [
-        "verisk",
-        "insurance",
-        "estimating",
-        "restoration",
-        "finance"
-      ]
-    },
-    {
-      "name": "Aura",
-      "description": "Connect AI tools to Aura for company intelligence and workforce analytics across headcount, hiring, and corporate structure. Hosted remotely by Aura.",
-      "category": "Research",
-      "connection_type": "http",
-      "connection_url": "https://mcp.auraintelligence.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.auraintelligence.com/",
-      "publisher": "Aura",
-      "tags": [
-        "aura",
-        "company-intelligence",
-        "workforce",
-        "analytics",
-        "research"
-      ]
-    },
-    {
-      "name": "Ketryx",
-      "description": "Connect AI tools to Ketryx to search and explore regulated software lifecycle, quality, and compliance data. Hosted remotely by Ketryx.",
-      "category": "Developer Tools",
-      "connection_type": "http",
-      "connection_url": "https://app.ketryx.com/api/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.ketryx.com/",
-      "publisher": "Ketryx",
-      "tags": [
-        "ketryx",
-        "compliance",
-        "quality",
-        "regulated",
-        "developer-tools"
-      ]
-    },
-    {
-      "name": "Gainsight",
-      "description": "Connect AI tools to Gainsight (Staircase AI) to bring customer context into workflows for customer-success teams. Hosted remotely by Gainsight.",
-      "category": "Customer Support",
-      "connection_type": "http",
-      "connection_url": "https://mcp.staircase.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.gainsight.com/",
-      "publisher": "Gainsight",
-      "tags": [
-        "gainsight",
-        "customer-success",
-        "customer-data",
-        "retention",
-        "customer-support"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/granted.png"
     },
     {
       "name": "Quo",
       "description": "Connect AI tools to Quo to surface call insights and missed opportunities through conversation intelligence. Hosted remotely by Quo.",
       "category": "Sales",
-      "connection_type": "http",
-      "connection_url": "https://mcp.quo.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://quo.com/",
+      "connection_type": "sse",
+      "connection_url": "https://mcp.quo.com/sse",
+      "auth_type": "headers",
+      "docs_url": "https://mcp.quo.com/",
       "publisher": "Quo",
       "tags": [
         "quo",
@@ -3088,7 +2032,8 @@
         "calls",
         "sales",
         "insights"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/quo.png"
     },
     {
       "name": "Zocks",
@@ -3105,7 +2050,8 @@
         "conversation-intelligence",
         "wealth",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/zocks.png"
     },
     {
       "name": "Shapes",
@@ -3122,24 +2068,8 @@
         "people-analytics",
         "headcount",
         "workforce"
-      ]
-    },
-    {
-      "name": "Adobe Experience Manager",
-      "description": "Connect AI tools to Adobe Experience Manager to create, edit, search, and publish pages and content fragments in natural language. Hosted remotely by Adobe.",
-      "category": "Marketing",
-      "connection_type": "http",
-      "connection_url": "https://mcp.adobeaemcloud.com/adobe/mcp/aem",
-      "auth_type": "oauth",
-      "docs_url": "https://business.adobe.com/products/experience-manager/adobe-experience-manager.html",
-      "publisher": "Adobe",
-      "tags": [
-        "adobe",
-        "aem",
-        "cms",
-        "content",
-        "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/shapes.png"
     },
     {
       "name": "Adobe Journey Optimizer",
@@ -3156,7 +2086,8 @@
         "campaigns",
         "orchestration",
         "marketing"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/adobe.svg"
     },
     {
       "name": "Adobe Marketing Agent",
@@ -3173,24 +2104,8 @@
         "campaigns",
         "audiences",
         "analytics"
-      ]
-    },
-    {
-      "name": "Adobe for Creativity",
-      "description": "Connect AI tools to Adobe creative tools including Photoshop, Lightroom, Illustrator, Firefly, Premiere, Express, InDesign, and Stock through natural language. Hosted remotely by Adobe.",
-      "category": "Design",
-      "connection_type": "http",
-      "connection_url": "https://adobe-creativity.adobe.io/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.adobe.com/",
-      "publisher": "Adobe",
-      "tags": [
-        "adobe",
-        "creative",
-        "photoshop",
-        "firefly",
-        "design"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/adobe.svg"
     },
     {
       "name": "Autodesk Product Help",
@@ -3207,7 +2122,8 @@
         "cad",
         "product-help",
         "developer-tools"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/autodesk.png"
     },
     {
       "name": "Orion by Gravity",
@@ -3224,143 +2140,8 @@
         "ai-analyst",
         "insights",
         "data"
-      ]
-    },
-    {
-      "name": "Aiwyn Tax",
-      "description": "Connect AI tools to Aiwyn to estimate federal and state taxes from user-provided tax documents. Hosted remotely by Aiwyn.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://mcp.columnapi.com/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.aiwyn.ai/",
-      "publisher": "Aiwyn",
-      "tags": [
-        "aiwyn",
-        "tax",
-        "accounting",
-        "estimation",
-        "finance"
-      ]
-    },
-    {
-      "name": "Clarity AI",
-      "description": "Connect AI tools to Clarity AI to simulate fund classifications under the proposed SFDR 2.0 framework for ESG workflows. Hosted remotely by Clarity AI.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://clarity-sfdr20-mcp.pro.clarity.ai/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://clarity.ai/",
-      "publisher": "Clarity AI",
-      "tags": [
-        "clarity-ai",
-        "esg",
-        "sfdr",
-        "compliance",
-        "finance"
-      ]
-    },
-    {
-      "name": "Chronograph",
-      "description": "Connect AI tools to Chronograph to interact with private-investment portfolio data. Hosted remotely by Chronograph.",
-      "category": "Finance",
-      "connection_type": "http",
-      "connection_url": "https://ai.chronograph.pe/mcp",
-      "auth_type": "oauth",
-      "docs_url": "https://www.chronograph.pe/",
-      "publisher": "Chronograph",
-      "tags": [
-        "chronograph",
-        "private-equity",
-        "portfolio",
-        "investments",
-        "finance"
-      ]
-    },
-    {
-      "name": "Aurora by Consilio",
-      "description": "Connect AI tools to Aurora, a read-only Consilio connector for engagement, document, matter, and workspace data. Hosted remotely by Consilio.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.ai.consilio.com",
-      "auth_type": "oauth",
-      "docs_url": "https://www.consilio.com/",
-      "publisher": "Consilio",
-      "tags": [
-        "aurora",
-        "consilio",
-        "legal",
-        "ediscovery",
-        "documents"
-      ]
-    },
-    {
-      "name": "BoardWise",
-      "description": "Connect AI tools to BoardWise for read-only educational guidance for licensed professionals facing state licensing-board matters. Hosted remotely by BoardWise.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://uakozrqrztgrgwoywxkx.supabase.co/functions/v1/mcp-server",
-      "auth_type": "none",
-      "docs_url": "https://www.boardwise.ai/",
-      "publisher": "BoardWise",
-      "tags": [
-        "boardwise",
-        "legal",
-        "licensing",
-        "professionals",
-        "guidance"
-      ]
-    },
-    {
-      "name": "TopCounsel",
-      "description": "Connect AI tools to TopCounsel to find outside counsel recommendations based on insights from a large in-house counsel community. Hosted remotely by TopCounsel.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://api.techgc.co/api/mcp/topcounsel",
-      "auth_type": "oauth",
-      "docs_url": "https://www.techgc.co/",
-      "publisher": "TechGC",
-      "tags": [
-        "topcounsel",
-        "legal",
-        "outside-counsel",
-        "recommendations",
-        "community"
-      ]
-    },
-    {
-      "name": "Trellis",
-      "description": "Connect AI tools to Trellis to access state trial-court data including dockets, rulings, verdicts, and filings for legal research and case strategy. Hosted remotely by Trellis.",
-      "category": "Legal",
-      "connection_type": "http",
-      "connection_url": "https://mcp.trellis.law/anthropic",
-      "auth_type": "oauth",
-      "docs_url": "https://trellis.law/",
-      "publisher": "Trellis",
-      "tags": [
-        "trellis",
-        "legal",
-        "trial-court",
-        "dockets",
-        "litigation"
-      ]
-    },
-    {
-      "name": "Kindora",
-      "description": "Connect AI tools to Kindora to find funders who support causes like yours for prospect research and funding strategy. Hosted remotely by Kindora.",
-      "category": "Productivity",
-      "connection_type": "http",
-      "connection_url": "https://kindora-mcp.azurewebsites.net/mcp/",
-      "auth_type": "oauth",
-      "docs_url": "https://www.kindora.org/",
-      "publisher": "Kindora",
-      "tags": [
-        "kindora",
-        "funders",
-        "grants",
-        "nonprofit",
-        "productivity"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/orion.png"
     },
     {
       "name": "Tropic",
@@ -3369,7 +2150,7 @@
       "connection_type": "http",
       "connection_url": "https://app.tropicapp.io/mcp",
       "auth_type": "oauth",
-      "docs_url": "https://www.tropicapp.io/",
+      "docs_url": "https://help.tropicapp.io/hc/en-us/articles/45502083594267-Using-Model-Context-Protocol-MCP-with-Tropic",
       "publisher": "Tropic",
       "tags": [
         "tropic",
@@ -3377,7 +2158,8 @@
         "contracts",
         "spend",
         "finance"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/tropic.png"
     },
     {
       "name": "PostHog",
@@ -3394,7 +2176,106 @@
         "product-analytics",
         "feature-flags",
         "data"
-      ]
+      ],
+      "icon_url": "/images/mcp-servers/posthog.svg"
+    },
+    {
+      "name": "Tally",
+      "description": "Connect AI tools to Tally to create and edit forms, pull submission data, and generate insights from responses. Hosted remotely by Tally.",
+      "category": "Productivity",
+      "connection_type": "http",
+      "connection_url": "https://api.tally.so/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://tally.so/help/mcp",
+      "publisher": "Tally",
+      "tags": [
+        "tally",
+        "forms",
+        "surveys",
+        "submissions",
+        "productivity"
+      ],
+      "icon_url": "/images/mcp-servers/tally.png"
+    },
+    {
+      "name": "Playwright",
+      "description": "Automate browser interactions for testing, scraping, and web automation using Playwright. Runs locally via npx with support for Chrome, Firefox, WebKit, and Edge.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "@playwright/mcp@latest"
+        ],
+        "envs": []
+      },
+      "auth_type": "none",
+      "docs_url": "https://playwright.dev/docs/getting-started-mcp",
+      "publisher": "Microsoft",
+      "tags": [
+        "playwright",
+        "browser",
+        "testing",
+        "automation",
+        "web"
+      ],
+      "icon_url": "/images/mcp-servers/playwright.png"
+    },
+    {
+      "name": "Brave Search",
+      "description": "Connect AI tools to Brave Search for web search, local business search, image search, video search, news search, and AI-powered summarization. Runs locally via npx.",
+      "category": "Search",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@brave/brave-search-mcp-server",
+          "--transport",
+          "stdio"
+        ],
+        "envs": [
+          "BRAVE_API_KEY"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://github.com/brave/brave-search-mcp-server",
+      "publisher": "Brave",
+      "tags": [
+        "brave",
+        "search",
+        "web-search",
+        "news",
+        "local-search"
+      ],
+      "icon_url": "/images/mcp-servers/brave.png"
+    },
+    {
+      "name": "Perplexity",
+      "description": "Connect AI assistants to Perplexity's search and reasoning capabilities for web search with citations and AI-powered summarization. Runs locally via npx.",
+      "category": "Search",
+      "connection_type": "stdio",
+      "stdio_config": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@perplexity-ai/mcp-server"
+        ],
+        "envs": [
+          "PERPLEXITY_API_KEY"
+        ]
+      },
+      "auth_type": "none",
+      "docs_url": "https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server",
+      "publisher": "Perplexity",
+      "tags": [
+        "perplexity",
+        "search",
+        "web-search",
+        "ai-search",
+        "citations"
+      ],
+      "icon_url": "/images/mcp-servers/perplexity.png"
     }
   ]
 }
