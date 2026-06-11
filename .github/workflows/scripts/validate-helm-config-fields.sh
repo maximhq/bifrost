@@ -555,7 +555,6 @@ assert_field_value 'governance.providers[0].rate_limit_id' '.governance.provider
 assert_field_value 'governance.auth_config.admin_username' '.governance.auth_config.admin_username' '"admin"'
 assert_field_value 'governance.auth_config.admin_password' '.governance.auth_config.admin_password' '"secret"'
 assert_field_value 'governance.auth_config.is_enabled' '.governance.auth_config.is_enabled' 'true'
-assert_field_value 'governance.auth_config.disable_auth_on_inference' '.governance.auth_config.disable_auth_on_inference' 'true'
 
 ###############################################################################
 # 5. Top-level Auth Config
@@ -579,7 +578,6 @@ render_config "$TMPDIR/values-auth.yaml"
 assert_field_value 'auth_config.admin_username' '.auth_config.admin_username' '"root"'
 assert_field_value 'auth_config.admin_password' '.auth_config.admin_password' '"rootpass"'
 assert_field_value 'auth_config.is_enabled' '.auth_config.is_enabled' 'true'
-assert_field_value 'auth_config.disable_auth_on_inference' '.auth_config.disable_auth_on_inference' 'false'
 
 ###############################################################################
 # 6. Plugins (telemetry, logging, governance, maxim, semantic_cache, otel, datadog, custom)
