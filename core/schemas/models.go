@@ -151,7 +151,7 @@ type Model struct {
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
 	NormalizedName      *string            `json:"normalized_name,omitempty"` // Human-readable name derived from the datasheet base_model (e.g. "Claude Sonnet 4.5")
-	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
+	Alias               *string            `json:"alias,omitempty"`           // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
 	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`
@@ -173,9 +173,64 @@ type Model struct {
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`
 
+	RawModelJSON json.RawMessage `json:"-"`
+
 	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
 	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.
 	ProviderExtra json.RawMessage `json:"-"`
+}
+
+type modelAlias Model
+
+type modelUnmarshalAlias struct {
+	modelAlias
+	ContextWindow *int `json:"context_window,omitempty"`
+}
+
+func (m *Model) UnmarshalJSON(data []byte) error {
+	var decoded modelUnmarshalAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	result := Model(decoded.modelAlias)
+	if result.ContextLength == nil && decoded.ContextWindow != nil {
+		result.ContextLength = decoded.ContextWindow
+	}
+	if len(data) > 0 {
+		result.RawModelJSON = append(json.RawMessage(nil), data...)
+	}
+
+	*m = result
+	return nil
+}
+
+func (m Model) MarshalJSON() ([]byte, error) {
+	alias := modelAlias(m)
+	if len(m.RawModelJSON) == 0 {
+		return json.Marshal(alias)
+	}
+
+	merged := map[string]json.RawMessage{}
+	if err := json.Unmarshal(m.RawModelJSON, &merged); err != nil {
+		return json.Marshal(alias)
+	}
+
+	overlayBytes, err := json.Marshal(alias)
+	if err != nil {
+		return nil, err
+	}
+
+	var overlay map[string]json.RawMessage
+	if err := json.Unmarshal(overlayBytes, &overlay); err != nil {
+		return nil, err
+	}
+
+	for key, value := range overlay {
+		merged[key] = value
+	}
+
+	return json.Marshal(merged)
 }
 
 type Architecture struct {

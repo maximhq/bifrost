@@ -105,6 +105,26 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 	return defaultProvider, model
 }
 
+func ParseListModelString(model string, defaultProvider ModelProvider) (ModelProvider, string) {
+	provider, parsedModel := ParseModelString(model, defaultProvider)
+	if !strings.Contains(model, "/") {
+		return provider, parsedModel
+	}
+	if provider != defaultProvider || parsedModel != model {
+		return provider, parsedModel
+	}
+
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) == 2 {
+		normalizedProvider := strings.ToLower(parts[0])
+		if IsKnownProvider(normalizedProvider) {
+			return ModelProvider(normalizedProvider), parts[1]
+		}
+	}
+
+	return provider, parsedModel
+}
+
 // IsAllDigitsASCII checks if a string contains only ASCII digits (0-9).
 func IsAllDigitsASCII(s string) bool {
 	if s == "" {
