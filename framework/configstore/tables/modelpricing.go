@@ -28,7 +28,11 @@ type TableModelPricing struct {
 	OutputCostPerTokenPriority *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
 	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
-	InputCostPerCharacter      *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
+	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+	// Flat rate across the full context window; cache tokens bill at standard cache rates.
+	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
+	OutputCostPerTokenFast *float64 `gorm:"default:null;column:output_cost_per_token_fast" json:"output_cost_per_token_fast,omitempty"`
+	InputCostPerCharacter  *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`

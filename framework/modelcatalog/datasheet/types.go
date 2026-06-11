@@ -102,7 +102,11 @@ type Options struct {
 	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
 	InputCostPerTokenFlex      *float64 `json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `json:"output_cost_per_token_flex,omitempty"`
-	InputCostPerCharacter      *float64 `json:"input_cost_per_character,omitempty"`
+	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+	// Flat rate across the full context window — no 128k/200k/272k tiering.
+	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
+	OutputCostPerTokenFast *float64 `json:"output_cost_per_token_fast,omitempty"`
+	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
@@ -246,6 +250,7 @@ type Override struct {
 type serviceTier struct {
 	isPriority bool // true when service_tier == "priority"
 	isFlex     bool // true when service_tier == "flex"
+	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
 }
 
 // costInput holds the extracted usage data from a BifrostResponse,
@@ -544,6 +549,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
 		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
+		InputCostPerTokenFast:                     entry.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                    entry.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:          entry.InputCostPerTokenAbove200kTokens,
 		InputCostPerTokenAbove200kTokensPriority:  entry.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
@@ -619,6 +626,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
 		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenFast:                     pricing.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                    pricing.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:          pricing.InputCostPerTokenAbove200kTokens,
 		InputCostPerTokenAbove200kTokensPriority:  pricing.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         pricing.OutputCostPerTokenAbove200kTokens,
