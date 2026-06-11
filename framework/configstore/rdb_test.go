@@ -43,6 +43,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableGovernanceConfig{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
+		&tables.TableMCPLibrary{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableFolder{},
 		&tables.TablePrompt{},
@@ -183,6 +184,30 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *te
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestUpsertMCPLibraryEntry(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	entry := &tables.TableMCPLibrary{
+		Slug:           "filesystem",
+		Name:           "Filesystem",
+		Description:    "original",
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		AuthType:       schemas.MCPAuthTypeNone,
+		Source:         "remote",
+	}
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, entry))
+
+	entry.Description = "updated"
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, entry))
+
+	entries, totalCount, err := store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{Limit: 1})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), totalCount)
+	require.Len(t, entries, 1)
+	require.Equal(t, "updated", entries[0].Description)
 }
 
 // =============================================================================

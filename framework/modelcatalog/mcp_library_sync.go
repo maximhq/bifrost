@@ -17,6 +17,50 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	urlFetchMaxRetries     = 3                // retries after the first attempt (4 attempts total)
+	urlFetchMaxBackoff     = 10 * time.Second // cap for exponential backoff (steps start at 1s)
+	retryBackoffMin        = time.Second      // initial wait before the first retry
+	maxMCPLibraryBodyBytes = 50 << 20         // 50 MiB — hard cap on the catalog payload to prevent OOM
+)
+
+// withRetries runs op up to maxRetries+1 times, waiting with exponential
+// backoff (starting at retryBackoffMin, capped at maxBackoff) between attempts.
+// It returns the first successful result or the last error. The context is
+// honored during both the operation and the backoff waits.
+func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Duration, op func() (T, error)) (T, error) {
+	var zero T
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		default:
+		}
+
+		if attempt > 0 {
+			backoff := retryBackoffMin * time.Duration(1<<uint(attempt-1))
+			if maxBackoff > 0 && backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		v, err := op()
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+	}
+	return zero, lastErr
+}
+
 // MCPLibraryEntry is the JSON shape a single server has in the remote MCP
 // library catalog (the payload fetched from DefaultMCPLibraryURL / custom URL).
 // The catalog carries no slug; it is derived from Name at sync time via
@@ -57,7 +101,7 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 		url = DefaultMCPLibraryURL
 	}
 
-	entries, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() ([]MCPLibraryEntry, error) {
+	entries, err := withRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() ([]MCPLibraryEntry, error) {
 		return fetchMCPLibrary(ctx, url)
 	})
 	if err != nil {
