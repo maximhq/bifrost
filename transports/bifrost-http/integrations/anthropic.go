@@ -306,16 +306,9 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Strip the explicit `anthropic/` prefix so downstream code sees the bare model.
-		if provider == schemas.Anthropic {
-			r.Model = model
-		}
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		if provider == schemas.Anthropic {
-			r.Model = model
-		}
 	}
 
 	headers := extractHeadersFromRequest(ctx)
