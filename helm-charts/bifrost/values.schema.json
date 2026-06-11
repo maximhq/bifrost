@@ -872,14 +872,27 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
                 "config": {
                   "type": "object",
                   "properties": {
                     "service_name": {
                       "type": "string"
                     },
+                    "ml_app": {
+                      "type": "string",
+                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name)"
+                    },
                     "agent_addr": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Datadog Agent address for APM traces (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_AGENT_ADDR)"
+                    },
+                    "dogstatsd_addr": {
+                      "type": "string",
+                      "description": "DogStatsD server address for metrics (agent mode only). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_DOGSTATSD_ADDR)"
                     },
                     "env": {
                       "type": "string"
@@ -888,10 +901,46 @@
                       "type": "string"
                     },
                     "custom_tags": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "Custom tags for Datadog metrics and traces. Values support env.VAR_NAME prefix for environment variable substitution",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Enable Datadog metrics emission (default: true)"
                     },
                     "enable_traces": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "Enable Datadog APM traces (default: true)"
+                    },
+                    "enable_llm_obs": {
+                      "type": "boolean",
+                      "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "When true, sensitive content (prompts, completions, embeddings) is excluded from traces (default: false)"
+                    },
+                    "agentless": {
+                      "type": "boolean",
+                      "description": "Use agentless mode to send data directly to Datadog APIs instead of a local agent. Requires api_key (default: false)"
+                    },
+                    "api_key": {
+                      "type": "string",
+                      "description": "Datadog API key, required for agentless mode. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.DD_API_KEY)"
+                    },
+                    "site": {
+                      "type": "string",
+                      "description": "Datadog site/region for agentless mode (e.g. datadoghq.com, datadoghq.eu)"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header names to capture as Datadog span tags"
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
