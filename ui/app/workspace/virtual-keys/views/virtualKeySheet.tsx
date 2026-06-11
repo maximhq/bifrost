@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
+import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import {
@@ -42,7 +42,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DottedSeparator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -61,7 +60,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { TimePicker } from "@/components/ui/timePicker";
 import Toggle from "@/components/ui/toggle";
 import {
   Tooltip,
@@ -98,7 +96,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { CalendarIcon, Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -239,36 +237,6 @@ interface ExpiryFieldProps {
 }
 
 function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
-  const [customOpen, setCustomOpen] = useState(false);
-  const [pickerDate, setPickerDate] = useState<Date | undefined>(undefined);
-  const [pickerTime, setPickerTime] = useState({ hour: 23, minute: 59 });
-
-  const handleCustomOpen = (open: boolean) => {
-    if (open) {
-      if (value) {
-        const d = new Date(value);
-        setPickerDate(d);
-        setPickerTime({ hour: d.getHours(), minute: d.getMinutes() });
-      } else {
-        setPickerDate(undefined);
-        setPickerTime({ hour: 23, minute: 59 });
-      }
-    }
-    setCustomOpen(open);
-  };
-
-  const customDateTime = pickerDate ? new Date(pickerDate) : null;
-  if (customDateTime) {
-    customDateTime.setHours(pickerTime.hour, pickerTime.minute, 0, 0);
-  }
-  const customIsInvalid = !customDateTime || customDateTime.getTime() <= Date.now();
-
-  const applyCustom = () => {
-    if (customIsInvalid || !customDateTime) return;
-    onChange(toDatetimeLocal(customDateTime));
-    setCustomOpen(false);
-  };
-
   const summary = value
     ? formatDistanceToNow(new Date(value), { addSuffix: true })
     : null;
@@ -314,40 +282,12 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
             {label}
           </Button>
         ))}
-        <Popover open={customOpen} onOpenChange={handleCustomOpen}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm">
-              <CalendarIcon className="mr-1.5 h-3.5 w-3.5" />
-              Custom
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
-            <Calendar
-              mode="single"
-              selected={pickerDate}
-              onSelect={setPickerDate}
-              disabled={{ before: new Date() }}
-              initialFocus
-            />
-            <div className="border-t p-3 space-y-2">
-              <TimePicker value={pickerTime} onChange={setPickerTime} />
-              {customIsInvalid && pickerDate && (
-                <p className="text-muted-foreground text-xs">
-                  Choose a future date and time.
-                </p>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                className="w-full"
-                onClick={applyCustom}
-                disabled={customIsInvalid}
-              >
-                Apply
-              </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+        <DateTimePicker
+          buttonClassName="h-8 text-sm px-3"
+          dateTime={value ? new Date(value) : undefined}
+          disabledBefore={new Date()}
+          onDateTimeUpdate={(dt) => onChange(toDatetimeLocal(dt))}
+        />
       </div>
       <FormMessage />
     </FormItem>

@@ -352,45 +352,40 @@ export function DateTimePicker(props: DateTimePickerProps) {
 					</Button>
 				</PopoverTrigger>
 				<PopoverContent className="w-auto p-0" align={props.popupAlignment ? props.popupAlignment : "start"}>
-					<div className="flex flex-row gap-2">
-						<div>
-							<Calendar
-								autoFocus
-								mode="single"
-								disabled={disabledDateRange}
-								defaultMonth={date}
-								selected={date}
-								numberOfMonths={2}
-								onSelect={(selectedDate) => {
-									if (!selectedDate) return;
-									setDate(selectedDate);
+					<div className="p-2">
+						<Calendar
+							autoFocus
+							mode="single"
+							disabled={disabledDateRange}
+							defaultMonth={date}
+							selected={date}
+							onSelect={(selectedDate) => {
+								if (!selectedDate) return;
+								setDate(selectedDate);
 
-									const newDateTime = getDateTime(selectedDate, timeValue);
+								const newDateTime = getDateTime(selectedDate, timeValue);
+
+								if (newDateTime?.toISOString() !== props.dateTime?.toISOString()) {
+									props.onDateTimeUpdate && newDateTime && props.onDateTimeUpdate(newDateTime);
+								}
+							}}
+						/>
+						<div className="mt-3 flex flex-col gap-1 px-2 pb-2">
+							<Label className="ml-0.5">Time</Label>
+							<TimePicker
+								aria-label="Time"
+								className=""
+								value={timeValue}
+								onChange={(v) => {
+									if (v) setTimeValue(v);
+
+									const newDateTime = getDateTime(date, v);
 
 									if (newDateTime?.toISOString() !== props.dateTime?.toISOString()) {
 										props.onDateTimeUpdate && newDateTime && props.onDateTimeUpdate(newDateTime);
 									}
 								}}
 							/>
-							<div className="-mt-1 flex flex-row items-center px-2 pb-1">
-								<div className="m-1 flex flex-1 flex-col gap-1">
-									<Label className="ml-0.5">Time</Label>
-									<TimePicker
-										aria-label="Time"
-										className=""
-										value={timeValue}
-										onChange={(v) => {
-											if (v) setTimeValue(v);
-
-											const newDateTime = getDateTime(date, v);
-
-											if (newDateTime?.toISOString() !== props.dateTime?.toISOString()) {
-												props.onDateTimeUpdate && newDateTime && props.onDateTimeUpdate(newDateTime);
-											}
-										}}
-									/>
-								</div>
-							</div>
 						</div>
 					</div>
 					{triggerLabel && onTrigger && (

@@ -1109,7 +1109,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if virtualKeyValue != "" {
 		var ok bool
 		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
+		if !ok || virtualKey == nil || virtualKey.IsExpiredAt(time.Now().UTC()) {
 			return nil
 		}
 	}

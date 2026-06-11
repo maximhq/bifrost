@@ -180,8 +180,8 @@ export interface UpdateVirtualKeyRequest {
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	reset_budget_usage?: boolean;
-	expires_at?: string | null;    // ISO 8601 UTC timestamp; omit to leave unchanged
-	clear_expires_at?: boolean;    // true to remove an existing expiry (mutually exclusive with expires_at)
+	expires_at?: string | null; // ISO 8601 UTC timestamp; omit to leave unchanged
+	clear_expires_at?: boolean; // true to remove an existing expiry (mutually exclusive with expires_at)
 }
 
 export interface BulkRotateVirtualKeysRequest {

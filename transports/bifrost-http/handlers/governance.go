@@ -182,11 +182,10 @@ type UpdateVirtualKeyRequest struct {
 	Budgets          []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit        *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
 	IsActive         *bool                        `json:"is_active,omitempty"`
-	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
+	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
 	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
-	ExpiresAt        *time.Time                   `json:"expires_at,omitempty"`          // Set a new expiry; nil means "leave unchanged"
-	ClearExpiresAt   bool                         `json:"clear_expires_at,omitempty"`    // true to remove an existing expiry (also clears delete_after_expiry)
-	DeleteAfterExpiry *bool                       `json:"delete_after_expiry,omitempty"` // nil means "leave unchanged"
+	ExpiresAt        *time.Time                   `json:"expires_at,omitempty"`       // Set a new expiry; nil means "leave unchanged"
+	ClearExpiresAt   bool                         `json:"clear_expires_at,omitempty"` // true to remove an existing expiry
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
