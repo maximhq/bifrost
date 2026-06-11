@@ -1421,6 +1421,12 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 								openaiReq.InputFileID = string(decodedFileID)
 							}
 						}
+					case schemas.Vertex:
+						if openaiReq.InputFileID != "" {
+							if decodedFileID, err := base64.RawURLEncoding.DecodeString(openaiReq.InputFileID); err == nil {
+								openaiReq.InputFileID = string(decodedFileID)
+							}
+						}
 					}
 					return &BatchRequest{
 						Type:          schemas.BatchCreateRequest,
@@ -1437,6 +1443,12 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
 					resp.InputFileID = base64.StdEncoding.EncodeToString([]byte(resp.InputFileID))
+				case schemas.Vertex:
+					// id is a full resource name (projects/.../batchPredictionJobs/{id}) and
+					// input_file_id is a gs:// URI; both contain slashes. RawURLEncoding keeps
+					// them path-safe so callers can use them in retrieve/cancel without escaping.
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
+					resp.InputFileID = base64.RawURLEncoding.EncodeToString([]byte(resp.InputFileID))
 				}
 				return resp, nil
 			},
@@ -1570,6 +1582,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						resp.Data[i].ID = base64.StdEncoding.EncodeToString([]byte(batch.ID))
 						resp.Data[i].InputFileID = base64.StdEncoding.EncodeToString([]byte(batch.InputFileID))
 					}
+				case schemas.Vertex:
+					for i, batch := range resp.Data {
+						resp.Data[i].ID = base64.RawURLEncoding.EncodeToString([]byte(batch.ID))
+						resp.Data[i].InputFileID = base64.RawURLEncoding.EncodeToString([]byte(batch.InputFileID))
+					}
 				}
 				return resp, nil
 			},
@@ -1609,6 +1626,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						if decodedBatchID, err := base64.StdEncoding.DecodeString(retrieveReq.BatchID); err == nil {
 							retrieveReq.BatchID = string(decodedBatchID)
 						}
+					case schemas.Vertex:
+						// Reverse the RawURLEncoding applied to the full resource name.
+						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(retrieveReq.BatchID); err == nil {
+							retrieveReq.BatchID = string(decodedBatchID)
+						}
 					}
 					return &BatchRequest{
 						Type:            schemas.BatchRetrieveRequest,
@@ -1625,6 +1647,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
 					resp.InputFileID = base64.StdEncoding.EncodeToString([]byte(resp.InputFileID))
+				case schemas.Vertex:
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
+					resp.InputFileID = base64.RawURLEncoding.EncodeToString([]byte(resp.InputFileID))
 				}
 				return resp, nil
 			},
@@ -1664,6 +1689,11 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 						if decodedBatchID, err := base64.StdEncoding.DecodeString(cancelReq.BatchID); err == nil {
 							cancelReq.BatchID = string(decodedBatchID)
 						}
+					case schemas.Vertex:
+						// Reverse the RawURLEncoding applied to the full resource name.
+						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(cancelReq.BatchID); err == nil {
+							cancelReq.BatchID = string(decodedBatchID)
+						}
 					}
 					return &BatchRequest{
 						Type:          schemas.BatchCancelRequest,
@@ -1678,6 +1708,8 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
 				case schemas.Bedrock:
 					resp.ID = base64.StdEncoding.EncodeToString([]byte(resp.ID))
+				case schemas.Vertex:
+					resp.ID = base64.RawURLEncoding.EncodeToString([]byte(resp.ID))
 				}
 				return resp, nil
 			},

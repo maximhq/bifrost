@@ -179,6 +179,7 @@ from .utils.common import (
     get_content_string,
     get_provider_voice,
     get_provider_voices,
+    get_vertex_batch_dest_uri,
     get_vertex_gcs_config,
     mock_tool_response,
     skip_if_no_api_key,
@@ -3175,6 +3176,48 @@ class TestOpenAIIntegration:
                         print(f"Info: Could not cancel batch (may already be processed): {e}")
             return
 
+        # Vertex uses a customer-owned GCS bucket for input and an output_folder (gs:// prefix)
+        # instead of Bedrock's S3 role/URI. The uploaded file id is base64-encoded by the
+        # integration; the batch routes decode it back to gs:// before reaching the provider.
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+            uploaded_file = client.files.create(
+                file=("batch_create_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={"provider": provider, "storage_config": storage_config},
+            )
+            batch = None
+            try:
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                assert_valid_batch_response(batch)
+                assert (
+                    batch.input_file_id == uploaded_file.id
+                ), f"Input file ID should round-trip: expected {uploaded_file.id}, got {batch.input_file_id}"
+                print(
+                    f"Success: Created file-based batch with ID: {batch.id}, status: {batch.status} for provider {provider}"
+                )
+            finally:
+                if batch:
+                    try:
+                        client.batches.cancel(batch.id, extra_body={"provider": provider})
+                    except Exception as e:
+                        print(f"Info: Could not cancel batch (may already be processed): {e}")
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+            return
+
         # File-based batching for other providers (Bedrock, OpenAI)
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
@@ -3329,6 +3372,49 @@ class TestOpenAIIntegration:
                         pass
             return
 
+        # Vertex: GCS-backed file input + output_folder (gs:// prefix).
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            batch_id = None
+            uploaded_file = None
+            try:
+                jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+                uploaded_file = client.files.create(
+                    file=("batch_retrieve_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                    purpose="batch",
+                    extra_body={"provider": provider, "storage_config": storage_config},
+                )
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                batch_id = batch.id
+
+                retrieved_batch = client.batches.retrieve(batch_id, extra_query={"provider": provider})
+                assert_valid_batch_response(retrieved_batch)
+                assert retrieved_batch.id == batch_id
+                print(
+                    f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status} for provider {provider}"
+                )
+            finally:
+                if batch_id:
+                    try:
+                        client.batches.cancel(batch_id, extra_body={"provider": provider})
+                    except Exception:
+                        pass
+                if uploaded_file:
+                    try:
+                        client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    except Exception:
+                        pass
+            return
+
         # File-based batching for other providers (Bedrock, OpenAI)
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
@@ -3450,6 +3536,42 @@ class TestOpenAIIntegration:
                 pass
             return
 
+        # Vertex: GCS-backed file input + output_folder (gs:// prefix).
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            uploaded_file = None
+            try:
+                jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+                uploaded_file = client.files.create(
+                    file=("batch_cancel_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                    purpose="batch",
+                    extra_body={"provider": provider, "storage_config": storage_config},
+                )
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                cancelled_batch = client.batches.cancel(batch.id, extra_body={"provider": provider})
+                assert cancelled_batch is not None
+                assert cancelled_batch.id == batch.id
+                assert cancelled_batch.status in ["cancelling", "cancelled"]
+                print(
+                    f"Success: Cancelled batch {batch.id}, status: {cancelled_batch.status} for provider {provider}"
+                )
+            finally:
+                if uploaded_file:
+                    try:
+                        client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    except Exception:
+                        pass
+            return
+
         # File-based batching for other providers (Bedrock, OpenAI)
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
@@ -3536,6 +3658,70 @@ class TestOpenAIIntegration:
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for batch_file_upload scenario")
 
+        # Get provider-specific client
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        # Vertex: GCS-backed e2e (upload -> create -> poll -> verify in list). Handled before
+        # the Bedrock S3 config/skip below, since Vertex uses its own GCS bucket. Vertex batches
+        # are long-running, so we poll a few times but do not wait for a terminal state.
+        if provider == "vertex":
+            storage_config = get_file_storage_config(provider)  # skips if VERTEX_GCS_BUCKET unset
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+            print(f"Step 1: Uploading batch input file for provider {provider}...")
+            uploaded_file = client.files.create(
+                file=("batch_e2e_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={"provider": provider, "storage_config": storage_config},
+            )
+            assert_valid_file_response(uploaded_file, expected_purpose="batch")
+            print(f"  Uploaded file: {uploaded_file.id}")
+            batch = None
+            try:
+                print("Step 2: Creating batch job with file ID...")
+                batch = client.batches.create(
+                    input_file_id=uploaded_file.id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    metadata={"test": "e2e_file", "source": "bifrost-integration-tests"},
+                    extra_body={
+                        "provider": provider,
+                        "model": model,
+                        "output_folder": {"url": get_vertex_batch_dest_uri()},
+                    },
+                )
+                assert_valid_batch_response(batch)
+                print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+                print("Step 3: Polling batch status...")
+                for i in range(5):
+                    retrieved_batch = client.batches.retrieve(
+                        batch.id, extra_query={"provider": provider}
+                    )
+                    print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+                    if retrieved_batch.status in ["completed", "failed", "expired", "cancelled"]:
+                        break
+                    time.sleep(2)
+
+                print("Step 4: Verifying batch in list...")
+                batch_list = client.batches.list(limit=20, extra_query={"provider": provider})
+                assert batch.id in [
+                    b.id for b in batch_list.data
+                ], f"Batch {batch.id} should be in the batch list"
+                print(f"Success: File API E2E completed for batch {batch.id} (provider: {provider})")
+            finally:
+                if batch:
+                    try:
+                        client.batches.cancel(batch.id, extra_body={"provider": provider})
+                        print(f"Cleanup: Cancelled batch {batch.id}")
+                    except Exception as e:
+                        print(f"Cleanup info: Could not cancel batch: {e}")
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                    print(f"Cleanup: Deleted file {uploaded_file.id}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete file: {e}")
+            return
+
         config = get_config()
         integration_settings = config.get_integration_settings("bedrock")
         s3_bucket = integration_settings.get("s3_bucket")
@@ -3544,9 +3730,6 @@ class TestOpenAIIntegration:
 
         if not s3_bucket:
             pytest.skip("S3 bucket not configured for file tests")
-
-        # Get provider-specific client
-        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
 
         # Anthropic uses inline requests instead of file-based batching
         if provider == "anthropic":
