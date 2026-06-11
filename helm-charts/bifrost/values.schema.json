@@ -2780,6 +2780,13 @@
                         }
                       },
                       "additionalProperties": false
+                    },
+                    "key_ids": {
+                      "type": "array",
+                      "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": ["provider_name"],
@@ -4630,7 +4637,7 @@
         },
         "key_ids": {
           "type": "array",
-          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In Helm values, use provider key names.",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
