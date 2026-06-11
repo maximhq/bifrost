@@ -388,7 +388,7 @@ bifrost:
 
 If you use `complexity_tier` in routing rules, you can seed the analyzer thresholds and keyword lists from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to use the built-in defaults.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave the stored runtime configuration unchanged. Fresh installs use the built-in defaults.
 
 ```yaml
 bifrost:
@@ -406,7 +406,7 @@ bifrost:
 ```
 
 <Note>
-When this block is present, it is reapplied from the generated `config.json` on restart. Runtime UI and API edits still hot-reload immediately, but Helm values remain the source of truth for the next rollout.
+In the default `source_of_truth: "split"` mode, Helm changes update tier boundaries and merge configured keywords with the stored lists as a union. Runtime UI and API edits are preserved in the store across restarts, but they are not written back to the rendered `config.json`. Set `bifrost.sourceOfTruth: "config.json"` when Helm should remain authoritative.
 </Note>
 
 ---

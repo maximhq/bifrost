@@ -983,6 +983,11 @@ func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, co
 	if m.governanceConfig == nil {
 		m.governanceConfig = &configstore.GovernanceConfig{}
 	}
+	if config != nil && config.ConfigHash == "" && m.governanceConfig.ComplexityAnalyzerConfig != nil {
+		copy := *config
+		copy.ConfigHash = m.governanceConfig.ComplexityAnalyzerConfig.ConfigHash
+		config = &copy
+	}
 	m.governanceConfig.ComplexityAnalyzerConfig = config
 	return nil
 }
@@ -1466,10 +1471,10 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 			ComplexReasoning: 0.77,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API"},
-			ReasoningKeywords: []string{"tradeoffs"},
-			TechnicalKeywords: []string{"latency"},
-			SimpleKeywords:    []string{"hello"},
+			CodeKeywords:      []string{"file-code"},
+			ReasoningKeywords: []string{"file-reason"},
+			TechnicalKeywords: []string{"file-tech"},
+			SimpleKeywords:    []string{"file-simple"},
 		},
 	}
 	configData := &ConfigData{
@@ -1484,8 +1489,148 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
-	require.Equal(t, []string{"api", "function"}, stored.Keywords.CodeKeywords)
+	require.Contains(t, stored.Keywords.CodeKeywords, "file-code")
+	require.Contains(t, stored.Keywords.CodeKeywords, "algorithm")
+	require.Contains(t, stored.Keywords.ReasoningKeywords, "file-reason")
+	require.NotEmpty(t, stored.ConfigHash)
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
+}
+
+func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenFileHashMatches(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHash, err := configstore.GenerateComplexityAnalyzerConfigHash(fileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHash = fileHash
+	dbConfig.TierBoundaries.SimpleMedium = 0.21
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHash, stored.ConfigHash)
+}
+
+func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenFileHashChanges(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHash = "old-file-hash"
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHash, err := configstore.GenerateComplexityAnalyzerConfigHash(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
+	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
+	require.Equal(t, fileHash, stored.ConfigHash)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHash = "old-file-hash"
+	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileHash, err := configstore.GenerateComplexityAnalyzerConfigHash(fileConfig)
+	require.NoError(t, err)
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileHash, stored.ConfigHash)
+}
+
+func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.10,
+			MediumComplex:    0.30,
+			ComplexReasoning: 0.70,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"runtime-code"},
+			ReasoningKeywords: []string{"runtime-reason"},
+			TechnicalKeywords: []string{"runtime-tech"},
+			SimpleKeywords:    []string{"runtime-simple"},
+		},
+	}
+}
+
+func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{
+			SimpleMedium:     0.22,
+			MediumComplex:    0.44,
+			ComplexReasoning: 0.88,
+		},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			CodeKeywords:      []string{"file-code"},
+			ReasoningKeywords: []string{"file-reason"},
+			TechnicalKeywords: []string{"file-tech"},
+			SimpleKeywords:    []string{"file-simple"},
+		},
+	}
 }
 
 // Prompt Repository - Folders

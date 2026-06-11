@@ -181,9 +181,9 @@ curl -X POST http://localhost:8080/api/governance/complexity-analyzer-config/res
 Each keyword list requires at least one entry. Keywords are normalized to lowercase and deduplicated on save. Changes are hot-reloaded with no restart required.
 </Note>
 
-<Warning>
-If `governance.complexity_analyzer_config` is present in `config.json`, the file remains authoritative on restart. UI and API edits apply immediately, but the file values are re-applied on the next startup unless you update `config.json` too.
-</Warning>
+<Note>
+In the default `source_of_truth: "split"` mode, config file changes update tier boundaries and merge configured keywords with the stored lists as a union. UI and API edits are preserved in the store across restarts, but they are not written back to `config.json`. Set `source_of_truth: "config.json"` when the generated file should remain authoritative.
+</Note>
 
 </Tab>
 </Tabs>

@@ -4957,6 +4957,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	}
 	var authConfig *AuthConfig
 	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
+	var complexityAnalyzerConfigHash string
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
@@ -4982,7 +4983,12 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 					continue
 				}
 				complexityAnalyzerConfig = decoded
+			case tables.ConfigComplexityAnalyzerConfigHashKey:
+				complexityAnalyzerConfigHash = strings.TrimSpace(entry.Value)
 			}
+		}
+		if complexityAnalyzerConfig != nil {
+			complexityAnalyzerConfig.ConfigHash = complexityAnalyzerConfigHash
 		}
 		if username != nil && password != nil {
 			authConfig = &AuthConfig{
@@ -5009,17 +5015,35 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 
 // GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
 func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
-	configEntry, err := s.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, nil
-		}
+	var entries []tables.TableGovernanceConfig
+	if err := s.DB().WithContext(ctx).
+		Where("key IN ?", []string{
+			tables.ConfigComplexityAnalyzerConfigKey,
+			tables.ConfigComplexityAnalyzerConfigHashKey,
+		}).
+		Find(&entries).Error; err != nil {
 		return nil, err
 	}
-	if configEntry == nil || strings.TrimSpace(configEntry.Value) == "" {
+
+	var configValue string
+	var configHash string
+	for _, entry := range entries {
+		switch entry.Key {
+		case tables.ConfigComplexityAnalyzerConfigKey:
+			configValue = entry.Value
+		case tables.ConfigComplexityAnalyzerConfigHashKey:
+			configHash = strings.TrimSpace(entry.Value)
+		}
+	}
+	if strings.TrimSpace(configValue) == "" {
 		return nil, nil
 	}
-	return DecodeComplexityAnalyzerConfig([]byte(configEntry.Value))
+	decoded, err := DecodeComplexityAnalyzerConfig([]byte(configValue))
+	if err != nil {
+		return nil, err
+	}
+	decoded.ConfigHash = configHash
+	return decoded, nil
 }
 
 // UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
@@ -5033,14 +5057,31 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
+	if normalized.ConfigHash != "" && len(tx) == 0 {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.updateComplexityAnalyzerConfigTx(ctx, normalized, transaction)
+		})
+	}
+	return s.updateComplexityAnalyzerConfigTx(ctx, normalized, tx...)
+}
+
+func (s *RDBConfigStore) updateComplexityAnalyzerConfigTx(ctx context.Context, normalized ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
 	raw, err := json.Marshal(normalized)
 	if err != nil {
 		return fmt.Errorf("failed to marshal complexity analyzer config: %w", err)
 	}
-
-	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+	if err := s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigKey,
 		Value: string(raw),
+	}, tx...); err != nil {
+		return err
+	}
+	if normalized.ConfigHash == "" {
+		return nil
+	}
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigHashKey,
+		Value: normalized.ConfigHash,
 	}, tx...)
 }
 

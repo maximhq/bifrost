@@ -2363,21 +2363,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 	}
 
-	// File config stays authoritative for analyzer tuning when present.
-	if configData.Governance.ComplexityAnalyzerConfig != nil {
-		normalized, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
-		if err != nil {
-			logger.Error("invalid complexity analyzer config in config file: %v", err)
-		} else if normalized != nil {
-			current := config.GovernanceConfig.ComplexityAnalyzerConfig
-			config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
-			if config.ConfigStore != nil && (current == nil || !reflect.DeepEqual(current, normalized)) {
-				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
-					logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
-				}
-			}
-		}
-	}
+	reconcileComplexityAnalyzerConfig(ctx, config, configData)
 
 	// Sync pricing overrides into the model catalog in one batch to avoid
 	// rebuilding the lookup map on every iteration.
@@ -2397,6 +2383,87 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	}
 	if configData.isConfigJSONSourceOfTruth() {
 		pruneGovernanceConfigToFile(ctx, config, configData)
+	}
+}
+
+// reconcileComplexityAnalyzerConfig applies config.json complexity analyzer changes without
+// clobbering runtime UI/API edits when the file has not changed.
+//
+// In split mode, config.json updates tier boundaries and adds keywords to the stored
+// runtime config. In config.json source-of-truth mode, the file remains authoritative.
+func reconcileComplexityAnalyzerConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	if config == nil || configData == nil || configData.Governance == nil || configData.Governance.ComplexityAnalyzerConfig == nil {
+		return
+	}
+	if config.GovernanceConfig == nil {
+		config.GovernanceConfig = &configstore.GovernanceConfig{}
+	}
+
+	fileConfig, fileHash, ok := complexityAnalyzerConfigFromFile(configData)
+	if !ok {
+		return
+	}
+
+	current := config.GovernanceConfig.ComplexityAnalyzerConfig
+	if configData.isConfigJSONSourceOfTruth() {
+		fileConfig.ConfigHash = fileHash
+		syncComplexityAnalyzerConfig(ctx, config, current, fileConfig)
+		return
+	}
+
+	if current != nil && current.ConfigHash == fileHash {
+		logger.Debug("complexity analyzer config hash matches, keeping DB config")
+		return
+	}
+
+	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileConfig)
+	if err != nil {
+		logger.Warn("failed to merge complexity analyzer config from config file: %v", err)
+		return
+	}
+	merged.ConfigHash = fileHash
+	syncComplexityAnalyzerConfig(ctx, config, current, merged)
+}
+
+// complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
+// returns the canonical hash used to detect whether config.json changed.
+func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.ComplexityAnalyzerConfig, string, bool) {
+	fileConfig, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
+	if err != nil {
+		logger.Error("invalid complexity analyzer config in config file: %v", err)
+		return nil, "", false
+	}
+	fileHash, err := configstore.GenerateComplexityAnalyzerConfigHash(fileConfig)
+	if err != nil {
+		logger.Warn("failed to generate complexity analyzer config hash: %v", err)
+		return nil, "", false
+	}
+	return fileConfig, fileHash, true
+}
+
+// mergeComplexityAnalyzerConfigFromFile overlays file boundaries and merges file
+// keywords into the current runtime config. On first startup, defaults are the
+// base so a partial seed does not erase the built-in keyword coverage.
+func mergeComplexityAnalyzerConfigFromFile(current, fileConfig *configstore.ComplexityAnalyzerConfig) (*configstore.ComplexityAnalyzerConfig, error) {
+	base := current
+	if base == nil {
+		defaults := complexity.DefaultAnalyzerConfig()
+		base = &defaults
+	}
+	return configstore.MergeComplexityAnalyzerConfig(base, fileConfig)
+}
+
+// syncComplexityAnalyzerConfig updates the in-memory config and persists it when
+// the stored value changed.
+func syncComplexityAnalyzerConfig(ctx context.Context, config *Config, current, next *configstore.ComplexityAnalyzerConfig) {
+	config.GovernanceConfig.ComplexityAnalyzerConfig = next
+	if config.ConfigStore != nil {
+		if current != nil && reflect.DeepEqual(current, next) {
+			return
+		}
+		if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, next); err != nil {
+			logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+		}
 	}
 }
 
