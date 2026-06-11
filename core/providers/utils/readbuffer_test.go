@@ -65,6 +65,13 @@ func TestMakeRequestWithContext_LargeResponseHeaders(t *testing.T) {
 		if bifrostErr == nil {
 			t.Fatal("expected small read buffer error with fasthttp's default ReadBufferSize, got success")
 		}
+		errText := bifrostErr.Error.Message
+		if bifrostErr.Error.Error != nil {
+			errText += " " + bifrostErr.Error.Error.Error()
+		}
+		if !strings.Contains(errText, "small read buffer") {
+			t.Fatalf("expected small read buffer error, got: %s", errText)
+		}
 	})
 
 	t.Run("default_client_read_buffer_size_succeeds", func(t *testing.T) {
