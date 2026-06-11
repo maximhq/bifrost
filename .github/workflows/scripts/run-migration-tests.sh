@@ -1801,6 +1801,62 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # governance_budgets.model_config_id (added in v1.5.9 via add_budget_model_config_id_column)
+  if column_exists_postgres "governance_budgets" "model_config_id"; then
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+    echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+  fi
+
+  # governance_budgets.customer_id (added in v1.5.9 via add_customer_budgets_to_budgets_table)
+  if column_exists_postgres "governance_budgets" "customer_id"; then
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+    echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+  fi
+
+  # governance_customers.calendar_aligned (added in v1.5.9 via add_customer_calendar_aligned_column)
+  if column_exists_postgres "governance_customers" "calendar_aligned"; then
+    echo "UPDATE governance_customers SET calendar_aligned = false WHERE id = 'customer-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_customers SET calendar_aligned = false WHERE id = 'customer-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_model_configs.scope / scope_id (added in v1.5.9 via add_model_config_scope_columns)
+  # scope is set to the column default 'global'; scope_id stays NULL so the seeded rows keep
+  # satisfying the idx_model_scope_provider unique index
+  if column_exists_postgres "governance_model_configs" "scope"; then
+    echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_configs" "scope_id"; then
+    echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_model_configs.calendar_aligned (added in v1.5.9 via add_model_config_calendar_aligned_column)
+  if column_exists_postgres "governance_model_configs" "calendar_aligned"; then
+    echo "UPDATE governance_model_configs SET calendar_aligned = false WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_model_configs SET calendar_aligned = false WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
+  # logs_add_multi_team_business_unit_columns and logs_add_customer_array_columns)
+  for arr_col in team_ids team_names customer_ids customer_names business_unit_ids business_unit_names; do
+    if column_exists_postgres "logs" "$arr_col"; then
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+      echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+    fi
+  done
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2792,6 +2848,59 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET inc_number = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.5.9 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # governance_budgets.model_config_id (added in v1.5.9 via add_budget_model_config_id_column)
+    if column_exists_sqlite "$config_db" "governance_budgets" "model_config_id"; then
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+      echo "UPDATE governance_budgets SET model_config_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+    fi
+
+    # governance_budgets.customer_id (added in v1.5.9 via add_customer_budgets_to_budgets_table)
+    if column_exists_sqlite "$config_db" "governance_budgets" "customer_id"; then
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+      echo "UPDATE governance_budgets SET customer_id = NULL WHERE id = 'budget-migration-test-3';" >> "$output_file"
+    fi
+
+    # governance_customers.calendar_aligned (added in v1.5.9 via add_customer_calendar_aligned_column)
+    if column_exists_sqlite "$config_db" "governance_customers" "calendar_aligned"; then
+      echo "UPDATE governance_customers SET calendar_aligned = 0 WHERE id = 'customer-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_customers SET calendar_aligned = 0 WHERE id = 'customer-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_model_configs.scope / scope_id (added in v1.5.9 via add_model_config_scope_columns)
+    # scope is set to the column default 'global'; scope_id stays NULL so the seeded rows keep
+    # satisfying the idx_model_scope_provider unique index
+    if column_exists_sqlite "$config_db" "governance_model_configs" "scope"; then
+      echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET scope = 'global' WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_configs" "scope_id"; then
+      echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET scope_id = NULL WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+
+    # governance_model_configs.calendar_aligned (added in v1.5.9 via add_model_config_calendar_aligned_column)
+    if column_exists_sqlite "$config_db" "governance_model_configs" "calendar_aligned"; then
+      echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_model_configs SET calendar_aligned = 0 WHERE id = 'model-config-migration-test-2';" >> "$output_file"
+    fi
+  fi
+
+  # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
+  # logs_add_multi_team_business_unit_columns and logs_add_customer_array_columns)
+  # Emitted unconditionally - logs table is in logs_db; fails silently on config_db
+  for arr_col in team_ids team_names customer_ids customer_names business_unit_ids business_unit_names; do
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET $arr_col = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  done
 }
 
 # ============================================================================
