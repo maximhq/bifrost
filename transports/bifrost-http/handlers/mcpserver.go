@@ -390,6 +390,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 		toolName := tool.Function.Name
 
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			logger.Info("[mcp-server] tool handler start tool=%q arg_count=%d", toolName, len(request.GetArguments()))
 			// Inject tool filter into execution context if present
 			if toolFilter != nil {
 				ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, toolFilter)
@@ -413,6 +414,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
+				logger.Info("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
 				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
 					// Two surfaces share this error: per-user OAuth uses
 					// AuthorizeURL (the upstream provider's authorize page);
@@ -436,6 +438,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
+			logger.Info("[mcp-server] tool handler success tool=%q", toolName)
 
 			// Extract content from tool message
 			var resultText string

@@ -106,6 +106,11 @@ func TestPreLLMHookSetsAppContextFromDetectedApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app-context")
 	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
@@ -143,6 +148,11 @@ func TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-cowork-context")
 	// Captured from the agent's MITM → GATEWAY forwarding of a Cowork request.
@@ -205,6 +215,11 @@ func TestPreLLMHookSetsAppContextFromCustomMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
 	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
 		Pattern:   `custom-wrapper/\d+`,
 		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
