@@ -896,22 +896,10 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
-// OpenAIModel represents an OpenAI model
-type OpenAIModel struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
-	Created *int64 `json:"created,omitempty"`
-
-	// GROQ specific fields
-	Active        *bool `json:"active,omitempty"`
-	ContextWindow *int  `json:"context_window,omitempty"`
-}
-
 // OpenAIListModelsResponse represents an OpenAI list models response
 type OpenAIListModelsResponse struct {
-	Object string        `json:"object"`
-	Data   []OpenAIModel `json:"data"`
+	Object string          `json:"object"`
+	Data   []schemas.Model `json:"data"`
 }
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.

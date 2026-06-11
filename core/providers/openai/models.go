@@ -32,15 +32,18 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	included := make(map[string]bool)
 
 	for _, model := range response.Data {
-		for _, result := range pipeline.FilterModel(model.ID) {
-			entry := schemas.Model{
-				ID:            string(providerKey) + "/" + result.ResolvedID,
-				Created:       model.Created,
-				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
-			}
+		rawID := model.ID
+		if parsedProvider, parsedModel := schemas.ParseListModelString(rawID, ""); parsedProvider != "" && strings.EqualFold(string(parsedProvider), string(providerKey)) {
+			rawID = parsedModel
+		}
+
+		for _, result := range pipeline.FilterModel(rawID) {
+			entry := model
+			entry.ID = string(providerKey) + "/" + result.ResolvedID
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
+			} else {
+				entry.Alias = nil
 			}
 			bifrostResponse.Data = append(bifrostResponse.Data, entry)
 			included[strings.ToLower(result.ResolvedID)] = true
@@ -59,22 +62,11 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		return nil
 	}
 	openaiResponse := &OpenAIListModelsResponse{
-		Data: make([]OpenAIModel, 0, len(response.Data)),
+		Object: "list",
+		Data:   make([]schemas.Model, 0, len(response.Data)),
 	}
 	for _, model := range response.Data {
-		openaiModel := OpenAIModel{
-			ID:     model.ID,
-			Object: "model",
-		}
-		if model.Created != nil {
-			openaiModel.Created = model.Created
-		}
-		if model.OwnedBy != nil {
-			openaiModel.OwnedBy = *model.OwnedBy
-		}
-
-		openaiResponse.Data = append(openaiResponse.Data, openaiModel)
-
+		openaiResponse.Data = append(openaiResponse.Data, model)
 	}
 	return openaiResponse
 }
