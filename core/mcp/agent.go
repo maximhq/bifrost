@@ -144,7 +144,7 @@ func (a *AgentModeExecutor) executeAgent(
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	executeToolFunc MCPToolExecutor,
 	clientManager ClientManager,
-) (interface{}, *schemas.BifrostError) {
+) (any, *schemas.BifrostError) {
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
 
