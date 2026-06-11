@@ -194,31 +194,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
-	if VaultIsEnabled() {
-		connPath := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID,
-			tx.Statement.DB.NamingStrategy.ColumnName("", "ConnectionString"))
-		headersPath := fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID,
-			tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON"))
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
-			cs := *c.ConnectionString
-			if err := vaultEnvVar(tx.Statement.Context, connPath, &cs); err != nil {
-				return fmt.Errorf("failed to vault mcp connection string: %w", err)
-			}
-			c.ConnectionString = &cs
-		} else {
-			// Field cleared or switched to env-var — remove any stale vault entry.
-			removeVaultEnvVar(tx.Statement.Context, connPath, c.ConnectionString)
-		}
-		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
-			if err := vaultString(tx.Statement.Context, headersPath, &c.HeadersJSON); err != nil {
-				return fmt.Errorf("failed to vault mcp headers: %w", err)
-			}
-		} else {
-			// Headers cleared — remove any stale vault entry.
-			removeVaultString(tx.Statement.Context, headersPath, &c.HeadersJSON)
-		}
-		c.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() {
+	if encrypt.IsEnabled() {
 		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
 			// Copy to avoid encrypting the shared ConnectionString through the pointer
 			cs := *c.ConnectionString
@@ -245,19 +221,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
 // and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
-	switch c.EncryptionStatus {
-	case EncryptionStatusVault:
-		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
-			if err := resolveVaultString(tx.Statement.Context, &c.HeadersJSON); err != nil {
-				return fmt.Errorf("failed to resolve vault mcp headers: %w", err)
-			}
-		}
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
-			if err := resolveVaultEnvVar(tx.Statement.Context, c.ConnectionString); err != nil {
-				return fmt.Errorf("failed to resolve vault mcp connection string: %w", err)
-			}
-		}
-	case EncryptionStatusEncrypted:
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
 			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
 			if err != nil {
@@ -327,17 +291,5 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (c *TableMCPClient) AfterDelete(tx *gorm.DB) error {
-	if c.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	connField := tx.Statement.DB.NamingStrategy.ColumnName("", "ConnectionString")
-	headersField := tx.Statement.DB.NamingStrategy.ColumnName("", "HeadersJSON")
-	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID, connField))
-	_ = VaultHooks.Remove(tx.Statement.Context, fmt.Sprintf("%s/%s/%s/%s", VaultPrefix(), c.TableName(), c.ClientID, headersField))
 	return nil
 }

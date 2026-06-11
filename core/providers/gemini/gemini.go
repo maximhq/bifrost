@@ -2754,7 +2754,8 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(geminiResp.Operations))
 	for _, batch := range geminiResp.Operations {
 		data = append(data, schemas.BifrostBatchRetrieveResponse{
-			ID:            extractBatchIDFromName(batch.Name),
+			// Full name (batches/<id>), matching create/retrieve so the id is stable.
+			ID:            batch.Name,
 			Object:        "batch",
 			Status:        ToBifrostBatchStatus(batch.Metadata.State),
 			CreatedAt:     parseGeminiTimestamp(batch.Metadata.CreateTime),

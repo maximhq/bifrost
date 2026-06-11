@@ -192,7 +192,6 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
-    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
@@ -230,7 +229,7 @@ bifrost:
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.
-    # When unset, inference endpoints follow authConfig.disableAuthOnInference behavior.
+    # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
     maxRequestBodySizeMb: 100
     compat:
@@ -515,11 +514,24 @@ bifrost:
       version: 1
       config:
         service_name: "bifrost"
+        # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
+        # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
+        # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
         agent_addr: "localhost:8126"
+        # dogstatsd_addr: "localhost:8125"  # DogStatsD address (supports env.VAR_NAME)
         env: ""
         version: ""
         custom_tags: {}
         enable_traces: true
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # enable_metrics: true
+        # enable_llm_obs: true
+        # disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # Agentless mode (direct to Datadog API, no local agent):
+        # agentless: true
+        # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
+        # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -674,7 +686,6 @@ bifrost:
       adminUsername: ""
       adminPassword: ""
       isEnabled: false
-      disableAuthOnInference: false
       # Use existing Kubernetes secret for admin credentials
       existingSecret: ""
       usernameKey: "username"

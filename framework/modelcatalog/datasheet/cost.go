@@ -187,18 +187,18 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
 		input.usage = result.ChatResponse.Usage
-		input.tier = tierFromString(result.ChatResponse.ServiceTier)
+		input.tier = tierFromResponse(result.ChatResponse.ServiceTier, result.ChatResponse.Speed)
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
-		input.tier = tierFromString(result.ResponsesResponse.ServiceTier)
+		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed)
 
 	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
-		input.tier = tierFromString(result.ResponsesStreamResponse.Response.ServiceTier)
+		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed)
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -730,24 +730,33 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 // Helpers
 // ---------------------------------------------------------------------------
 
-// tierFromString constructs a serviceTier from an OpenAI service_tier response value.
-func tierFromString(s *schemas.BifrostServiceTier) serviceTier {
-	if s == nil {
-		return serviceTier{}
+// tierFromResponse builds a serviceTier from a response's billing-relevant
+// fields: the OpenAI service_tier (priority/flex) and the Anthropic speed
+// (fast mode). speed == "fast" means fast mode was actually served — the
+// provider echoes the served speed, so stripped/fell-back requests report
+// "standard" and bill at standard rates.
+func tierFromResponse(s *schemas.BifrostServiceTier, speed *string) serviceTier {
+	var tier serviceTier
+	if s != nil {
+		switch *s {
+		case schemas.BifrostServiceTierPriority:
+			tier.isPriority = true
+		case schemas.BifrostServiceTierFlex:
+			tier.isFlex = true
+		}
 	}
-	switch *s {
-	case schemas.BifrostServiceTierPriority:
-		return serviceTier{isPriority: true}
-	case schemas.BifrostServiceTierFlex:
-		return serviceTier{isFlex: true}
-	default:
-		return serviceTier{}
-	}
+	tier.isFast = speed != nil && *speed == "fast"
+	return tier
 }
 
 // tieredInputRate returns the effective per-token input rate based on total token count.
 // Flex applies a flat rate. Priority-specific tier rates are preferred where available.
 func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window — it
+	// takes precedence over the token-count tiers below.
+	if tier.isFast && pricing.InputCostPerTokenFast != nil {
+		return *pricing.InputCostPerTokenFast
+	}
 	if tier.isFlex && pricing.InputCostPerTokenFlex != nil {
 		return *pricing.InputCostPerTokenFlex
 	}
@@ -782,6 +791,11 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 // tieredOutputRate returns the effective per-token output rate based on total token count.
 // Flex applies a flat rate. Priority-specific tier rates are preferred where available.
 func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window — it
+	// takes precedence over the token-count tiers below.
+	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
+		return *pricing.OutputCostPerTokenFast
+	}
 	if tier.isFlex && pricing.OutputCostPerTokenFlex != nil {
 		return *pricing.OutputCostPerTokenFlex
 	}
@@ -1298,9 +1312,7 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	if su.LLMUsage != nil {
 		input.usage = su.LLMUsage
 	}
-	if su.ServiceTier != nil {
-		input.tier = tierFromString(su.ServiceTier)
-	}
+	input.tier = tierFromResponse(su.ServiceTier, su.Speed)
 	if su.ImageUsage != nil {
 		input.imageUsage = su.ImageUsage
 		input.imageSize = su.ImageSize

@@ -188,7 +188,6 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
-
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -873,6 +872,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddMCPLibrarySourceColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddFastModePricingColumns(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -7825,6 +7827,54 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error 
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
 
+	}
+	return nil
+}
+
+// migrationAddFastModePricingColumns adds pricing columns for Anthropic fast mode
+// (research preview, speed:"fast" on Opus 4.6/4.7/4.8).
+func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_fast_mode_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_fast",
+				"output_cost_per_token_fast",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode pricing columns migration: %s", err.Error())
 	}
 	return nil
 }

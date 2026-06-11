@@ -1,7 +1,6 @@
 package tables
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -38,13 +37,7 @@ func (t *TempToken) BeforeSave(tx *gorm.DB) error {
 	if t.Token != "" {
 		t.TokenHash = encrypt.HashSHA256(t.Token)
 	}
-	if VaultIsEnabled() && t.Token != "" {
-		path := fmt.Sprintf("%s/%s/%s/token", VaultPrefix(), t.TableName(), t.ID)
-		if err := vaultString(tx.Statement.Context, path, &t.Token); err != nil {
-			return fmt.Errorf("failed to vault temp token: %w", err)
-		}
-		t.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && t.Token != "" {
+	if encrypt.IsEnabled() && t.Token != "" {
 		if err := encryptString(&t.Token); err != nil {
 			return fmt.Errorf("failed to encrypt temp token: %w", err)
 		}
@@ -55,38 +48,10 @@ func (t *TempToken) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind decrypts the stored plaintext when encryption is in effect.
 func (t *TempToken) AfterFind(tx *gorm.DB) error {
-	switch t.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &t.Token); err != nil {
-			return fmt.Errorf("failed to resolve vault temp token: %w", err)
-		}
-	case EncryptionStatusEncrypted:
+	if t.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&t.Token); err != nil {
 			return fmt.Errorf("failed to decrypt temp token: %w", err)
 		}
 	}
 	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (t *TempToken) AfterDelete(tx *gorm.DB) error {
-	if t.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	path := fmt.Sprintf("%s/%s/%s/token", VaultPrefix(), t.TableName(), t.ID)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
-	return nil
-}
-
-// DeleteVaultSecrets removes vault entries for the given temp token IDs.
-// Called after a batch delete so vault cleanup runs even when AfterDelete can't fire.
-func (TempToken) DeleteVaultSecrets(ctx context.Context, ids []string) {
-	if VaultHooks.Remove == nil {
-		return
-	}
-	tableName := TempToken{}.TableName()
-	for _, id := range ids {
-		path := fmt.Sprintf("%s/%s/%s/token", VaultPrefix(), tableName, id)
-		_ = VaultHooks.Remove(ctx, path)
-	}
 }

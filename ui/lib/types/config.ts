@@ -442,7 +442,6 @@ export interface AuthConfig {
 	admin_username: EnvVar;
 	admin_password: EnvVar;
 	is_enabled: boolean;
-	disable_auth_on_inference?: boolean;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)

@@ -50,8 +50,8 @@ func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
 		return "", providerUtils.NewConfigurationError("project ID is not set")
 	}
 	region := key.VertexKeyConfig.Region.GetValue()
-	if region == "" || region == "global" {
-		return "", providerUtils.NewConfigurationError("a regional vertex key (e.g. us-central1) is required for batch prediction; global is not supported")
+	if region == "" {
+		return "", providerUtils.NewConfigurationError("region is required for batch prediction")
 	}
 	return getVertexProjectLocationURL(region, "v1", projectID), nil
 }
@@ -72,14 +72,6 @@ func vertexBatchJobURL(key schemas.Key, batchID string) (string, *schemas.Bifros
 		return "", cfgErr
 	}
 	return base + "/batchPredictionJobs/" + batchID, nil
-}
-
-// vertexBatchJobIDFromName extracts the bare job ID from a full resource name.
-func vertexBatchJobIDFromName(name string) string {
-	if idx := strings.LastIndexByte(name, '/'); idx >= 0 {
-		return name[idx+1:]
-	}
-	return name
 }
 
 // vertexBatchJobToBifrost maps a BatchPredictionJob resource to the Bifrost retrieve response.
@@ -145,11 +137,6 @@ func parseVertexJobAPIError(body []byte, statusCode int, op string) *schemas.Bif
 	return providerUtils.NewProviderAPIError(msg, nil, statusCode, nil, nil)
 }
 
-// vertexBatchControlParams are extra_params consumed by BatchCreate for Bifrost-side
-// storage/routing; they are stripped before the rest of extra_params is passed through to
-// the Vertex BatchPredictionJob body.
-var vertexBatchControlParams = []string{"output_uri", "gcs_bucket", "gcs_prefix"}
-
 // ToVertexBatchCreateRequest maps a Bifrost batch create request to a Vertex
 // BatchPredictionJob request. The model, display name and input/output GCS config are
 // mapped explicitly; every other field is taken from extra_params (e.g. modelParameters,
@@ -175,18 +162,6 @@ func ToVertexBatchCreateRequest(request *schemas.BifrostBatchCreateRequest, disp
 			GcsDestination:    &VertexGcsDestination{OutputUriPrefix: outputURI},
 		},
 		ExtraParams: request.ExtraParams,
-	}
-
-	// Strip Bifrost control keys so they are not forwarded to Vertex as unknown fields.
-	if len(req.ExtraParams) > 0 {
-		stripped := make(map[string]interface{}, len(req.ExtraParams))
-		for k, v := range req.ExtraParams {
-			stripped[k] = v
-		}
-		for _, k := range vertexBatchControlParams {
-			delete(stripped, k)
-		}
-		req.ExtraParams = stripped
 	}
 
 	return req

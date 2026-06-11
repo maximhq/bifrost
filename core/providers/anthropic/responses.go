@@ -2866,6 +2866,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.ServiceTier = &mapped
 	}
 
+	// Forward the speed actually served (fast mode) — drives fast-mode billing.
+	if response.Usage != nil && response.Usage.Speed != nil {
+		bifrostResp.Speed = response.Usage.Speed
+	}
+
 	return bifrostResp
 }
 
@@ -2926,6 +2931,13 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		}
 		mapped := MapBifrostServiceTierToAnthropicResponse(*bifrostResp.ServiceTier)
 		anthropicResp.Usage.ServiceTier = &mapped
+	}
+
+	if bifrostResp.Speed != nil {
+		if anthropicResp.Usage == nil {
+			anthropicResp.Usage = &AnthropicUsage{}
+		}
+		anthropicResp.Usage.Speed = bifrostResp.Speed
 	}
 
 	return anthropicResp

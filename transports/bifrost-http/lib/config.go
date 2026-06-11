@@ -1160,14 +1160,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		for providerName, providerCfgInFile := range configData.Providers {
 			provider := schemas.ModelProvider(strings.ToLower(providerName))
 			existingCfg, exists := providersInConfigStore[provider]
-			if err = processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders); err != nil {
-				logger.Warn("failed to process provider %s: %v", providerName, err)
-				// Preserve the existing persisted config so a single bad file entry
-				// does not prune the provider (and its DB-only keys) from the store.
-				if exists {
-					authoritativeProviders[provider] = existingCfg
-				}
-			}
+			processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders)
 		}
 		providersInConfigStore = authoritativeProviders
 	} else {
@@ -1279,10 +1272,10 @@ func processAuthoritativeProvider(
 	existingCfg configstore.ProviderConfig,
 	exists bool,
 	providers map[schemas.ModelProvider]configstore.ProviderConfig,
-) error {
+) {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
-		return err
+		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
 	}
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -1293,7 +1286,7 @@ func processAuthoritativeProvider(
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
-			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
+			logger.Warn("invalid aliases for key %q in provider %s (writing through): %v", providerKeyInFile.Name, provider, err)
 		}
 	}
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -1307,7 +1300,6 @@ func processAuthoritativeProvider(
 		providerCfgInFile.Description = existingCfg.Description
 	}
 	providers[provider] = providerCfgInFile
-	return nil
 }
 
 // mergeProviderWithHash merges provider config using hash-based reconciliation
@@ -2136,10 +2128,16 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		// Preparing hash
 		found := false
 		for j, existingVirtualKey := range governanceConfig.VirtualKeys {
-			if existingVirtualKey.ID == newVirtualKey.ID {
+			idMatch := existingVirtualKey.ID == newVirtualKey.ID
+			nameMatch := newVirtualKey.ID == "" && existingVirtualKey.Name == newVirtualKey.Name
+			if idMatch || nameMatch {
+				if nameMatch {
+					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
+					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
+				}
 				found = true
 				if existingVirtualKey.ConfigHash != fileVKHash {
-					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", newVirtualKey.ID)
+					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 					// This is added for backward compatibility with existing configs
 					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
@@ -2781,6 +2779,9 @@ func updateGovernanceConfigInStore(
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
+			if virtualKey.ID == "" {
+				virtualKey.ID = uuid.NewString()
+			}
 			providerConfigs := virtualKey.ProviderConfigs
 			mcpConfigs := virtualKey.MCPConfigs
 			virtualKey.ProviderConfigs = nil
@@ -3334,6 +3335,10 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			virtualKey.ProviderConfigs = nil
 			virtualKey.MCPConfigs = nil
 
+			if virtualKey.ID == "" {
+				virtualKey.ID = uuid.NewString()
+			}
+
 			if err := config.ConfigStore.CreateVirtualKey(ctx, virtualKey, tx); err != nil {
 				logger.Error("failed to create virtual key %s: %v", virtualKey.ID, err)
 				return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
@@ -3520,8 +3525,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	// If DB already matches file config, skip hashing and DB write
 	if dbAuthConfig != nil {
 		usernameMatch := dbAuthConfig.AdminUserName.GetValue() == authConfig.AdminUserName.GetValue()
-		boolsMatch := dbAuthConfig.IsEnabled == authConfig.IsEnabled &&
-			dbAuthConfig.DisableAuthOnInference == authConfig.DisableAuthOnInference
+		boolsMatch := dbAuthConfig.IsEnabled == authConfig.IsEnabled
 		var passwordMatch bool
 		if filePassword == "" {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == ""
@@ -3533,10 +3537,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		if usernameMatch && passwordMatch && boolsMatch {
 			// DB matches file -- use DB hash but preserve file env var references
 			config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-				AdminUserName:          authConfig.AdminUserName,
-				AdminPassword:          preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
-				IsEnabled:              authConfig.IsEnabled,
-				DisableAuthOnInference: authConfig.DisableAuthOnInference,
+				AdminUserName: authConfig.AdminUserName,
+				AdminPassword: preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
+				IsEnabled:     authConfig.IsEnabled,
 			}
 			return
 		}
@@ -3563,10 +3566,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	// Build auth config with hashed password but preserve env var references
 	config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-		AdminUserName:          authConfig.AdminUserName,
-		AdminPassword:          preserveEnvVar(authConfig.AdminPassword, hashedPassword),
-		IsEnabled:              authConfig.IsEnabled,
-		DisableAuthOnInference: authConfig.DisableAuthOnInference,
+		AdminUserName: authConfig.AdminUserName,
+		AdminPassword: preserveEnvVar(authConfig.AdminPassword, hashedPassword),
+		IsEnabled:     authConfig.IsEnabled,
 	}
 	// Persist to config store
 	if err := config.ConfigStore.UpdateAuthConfig(ctx, config.GovernanceConfig.AuthConfig); err != nil {

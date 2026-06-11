@@ -17,6 +17,7 @@ type BifrostPassthroughUsage struct {
 	// Text / chat / responses / embeddings
 	LLMUsage    *BifrostLLMUsage
 	ServiceTier *BifrostServiceTier // "priority" | "flex" | nil (default)
+	Speed       *string             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 
 	// Image generation / edit / variation
 	ImageUsage   *ImageUsage
