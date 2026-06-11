@@ -2536,8 +2536,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Get the trace completer function for use in the streaming callback.
 	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
 	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
-	// Router path has no transport post-hook phase, so we always pass nil.
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+	transportLogs := transportPluginLogsFromFastHTTP(ctx)
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -2560,7 +2560,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				traceCompleter(transportLogs)
 			}
 		}()
 
@@ -2803,6 +2803,17 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}()
+}
+
+func transportPluginLogsFromFastHTTP(ctx *fasthttp.RequestCtx) []schemas.PluginLogEntry {
+	if ctx == nil {
+		return nil
+	}
+	logs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry)
+	if !ok || len(logs) == 0 {
+		return nil
+	}
+	return append([]schemas.PluginLogEntry(nil), logs...)
 }
 
 // extractPassthroughModel extracts the model from the passthrough request path and/or body.
