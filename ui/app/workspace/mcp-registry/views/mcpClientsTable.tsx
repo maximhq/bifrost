@@ -22,10 +22,22 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PackagePlus, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import {
+	Box,
+	ChevronLeft,
+	ChevronRight,
+	Loader2,
+	MoreHorizontal,
+	PencilIcon,
+	Plus,
+	RefreshCcw,
+	Search,
+	Trash2,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
+import { MCPUsageGuideSheet } from "./mcpUsageGuide";
 
 function MCPClientActionsMenu({
 	client,
@@ -83,43 +95,38 @@ function MCPClientActionsMenu({
 					>
 						<PencilIcon className="h-4 w-4" />
 						Edit
-					</DropdownMenuItem >
-				)
-				}
-				{
-					hasUpdateAccess && (
-						<DropdownMenuItem
-							className="cursor-pointer"
-							disabled={isPerUserAuth || client.config.disabled || isReconnecting}
-							onSelect={(e) => {
-								e.preventDefault();
-								onReconnect(client);
-								setIsOpen(false);
-							}}
-						>
-							<RefreshCcw className="h-4 w-4" />
-							Reconnect
-						</DropdownMenuItem>
-					)
-				}
-				{
-					hasDeleteAccess && (
-						<DropdownMenuItem
-							variant="destructive"
-							className="cursor-pointer"
-							onSelect={(e) => {
-								e.preventDefault();
-								onDelete(client);
-								setIsOpen(false);
-							}}
-						>
-							<Trash2 className="h-4 w-4" />
-							Delete
-						</DropdownMenuItem>
-					)
-				}
-			</DropdownMenuContent >
-		</DropdownMenu >
+					</DropdownMenuItem>
+				)}
+				{hasUpdateAccess && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={isPerUserAuth || client.config.disabled || isReconnecting}
+						onSelect={(e) => {
+							e.preventDefault();
+							onReconnect(client);
+							setIsOpen(false);
+						}}
+					>
+						<RefreshCcw className="h-4 w-4" />
+						Reconnect
+					</DropdownMenuItem>
+				)}
+				{hasDeleteAccess && (
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onDelete(client);
+							setIsOpen(false);
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						Delete
+					</DropdownMenuItem>
+				)}
+			</DropdownMenuContent>
+		</DropdownMenu>
 	);
 }
 
@@ -343,9 +350,10 @@ export default function MCPClientsTable({
 					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
 				</div>
 				<div className="flex gap-2">
+					<MCPUsageGuideSheet />
 					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
 						<Link to="/workspace/mcp-registry/library">
-							<PackagePlus className="h-4 w-4" />
+							<Box />
 							<span className="hidden sm:inline">Library</span>
 						</Link>
 					</Button>
@@ -406,8 +414,7 @@ export default function MCPClientsTable({
 								// Per-user auth types (OAuth + headers) don't hold a shared
 								// upstream connection, so reconnect is a no-op for them — the
 								// backend's ReconnectClient rejects with ErrMCPReconnectNotApplicable.
-								const isPerUserAuth =
-									c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
+								const isPerUserAuth = c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
 								const enabledToolsCount =
 									c.state == "connected"
 										? c.config.tools_to_execute?.includes("*")
