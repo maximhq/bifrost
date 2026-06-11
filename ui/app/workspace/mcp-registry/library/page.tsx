@@ -14,8 +14,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MCPLibraryAddServerSheet } from "./views/mcpLibraryAddServerSheet";
 import { MCPLibraryFilterSidebar, type MCPLibraryFilters } from "./views/mcpLibraryFilterSidebar";
 import { MCPLibraryInstallSheet, sanitizeServerName } from "./views/mcpLibraryInstallSheet";
-import { MCPLibraryServerCard } from "./views/mcpLibraryServerCard";
-import { MCPLibraryServersTable } from "./views/mcpLibraryServersTable";
+import { MCPLibraryServerCard, MCPLibraryServerCardSkeleton } from "./views/mcpLibraryServerCard";
+import { MCPLibraryServersTable, MCPLibraryServersTableSkeleton } from "./views/mcpLibraryServersTable";
 import { MCPLibrarySettingsSheet } from "./views/mcpLibrarySettingsSheet";
 
 const PAGE_SIZE = 24;
@@ -159,8 +159,8 @@ export default function MCPLibraryPage() {
 				<MCPLibraryFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 				{/* Main Content */}
-				<ScrollArea className="bg-card w-full rounded-l-md">
-					<div className="flex min-w-0 flex-1 flex-col gap-4 p-4 pb-2">
+				<div className="bg-card w-full rounded-l-md h-full">
+					<div className="flex flex-col gap-4 p-4 pb-2 h-full">
 						{/* Header */}
 						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div className="space-y-1">
@@ -185,7 +185,7 @@ export default function MCPLibraryPage() {
 
 						{/* Search */}
 						{!isCatalogEmpty && (
-							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between -mx-2 px-2 py-2 sticky top-0 z-20 bg-card">
+							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between -mx-2 px-2 py-2">
 								<div className="relative max-w-md flex-1">
 									<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 									<Input
@@ -235,106 +235,123 @@ export default function MCPLibraryPage() {
 								</div>
 							</div>
 						)}
+						<div className="grow overflow-hidden flex flex-col">
 
-						{/* Grid or empty state */}
-						{servers.length === 0 && !isFetching ? (
-							<div
-								className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
-								data-testid="mcp-library-empty-state"
-							>
-								<div className="text-muted-foreground">
-									<Library className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
-								</div>
-								<div className="flex flex-col gap-1">
-									<h1 className="text-muted-foreground text-xl font-medium">
-										{isCatalogEmpty ? "No synced servers yet" : "No servers found"}
-									</h1>
-									<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
-										{isCatalogEmpty
-											? "Configure the library sync source in Settings to populate this catalog."
-											: "Try adjusting your search or filters."}
-									</div>
-									{isCatalogEmpty && hasSettingsAccess && (
-										<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
-											<Button onClick={() => setSettingsOpen(true)} data-testid="mcp-library-empty-settings-btn">
-												<Settings className="h-4 w-4" />
-												Configure sync
-											</Button>
+							{/* Loading skeletons */}
+							{isFetching && servers.length === 0 ? (
+								viewMode === "grid" ? (
+									<ScrollArea className="overflow-y-auto mb-2">
+										<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-skeleton">
+											{Array.from({ length: 6 }).map((_, i) => (
+												// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders have no stable id
+												<MCPLibraryServerCardSkeleton key={i} />
+											))}
 										</div>
-									)}
-								</div>
-							</div>
-						) : (
-							<>
-								{viewMode === "grid" ? (
-									<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-view">
-										{servers.map((server) => {
-											const isInstalled = installedServerSlugs.has(server.slug);
-											return (
-												<MCPLibraryServerCard
-													key={server.slug}
-													server={server}
-													isInstalled={isInstalled}
-													canCreateMCPClient={hasCreateMCPClientAccess}
-													canDelete={hasDeleteMCPLibraryAccess}
-													onInstall={setSelectedServer}
-												/>
-											);
-										})}
-									</div>
+									</ScrollArea>
 								) : (
-									<MCPLibraryServersTable
-										servers={servers}
-										installedServerSlugs={installedServerSlugs}
-										canCreateMCPClient={hasCreateMCPClientAccess}
-										canDelete={hasDeleteMCPLibraryAccess}
-										onInstall={setSelectedServer}
-									/>
-								)}
-
-								{/* Pagination */}
-								{totalCount > 0 && (
-									<div className="mt-auto flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-										<div className="text-muted-foreground flex items-center gap-2">
-											{(urlState.offset + 1).toLocaleString()}-{Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString()} of{" "}
-											{totalCount.toLocaleString()} entries
+									<MCPLibraryServersTableSkeleton />
+								)
+							) : servers.length === 0 ? (
+								<div
+									className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+									data-testid="mcp-library-empty-state"
+								>
+									<div className="text-muted-foreground">
+										<Library className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
+									</div>
+									<div className="flex flex-col gap-1">
+										<h1 className="text-muted-foreground text-xl font-medium">
+											{isCatalogEmpty ? "No synced servers yet" : "No servers found"}
+										</h1>
+										<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+											{isCatalogEmpty
+												? "Configure the library sync source in Settings to populate this catalog."
+												: "Try adjusting your search or filters."}
 										</div>
+										{isCatalogEmpty && hasSettingsAccess && (
+											<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
+												<Button onClick={() => setSettingsOpen(true)} data-testid="mcp-library-empty-settings-btn">
+													<Settings className="h-4 w-4" />
+													Configure sync
+												</Button>
+											</div>
+										)}
+									</div>
+								</div>
+							) : (
+								<>
+									{viewMode === "grid" ? (
+										<ScrollArea className="overflow-y-auto mb-2">
+											<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-view">
+												{servers.map((server) => {
+													const isInstalled = installedServerSlugs.has(server.slug);
+													return (
+														<MCPLibraryServerCard
+															key={server.slug}
+															server={server}
+															isInstalled={isInstalled}
+															canCreateMCPClient={hasCreateMCPClientAccess}
+															canDelete={hasDeleteMCPLibraryAccess}
+															onInstall={setSelectedServer}
+														/>
+													);
+												})}
+											</div>
+										</ScrollArea>
+									) : (
+										<MCPLibraryServersTable
+											servers={servers}
+											installedServerSlugs={installedServerSlugs}
+											canCreateMCPClient={hasCreateMCPClientAccess}
+											canDelete={hasDeleteMCPLibraryAccess}
+											onInstall={setSelectedServer}
+										/>
+									)}
 
-										<div className="flex items-center gap-2">
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => setUrlState({ offset: Math.max(0, urlState.offset - PAGE_SIZE) }, { history: "push" })}
-												disabled={urlState.offset === 0}
-												data-testid="mcp-library-pagination-prev-btn"
-												aria-label="Previous page"
-											>
-												<ChevronLeft className="size-3" />
-											</Button>
-
-											<div className="flex items-center gap-1">
-												<span>Page</span>
-												<span>{currentPage}</span>
-												<span>of {totalPages}</span>
+									{/* Pagination */}
+									{totalCount > 0 && (
+										<div className="mt-auto flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+											<div className="text-muted-foreground flex items-center gap-2">
+												{(urlState.offset + 1).toLocaleString()}-{Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString()} of{" "}
+												{totalCount.toLocaleString()} entries
 											</div>
 
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => setUrlState({ offset: urlState.offset + PAGE_SIZE }, { history: "push" })}
-												disabled={urlState.offset + PAGE_SIZE >= totalCount}
-												data-testid="mcp-library-pagination-next-btn"
-												aria-label="Next page"
-											>
-												<ChevronRight className="size-3" />
-											</Button>
+											<div className="flex items-center gap-2">
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() => setUrlState({ offset: Math.max(0, urlState.offset - PAGE_SIZE) }, { history: "push" })}
+													disabled={urlState.offset === 0}
+													data-testid="mcp-library-pagination-prev-btn"
+													aria-label="Previous page"
+												>
+													<ChevronLeft className="size-3" />
+												</Button>
+
+												<div className="flex items-center gap-1">
+													<span>Page</span>
+													<span>{currentPage}</span>
+													<span>of {totalPages}</span>
+												</div>
+
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() => setUrlState({ offset: urlState.offset + PAGE_SIZE }, { history: "push" })}
+													disabled={urlState.offset + PAGE_SIZE >= totalCount}
+													data-testid="mcp-library-pagination-next-btn"
+													aria-label="Next page"
+												>
+													<ChevronRight className="size-3" />
+												</Button>
+											</div>
 										</div>
-									</div>
-								)}
-							</>
-						)}
+									)}
+								</>
+							)}
+						</div>
 					</div>
-				</ScrollArea>
+				</div>
 			</div>
 
 			{/* Install sheet */}

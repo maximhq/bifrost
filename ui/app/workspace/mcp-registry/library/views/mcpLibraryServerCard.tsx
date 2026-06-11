@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useDeleteMCPLibraryEntryMutation } from "@/lib/store";
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
@@ -222,6 +223,41 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 				onConfirm={handleDelete}
 				confirmTestId={`mcp-library-delete-confirm-${server.slug}`}
 			/>
+		</Card>
+	);
+}
+
+/** Skeleton placeholder mirroring the card layout while the library catalog loads. */
+export function MCPLibraryServerCardSkeleton() {
+	return (
+		<Card className="h-full gap-0 overflow-hidden py-0 shadow-none" data-testid="mcp-library-card-skeleton">
+			<CardHeader className="bg-muted/20 border-b px-4 py-4">
+				<div className="flex min-w-0 items-start gap-3">
+					<Skeleton className="h-12 w-12 shrink-0 rounded-md" />
+					<div className="min-w-0 flex-1 space-y-2">
+						<Skeleton className="h-4 w-3/4" />
+						<div className="flex items-center gap-1.5">
+							<Skeleton className="h-5 w-16 rounded-full" />
+							<Skeleton className="h-4 w-20" />
+						</div>
+					</div>
+				</div>
+			</CardHeader>
+			<CardContent className="flex flex-1 flex-col gap-3 px-4 py-3">
+				<div className="min-h-10 space-y-2">
+					<Skeleton className="h-4 w-full" />
+					<Skeleton className="h-4 w-5/6" />
+				</div>
+				<div className="flex flex-wrap items-center gap-1.5">
+					<Skeleton className="h-5 w-14 rounded-full" />
+					<Skeleton className="h-5 w-16 rounded-full" />
+					<Skeleton className="h-5 w-12 rounded-full" />
+				</div>
+			</CardContent>
+			<CardFooter className="bg-muted/10 mt-auto justify-between gap-3 border-t px-4 py-3 !pt-3">
+				<Skeleton className="h-4 w-24" />
+				<Skeleton className="h-8 w-20 rounded-md" />
+			</CardFooter>
 		</Card>
 	);
 }
