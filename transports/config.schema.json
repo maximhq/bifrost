@@ -1685,10 +1685,19 @@
                       "description": "Name of the service to report to Datadog",
                       "default": "bifrost"
                     },
+                    "ml_app": {
+                      "type": "string",
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name)"
+                    },
                     "agent_addr": {
                       "type": "string",
-                      "description": "Address of the Datadog Agent for APM traces",
+                      "description": "Address of the Datadog Agent for APM traces (agent mode only, can use env. prefix)",
                       "default": "localhost:8126"
+                    },
+                    "dogstatsd_addr": {
+                      "type": "string",
+                      "description": "Address of the DogStatsD server for metrics (agent mode only, can use env. prefix)",
+                      "default": "localhost:8125"
                     },
                     "env": {
                       "type": "string",
@@ -1703,17 +1712,68 @@
                       "additionalProperties": {
                         "type": "string"
                       },
-                      "description": "Additional tags to add to all traces and metrics"
+                      "description": "Additional tags to add to all traces and metrics (values can use env. prefix)"
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Enable metrics emission (default: true)",
+                      "default": true
                     },
                     "enable_traces": {
                       "type": "boolean",
                       "description": "Enable APM traces (default: true)",
                       "default": true
                     },
+                    "enable_llm_obs": {
+                      "type": "boolean",
+                      "description": "Enable LLM Observability (default: true)",
+                      "default": true
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Disable logging of message content to Datadog (default: false)",
+                      "default": false
+                    },
+                    "agentless": {
+                      "type": "boolean",
+                      "description": "Use agentless mode to send data directly to Datadog APIs (default: false)",
+                      "default": false
+                    },
+                    "api_key": {
+                      "type": "string",
+                      "description": "Datadog API key, required for agentless mode (can use env. prefix)"
+                    },
+                    "site": {
+                      "type": "string",
+                      "description": "Datadog site/region (e.g., datadoghq.com, datadoghq.eu)",
+                      "default": "datadoghq.com"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request header names to capture as span tags"
+                    },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/plugin_span_filter"
                     }
                   },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "agentless": {
+                            "const": true
+                          }
+                        },
+                        "required": ["agentless"]
+                      },
+                      "then": {
+                        "required": ["api_key"]
+                      }
+                    }
+                  ],
                   "additionalProperties": false
                 }
               }
