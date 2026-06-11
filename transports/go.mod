@@ -15,7 +15,7 @@ require (
 	github.com/maximhq/bifrost/core v1.5.18
 	github.com/maximhq/bifrost/framework v1.3.18
 	github.com/maximhq/bifrost/plugins/compat v0.1.17
-	github.com/maximhq/bifrost/plugins/governance v1.5.18
+	github.com/maximhq/bifrost/plugins/governance v1.5.19-0.20260610175847-9908b7c5f7ef
 	github.com/maximhq/bifrost/plugins/logging v1.5.18
 	github.com/maximhq/bifrost/plugins/maxim v1.6.18
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v0.0.0-20260531215024-856c9963e662
