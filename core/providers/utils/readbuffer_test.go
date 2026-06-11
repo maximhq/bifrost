@@ -65,6 +65,9 @@ func TestMakeRequestWithContext_LargeResponseHeaders(t *testing.T) {
 		if bifrostErr == nil {
 			t.Fatal("expected small read buffer error with fasthttp's default ReadBufferSize, got success")
 		}
+		// GetErrorString() is not used here: it returns only the generic
+		// classification message (ErrProviderDoRequest); the fasthttp
+		// "small read buffer" detail lives in the wrapped Error.Error.
 		errText := bifrostErr.Error.Message
 		if bifrostErr.Error.Error != nil {
 			errText += " " + bifrostErr.Error.Error.Error()
