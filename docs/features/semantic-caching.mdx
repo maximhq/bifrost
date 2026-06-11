@@ -50,6 +50,14 @@ A few things that trip up first-time users — read these before configuring:
 
 **What gets cached:** chat completions, text completions, the Responses API (including WebSocket), embeddings, transcriptions, speech, and image generation — including their streaming variants.
 
+<Warning>
+**Latency overhead.** The cache lookup itself adds latency to every cache-enabled request, and the cost differs per path:
+
+- **Direct lookup** — one vector store round-trip per request, hit or miss. Sub-millisecond to a few milliseconds with a local Redis/Valkey; higher with remote or managed stores. (Computing the request hash itself is in-process and takes microseconds — the round-trip is the only real cost.)
+- **Semantic lookup** — runs on every direct miss, and must embed the incoming request *before* it can search. That means one embedding API call to your provider (typically tens to a few hundred milliseconds) plus a vector similarity search, paid upfront regardless of the outcome. A semantic **hit** therefore costs roughly an embedding round-trip — not the near-instant replay of a direct hit — and a semantic **miss** pays the embedding call *on top of* the full LLM call, making it slower than running without the cache.
+- **Cache writes** — asynchronous; they add no latency to the response.
+</Warning>
+
 ---
 
 ## Prerequisites
@@ -295,6 +303,7 @@ bifrostConfig := schemas.BifrostConfig{
 | **Matches** | Exact (normalized) request | Exact **and** semantically similar |
 | **Embedding provider** | Not needed | Required |
 | **Cost per miss** | Zero embedding cost | One embedding call per miss |
+| **Added latency** | One vector store round-trip per request | Store round-trip, plus an embedding call + similarity search on every direct miss |
 | **Best for** | Stable, repeated prompts; strict dedup | Paraphrased / varied user queries |
 | **`dimension`** | `1` | The model's real vector size (`> 1`) |
 

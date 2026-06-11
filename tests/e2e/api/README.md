@@ -88,6 +88,15 @@ From this directory (`tests/e2e/api`):
 ./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
+### Routing Harness Ledger
+
+Harness days are journaled in `routing/ledger-YYYY-MM-DD.md` (gitignored, one
+file per day the routing/catalog suites run). Each ledger holds: an
+open-divergences snapshot, per-suite scenario tables (setup / expected /
+actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
+results, and day notes. Append to the current day's file during a session;
+never rewrite past days.
+
 ### API Management Extensions
 
 The API management runner can merge additional Postman folders maintained
