@@ -523,7 +523,7 @@ Operations:
 
 GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost responses are prefixed with `openai/` (e.g., `openai/gpt-4o`). Results are aggregated from all configured API keys. No request body or parameters required.
 
-When the upstream provider returns richer model objects, Bifrost preserves those top-level fields in the native `/v1/models` response. Clients can use this metadata for model pickers, context limits, modality or tool support, and pricing displays without a separate `metadata` wrapper.
+When the upstream provider returns richer model objects, Bifrost preserves those top-level fields in the native `/v1/models` response, including fields such as `name`, `description`, context limits, `architecture`, `supported_parameters`, and provider-specific `pricing`. Clients can use this metadata for model pickers, context limits, modality or tool support, and pricing displays without a separate `metadata` wrapper.
 
 ---
 
