@@ -738,6 +738,9 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *tes
 		AdminPassword: schemas.NewEnvVar("hashedpassword"),
 		IsEnabled:     true,
 	})
+	// Enforce auth on inference; realtime transport endpoints must still bypass it
+	// because browser clients connect with an ephemeral key, not admin credentials.
+	am.UpdateEnforceAuthOnInference(true)
 
 	routes := []string{
 		"/v1/realtime",
@@ -775,6 +778,9 @@ func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *
 		AdminPassword: schemas.NewEnvVar("hashedpassword"),
 		IsEnabled:     true,
 	})
+	// Enforce auth on inference. Minting endpoints follow the inference auth toggle with
+	// no exception (unlike the transport carve-out), so they require auth when enforced.
+	am.UpdateEnforceAuthOnInference(true)
 
 	routes := []string{
 		"/v1/realtime/client_secrets",

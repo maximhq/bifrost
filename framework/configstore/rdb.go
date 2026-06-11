@@ -5056,7 +5056,6 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		var username *string
 		var password *string
 		var isEnabled bool
-		var disableAuthOnInference bool
 		for _, entry := range governanceConfigs {
 			switch entry.Key {
 			case tables.ConfigAdminUsernameKey:
@@ -5065,8 +5064,6 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				password = bifrost.Ptr(entry.Value)
 			case tables.ConfigIsAuthEnabledKey:
 				isEnabled = entry.Value == "true"
-			case tables.ConfigDisableAuthOnInferenceKey:
-				disableAuthOnInference = entry.Value == "true"
 			case tables.ConfigComplexityAnalyzerConfigKey:
 				if strings.TrimSpace(entry.Value) == "" {
 					continue
@@ -5083,10 +5080,9 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		}
 		if username != nil && password != nil {
 			authConfig = &AuthConfig{
-				AdminUserName:          schemas.NewEnvVar(*username),
-				AdminPassword:          schemas.NewEnvVar(*password),
-				IsEnabled:              isEnabled,
-				DisableAuthOnInference: disableAuthOnInference,
+				AdminUserName: schemas.NewEnvVar(*username),
+				AdminPassword: schemas.NewEnvVar(*password),
+				IsEnabled:     isEnabled,
 			}
 		}
 	}
@@ -5147,7 +5143,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	var username *string
 	var password *string
 	var isEnabled bool
-	var disableAuthOnInference bool
 	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -5163,23 +5158,13 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigDisableAuthOnInferenceKey).Select("value").Scan(&disableAuthOnInference).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-	}
 	if username == nil || password == nil {
 		return nil, nil
 	}
-	// We are no longer keeping this option in the database
-	if !isEnabled {
-		disableAuthOnInference = true
-	}
 	return &AuthConfig{
-		AdminUserName:          schemas.NewEnvVar(*username),
-		AdminPassword:          schemas.NewEnvVar(*password),
-		IsEnabled:              isEnabled,
-		DisableAuthOnInference: disableAuthOnInference,
+		AdminUserName: schemas.NewEnvVar(*username),
+		AdminPassword: schemas.NewEnvVar(*password),
+		IsEnabled:     isEnabled,
 	}, nil
 }
 
@@ -5201,12 +5186,6 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		if err := tx.Save(&tables.TableGovernanceConfig{
 			Key:   tables.ConfigIsAuthEnabledKey,
 			Value: fmt.Sprintf("%t", config.IsEnabled),
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Save(&tables.TableGovernanceConfig{
-			Key:   tables.ConfigDisableAuthOnInferenceKey,
-			Value: fmt.Sprintf("%t", config.DisableAuthOnInference),
 		}).Error; err != nil {
 			return err
 		}

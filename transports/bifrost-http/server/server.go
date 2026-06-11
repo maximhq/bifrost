@@ -833,6 +833,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
+		s.AuthMiddleware.UpdateEnforceAuthOnInference(config.EnforceAuthOnInference)
 	}
 	// Reloading config in bifrost client
 	if s.Client != nil {

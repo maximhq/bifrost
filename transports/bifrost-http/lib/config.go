@@ -3520,8 +3520,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	// If DB already matches file config, skip hashing and DB write
 	if dbAuthConfig != nil {
 		usernameMatch := dbAuthConfig.AdminUserName.GetValue() == authConfig.AdminUserName.GetValue()
-		boolsMatch := dbAuthConfig.IsEnabled == authConfig.IsEnabled &&
-			dbAuthConfig.DisableAuthOnInference == authConfig.DisableAuthOnInference
+		boolsMatch := dbAuthConfig.IsEnabled == authConfig.IsEnabled
 		var passwordMatch bool
 		if filePassword == "" {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == ""
@@ -3533,10 +3532,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		if usernameMatch && passwordMatch && boolsMatch {
 			// DB matches file -- use DB hash but preserve file env var references
 			config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-				AdminUserName:          authConfig.AdminUserName,
-				AdminPassword:          preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
-				IsEnabled:              authConfig.IsEnabled,
-				DisableAuthOnInference: authConfig.DisableAuthOnInference,
+				AdminUserName: authConfig.AdminUserName,
+				AdminPassword: preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
+				IsEnabled:     authConfig.IsEnabled,
 			}
 			return
 		}
@@ -3563,10 +3561,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	// Build auth config with hashed password but preserve env var references
 	config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-		AdminUserName:          authConfig.AdminUserName,
-		AdminPassword:          preserveEnvVar(authConfig.AdminPassword, hashedPassword),
-		IsEnabled:              authConfig.IsEnabled,
-		DisableAuthOnInference: authConfig.DisableAuthOnInference,
+		AdminUserName: authConfig.AdminUserName,
+		AdminPassword: preserveEnvVar(authConfig.AdminPassword, hashedPassword),
+		IsEnabled:     authConfig.IsEnabled,
 	}
 	// Persist to config store
 	if err := config.ConfigStore.UpdateAuthConfig(ctx, config.GovernanceConfig.AuthConfig); err != nil {
