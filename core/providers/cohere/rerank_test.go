@@ -79,15 +79,13 @@ func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T
 // a rerank response billed only in search units (no token counts) still yields
 // a non-nil Usage with NumSearchQueries populated.
 func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage(t *testing.T) {
-	searchUnits := 2
-
 	response := (&CohereRerankResponse{
 		ID: "rerank-response-id",
 		Results: []CohereRerankResult{
 			{Index: 0, RelevanceScore: 0.91},
 		},
 		Meta: &CohereRerankMeta{
-			BilledUnits: &CohereBilledUnits{SearchUnits: &searchUnits},
+			BilledUnits: &CohereBilledUnits{SearchUnits: schemas.Ptr(2)},
 		},
 	}).ToBifrostRerankResponse(nil, false)
 
@@ -103,10 +101,6 @@ func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage(t *testing.
 // that token counts and search units are both preserved when billed_units carries
 // the two together.
 func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsWithTokenUsage(t *testing.T) {
-	searchUnits := 1
-	inputTokens := 7
-	outputTokens := 3
-
 	response := (&CohereRerankResponse{
 		ID: "rerank-response-id",
 		Results: []CohereRerankResult{
@@ -114,9 +108,9 @@ func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsWithTokenUsage(t 
 		},
 		Meta: &CohereRerankMeta{
 			BilledUnits: &CohereBilledUnits{
-				InputTokens:  &inputTokens,
-				OutputTokens: &outputTokens,
-				SearchUnits:  &searchUnits,
+				InputTokens:  schemas.Ptr(7),
+				OutputTokens: schemas.Ptr(3),
+				SearchUnits:  schemas.Ptr(1),
 			},
 		},
 	}).ToBifrostRerankResponse(nil, false)
