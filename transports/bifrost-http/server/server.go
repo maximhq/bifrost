@@ -1338,8 +1338,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
 	loggerPlugin, _ := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler
 	governancePluginName := governance.PluginName
@@ -1348,7 +1350,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
