@@ -504,6 +504,26 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess, on
 										</span>
 									</div>
 								</div>
+								{mcpClient.config.connection_type === "stdio" &&
+									mcpClient.config.stdio_config?.envs &&
+									mcpClient.config.stdio_config.envs.length > 0 && (
+									<div className="space-y-2">
+										<div className="text-sm font-medium">Environment Variables</div>
+										<HeadersTable
+											value={Object.fromEntries(
+												mcpClient.config.stdio_config.envs.map((env) => {
+													const [name, ...valueParts] = env.split("=");
+													return [name, valueParts.join("=")];
+												}),
+											)}
+											onChange={noop}
+											fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
+											valuePlaceholder="—"
+											label=""
+											disabled
+										/>
+									</div>
+								)}
 								<FormField
 									control={form.control}
 									name="is_code_mode_client"
