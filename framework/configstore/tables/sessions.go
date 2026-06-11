@@ -28,13 +28,7 @@ func (s *SessionsTable) BeforeSave(tx *gorm.DB) error {
 	if s.Token != "" {
 		s.TokenHash = encrypt.HashSHA256(s.Token)
 	}
-	if VaultIsEnabled() && s.Token != "" {
-		path := fmt.Sprintf("%s/%s/%s", VaultPrefix(), s.TableName(), s.TokenHash)
-		if err := vaultString(tx.Statement.Context, path, &s.Token); err != nil {
-			return fmt.Errorf("failed to vault session token: %w", err)
-		}
-		s.EncryptionStatus = EncryptionStatusVault
-	} else if encrypt.IsEnabled() && s.Token != "" {
+	if encrypt.IsEnabled() && s.Token != "" {
 		if err := encryptString(&s.Token); err != nil {
 			return fmt.Errorf("failed to encrypt session token: %w", err)
 		}
@@ -45,25 +39,10 @@ func (s *SessionsTable) BeforeSave(tx *gorm.DB) error {
 
 // AfterFind hook to decrypt the session token
 func (s *SessionsTable) AfterFind(tx *gorm.DB) error {
-	switch s.EncryptionStatus {
-	case EncryptionStatusVault:
-		if err := resolveVaultString(tx.Statement.Context, &s.Token); err != nil {
-			return fmt.Errorf("failed to resolve vault session token: %w", err)
-		}
-	case EncryptionStatusEncrypted:
+	if s.EncryptionStatus == EncryptionStatusEncrypted {
 		if err := decryptString(&s.Token); err != nil {
 			return fmt.Errorf("failed to decrypt session token: %w", err)
 		}
 	}
-	return nil
-}
-
-// AfterDelete hook for best-effort vault cleanup on row deletion.
-func (s *SessionsTable) AfterDelete(tx *gorm.DB) error {
-	if s.EncryptionStatus != EncryptionStatusVault || VaultHooks.Remove == nil {
-		return nil
-	}
-	path := fmt.Sprintf("%s/%s/%s", VaultPrefix(), s.TableName(), s.TokenHash)
-	_ = VaultHooks.Remove(tx.Statement.Context, path)
 	return nil
 }

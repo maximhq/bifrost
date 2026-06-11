@@ -1179,8 +1179,14 @@ false
 {{- if $inputConfig.service_name }}
 {{- $_ := set $datadogConfig "service_name" $inputConfig.service_name }}
 {{- end }}
+{{- if $inputConfig.ml_app }}
+{{- $_ := set $datadogConfig "ml_app" $inputConfig.ml_app }}
+{{- end }}
 {{- if $inputConfig.agent_addr }}
 {{- $_ := set $datadogConfig "agent_addr" $inputConfig.agent_addr }}
+{{- end }}
+{{- if $inputConfig.dogstatsd_addr }}
+{{- $_ := set $datadogConfig "dogstatsd_addr" $inputConfig.dogstatsd_addr }}
 {{- end }}
 {{- if $inputConfig.env }}
 {{- $_ := set $datadogConfig "env" $inputConfig.env }}
@@ -1191,8 +1197,29 @@ false
 {{- if $inputConfig.custom_tags }}
 {{- $_ := set $datadogConfig "custom_tags" $inputConfig.custom_tags }}
 {{- end }}
+{{- if hasKey $inputConfig "enable_metrics" }}
+{{- $_ := set $datadogConfig "enable_metrics" $inputConfig.enable_metrics }}
+{{- end }}
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
+{{- end }}
+{{- if hasKey $inputConfig "enable_llm_obs" }}
+{{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if hasKey $inputConfig "agentless" }}
+{{- $_ := set $datadogConfig "agentless" $inputConfig.agentless }}
+{{- end }}
+{{- if $inputConfig.api_key }}
+{{- $_ := set $datadogConfig "api_key" $inputConfig.api_key }}
+{{- end }}
+{{- if $inputConfig.site }}
+{{- $_ := set $datadogConfig "site" $inputConfig.site }}
+{{- end }}
+{{- if $inputConfig.request_headers }}
+{{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
@@ -1401,6 +1428,10 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if and .Values.bifrost.plugins.datadog.enabled (hasKey .Values.bifrost.plugins.datadog "version") (gt (int .Values.bifrost.plugins.datadog.version) 32767) }}
 {{- fail "ERROR: bifrost.plugins.datadog.version must be <= 32767." }}
+{{- end }}
+{{- $ddCfg := (.Values.bifrost.plugins.datadog.config | default dict) }}
+{{- if and .Values.bifrost.plugins.datadog.enabled $ddCfg.agentless (not $ddCfg.api_key) }}
+{{- fail "ERROR: bifrost.plugins.datadog.config.api_key is required when bifrost.plugins.datadog.config.agentless is true." }}
 {{- end }}
 {{- if and .Values.bifrost.plugins.bigquery.enabled (hasKey .Values.bifrost.plugins.bigquery "version") (lt (int .Values.bifrost.plugins.bigquery.version) 1) }}
 {{- fail "ERROR: bifrost.plugins.bigquery.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}

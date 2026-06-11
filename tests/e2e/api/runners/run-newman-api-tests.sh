@@ -164,7 +164,7 @@ while [[ $# -gt 0 ]]; do
             echo "                      (default: ./config.json; also reads BIFROST_CONFIG_PATH env)"
             echo "  --extra-collection <p>"
             echo "                      Merge an additional Postman collection into this API run."
-            echo "                      Intended for enterprise-only API e2e coverage from another repo."
+            echo "                      Intended for API e2e coverage maintained in another repo."
             echo "  --seed-env <p>      Load generated seed dotenv values and pass them to Newman."
             echo "  --expected <p>      Load generated DAC expected-manifest JSON for assertions."
             echo "  --help              Show this help message"

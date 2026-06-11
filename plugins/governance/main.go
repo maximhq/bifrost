@@ -458,25 +458,14 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // and mutates req.Provider/req.Model with the refined provider/model. Also populates req.Fallbacks
 // from the remaining weighted providers if no fallbacks were configured by the caller.
 func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error {
-	_, modelStr, existingFallbacks := req.GetRequestFields()
+	provider, modelStr, existingFallbacks := req.GetRequestFields()
 	if modelStr == "" {
 		return nil
 	}
 
-	// Model already has provider prefix pointing to a configured provider → leave it alone.
-	if strings.Contains(modelStr, "/") {
-		provider, _ := schemas.ParseModelString(modelStr, "")
-		// Checking valid provider when store is available; if store is nil,
-		// assume the prefixed model should be left unchanged.
-		if p.inMemoryStore != nil {
-			if _, ok := p.inMemoryStore.GetConfiguredProviders()[provider]; ok {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Skipping load balancing for model %s: already prefixed with configured provider %s", modelStr, provider))
-				return nil
-			}
-		} else {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("Skipping load balancing for model %s: provider-prefixed and no in-memory store to validate against", modelStr))
-			return nil
-		}
+	if provider != "" {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Skipping load balancing for model %s: provider %s already set", modelStr, provider))
+		return nil
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing provider for model %s", modelStr))
