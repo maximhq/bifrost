@@ -2280,7 +2280,7 @@
         },
         "key_ids": {
           "type": "array",
-          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In config.json, values are key names. Via the API, values are key UUIDs.",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys. Semantics depend on version: v2 (default) empty = deny all; v1 empty = allow all. Values are the key IDs.",
           "items": {
             "type": "string"
           }
@@ -4719,6 +4719,13 @@
         },
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": ["provider_name"],
