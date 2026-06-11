@@ -91,9 +91,11 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	}
 
 	// Rerank entries carry their per-query rate as input_cost_per_query; fold it
-	// onto SearchContextCostPerQuery so computeRerankCost can consume it. An
-	// explicit search_context_cost_per_query value always wins.
-	if p.SearchContextCostPerQuery == nil && raw.InputCostPerQuery != nil {
+	// onto SearchContextCostPerQuery so computeRerankCost can consume it. The
+	// fold is gated on rerank mode so the rate can never attach to other entry
+	// types and leak into the web-search pricing path. An explicit
+	// search_context_cost_per_query value always wins.
+	if p.Mode == "rerank" && p.SearchContextCostPerQuery == nil && raw.InputCostPerQuery != nil {
 		p.SearchContextCostPerQuery = raw.InputCostPerQuery
 	}
 	return nil

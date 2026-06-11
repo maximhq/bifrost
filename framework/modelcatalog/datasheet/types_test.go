@@ -29,14 +29,31 @@ func TestEntryUnmarshalInputCostPerQuery(t *testing.T) {
 	assert.Equal(t, 0.002, *entry.SearchContextCostPerQuery)
 }
 
+// TestEntryUnmarshalInputCostPerQueryIgnoredForNonRerankModes verifies that
+// input_cost_per_query never attaches to non-rerank entries, so it cannot leak
+// into the web-search pricing path via SearchContextCostPerQuery.
+func TestEntryUnmarshalInputCostPerQueryIgnoredForNonRerankModes(t *testing.T) {
+	for _, mode := range []string{"chat", "embedding", "completion"} {
+		var entry Entry
+		err := sonic.Unmarshal([]byte(`{
+			"provider": "cohere",
+			"mode": "`+mode+`",
+			"input_cost_per_query": 0.002
+		}`), &entry)
+
+		require.NoError(t, err)
+		assert.Nil(t, entry.SearchContextCostPerQuery, "mode %q must not fold input_cost_per_query", mode)
+	}
+}
+
 // TestEntryUnmarshalTieredSearchContextCostTakesPrecedence verifies that an
 // explicit tiered search_context_cost_per_query object wins over
 // input_cost_per_query when both keys are present.
 func TestEntryUnmarshalTieredSearchContextCostTakesPrecedence(t *testing.T) {
 	var entry Entry
 	err := sonic.Unmarshal([]byte(`{
-		"provider": "perplexity",
-		"mode": "chat",
+		"provider": "cohere",
+		"mode": "rerank",
 		"input_cost_per_query": 0.002,
 		"search_context_cost_per_query": {"search_context_size_medium": 0.01}
 	}`), &entry)
