@@ -53,7 +53,7 @@ func NewCopilotProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
@@ -70,7 +70,7 @@ func NewCopilotProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		MaxResponseBodySize: tokenExchangeMaxResponseBytes,
 	}
 	tokenClient = providerUtils.ConfigureProxy(tokenClient, config.ProxyConfig, logger)
-	tokenClient = providerUtils.ConfigureDialer(tokenClient)
+	tokenClient = providerUtils.ConfigureDialer(tokenClient, config.NetworkConfig.AllowPrivateNetwork)
 	tokenClient = providerUtils.ConfigureTLS(tokenClient, config.NetworkConfig, logger)
 
 	return &CopilotProvider{
@@ -578,6 +578,11 @@ func (provider *CopilotProvider) TextCompletionStream(_ *schemas.BifrostContext,
 // Embedding is not supported by the Copilot provider.
 func (provider *CopilotProvider) Embedding(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Copilot provider.
+func (provider *CopilotProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // Rerank is not supported by the Copilot provider.
