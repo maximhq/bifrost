@@ -2066,7 +2066,13 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 
 		found := false
 		for j, existingCustomer := range governanceConfig.Customers {
-			if existingCustomer.ID == newCustomer.ID {
+			idMatch := existingCustomer.ID == newCustomer.ID
+			nameMatch := newCustomer.ID == "" && existingCustomer.Name == newCustomer.Name
+			if idMatch || nameMatch {
+				if nameMatch {
+					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
+					configData.Governance.Customers[i].ID = existingCustomer.ID
+				}
 				found = true
 				if existingCustomer.ConfigHash != fileCustomerHash {
 					logger.Debug("config hash mismatch for customer %s, syncing from config file", newCustomer.ID)
@@ -2081,6 +2087,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.Customers[i].ConfigHash = fileCustomerHash
+			if configData.Governance.Customers[i].ID == "" {
+				configData.Governance.Customers[i].ID = uuid.NewString()
+			}
 			customersToAdd = append(customersToAdd, configData.Governance.Customers[i])
 		}
 	}
@@ -2097,7 +2106,13 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 
 		found := false
 		for j, existingTeam := range governanceConfig.Teams {
-			if existingTeam.ID == newTeam.ID {
+			idMatch := existingTeam.ID == newTeam.ID
+			nameMatch := newTeam.ID == "" && existingTeam.Name == newTeam.Name
+			if idMatch || nameMatch {
+				if nameMatch {
+					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
+					configData.Governance.Teams[i].ID = existingTeam.ID
+				}
 				found = true
 				if existingTeam.ConfigHash != fileTeamHash {
 					logger.Debug("config hash mismatch for team %s, syncing from config file", newTeam.ID)
@@ -2112,6 +2127,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.Teams[i].ConfigHash = fileTeamHash
+			if configData.Governance.Teams[i].ID == "" {
+				configData.Governance.Teams[i].ID = uuid.NewString()
+			}
 			teamsToAdd = append(teamsToAdd, configData.Governance.Teams[i])
 		}
 	}
@@ -2173,6 +2191,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
+			if configData.Governance.VirtualKeys[i].ID == "" {
+				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
+			}
 			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
 			// Process environment variable for virtual key value
 			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
@@ -2779,9 +2800,6 @@ func updateGovernanceConfigInStore(
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
-			if virtualKey.ID == "" {
-				virtualKey.ID = uuid.NewString()
-			}
 			providerConfigs := virtualKey.ProviderConfigs
 			mcpConfigs := virtualKey.MCPConfigs
 			virtualKey.ProviderConfigs = nil
