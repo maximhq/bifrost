@@ -10,14 +10,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.26.4' }
-      - name: go get governance@dev-sha + tidy
+      - name: bump ALL bifrost-internal subpackages to dev pseudo-version + tidy
         working-directory: transports
         run: |
           set -euo pipefail
-          DEV_SHA=$(git -C ../ ls-remote https://github.com/maximhq/bifrost.git dev | cut -f1)
+          DEV_SHA=$(git ls-remote https://github.com/maximhq/bifrost.git dev | cut -f1)
           echo "  upstream/dev tip: $DEV_SHA"
-          go get github.com/maximhq/bifrost/plugins/governance@${DEV_SHA} || true
-          go mod tidy
+          # Discover every maximhq/bifrost/<subpkg> require line + bump each
+          PKGS=$(grep -oE 'github\.com/maximhq/bifrost/[a-zA-Z0-9/_-]+' go.mod | sort -u)
+          echo "  bifrost-internal modules to bump:"
+          for p in $PKGS; do echo "    $p"; done
+          for p in $PKGS; do
+            echo "  go get $p@$DEV_SHA"
+            go get "$p@$DEV_SHA" 2>&1 | tail -2 || true
+          done
+          go mod tidy 2>&1 | tail -5
       - name: commit + push
         run: |
           set -euo pipefail
@@ -25,6 +32,8 @@ jobs:
           git config user.email 'fork-bot@users.noreply.github.com'
           if ! git diff --quiet transports/go.mod transports/go.sum; then
             git add transports/go.mod transports/go.sum
-            git commit -m "chore(transports): go mod tidy + bump governance to dev pseudo-version"
+            git commit -m "chore(transports): bump all bifrost-internal modules to dev pseudo-version + tidy"
             git push
+          else
+            echo "  no changes — already in lockstep"
           fi
