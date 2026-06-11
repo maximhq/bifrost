@@ -505,7 +505,10 @@ false
 {{- if hasKey .Values.bifrost.governance.authConfig "isEnabled" }}
 {{- $_ := set $authConfig "is_enabled" .Values.bifrost.governance.authConfig.isEnabled }}
 {{- end }}
-{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- if hasKey .Values.bifrost.governance.authConfig "disableAuthOnInference" }}
+{{- $_ := set $authConfig "disable_auth_on_inference" .Values.bifrost.governance.authConfig.disableAuthOnInference }}
+{{- end }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled $authConfig.disable_auth_on_inference }}
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
@@ -530,7 +533,10 @@ false
 {{- if hasKey .Values.bifrost.authConfig "isEnabled" }}
 {{- $_ := set $authConfig "is_enabled" .Values.bifrost.authConfig.isEnabled }}
 {{- end }}
-{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- if hasKey .Values.bifrost.authConfig "disableAuthOnInference" }}
+{{- $_ := set $authConfig "disable_auth_on_inference" .Values.bifrost.authConfig.disableAuthOnInference }}
+{{- end }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled $authConfig.disable_auth_on_inference }}
 {{- $_ := set $config "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
