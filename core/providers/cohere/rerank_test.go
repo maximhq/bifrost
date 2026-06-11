@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCohereRerankResponseToBifrostRerankResponse verifies result ordering and
+// provider-document parsing when converting a Cohere rerank response.
 func TestCohereRerankResponseToBifrostRerankResponse(t *testing.T) {
 	response := (&CohereRerankResponse{
 		ID: "rerank-response-id",
@@ -40,6 +42,8 @@ func TestCohereRerankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, "geography", response.Results[1].Document.Meta["topic"])
 }
 
+// TestCohereRerankResponseToBifrostRerankResponseReturnDocuments verifies that
+// request documents are echoed back onto results when return_documents is set.
 func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T) {
 	requestDocs := []schemas.RerankDocument{
 		{Text: "request-doc-0"},
@@ -71,6 +75,9 @@ func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T
 	assert.Equal(t, "request-doc-1", response.Results[1].Document.Text)
 }
 
+// TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage verifies that
+// a rerank response billed only in search units (no token counts) still yields
+// a non-nil Usage with NumSearchQueries populated.
 func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage(t *testing.T) {
 	searchUnits := 2
 
@@ -92,6 +99,9 @@ func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage(t *testing.
 	assert.Equal(t, 0, response.Usage.TotalTokens)
 }
 
+// TestCohereRerankResponseToBifrostRerankResponseSearchUnitsWithTokenUsage verifies
+// that token counts and search units are both preserved when billed_units carries
+// the two together.
 func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsWithTokenUsage(t *testing.T) {
 	searchUnits := 1
 	inputTokens := 7
