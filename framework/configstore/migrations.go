@@ -188,7 +188,6 @@ type legacyBudgetTeam struct {
 // TableName returns the governance_teams table name for legacyBudgetTeam.
 func (legacyBudgetTeam) TableName() string { return "governance_teams" }
 
-
 // sqliteColumnInfo holds the information about a SQLite column.
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
@@ -861,6 +860,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddCustomerBudgetsToBudgetsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVirtualKeyExpiresAtColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddModelConfigBudgetsFKConstraint(ctx, db); err != nil {
@@ -9781,6 +9783,36 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
+// No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_virtual_key_expires_at_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys ADD COLUMN expires_at TIMESTAMP NULL").Error; err != nil {
+					return fmt.Errorf("failed to add expires_at column to governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableVirtualKey{}, "expires_at") {
+				if err := tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN expires_at").Error; err != nil {
+					return fmt.Errorf("failed to drop expires_at column from governance_virtual_keys: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_virtual_key_expires_at_column migration: %s", err.Error())
 	}
 	return nil
 }
