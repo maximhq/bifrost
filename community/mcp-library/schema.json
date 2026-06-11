@@ -24,16 +24,9 @@
   "definitions": {
     "server": {
       "type": "object",
-      "required": ["slug", "name", "connection_type"],
+      "required": ["name", "connection_type"],
       "additionalProperties": false,
       "properties": {
-        "slug": {
-          "type": "string",
-          "description": "Unique, stable, URL-safe identifier. Used as the primary key for syncing. Never change it once merged.",
-          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-          "minLength": 2,
-          "maxLength": 100
-        },
         "name": {
           "type": "string",
           "description": "Human-readable display name.",
