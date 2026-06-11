@@ -120,3 +120,28 @@ func TestToBifrostListModelsResponse_StripsCaseInsensitiveProviderPrefix(t *test
 	require.Len(t, resp.Data, 1)
 	assert.Equal(t, "openai/gpt-4o", resp.Data[0].ID)
 }
+
+func TestToOpenAIListModelsResponse_DefaultsItemObjectToModel(t *testing.T) {
+	t.Parallel()
+
+	response := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{{
+			ID:      "openai/gpt-4o",
+			OwnedBy: schemas.Ptr("openai"),
+		}},
+	}
+
+	openaiResponse := ToOpenAIListModelsResponse(response)
+	require.NotNil(t, openaiResponse)
+	require.Len(t, openaiResponse.Data, 1)
+	assert.Equal(t, "list", openaiResponse.Object)
+	assert.Equal(t, "openai/gpt-4o", openaiResponse.Data[0].ID)
+
+	payload, err := json.Marshal(openaiResponse)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	model := decoded["data"].([]any)[0].(map[string]any)
+	assert.Equal(t, "model", model["object"])
+}

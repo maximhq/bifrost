@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -66,6 +67,19 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		Data:   make([]schemas.Model, 0, len(response.Data)),
 	}
 	for _, model := range response.Data {
+		if len(model.RawModelJSON) == 0 {
+			model.RawModelJSON = json.RawMessage(`{"object":"model"}`)
+		} else {
+			payload := map[string]json.RawMessage{}
+			if err := json.Unmarshal(model.RawModelJSON, &payload); err == nil {
+				if _, ok := payload["object"]; !ok {
+					payload["object"] = json.RawMessage(`"model"`)
+					if raw, err := json.Marshal(payload); err == nil {
+						model.RawModelJSON = raw
+					}
+				}
+			}
+		}
 		openaiResponse.Data = append(openaiResponse.Data, model)
 	}
 	return openaiResponse
