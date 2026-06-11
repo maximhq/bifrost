@@ -207,6 +207,50 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	assert.Empty(t, found.OutputMessage, "output should be empty when S3 fails")
 }
 
+func TestHybrid_Create_DropsNonTextBlocksFromDBLastUserMessage(t *testing.T) {
+	// When the last user message carries attachments (image/audio/file blocks),
+	// only its text blocks should be kept in the DB row's input_history. The
+	// full message, attachments included, still goes to object storage.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	question := "What is in this image?"
+	imageData := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+	entry := &Log{
+		ID:        "attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4o",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: &question},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageData}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// DB row keeps the text block but not the attachment.
+	dbLog, err := inner.FindByID(ctx, "attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.InputHistory, "What is in this image?", "text block should be retained in DB")
+	assert.NotContains(t, dbLog.InputHistory, "base64", "attachment data must not be stored in DB")
+
+	// S3 payload keeps the full message including the attachment.
+	key := ObjectKey("test", entry.Timestamp, "attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "base64", "attachment should be preserved in object storage")
+
+	// The caller's parsed message must not be mutated by the DB filtering.
+	require.Len(t, entry.InputHistoryParsed[0].Content.ContentBlocks, 2, "caller's message blocks must stay intact")
+}
+
 func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
