@@ -90,6 +90,8 @@ export const PRICING_FIELDS = [
 	{ key: "output_cost_per_token_priority", label: "Output / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "input_cost_per_token_flex", label: "Input / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "output_cost_per_token_flex", label: "Output / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
+	{ key: "input_cost_per_token_fast", label: "Input / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
+	{ key: "output_cost_per_token_fast", label: "Output / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
 	{
 		key: "input_cost_per_token_above_128k_tokens",
 		label: "Input / token (>128k)",

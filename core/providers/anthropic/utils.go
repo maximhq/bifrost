@@ -1079,7 +1079,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (Opus 4.6 only per
 	// SupportsFastMode); otherwise sending the header guarantees a 400.
-	if req.Speed != nil && *req.Speed == "fast" {
+	if req.Speed != nil {
 		if (!hasProvider || features.FastMode) && SupportsFastMode(req.Model) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}

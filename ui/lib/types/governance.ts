@@ -420,6 +420,8 @@ export interface PricingOverridePatch {
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
+	input_cost_per_token_fast?: number;
+	output_cost_per_token_fast?:number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
 	output_cost_per_token_above_128k_tokens?: number;

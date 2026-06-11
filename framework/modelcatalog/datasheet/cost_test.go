@@ -153,6 +153,90 @@ func TestComputeTextCost_WithCachedPromptTokens(t *testing.T) {
 	assert.InDelta(t, 0.0096, cost, 1e-12)
 }
 
+func TestComputeTextCost_FastMode(t *testing.T) {
+	// Opus 4.8: standard $5/$25, fast $10/$50 per MTok.
+	p := chatPricing(0.000005, 0.000025)
+	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+
+	// Standard speed → standard rates.
+	standard := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, 1000*0.000005+500*0.000025, standard, 1e-12)
+
+	// Fast speed → fast rates.
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	assert.InDelta(t, 1000*0.00001+500*0.00005, fast, 1e-12)
+}
+
+func TestComputeTextCost_FastMode_FlatAcrossContextWindow(t *testing.T) {
+	// Fast mode is flat across the full window — it must ignore the 200k tier rate.
+	p := chatPricing(0.000005, 0.000025)
+	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
+	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.0000075)
+	p.OutputCostPerTokenAbove200kTokens = bifrost.Ptr(0.0000375)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     250000,
+		CompletionTokens: 1000,
+		TotalTokens:      251000, // above the 200k tier
+	}
+
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	// Flat fast rate, not the above-200k rate.
+	assert.InDelta(t, 250000*0.00001+1000*0.00005, fast, 1e-9)
+}
+
+func TestComputeTextCost_FastMode_FallsBackWhenUnconfigured(t *testing.T) {
+	// Model without fast columns (e.g. non-Opus) → fast flag is a no-op, standard rates apply.
+	p := chatPricing(0.000005, 0.000025)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	assert.InDelta(t, 1000*0.000005+500*0.000025, fast, 1e-12)
+}
+
+func TestComputeTextCost_FastMode_CacheBillsAtStandardRates(t *testing.T) {
+	// Per design: cache tokens on a fast request bill at standard cache rates;
+	// only the non-cached input and the output use the fast rate.
+	p := chatPricing(0.000005, 0.000025)
+	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)     // standard read
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625) // standard 5m write
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  1500,
+			CachedWriteTokens: 200,
+		},
+	}
+
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	// Input: non-cached (2000-1500-200)*fast + read 1500*stdRead + write 200*stdWrite
+	//      = 300*0.00001 + 1500*0.0000005 + 200*0.00000625 = 0.003 + 0.00075 + 0.00125 = 0.0019(? recompute)
+	expected := 300*0.00001 + 1500*0.0000005 + 200*0.00000625 + 500*0.00005
+	assert.InDelta(t, expected, fast, 1e-12)
+}
+
+func TestTierFromResponse_Speed(t *testing.T) {
+	assert.False(t, tierFromResponse(nil, nil).isFast)
+	assert.False(t, tierFromResponse(nil, bifrost.Ptr("standard")).isFast)
+	assert.True(t, tierFromResponse(nil, bifrost.Ptr("fast")).isFast)
+}
+
 func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
 	// claude-3-5-sonnet-20241022-v2:0 on Bedrock:
 	// input=$3/M, output=$15/M, cache_creation=$3.75/M, cache_creation_1hr=$7.50/M, cache_read=$0.3/M
@@ -1998,33 +2082,33 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 }
 
 // =========================================================================
-// tierFromString tests
+// tierFromResponse tests
 // =========================================================================
 
-func TestTierFromString_Priority(t *testing.T) {
+func TestTierFromResponse_Priority(t *testing.T) {
 	s := schemas.BifrostServiceTierPriority
-	tier := tierFromString(&s)
+	tier := tierFromResponse(&s, nil)
 	assert.True(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
 
-func TestTierFromString_Flex(t *testing.T) {
+func TestTierFromResponse_Flex(t *testing.T) {
 	s := schemas.BifrostServiceTierFlex
-	tier := tierFromString(&s)
+	tier := tierFromResponse(&s, nil)
 	assert.False(t, tier.isPriority)
 	assert.True(t, tier.isFlex)
 }
 
-func TestTierFromString_Default(t *testing.T) {
+func TestTierFromResponse_Default(t *testing.T) {
 	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
-		tier := tierFromString(&s)
+		tier := tierFromResponse(&s, nil)
 		assert.False(t, tier.isPriority, "expected no priority for %q", s)
 		assert.False(t, tier.isFlex, "expected no flex for %q", s)
 	}
 }
 
-func TestTierFromString_Nil(t *testing.T) {
-	tier := tierFromString(nil)
+func TestTierFromResponse_Nil(t *testing.T) {
+	tier := tierFromResponse(nil, nil)
 	assert.False(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
