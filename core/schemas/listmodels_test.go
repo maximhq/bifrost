@@ -70,3 +70,59 @@ func TestParseListModelString_NormalizesKnownProviderCasing(t *testing.T) {
 	assert.Equal(t, OpenAI, provider)
 	assert.Equal(t, "gpt-4o", model)
 }
+
+func TestModelUnmarshalJSON_NormalizesEmptyNestedStructsToNil(t *testing.T) {
+	t.Parallel()
+
+	var model Model
+	err := json.Unmarshal([]byte(`{
+		"id":"openai/gpt-5.5",
+		"pricing":{},
+		"architecture":{},
+		"top_provider":{},
+		"per_request_limits":{},
+		"default_parameters":{}
+	}`), &model)
+	require.NoError(t, err)
+	assert.Nil(t, model.Pricing)
+	assert.Nil(t, model.Architecture)
+	assert.Nil(t, model.TopProvider)
+	assert.Nil(t, model.PerRequestLimits)
+	assert.Nil(t, model.DefaultParameters)
+}
+
+func TestModelMarshalJSON_DeepMergesNestedMetadata(t *testing.T) {
+	t.Parallel()
+
+	model := Model{
+		ID: "openai/gpt-5.5",
+		RawModelJSON: json.RawMessage(`{
+			"id":"gpt-5.5",
+			"pricing":{"prompt":"0.1","input_cache_read":"0.02"},
+			"top_provider":{"is_moderated":true,"provider_name":"openrouter"}
+		}`),
+		Pricing: &Pricing{
+			Prompt:     Ptr("0.3"),
+			Completion: Ptr("0.4"),
+		},
+		TopProvider: &TopProvider{
+			ContextLength: Ptr(4096),
+		},
+	}
+
+	payload, err := json.Marshal(model)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+
+	pricing := decoded["pricing"].(map[string]any)
+	assert.Equal(t, "0.3", pricing["prompt"])
+	assert.Equal(t, "0.4", pricing["completion"])
+	assert.Equal(t, "0.02", pricing["input_cache_read"])
+
+	topProvider := decoded["top_provider"].(map[string]any)
+	assert.Equal(t, true, topProvider["is_moderated"])
+	assert.Equal(t, float64(4096), topProvider["context_length"])
+	assert.Equal(t, "openrouter", topProvider["provider_name"])
+}

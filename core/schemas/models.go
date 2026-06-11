@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 )
 
 // DefaultPageSize is the default page size for listing models
@@ -187,6 +188,65 @@ type modelUnmarshalAlias struct {
 	ContextWindow *int `json:"context_window,omitempty"`
 }
 
+var nestedModelJSONKeys = map[string]struct{}{
+	"architecture":       {},
+	"pricing":            {},
+	"top_provider":       {},
+	"per_request_limits": {},
+	"default_parameters": {},
+}
+
+func nilIfZeroStruct[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	if reflect.ValueOf(*value).IsZero() {
+		return nil
+	}
+	return value
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	var value map[string]json.RawMessage
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func isEmptyJSONObject(raw json.RawMessage) bool {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return len(value) == 0
+}
+
+func mergeJSONObject(base, overlay json.RawMessage) (json.RawMessage, bool) {
+	var baseMap map[string]json.RawMessage
+	if err := json.Unmarshal(base, &baseMap); err != nil {
+		return nil, false
+	}
+
+	var overlayMap map[string]json.RawMessage
+	if err := json.Unmarshal(overlay, &overlayMap); err != nil {
+		return nil, false
+	}
+
+	for key, value := range overlayMap {
+		if existing, ok := baseMap[key]; ok && isJSONObject(existing) && isJSONObject(value) {
+			if merged, ok := mergeJSONObject(existing, value); ok {
+				baseMap[key] = merged
+				continue
+			}
+		}
+		baseMap[key] = value
+	}
+
+	merged, err := json.Marshal(baseMap)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
 func (m *Model) UnmarshalJSON(data []byte) error {
 	var decoded modelUnmarshalAlias
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -197,6 +257,11 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	if result.ContextLength == nil && decoded.ContextWindow != nil {
 		result.ContextLength = decoded.ContextWindow
 	}
+	result.Architecture = nilIfZeroStruct(result.Architecture)
+	result.Pricing = nilIfZeroStruct(result.Pricing)
+	result.TopProvider = nilIfZeroStruct(result.TopProvider)
+	result.PerRequestLimits = nilIfZeroStruct(result.PerRequestLimits)
+	result.DefaultParameters = nilIfZeroStruct(result.DefaultParameters)
 	if len(data) > 0 {
 		result.RawModelJSON = append(json.RawMessage(nil), data...)
 	}
@@ -227,6 +292,17 @@ func (m Model) MarshalJSON() ([]byte, error) {
 	}
 
 	for key, value := range overlay {
+		if _, ok := nestedModelJSONKeys[key]; ok {
+			if existing, hasExisting := merged[key]; hasExisting {
+				if isEmptyJSONObject(value) {
+					continue
+				}
+				if mergedValue, ok := mergeJSONObject(existing, value); ok {
+					merged[key] = mergedValue
+					continue
+				}
+			}
+		}
 		merged[key] = value
 	}
 
