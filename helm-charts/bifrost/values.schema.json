@@ -3109,9 +3109,10 @@
               "type": "string"
             },
             "port": {
-              "type": "integer",
+              "type": ["integer", "string"],
               "minimum": 1,
-              "maximum": 65535
+              "maximum": 65535,
+              "description": "External PostgreSQL port. Integer (e.g. 5432) or a string. Supports env. prefix for environment variable references (e.g. 'env.BIFROST_POSTGRES_PORT')."
             },
             "user": {
               "type": "string"
