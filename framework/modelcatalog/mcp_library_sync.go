@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -112,6 +113,18 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 		return 0, nil
 	}
 
+	// Load the slugs the sync must not touch: org-internal ("custom") rows and
+	// soft-deleted ("tombstoned") rows. A remote payload entry whose slug is in
+	// this set is skipped silently so the rest of the payload still seeds.
+	protected, err := store.GetProtectedMCPLibrarySlugs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load protected MCP library slugs: %w", err)
+	}
+	protectedSet := make(map[string]bool, len(protected))
+	for _, slug := range protected {
+		protectedSet[slug] = true
+	}
+
 	// Upsert all entries in a single transaction.
 	count := 0
 	err = store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -120,6 +133,15 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 			e := &entries[i]
 			if e.Name == "" {
 				continue // skip malformed entries
+			}
+			// The catalog payload carries no slug; derive it from the name,
+			// matching the slug generation used for custom library entries.
+			slug := Slugify(e.Name)
+			if slug == "" {
+				continue // name had no slug-able content
+			}
+			if protectedSet[slug] {
+				continue // never overwrite custom or tombstoned rows
 			}
 			if seen[slug] {
 				continue // deduplicate within the payload
@@ -142,6 +164,7 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 				Publisher:          e.Publisher,
 				Tags:               e.Tags,
 				Metadata:           e.Metadata,
+				Source:             "remote",
 				CreatedAt:          now,
 				UpdatedAt:          now,
 			}
@@ -264,4 +287,32 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 	}
 
 	return payload.Servers, nil
+}
+
+// Slugify derives a URL/identifier-safe slug from a display name: lowercase,
+// non-alphanumeric runs collapsed to a single "-", and leading/trailing "-"
+// trimmed. Used to key custom library entries off their name so the existing
+// unique slug index detects duplicates. Returns "" for names with no
+// alphanumeric content (the caller rejects an empty slug).
+//
+// NOTE: only ASCII letters and digits are retained — accented/unicode characters
+// (e.g. "données") are stripped, which may produce unexpected slugs for non-ASCII
+// names. This is intentional to keep slugs URL-safe without a transliteration
+// dependency; callers should be aware of this limitation.
+func Slugify(name string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash && b.Len() > 0 {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }

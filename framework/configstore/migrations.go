@@ -872,6 +872,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPLibraryConfigColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPLibrarySourceColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9856,6 +9859,56 @@ func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_library_config_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibrarySourceColumns adds the source and deleted_at columns to
+// mcp_library. `source` marks a row as remote-synced or org-internal ("custom")
+// so the sync can protect custom rows; `deleted_at` is a soft-delete tombstone
+// so a user-hidden row (remote or custom) is never resurrected by the next sync.
+// Idempotent via HasColumn guards.
+func migrationAddMCPLibrarySourceColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_source_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "source") {
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("add source column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableMCPLibrary{}, "deleted_at") {
+				if err := mg.AddColumn(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("add deleted_at column: %w", err)
+				}
+			}
+			// Create indexes on the new columns (AddColumn doesn't create indexes
+			// from struct tags). `deleted_at IS NULL` is the leading predicate on
+			// every paginated library query, so the index avoids a full table scan.
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_source") {
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "Source"); err != nil {
+					return fmt.Errorf("create index on mcp_library.source: %w", err)
+				}
+			}
+			if !mg.HasIndex(&tables.TableMCPLibrary{}, "idx_mcp_library_deleted_at") {
+				if err := mg.CreateIndex(&tables.TableMCPLibrary{}, "DeletedAt"); err != nil {
+					return fmt.Errorf("create index on mcp_library.deleted_at: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: dropping `source` and
+			// `deleted_at` would destroy custom-row protection markers and
+			// soft-delete tombstones, letting the next sync resurrect rows the
+			// user hid. This migration is one-way.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_source_columns migration: %s", err.Error())
 	}
 	return nil
 }

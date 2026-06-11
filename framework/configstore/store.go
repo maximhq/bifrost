@@ -190,10 +190,19 @@ type ConfigStore interface {
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
-	// MCP library catalog (synced, read-only)
+	// MCP library catalog (synced + org-custom)
 	GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error)
 	GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error)
 	UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error
+	// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+	// Returns ErrAlreadyExists when the slug collides with an existing entry.
+	CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error
+	// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at)
+	// so it is hidden from listings and never resurrected by the remote sync.
+	SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error
+	// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must not
+	// overwrite or recreate: custom rows and soft-deleted (tombstoned) rows.
+	GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error)
 
 	// Vector store config CRUD
 	UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error
