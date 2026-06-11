@@ -70,6 +70,7 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	Mistral,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
