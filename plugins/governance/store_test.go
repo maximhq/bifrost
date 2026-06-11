@@ -1243,6 +1243,26 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	assert.Equal(t, program, program2)
 }
 
+// TestGetTeamNameAndGetCustomerName verifies the display-name accessors the
+// enterprise layer uses as the log-stamping fallback when its edge-driven name
+// caches miss: known entities return their name, unknown/empty ids return "".
+func TestGetTeamNameAndGetCustomerName(t *testing.T) {
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	store.CreateTeamInMemory(context.Background(), buildTeam("team-1", "Platform", nil))
+	store.CreateCustomerInMemory(context.Background(), buildCustomer("cust-1", "ACME", nil))
+
+	assert.Equal(t, "Platform", store.GetTeamName(context.Background(), "team-1"))
+	assert.Equal(t, "ACME", store.GetCustomerName(context.Background(), "cust-1"))
+
+	assert.Empty(t, store.GetTeamName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetCustomerName(context.Background(), "unknown"))
+	assert.Empty(t, store.GetTeamName(context.Background(), ""))
+	assert.Empty(t, store.GetCustomerName(context.Background(), ""))
+}
+
 // TestGovernanceStore_Customer_CalendarAligned_CreateInMemory verifies that
 // CreateCustomerInMemory stamps IsCalendarAligned on the in-memory budget and
 // rate limit so ResetExpiredBudgetsInMemory uses the calendar-aligned reset path.
