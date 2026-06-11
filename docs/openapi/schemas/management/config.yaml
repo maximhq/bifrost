@@ -137,6 +137,8 @@ AuthConfig:
       type: boolean
     disable_auth_on_inference:
       type: boolean
+      deprecated: true
+      description: "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
 
 HeaderFilterConfig:
   type: object

@@ -192,7 +192,6 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
-    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
@@ -230,7 +229,7 @@ bifrost:
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.
-    # When unset, inference endpoints follow authConfig.disableAuthOnInference behavior.
+    # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
     maxRequestBodySizeMb: 100
     compat:
@@ -674,7 +673,6 @@ bifrost:
       adminUsername: ""
       adminPassword: ""
       isEnabled: false
-      disableAuthOnInference: false
       # Use existing Kubernetes secret for admin credentials
       existingSecret: ""
       usernameKey: "username"
