@@ -26,7 +26,7 @@ func insertLogWithMetadata(t *testing.T, store *RDBLogStore, id string, metadata
 // strings (from HTTP headers), so both dialects must match them correctly.
 //
 // Boolean values ("true"/"false") are excluded: SQLite intentionally uses json_type to match
-// JSON booleans for those values, while Postgres always uses string matching after Fix 1.
+// JSON booleans for those values, while Postgres always matches as a JSON string.
 func runMetadataStringMatchingSuite(t *testing.T, store *RDBLogStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -82,10 +82,10 @@ func runMetadataStringMatchingSuite(t *testing.T, store *RDBLogStore) {
 	}
 }
 
-// runPostgresMetadataBooleanStringMatchingSuite verifies Postgres-specific Fix 1 behaviour:
-// values like "true" and "false" that come from HTTP headers are stored as JSON strings and
-// must match as strings via JSONB @> containment. Before the fix, the old code emitted a
-// JSON boolean fragment {"active": true} which never matched the stored string "true".
+// runPostgresMetadataBooleanStringMatchingSuite verifies that values like "true" and "false"
+// that come from HTTP headers are stored as JSON strings and match as strings via JSONB @>
+// containment. The old code emitted a JSON boolean fragment {"active": true} which never
+// matched the stored string "true".
 func runPostgresMetadataBooleanStringMatchingSuite(t *testing.T, store *RDBLogStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -120,7 +120,7 @@ func runPostgresMetadataBooleanStringMatchingSuite(t *testing.T, store *RDBLogSt
 }
 
 // runPaginationTotalCountSuite verifies that SearchLogs sets pagination.TotalCount correctly.
-// Before Fix 4, totalCount was computed but only stored in Stats.TotalRequests — never
+// Previously, totalCount was computed but only stored in Stats.TotalRequests — never
 // assigned to Pagination.TotalCount — so every response returned total_count: 0.
 func runPaginationTotalCountSuite(t *testing.T, store *RDBLogStore) {
 	t.Helper()
@@ -166,31 +166,29 @@ func runPaginationTotalCountSuite(t *testing.T, store *RDBLogStore) {
 		"TotalCount should be 0 when no rows match")
 }
 
-// TestSearchLogs_MetadataFilter_StringMatching_SQLite exercises Fix 1 (numeric string
-// matching) on the SQLite dialect.
+// TestSearchLogs_MetadataFilter_StringMatching_SQLite exercises the metadata string matching fix on SQLite.
 func TestSearchLogs_MetadataFilter_StringMatching_SQLite(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	defer store.Close(context.Background())
 	runMetadataStringMatchingSuite(t, store)
 }
 
-// TestSearchLogs_MetadataFilter_StringMatching_Postgres exercises Fix 1 on Postgres,
-// where the old code generated JSONB number fragments that never matched stored string values.
-// Also implicitly exercises Fix 2 (jsonb_typeof guard in applyFilters) and Fix 3 (GIN index predicate).
+// TestSearchLogs_MetadataFilter_StringMatching_Postgres exercises the metadata string matching fix on Postgres,
+// where the old code generated JSONB number/boolean fragments that never matched stored string values.
 func TestSearchLogs_MetadataFilter_StringMatching_Postgres(t *testing.T) {
 	store, _ := setupPerfTestDB(t)
 	runMetadataStringMatchingSuite(t, store)
 	runPostgresMetadataBooleanStringMatchingSuite(t, store)
 }
 
-// TestSearchLogs_PaginationTotalCount_SQLite exercises Fix 4 on SQLite.
+// TestSearchLogs_PaginationTotalCount_SQLite verifies pagination.TotalCount on SQLite.
 func TestSearchLogs_PaginationTotalCount_SQLite(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	defer store.Close(context.Background())
 	runPaginationTotalCountSuite(t, store)
 }
 
-// TestSearchLogs_PaginationTotalCount_Postgres exercises Fix 4 on Postgres.
+// TestSearchLogs_PaginationTotalCount_Postgres verifies pagination.TotalCount on Postgres.
 func TestSearchLogs_PaginationTotalCount_Postgres(t *testing.T) {
 	store, _ := setupPerfTestDB(t)
 	runPaginationTotalCountSuite(t, store)

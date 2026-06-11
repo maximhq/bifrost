@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/framework/migrator"
@@ -2066,39 +2065,24 @@ func migrationAddMultiTeamBusinessUnitGINIndexes(ctx context.Context, db *gorm.D
 func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// pg_index.indisvalid is false when a CONCURRENTLY build was interrupted.
 	// COALESCE returns false when no row matches (index does not exist yet).
-	// MAX(pg_get_expr) captures the stored predicate so we can detect a stale
-	// IS JSON OBJECT predicate (PG 15+ only) left by an older deployment.
 	var indexValid bool
-	var indexPredicate sql.NullString
 
 	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false),
-		       MAX(pg_get_expr(pi.indpred, pi.indrelid))
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		WHERE pc.relname = 'logs'
 		  AND ic.relname = 'idx_logs_metadata_gin'
-	`).Scan(&indexValid, &indexPredicate); err != nil {
+	`).Scan(&indexValid); err != nil {
 		return fmt.Errorf("failed to query GIN index validity: %w", err)
 	}
 
 	if indexValid {
-		// If the stored predicate still uses the PG 15+ IS JSON OBJECT guard, the
-		// new jsonb_typeof() guard in rdb.go won't satisfy it and the planner will
-		// fall back to sequential scans. Drop the stale index so it gets rebuilt
-		// with the compatible predicate below.
-		if indexPredicate.Valid && strings.Contains(strings.ToLower(indexPredicate.String), "is json") {
-			if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_metadata_gin"); err != nil {
-				return fmt.Errorf("failed to drop stale metadata GIN index: %w", err)
-			}
-			// Fall through to rebuild with the jsonb_typeof predicate.
-		} else {
-			if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
-				return err
-			}
-			return nil
+		if err := cleanupInvalidLogMetadata(ctx, conn); err != nil {
+			return err
 		}
+		return nil
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
@@ -2128,11 +2112,10 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// and value separately, making the index ~3x smaller and faster to build.
 	// It supports the @> containment operator used by all metadata filter queries.
 	//
-	// The partial predicate skips NULL and non-object rows, further reducing build
-	// time and index size. Queries that filter on metadata always include the same
-	// guard (rdb.go) so the planner will use this index.
-	// Use jsonb_typeof (PG 9.4+) instead of IS JSON OBJECT (PG 15+) for compatibility.
-	if _, err := conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object'"); err != nil {
+	// The partial predicate (WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT) skips NULL and non-object rows,
+	// further reducing build time and index size. Queries that filter on metadata
+	// always include an IS NOT NULL guard (rdb.go) so the planner will use this index.
+	if _, err := conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT"); err != nil {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
 	}
 	return nil
@@ -2144,7 +2127,7 @@ func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
 			SELECT ctid
 			FROM logs
 			WHERE metadata IS NOT NULL
-			  AND jsonb_typeof(metadata::jsonb) <> 'object'
+			  AND metadata IS NOT JSON OBJECT
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)

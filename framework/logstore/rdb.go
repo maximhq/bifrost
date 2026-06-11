@@ -317,7 +317,7 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// Guard must match the partial-index predicate so the planner uses the GIN index.
 		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
 		if dialect == "postgres" {
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object'")
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
 		} else {
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
 		}
@@ -3351,7 +3351,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 	// Guard must match the partial-index predicate so the planner uses the GIN index.
 	var metadataGuard string
 	if s.db.Dialector.Name() == "postgres" {
-		metadataGuard = "metadata IS NOT NULL AND jsonb_typeof(metadata::jsonb) = 'object' AND metadata != '{}' AND timestamp >= ?"
+		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
 	} else {
 		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
 	}
