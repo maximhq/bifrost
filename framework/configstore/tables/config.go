@@ -11,8 +11,10 @@ const (
 	ConfigComplexityAnalyzerConfigKey = "complexity_analyzer_config"
 	// ConfigComplexityAnalyzerConfigHashKey stores the last config.json hash synced for the analyzer config.
 	ConfigComplexityAnalyzerConfigHashKey = "complexity_analyzer_config_hash"
-	ConfigRestartRequiredKey              = "restart_required"
-	ConfigHeaderFilterKey                 = "header_filter_config"
+	// ConfigComplexityAnalyzerConfigSnapshotKey stores the last config.json analyzer config used for split-mode reconciliation.
+	ConfigComplexityAnalyzerConfigSnapshotKey = "complexity_analyzer_config_snapshot"
+	ConfigRestartRequiredKey                  = "restart_required"
+	ConfigHeaderFilterKey                     = "header_filter_config"
 )
 
 // Keys for the ClientConfig.MetadataJSON blob.

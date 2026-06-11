@@ -2299,6 +2299,17 @@ func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableG
 	return txDB.WithContext(ctx).Save(config).Error
 }
 
+// DeleteConfig deletes a specific config key from the database.
+func (s *RDBConfigStore) DeleteConfig(ctx context.Context, key string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 && tx[0] != nil {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	return txDB.WithContext(ctx).Delete(&tables.TableGovernanceConfig{}, "key = ?", key).Error
+}
+
 // GetModelPrices retrieves all model pricing records from the database.
 func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error) {
 	var modelPrices []tables.TableModelPricing
@@ -5065,6 +5076,36 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 	return s.updateComplexityAnalyzerConfigTx(ctx, normalized, tx...)
 }
 
+// ApplyComplexityAnalyzerConfigFromFile persists a file-reconciled analyzer config and its file snapshot.
+func (s *RDBConfigStore) ApplyComplexityAnalyzerConfigFromFile(ctx context.Context, config *ComplexityAnalyzerConfig, fileSnapshot *ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+	if fileSnapshot == nil {
+		return fmt.Errorf("complexity analyzer file snapshot is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+	if normalized.ConfigHash == "" {
+		return fmt.Errorf("complexity analyzer config hash is required for file apply")
+	}
+	normalizedSnapshot := fileSnapshot.Normalized()
+	if err := normalizedSnapshot.Validate(); err != nil {
+		return err
+	}
+	normalizedSnapshot.ConfigHash = ""
+
+	if len(tx) == 0 || tx[0] == nil {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.applyComplexityAnalyzerConfigFromFileTx(ctx, normalized, normalizedSnapshot, transaction)
+		})
+	}
+	return s.applyComplexityAnalyzerConfigFromFileTx(ctx, normalized, normalizedSnapshot, tx...)
+}
+
 func (s *RDBConfigStore) updateComplexityAnalyzerConfigTx(ctx context.Context, normalized ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
 	raw, err := json.Marshal(normalized)
 	if err != nil {
@@ -5082,6 +5123,20 @@ func (s *RDBConfigStore) updateComplexityAnalyzerConfigTx(ctx context.Context, n
 	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigHashKey,
 		Value: normalized.ConfigHash,
+	}, tx...)
+}
+
+func (s *RDBConfigStore) applyComplexityAnalyzerConfigFromFileTx(ctx context.Context, normalized ComplexityAnalyzerConfig, snapshot ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if err := s.updateComplexityAnalyzerConfigTx(ctx, normalized, tx...); err != nil {
+		return err
+	}
+	rawSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("failed to marshal complexity analyzer config snapshot: %w", err)
+	}
+	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigSnapshotKey,
+		Value: string(rawSnapshot),
 	}, tx...)
 }
 

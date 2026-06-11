@@ -314,6 +314,8 @@ func (cd *ConfigData) governanceSectionPresent(name string) bool {
 		return cd.Governance.RoutingRules != nil
 	case "pricing_overrides":
 		return cd.Governance.PricingOverrides != nil
+	case "complexity_analyzer_config":
+		return cd.Governance.ComplexityAnalyzerConfig != nil
 	default:
 		return false
 	}
@@ -2403,26 +2405,30 @@ func reconcileComplexityAnalyzerConfig(ctx context.Context, config *Config, conf
 	if !ok {
 		return
 	}
-
 	current := config.GovernanceConfig.ComplexityAnalyzerConfig
 	if configData.isConfigJSONSourceOfTruth() {
 		fileConfig.ConfigHash = fileHash
-		syncComplexityAnalyzerConfig(ctx, config, current, fileConfig)
+		applyComplexityAnalyzerConfigFromFile(ctx, config, current, fileConfig, fileConfig, false)
 		return
 	}
 
+	previousFileConfig, snapshotFound := complexityAnalyzerConfigFileSnapshot(ctx, config.ConfigStore)
+
 	if current != nil && current.ConfigHash == fileHash {
+		if !snapshotFound {
+			applyComplexityAnalyzerConfigFromFile(ctx, config, current, current, fileConfig, true)
+		}
 		logger.Debug("complexity analyzer config hash matches, keeping DB config")
 		return
 	}
 
-	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileConfig)
+	merged, err := mergeComplexityAnalyzerConfigFromFile(current, previousFileConfig, fileConfig)
 	if err != nil {
 		logger.Warn("failed to merge complexity analyzer config from config file: %v", err)
 		return
 	}
 	merged.ConfigHash = fileHash
-	syncComplexityAnalyzerConfig(ctx, config, current, merged)
+	applyComplexityAnalyzerConfigFromFile(ctx, config, current, merged, fileConfig, false)
 }
 
 // complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
@@ -2444,27 +2450,91 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 // mergeComplexityAnalyzerConfigFromFile overlays file boundaries and merges file
 // keywords into the current runtime config. On first startup, defaults are the
 // base so a partial seed does not erase the built-in keyword coverage.
-func mergeComplexityAnalyzerConfigFromFile(current, fileConfig *configstore.ComplexityAnalyzerConfig) (*configstore.ComplexityAnalyzerConfig, error) {
+func mergeComplexityAnalyzerConfigFromFile(current, previousFileConfig, fileConfig *configstore.ComplexityAnalyzerConfig) (*configstore.ComplexityAnalyzerConfig, error) {
 	base := current
 	if base == nil {
 		defaults := complexity.DefaultAnalyzerConfig()
 		base = &defaults
 	}
-	return configstore.MergeComplexityAnalyzerConfig(base, fileConfig)
+	return configstore.MergeComplexityAnalyzerConfigWithFileSnapshot(base, previousFileConfig, fileConfig)
 }
 
-// syncComplexityAnalyzerConfig updates the in-memory config and persists it when
-// the stored value changed.
-func syncComplexityAnalyzerConfig(ctx context.Context, config *Config, current, next *configstore.ComplexityAnalyzerConfig) {
-	config.GovernanceConfig.ComplexityAnalyzerConfig = next
-	if config.ConfigStore != nil {
-		if current != nil && reflect.DeepEqual(current, next) {
-			return
+// complexityAnalyzerConfigFileSnapshot loads the previous config.json analyzer config.
+func complexityAnalyzerConfigFileSnapshot(ctx context.Context, store configstore.ConfigStore) (*configstore.ComplexityAnalyzerConfig, bool) {
+	if store == nil {
+		return nil, false
+	}
+	entry, err := store.GetConfig(ctx, configstoreTables.ConfigComplexityAnalyzerConfigSnapshotKey)
+	if err != nil {
+		if !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to load complexity analyzer config file snapshot: %v", err)
 		}
-		if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, next); err != nil {
-			logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+		return nil, false
+	}
+	if entry == nil || strings.TrimSpace(entry.Value) == "" {
+		return nil, false
+	}
+	decoded, err := configstore.DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+	if err != nil {
+		logger.Warn("failed to decode complexity analyzer config file snapshot: %v", err)
+		return nil, false
+	}
+	return decoded, true
+}
+
+// applyComplexityAnalyzerConfigFromFile persists file reconciliation metadata and
+// swaps the in-memory config after persistence succeeds.
+func applyComplexityAnalyzerConfigFromFile(ctx context.Context, config *Config, current, next, fileSnapshot *configstore.ComplexityAnalyzerConfig, forceMetadataSync bool) {
+	if config.ConfigStore == nil {
+		config.GovernanceConfig.ComplexityAnalyzerConfig = next
+		return
+	}
+	if !forceMetadataSync && current != nil && reflect.DeepEqual(current, next) {
+		config.GovernanceConfig.ComplexityAnalyzerConfig = next
+		return
+	}
+	if err := config.ConfigStore.ApplyComplexityAnalyzerConfigFromFile(ctx, next, fileSnapshot); err != nil {
+		logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+		return
+	}
+	config.GovernanceConfig.ComplexityAnalyzerConfig = next
+}
+
+// pruneComplexityAnalyzerConfig deletes the singleton analyzer config and its
+// file-reconciliation metadata when config.json is authoritative.
+func pruneComplexityAnalyzerConfig(ctx context.Context, config *Config, tx *gorm.DB) error {
+	for _, key := range []string{
+		configstoreTables.ConfigComplexityAnalyzerConfigKey,
+		configstoreTables.ConfigComplexityAnalyzerConfigHashKey,
+		configstoreTables.ConfigComplexityAnalyzerConfigSnapshotKey,
+	} {
+		if err := config.ConfigStore.DeleteConfig(ctx, key, tx); err != nil {
+			return fmt.Errorf("failed to delete %s: %w", key, err)
 		}
 	}
+	return nil
+}
+
+// hasComplexityAnalyzerConfigFileMetadata reports whether the stored analyzer has
+// complete config.json reconciliation metadata.
+func hasComplexityAnalyzerConfigFileMetadata(ctx context.Context, store configstore.ConfigStore) bool {
+	if store == nil {
+		return false
+	}
+	for _, key := range []string{
+		configstoreTables.ConfigComplexityAnalyzerConfigHashKey,
+		configstoreTables.ConfigComplexityAnalyzerConfigSnapshotKey,
+	} {
+		entry, err := store.GetConfig(ctx, key)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to inspect complexity analyzer config metadata %s: %v", key, err)
+			return false
+		}
+		if err != nil || entry == nil || strings.TrimSpace(entry.Value) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
@@ -2473,7 +2543,14 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 		return
 	}
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
+	shouldPruneComplexityAnalyzerConfig := !configData.governanceSectionPresent("complexity_analyzer_config") &&
+		hasComplexityAnalyzerConfigFileMetadata(ctx, config.ConfigStore)
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if shouldPruneComplexityAnalyzerConfig {
+			if err := pruneComplexityAnalyzerConfig(ctx, config, tx); err != nil {
+				return err
+			}
+		}
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
 			for i := range configData.Governance.VirtualKeys {
@@ -2617,6 +2694,10 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	})
 	if err != nil {
 		logger.Fatal("failed to prune governance config: %v", err)
+		return
+	}
+	if shouldPruneComplexityAnalyzerConfig {
+		config.GovernanceConfig.ComplexityAnalyzerConfig = nil
 	}
 }
 
@@ -3502,8 +3583,13 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			if err != nil {
 				logger.Warn("invalid complexity analyzer config in config file: %v", err)
 			} else if normalized != nil {
+				fileHash, err := configstore.GenerateComplexityAnalyzerConfigHash(normalized)
+				if err != nil {
+					return fmt.Errorf("failed to generate complexity analyzer config hash: %w", err)
+				}
+				normalized.ConfigHash = fileHash
 				config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
-				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized, tx); err != nil {
+				if err := config.ConfigStore.ApplyComplexityAnalyzerConfigFromFile(ctx, normalized, normalized, tx); err != nil {
 					return fmt.Errorf("failed to create complexity analyzer config: %w", err)
 				}
 			}

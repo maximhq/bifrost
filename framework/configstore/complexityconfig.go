@@ -156,6 +156,66 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 	return &merged, nil
 }
 
+// MergeComplexityAnalyzerConfigWithFileSnapshot overlays file boundaries, removes
+// keywords removed from config.json since the previous file snapshot, and keeps
+// runtime-only keywords.
+func MergeComplexityAnalyzerConfigWithFileSnapshot(base, previousFile, file *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error) {
+	if previousFile == nil {
+		return MergeComplexityAnalyzerConfig(base, file)
+	}
+	if file == nil {
+		return MergeComplexityAnalyzerConfig(base, nil)
+	}
+
+	normalizedFile := file.Normalized()
+	if err := normalizedFile.Validate(); err != nil {
+		return nil, err
+	}
+	normalizedPreviousFile := previousFile.Normalized()
+	if err := normalizedPreviousFile.Validate(); err != nil {
+		return nil, err
+	}
+
+	var normalizedBase ComplexityAnalyzerConfig
+	if base != nil {
+		normalizedBase = base.Normalized()
+		if err := normalizedBase.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
+	merged := ComplexityAnalyzerConfig{
+		TierBoundaries: normalizedFile.TierBoundaries,
+		Keywords: ComplexityEditableKeywordConfig{
+			CodeKeywords: mergeComplexityKeywordListsWithFileSnapshot(
+				normalizedBase.Keywords.CodeKeywords,
+				normalizedPreviousFile.Keywords.CodeKeywords,
+				normalizedFile.Keywords.CodeKeywords,
+			),
+			ReasoningKeywords: mergeComplexityKeywordListsWithFileSnapshot(
+				normalizedBase.Keywords.ReasoningKeywords,
+				normalizedPreviousFile.Keywords.ReasoningKeywords,
+				normalizedFile.Keywords.ReasoningKeywords,
+			),
+			TechnicalKeywords: mergeComplexityKeywordListsWithFileSnapshot(
+				normalizedBase.Keywords.TechnicalKeywords,
+				normalizedPreviousFile.Keywords.TechnicalKeywords,
+				normalizedFile.Keywords.TechnicalKeywords,
+			),
+			SimpleKeywords: mergeComplexityKeywordListsWithFileSnapshot(
+				normalizedBase.Keywords.SimpleKeywords,
+				normalizedPreviousFile.Keywords.SimpleKeywords,
+				normalizedFile.Keywords.SimpleKeywords,
+			),
+		},
+		ConfigHash: normalizedFile.ConfigHash,
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return &merged, nil
+}
+
 // DecodeComplexityAnalyzerConfig decodes raw JSON into a normalized, validated config.
 func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, error) {
 	if len(data) == 0 {
@@ -201,4 +261,27 @@ func mergeComplexityKeywordLists(base, overlay []string) []string {
 	values = append(values, base...)
 	values = append(values, overlay...)
 	return normalizeComplexityKeywordList(values)
+}
+
+func mergeComplexityKeywordListsWithFileSnapshot(current []string, previousFile []string, file []string) []string {
+	normalizedFile := normalizeComplexityKeywordList(file)
+	fileSet := make(map[string]struct{}, len(normalizedFile))
+	for _, value := range normalizedFile {
+		fileSet[value] = struct{}{}
+	}
+
+	removedFromFile := make(map[string]struct{}, len(previousFile))
+	for _, value := range normalizeComplexityKeywordList(previousFile) {
+		if _, stillInFile := fileSet[value]; !stillInFile {
+			removedFromFile[value] = struct{}{}
+		}
+	}
+
+	preserved := make([]string, 0, len(current))
+	for _, value := range normalizeComplexityKeywordList(current) {
+		if _, removed := removedFromFile[value]; !removed {
+			preserved = append(preserved, value)
+		}
+	}
+	return mergeComplexityKeywordLists(preserved, normalizedFile)
 }

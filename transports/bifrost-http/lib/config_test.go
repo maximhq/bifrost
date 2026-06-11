@@ -391,6 +391,7 @@ type MockConfigStore struct {
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
+	configEntries    map[string]string
 
 	// Track update calls for verification
 	clientConfigUpdated    bool
@@ -413,7 +414,8 @@ type MockConfigStore struct {
 // NewMockConfigStore creates a new mock config store
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
-		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		configEntries: make(map[string]string),
 	}
 }
 
@@ -965,10 +967,22 @@ func (m *MockConfigStore) GetLogsStoreConfig(ctx context.Context) (*logstore.Con
 
 // Config
 func (m *MockConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error) {
-	return nil, nil
+	if value, ok := m.configEntries[key]; ok {
+		return &tables.TableGovernanceConfig{Key: key, Value: value}, nil
+	}
+	return nil, configstore.ErrNotFound
 }
 
 func (m *MockConfigStore) UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error {
+	if m.configEntries == nil {
+		m.configEntries = make(map[string]string)
+	}
+	m.configEntries[config.Key] = config.Value
+	return nil
+}
+
+func (m *MockConfigStore) DeleteConfig(ctx context.Context, key string, tx ...*gorm.DB) error {
+	delete(m.configEntries, key)
 	return nil
 }
 
@@ -989,6 +1003,48 @@ func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, co
 		config = &copy
 	}
 	m.governanceConfig.ComplexityAnalyzerConfig = config
+	return nil
+}
+
+func (m *MockConfigStore) ApplyComplexityAnalyzerConfigFromFile(ctx context.Context, config *configstore.ComplexityAnalyzerConfig, fileSnapshot *configstore.ComplexityAnalyzerConfig, tx ...*gorm.DB) error {
+	if config == nil {
+		return fmt.Errorf("complexity analyzer config is nil")
+	}
+	if fileSnapshot == nil {
+		return fmt.Errorf("complexity analyzer file snapshot is nil")
+	}
+
+	normalized := config.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return err
+	}
+	if normalized.ConfigHash == "" {
+		return fmt.Errorf("complexity analyzer config hash is required for file apply")
+	}
+
+	normalizedSnapshot := fileSnapshot.Normalized()
+	if err := normalizedSnapshot.Validate(); err != nil {
+		return err
+	}
+	normalizedSnapshot.ConfigHash = ""
+
+	if err := m.UpdateComplexityAnalyzerConfig(ctx, &normalized, tx...); err != nil {
+		return err
+	}
+	if m.configEntries == nil {
+		m.configEntries = make(map[string]string)
+	}
+	rawConfig, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	rawSnapshot, err := json.Marshal(normalizedSnapshot)
+	if err != nil {
+		return err
+	}
+	m.configEntries[tables.ConfigComplexityAnalyzerConfigKey] = string(rawConfig)
+	m.configEntries[tables.ConfigComplexityAnalyzerConfigHashKey] = normalized.ConfigHash
+	m.configEntries[tables.ConfigComplexityAnalyzerConfigSnapshotKey] = string(rawSnapshot)
 	return nil
 }
 
@@ -1568,6 +1624,50 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenFileHashChanges(t *te
 	require.Equal(t, fileHash, stored.ConfigHash)
 }
 
+func TestMergeGovernanceConfig_RemovesComplexityKeywordsRemovedFromConfigJSON(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	previousFileConfig := testFileComplexityAnalyzerConfig()
+	previousFileConfig.Keywords.CodeKeywords = []string{"file-keep", "file-remove"}
+	previousSnapshot := previousFileConfig.Normalized()
+	previousSnapshot.ConfigHash = ""
+	rawPreviousSnapshot, err := json.Marshal(previousSnapshot)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHash = "old-file-hash"
+	dbConfig.Keywords.CodeKeywords = []string{"file-keep", "file-remove", "ui-code"}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	store.configEntries[tables.ConfigComplexityAnalyzerConfigSnapshotKey] = string(rawPreviousSnapshot)
+
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileConfig.Keywords.CodeKeywords = []string{"file-keep", "file-new"}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.ElementsMatch(t, []string{"file-keep", "file-new", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.NotContains(t, stored.Keywords.CodeKeywords, "file-remove")
+
+	snapshotEntry, err := store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigSnapshotKey)
+	require.NoError(t, err)
+	require.Contains(t, snapshotEntry.Value, "file-new")
+	require.NotContains(t, snapshotEntry.Value, "file-remove")
+}
+
 func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t *testing.T) {
 	initTestLogger()
 
@@ -1599,6 +1699,36 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
 	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
 	require.Equal(t, fileHash, stored.ConfigHash)
+}
+
+func TestMergeGovernanceConfig_SourceOfTruthConfigJSONPrunesRemovedComplexityConfig(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHash = "old-file-hash"
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	store.configEntries[tables.ConfigComplexityAnalyzerConfigHashKey] = dbConfig.ConfigHash
+	store.configEntries[tables.ConfigComplexityAnalyzerConfigSnapshotKey] = `{"tier_boundaries":{"simple_medium":0.1,"medium_complex":0.3,"complex_reasoning":0.7},"keywords":{"code_keywords":["runtime-code"],"reasoning_keywords":["runtime-reason"],"technical_keywords":["runtime-tech"],"simple_keywords":["runtime-simple"]}}`
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance:    &configstore.GovernanceConfig{},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	require.Nil(t, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	_, err := store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigKey)
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+	_, err = store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigHashKey)
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+	_, err = store.GetConfig(context.Background(), tables.ConfigComplexityAnalyzerConfigSnapshotKey)
+	require.ErrorIs(t, err, configstore.ErrNotFound)
 }
 
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {

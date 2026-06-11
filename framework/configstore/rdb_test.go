@@ -113,7 +113,7 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashOnRun
 
 	fileConfig := testComplexityAnalyzerConfig()
 	fileConfig.ConfigHash = "file-hash-1"
-	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, fileConfig))
+	require.NoError(t, store.ApplyComplexityAnalyzerConfigFromFile(ctx, fileConfig, fileConfig))
 
 	runtimeConfig := testComplexityAnalyzerConfig()
 	runtimeConfig.TierBoundaries.SimpleMedium = 0.12
@@ -125,6 +125,13 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashOnRun
 	require.NotNil(t, got)
 	assert.Equal(t, 0.12, got.TierBoundaries.SimpleMedium)
 	assert.Equal(t, "file-hash-1", got.ConfigHash)
+
+	snapshot, err := store.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigSnapshotKey)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	var snapshotCfg ComplexityAnalyzerConfig
+	require.NoError(t, json.Unmarshal([]byte(snapshot.Value), &snapshotCfg))
+	assert.Equal(t, 0.10, snapshotCfg.TierBoundaries.SimpleMedium)
 }
 
 func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
@@ -180,6 +187,61 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ReasoningKeywords)
 	assert.Equal(t, []string{"kubernetes", "latency"}, merged.Keywords.TechnicalKeywords)
 	assert.Equal(t, []string{"hello", "thanks"}, merged.Keywords.SimpleKeywords)
+}
+
+func TestMergeComplexityAnalyzerConfigWithFileSnapshotRemovesFileOwnedKeywords(t *testing.T) {
+	tests := []struct {
+		name         string
+		current      []string
+		previousFile []string
+		file         []string
+		want         []string
+	}{
+		{
+			name:         "removes file-owned keyword removed from file",
+			current:      []string{"api", "function", "ui-code"},
+			previousFile: []string{"api", "function"},
+			file:         []string{"function", "new-file-code"},
+			want:         []string{"function", "new-file-code", "ui-code"},
+		},
+		{
+			name:         "keeps current-only keyword when file is unchanged",
+			current:      []string{"api", "ui-code"},
+			previousFile: []string{"api"},
+			file:         []string{"api"},
+			want:         []string{"api", "ui-code"},
+		},
+		{
+			name:         "removes all stale file-owned keywords and adds new file keyword",
+			current:      []string{"api", "function", "ui-code"},
+			previousFile: []string{"api", "function"},
+			file:         []string{"new-file-code"},
+			want:         []string{"new-file-code", "ui-code"},
+		},
+		{
+			name:         "normalizes case and duplicates",
+			current:      []string{"API", "api", "Ui-Code"},
+			previousFile: []string{"API"},
+			file:         []string{"api", "GraphQL", "graphql"},
+			want:         []string{"api", "graphql", "ui-code"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := testComplexityAnalyzerConfig()
+			current.Keywords.CodeKeywords = tt.current
+			previousFile := testComplexityAnalyzerConfig()
+			previousFile.Keywords.CodeKeywords = tt.previousFile
+			file := testComplexityAnalyzerConfig()
+			file.Keywords.CodeKeywords = tt.file
+
+			merged, err := MergeComplexityAnalyzerConfigWithFileSnapshot(current, previousFile, file)
+			require.NoError(t, err)
+			require.NotNil(t, merged)
+			assert.Equal(t, tt.want, merged.Keywords.CodeKeywords)
+		})
+	}
 }
 
 func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *testing.T) {
