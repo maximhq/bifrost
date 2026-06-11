@@ -16,12 +16,12 @@ func TestCohereRerankResponseToBifrostRerankResponse(t *testing.T) {
 			{
 				Index:          1,
 				RelevanceScore: 0.62,
-				Document: json.RawMessage(`{"text":"provider-doc-1","id":"doc-1","topic":"geography"}`),
+				Document:       json.RawMessage(`{"text":"provider-doc-1","id":"doc-1","topic":"geography"}`),
 			},
 			{
 				Index:          0,
 				RelevanceScore: 0.91,
-				Document: json.RawMessage(`{"text":"provider-doc-0"}`),
+				Document:       json.RawMessage(`{"text":"provider-doc-0"}`),
 			},
 		},
 	}).ToBifrostRerankResponse(nil, false)
@@ -51,12 +51,12 @@ func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T
 			{
 				Index:          1,
 				RelevanceScore: 0.62,
-				Document: json.RawMessage(`{"text":"provider-doc-1"}`),
+				Document:       json.RawMessage(`{"text":"provider-doc-1"}`),
 			},
 			{
 				Index:          0,
 				RelevanceScore: 0.91,
-				Document: json.RawMessage(`{"text":"provider-doc-0"}`),
+				Document:       json.RawMessage(`{"text":"provider-doc-0"}`),
 			},
 		},
 	}).ToBifrostRerankResponse(requestDocs, true)
@@ -69,4 +69,54 @@ func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T
 	assert.Equal(t, 1, response.Results[1].Index)
 	assert.Equal(t, "request-doc-0", response.Results[0].Document.Text)
 	assert.Equal(t, "request-doc-1", response.Results[1].Document.Text)
+}
+
+func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsUsage(t *testing.T) {
+	searchUnits := 2
+
+	response := (&CohereRerankResponse{
+		ID: "rerank-response-id",
+		Results: []CohereRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+		Meta: &CohereRerankMeta{
+			BilledUnits: &CohereBilledUnits{SearchUnits: &searchUnits},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 2, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 0, response.Usage.TotalTokens)
+}
+
+func TestCohereRerankResponseToBifrostRerankResponseSearchUnitsWithTokenUsage(t *testing.T) {
+	searchUnits := 1
+	inputTokens := 7
+	outputTokens := 3
+
+	response := (&CohereRerankResponse{
+		ID: "rerank-response-id",
+		Results: []CohereRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+		Meta: &CohereRerankMeta{
+			BilledUnits: &CohereBilledUnits{
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
+				SearchUnits:  &searchUnits,
+			},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	assert.Equal(t, 7, response.Usage.PromptTokens)
+	assert.Equal(t, 3, response.Usage.CompletionTokens)
+	assert.Equal(t, 10, response.Usage.TotalTokens)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
 }
