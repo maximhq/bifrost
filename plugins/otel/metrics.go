@@ -143,6 +143,14 @@ var (
 	interTokenLatencyBuckets = []float64{
 		.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10,
 	}
+
+	// httpBodySizeBuckets: HTTP request/response body sizes, 100B to 1GB
+	// (matches prometheus.ExponentialBuckets(100, 10, 8) on the Prometheus side).
+	// The SDK default boundaries top out at 10,000, which would collapse any
+	// payload over 10KB into +Inf.
+	httpBodySizeBuckets = []float64{
+		100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000,
+	}
 )
 
 // syncFloat64Histogram wraps metric.Float64Histogram with thread-safe lazy initialization
@@ -416,17 +424,19 @@ func (m *MetricsExporter) initMetrics() {
 	}
 
 	m.httpRequestSizeBytes = &syncFloat64Histogram{
-		name:  "http_request_size_bytes",
-		desc:  "Size of HTTP requests",
-		unit:  "By",
-		meter: m.meter,
+		name:       "http_request_size_bytes",
+		desc:       "Size of HTTP requests",
+		unit:       "By",
+		meter:      m.meter,
+		boundaries: httpBodySizeBuckets,
 	}
 
 	m.httpResponseSizeBytes = &syncFloat64Histogram{
-		name:  "http_response_size_bytes",
-		desc:  "Size of HTTP responses",
-		unit:  "By",
-		meter: m.meter,
+		name:       "http_response_size_bytes",
+		desc:       "Size of HTTP responses",
+		unit:       "By",
+		meter:      m.meter,
+		boundaries: httpBodySizeBuckets,
 	}
 }
 

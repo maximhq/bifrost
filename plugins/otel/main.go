@@ -599,6 +599,30 @@ func (p *OtelPlugin) anyMetricsEnabled() bool {
 	return false
 }
 
+// RecordHTTPMetrics records HTTP-layer metrics (request count, duration, request/response
+// sizes) against every profile's metrics exporter. The HTTP transport's middleware calls
+// this once per completed request; it is a no-op when no profile has metrics enabled.
+// Non-positive sizes are skipped (fasthttp reports -1 when Content-Length is unknown).
+func (p *OtelPlugin) RecordHTTPMetrics(ctx context.Context, path, method, status string, durationSeconds, requestSizeBytes, responseSizeBytes float64) {
+	if !p.anyMetricsEnabled() {
+		return
+	}
+	attrs := BuildHTTPAttributes(path, method, status)
+	for _, t := range p.targets {
+		if t.metricsExporter == nil {
+			continue
+		}
+		t.metricsExporter.RecordHTTPRequest(ctx, attrs...)
+		t.metricsExporter.RecordHTTPRequestDuration(ctx, durationSeconds, attrs...)
+		if requestSizeBytes > 0 {
+			t.metricsExporter.RecordHTTPRequestSize(ctx, requestSizeBytes, attrs...)
+		}
+		if responseSizeBytes > 0 {
+			t.metricsExporter.RecordHTTPResponseSize(ctx, responseSizeBytes, attrs...)
+		}
+	}
+}
+
 // Inject receives a completed trace and sends it to the OTEL collector.
 // Implements schemas.ObservabilityPlugin interface.
 // This method is called asynchronously by TracingMiddleware after the response
