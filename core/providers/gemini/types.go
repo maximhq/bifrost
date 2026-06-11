@@ -2863,6 +2863,7 @@ type GeminiResumableUploadSession struct {
 	DisplayName string
 	MimeType    string
 	Provider    schemas.ModelProvider
+	VirtualKey  string
 }
 
 // GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.

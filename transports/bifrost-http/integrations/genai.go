@@ -371,6 +371,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				MimeType:    r.MimeType,
 				Provider:    r.Provider,
 			}
+			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
+				session.VirtualKey = vk
+			}
 			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
 				return true, fmt.Errorf("failed to store upload session: %w", err)
 			}
@@ -412,6 +415,15 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			session, ok := val.(*gemini.GeminiResumableUploadSession)
 			if !ok {
 				return nil, errors.New("invalid upload session type in kvstore")
+			}
+
+			// Chunk requests carry no auth headers (resumable-upload protocol:
+			// the upload_id is the credential), so restore the virtual key that
+			// initiated the upload. Headers presented on the chunk request win.
+			if session.VirtualKey != "" {
+				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
+					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
+				}
 			}
 
 			filename := session.DisplayName
