@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useDeleteMCPLibraryEntryMutation } from "@/lib/store";
@@ -35,9 +36,9 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 	};
 
 	return (
-		<div className="overflow-hidden rounded-md border" data-testid="mcp-library-table-view">
-			<Table>
-				<TableHeader>
+		<div className="overflow-y-auto rounded-md border mb-2" data-testid="mcp-library-table-view">
+			<Table containerClassName="overflow-x-clip">
+				<TableHeader className="sticky top-0 z-10 bg-muted">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
 						<TableHead>Server</TableHead>
@@ -102,7 +103,7 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 								<TableCell className="text-right">
 									<div className="flex justify-end gap-2">
 										{canDelete && (
-											<div className="hidden group-hover:block">
+											<div className="opacity-0 group-hover:opacity-100">
 												<Tooltip>
 													<TooltipTrigger asChild>
 														<Button
@@ -180,6 +181,48 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 				onConfirm={handleDelete}
 				confirmTestId="mcp-library-table-delete-confirm"
 			/>
+		</div>
+	);
+}
+
+/** Skeleton placeholder mirroring the table layout while the library catalog loads. */
+export function MCPLibraryServersTableSkeleton({ rows = 8 }: { rows?: number }) {
+	return (
+		<div className="overflow-y-auto rounded-md border mb-2" data-testid="mcp-library-table-skeleton">
+			<Table containerClassName="overflow-x-clip">
+				<TableHeader className="sticky top-0 z-10 bg-muted">
+					<TableRow>
+						<TableHead className="w-16">Icon</TableHead>
+						<TableHead>Server</TableHead>
+						<TableHead className="hidden w-10 lg:table-cell">Details</TableHead>
+						<TableHead className="w-32 text-right">Actions</TableHead>
+					</TableRow>
+				</TableHeader>
+				<TableBody>
+					{Array.from({ length: rows }).map((_, index) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders have no stable id
+						<TableRow key={index}>
+							<TableCell>
+								<Skeleton className="h-10 w-10 rounded-md" />
+							</TableCell>
+							<TableCell className="min-w-72 whitespace-normal">
+								<div className="space-y-2">
+									<Skeleton className="h-4 w-40" />
+									<Skeleton className="h-3 w-64" />
+								</div>
+							</TableCell>
+							<TableCell className="hidden lg:table-cell">
+								<Skeleton className="h-3 w-28" />
+							</TableCell>
+							<TableCell className="text-right">
+								<div className="flex justify-end gap-2">
+									<Skeleton className="h-9 w-9 rounded-md" />
+								</div>
+							</TableCell>
+						</TableRow>
+					))}
+				</TableBody>
+			</Table>
 		</div>
 	);
 }
