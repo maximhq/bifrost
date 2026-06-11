@@ -421,6 +421,9 @@ func rawContentResultToSystemBlocks(contentResult gjson.Result) ([]interface{}, 
 	if contentResult.Type == gjson.String {
 		return rawContentToSystemBlocks(contentResult.String()), nil
 	}
+	if contentResult.Type != gjson.JSON {
+		return nil, fmt.Errorf("unsupported raw system content type %s", contentResult.Type.String())
+	}
 	var raw interface{}
 	if err := sonic.UnmarshalString(contentResult.Raw, &raw); err != nil {
 		return nil, err

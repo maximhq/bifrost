@@ -413,6 +413,34 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects_unsupported_scalar_mid_conversation_system_content", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-4-6",
+			RawRequestBody: []byte(`{
+				"model":"claude-sonnet-4-6",
+				"max_tokens":1024,
+				"messages":[
+					{"role":"user","content":"hello"},
+					{"role":"system","content":123}
+				]
+			}`),
+		}
+
+		_, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err == nil {
+			t.Fatal("expected unsupported scalar system content to return an error")
+		}
+		if err.Error == nil || err.Error.Error == nil || !strings.Contains(err.Error.Error.Error(), "unsupported raw system content type") {
+			t.Fatalf("expected unsupported scalar content error, got %v", err)
+		}
+	})
+
 	t.Run("preserves_mid_conversation_system_for_opus48", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
