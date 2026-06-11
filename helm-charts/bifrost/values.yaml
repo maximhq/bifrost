@@ -266,6 +266,10 @@ bifrost:
       modelParametersUrl: "https://getbifrost.ai/datasheet/model-parameters"
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
+      # Custom MCP server catalog URL (optional, leave empty to use the default Bifrost catalog)
+      # mcpLibraryUrl: ""
+      # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      # mcpLibrarySyncInterval: 86400
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
