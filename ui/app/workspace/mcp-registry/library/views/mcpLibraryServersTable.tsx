@@ -2,9 +2,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { getErrorMessage, useDeleteMCPLibraryEntryMutation } from "@/lib/store";
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
 import { Link } from "@tanstack/react-router";
-import { BookIcon, Check, Download, Library, LogIn } from "lucide-react";
+import { BookIcon, Check, Download, LogIn, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
 import { authLabel, MCP_ICON_FALLBACK, transportIcon, transportLabel } from "./mcpLibraryServerCard";
 
@@ -12,10 +15,25 @@ interface MCPLibraryServersTableProps {
 	servers: MCPLibraryEntry[];
 	installedServerSlugs: Set<string>;
 	canCreateMCPClient: boolean;
+	canDelete: boolean;
 	onInstall: (server: MCPLibraryEntry) => void;
 }
 
-export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreateMCPClient, onInstall }: MCPLibraryServersTableProps) {
+export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreateMCPClient, canDelete, onInstall }: MCPLibraryServersTableProps) {
+	const [deleteEntry, { isLoading: isDeleting }] = useDeleteMCPLibraryEntryMutation();
+	const [serverToDelete, setServerToDelete] = useState<MCPLibraryEntry | null>(null);
+
+	const handleDelete = async () => {
+		if (!serverToDelete) return;
+		try {
+			await deleteEntry(serverToDelete.id).unwrap();
+			toast.success(`"${serverToDelete.name}" removed from the library.`);
+			setServerToDelete(null);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
 	return (
 		<div className="overflow-hidden rounded-md border" data-testid="mcp-library-table-view">
 			<Table>
@@ -63,6 +81,7 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 													Installed
 												</Badge>
 											)}
+											{server.source === "custom" && <Badge variant="outline">Custom</Badge>}
 
 										</div>
 										<p className="text-muted-foreground line-clamp-1 max-w-4xl text-sm leading-5">
@@ -152,6 +171,15 @@ export function MCPLibraryServersTable({ servers, installedServerSlugs, canCreat
 					})}
 				</TableBody>
 			</Table>
+
+			<MCPLibraryDeleteDialog
+				server={serverToDelete}
+				open={!!serverToDelete}
+				isDeleting={isDeleting}
+				onOpenChange={(open) => !open && setServerToDelete(null)}
+				onConfirm={handleDelete}
+				confirmTestId="mcp-library-table-delete-confirm"
+			/>
 		</div>
 	);
 }

@@ -639,6 +639,31 @@ func (m *MockConfigStore) GetMCPLibraryPaginated(ctx context.Context, params con
 	return nil, 0, nil
 }
 
+func (m *MockConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*configstore.MCPLibraryFilterData, error) {
+	return &configstore.MCPLibraryFilterData{
+		Categories:      []string{},
+		ConnectionTypes: []string{},
+		AuthTypes:       []string{},
+		Tags:            []string{},
+	}, nil
+}
+
+func (m *MockConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	return nil
+}
+
+func (m *MockConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	return []string{}, nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
 	if m.mcpConfig == nil {
 		return nil
@@ -16463,6 +16488,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	defaultURL := modelcatalog.DefaultPricingURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
+	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
@@ -16503,11 +16529,13 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		uiEditedURL := "https://ui-edited.example.com/pricing.json"
 		uiEditedSync := int64((24 * time.Hour).Seconds())
 		dbConfig := &tables.TableFrameworkConfig{
-			ID:                  8,
-			PricingURL:          &uiEditedURL,
-			PricingSyncInterval: &uiEditedSync,
-			ModelParametersURL:  &defaultModelParamsURL,
-			ConfigHash:          storedHash, // hash of last file-applied values
+			ID:                     8,
+			PricingURL:             &uiEditedURL,
+			PricingSyncInterval:    &uiEditedSync,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			ConfigHash:             storedHash, // hash of last file-applied values
 		}
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -16589,8 +16617,118 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.False(t, needsDBUpdate)
 		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
 		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, defaultMCPLibraryURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override defaults", func(t *testing.T) {
+		mcpURL := "https://example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file values override db when file hash changed", func(t *testing.T) {
+		mcpURL := "https://file.example.com/mcp-library.json"
+		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
+		dbMCPURL := modelcatalog.DefaultMCPLibraryURL
+		dbMCPSyncSeconds := int64((24 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     11,
+			MCPLibraryURL:          &dbMCPURL,
+			MCPLibrarySyncInterval: &dbMCPSyncSeconds,
+			ConfigHash:             "old-hash",
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &mcpURL,
+				MCPLibrarySyncInterval: &mcpSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, mcpSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library db wins when file hash matches stored hash", func(t *testing.T) {
+		fileMCPURL := "https://file.example.com/mcp-library.json"
+		fileMCPSyncSeconds := int64((2 * time.Hour).Seconds())
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{
+			MCPLibraryURL:          &fileMCPURL,
+			MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+		})
+		require.NoError(t, err)
+		uiEditedMCPURL := "https://ui.example.com/mcp-library.json"
+		uiEditedMCPSyncSeconds := int64((3 * time.Hour).Seconds())
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     12,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &uiEditedMCPURL,
+			MCPLibrarySyncInterval: &uiEditedMCPSyncSeconds,
+			ConfigHash:             storedHash,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibraryURL:          &fileMCPURL,
+				MCPLibrarySyncInterval: &fileMCPSyncSeconds,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, uiEditedMCPURL, *normalizedTable.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, uiEditedMCPURL, *normalizedModelCatalog.MCPLibraryURL)
+		require.Equal(t, uiEditedMCPSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library file interval below minimum is clamped", func(t *testing.T) {
+		tooLow := int64(1800)
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibrarySyncInterval: &tooLow,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
+		invalidDBSync := int64(0)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &invalidDBSync,
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {
@@ -16735,10 +16873,14 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			require.NotNil(t, tableOut.PricingURL, "PricingURL must never be nil")
 			require.NotNil(t, tableOut.PricingSyncInterval, "PricingSyncInterval must never be nil")
 			require.NotNil(t, tableOut.ModelParametersURL, "ModelParametersURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibraryURL, "MCPLibraryURL must never be nil")
+			require.NotNil(t, tableOut.MCPLibrarySyncInterval, "MCPLibrarySyncInterval must never be nil")
 			require.NotNil(t, catalogOut, "modelcatalog.Config must never be nil")
 			require.NotNil(t, catalogOut.PricingURL, "Config.PricingURL must never be nil")
 			require.NotNil(t, catalogOut.PricingSyncInterval, "Config.PricingSyncInterval must never be nil")
 			require.NotNil(t, catalogOut.ModelParametersURL, "Config.ModelParametersURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibraryURL, "Config.MCPLibraryURL must never be nil")
+			require.NotNil(t, catalogOut.MCPLibrarySyncInterval, "Config.MCPLibrarySyncInterval must never be nil")
 		}
 	})
 

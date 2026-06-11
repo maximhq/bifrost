@@ -1386,14 +1386,42 @@ type frameworkConfigHashPayload struct {
 	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
 }
 
+type frameworkConfigHashPayloadWithMCP struct {
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	MCPLibraryURL          *string `json:"mcp_library_url"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+}
+
+// FrameworkConfigHashOptions adds optional framework config fields to the
+// config.json change-detection hash while preserving the legacy pricing-only
+// hash when omitted.
+type FrameworkConfigHashOptions struct {
+	MCPLibraryURL          *string
+	MCPLibrarySyncInterval *int64
+}
+
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
 // This is used to detect changes to framework config between config.json and database.
-func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64) (string, error) {
-	data, err := sonic.Marshal(frameworkConfigHashPayload{
-		PricingURL:          pricingURL,
-		ModelParametersURL:  modelParametersURL,
-		PricingSyncInterval: pricingSyncInterval,
-	})
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64, opts ...FrameworkConfigHashOptions) (string, error) {
+	var data []byte
+	var err error
+	if len(opts) > 0 {
+		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+			PricingURL:             pricingURL,
+			ModelParametersURL:     modelParametersURL,
+			PricingSyncInterval:    pricingSyncInterval,
+			MCPLibraryURL:          opts[0].MCPLibraryURL,
+			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+		})
+	} else {
+		data, err = sonic.Marshal(frameworkConfigHashPayload{
+			PricingURL:          pricingURL,
+			ModelParametersURL:  modelParametersURL,
+			PricingSyncInterval: pricingSyncInterval,
+		})
+	}
 	if err != nil {
 		return "", err
 	}

@@ -8,9 +8,10 @@ import { getErrorMessage, useGetMCPClientsQuery, useGetMCPLibraryQuery } from "@
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, LayoutGrid, Library, List, Search, Settings } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutGrid, Library, List, Plus, Search, Settings } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { MCPLibraryAddServerSheet } from "./views/mcpLibraryAddServerSheet";
 import { MCPLibraryFilterSidebar, type MCPLibraryFilters } from "./views/mcpLibraryFilterSidebar";
 import { MCPLibraryInstallSheet, sanitizeServerName } from "./views/mcpLibraryInstallSheet";
 import { MCPLibraryServerCard } from "./views/mcpLibraryServerCard";
@@ -37,6 +38,7 @@ export default function MCPLibraryPage() {
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [selectedServer, setSelectedServer] = useState<MCPLibraryEntry | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [addServerOpen, setAddServerOpen] = useState(false);
 	const [viewMode, setViewMode] = useState<MCPLibraryViewMode>(getInitialViewMode);
 	const { toast } = useToast();
 
@@ -166,6 +168,12 @@ export default function MCPLibraryPage() {
 								<p className="text-muted-foreground max-w-2xl text-sm">Browse and install MCP servers from the synced catalog.</p>
 							</div>
 							<div className="flex items-center gap-2">
+								{hasCreateMCPClientAccess && (
+									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
+										<Plus className="h-4 w-4" />
+										Add Server
+									</Button>
+								)}
 								{hasSettingsAccess && (
 									<Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} data-testid="mcp-library-settings-btn">
 										<Settings className="h-4 w-4" />
@@ -268,6 +276,7 @@ export default function MCPLibraryPage() {
 													server={server}
 													isInstalled={isInstalled}
 													canCreateMCPClient={hasCreateMCPClientAccess}
+													canDelete={hasDeleteMCPLibraryAccess}
 													onInstall={setSelectedServer}
 												/>
 											);
@@ -278,6 +287,7 @@ export default function MCPLibraryPage() {
 										servers={servers}
 										installedServerSlugs={installedServerSlugs}
 										canCreateMCPClient={hasCreateMCPClientAccess}
+										canDelete={hasDeleteMCPLibraryAccess}
 										onInstall={setSelectedServer}
 									/>
 								)}
@@ -339,6 +349,9 @@ export default function MCPLibraryPage() {
 
 			{/* Settings sheet */}
 			<MCPLibrarySettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+			{/* Add Server sheet */}
+			<MCPLibraryAddServerSheet open={addServerOpen} onClose={() => setAddServerOpen(false)} />
 		</div>
 	);
 }

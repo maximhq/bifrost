@@ -61,7 +61,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	const [isLoading, setIsLoading] = useState(false);
 	const [argsText, setArgsText] = useState("");
-	const [envsText, setEnvsText] = useState("");
+	// STDIO env vars as a name→value map. Empty value = pass the bare name so the
+	// stdio process reads it from Bifrost's host environment.
+	const [envVars, setEnvVars] = useState<Record<string, string>>({});
 	const [scopesText, setScopesText] = useState("");
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
@@ -149,7 +151,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		if (open) {
 			reset(emptyForm);
 			setArgsText("");
-			setEnvsText("");
+			setEnvVars({});
 			setScopesText("");
 			setOauthFlow(null);
 			setHeadersFlow(null);
@@ -224,7 +226,14 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					? {
 						command: data.stdio_config?.command || "",
 						args: parseArrayFromText(argsText),
-						envs: parseArrayFromText(envsText),
+						// Each row becomes KEY=value, or a bare KEY when no value is given
+						// (read from Bifrost's host environment). Rows without a name are skipped.
+						envs: Object.entries(envVars)
+							.filter(([name]) => name.trim() !== "")
+							.map(([name, value]) => {
+								const v = value.trim();
+								return v ? `${name}=${v}` : name;
+							}),
 					}
 					: undefined,
 			tls_config:
@@ -842,12 +851,25 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 									{/* Envs (local state) */}
 									<div className="space-y-2">
-										<Label>Environment Variables (comma-separated)</Label>
-										<Input
-											value={envsText}
-											onChange={(e) => setEnvsText(e.target.value)}
-											placeholder="API_KEY, DATABASE_URL"
-											data-testid="stdio-envs-input"
+										<div className="flex items-center gap-2">
+											<Label>Environment Variables</Label>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+													</TooltipTrigger>
+													<TooltipContent className="max-w-xs">
+														<p>Add a value for each variable, or leave it blank to read the value from the environment where Bifrost runs.</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<HeadersTable
+											value={envVars}
+											onChange={setEnvVars}
+											keyPlaceholder="API_KEY"
+											valuePlaceholder="Value (or leave blank to use host env)"
+											label=""
 										/>
 									</div>
 								</>

@@ -1624,7 +1624,7 @@ var mcpLibrarySortColumns = map[string]string{
 // search, filtering, sorting, and pagination. Returns the page of rows and the
 // total count matching the filters (before pagination).
 func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{})
+	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -1712,6 +1712,7 @@ func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibra
 		var values []string
 		if err := db.Model(&tables.TableMCPLibrary{}).
 			Distinct(column).
+			Where("deleted_at IS NULL").
 			Where(column+" IS NOT NULL AND "+column+" != ?", "").
 			Order(column+" ASC").
 			Pluck(column, &values).Error; err != nil {
@@ -1735,6 +1736,7 @@ func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibra
 	var tagBlobs []string
 	if err := db.Model(&tables.TableMCPLibrary{}).
 		Distinct("tags").
+		Where("deleted_at IS NULL").
 		Where("tags IS NOT NULL AND tags != ?", "").
 		Pluck("tags", &tagBlobs).Error; err != nil {
 		return nil, err
@@ -1806,6 +1808,47 @@ func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *table
 		return s.parseGormError(err)
 	}
 	return nil
+}
+
+// CreateCustomMCPLibraryEntry inserts an org-internal ("custom") library row.
+// Source is forced to "custom" regardless of what the caller passed. The unique
+// slug index prevents duplicates; parseGormError maps that to ErrAlreadyExists.
+func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
+	entry.Source = "custom"
+	if err := s.DB().WithContext(ctx).Create(entry).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// SoftDeleteMCPLibraryEntry tombstones a library row by ID (sets deleted_at to
+// now) so it no longer appears in listings and the remote sync respects the
+// tombstone. Works on both "remote" and "custom" rows.
+func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("deleted_at", time.Now())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetProtectedMCPLibrarySlugs returns the slugs the remote sync must skip:
+// custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
+func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
+	var slugs []string
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPLibrary{}).
+		Where("source != 'remote' OR deleted_at IS NOT NULL").
+		Pluck("slug", &slugs).Error; err != nil {
+		return nil, err
+	}
+	return slugs, nil
 }
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
