@@ -166,6 +166,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = NormalizeRawMidConversationSystem(jsonBody, cfg.Provider, request.Model)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		jsonBody, err = StripAutoInjectableTools(jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)

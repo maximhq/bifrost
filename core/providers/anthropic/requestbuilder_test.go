@@ -326,6 +326,170 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 			t.Error("expected anthropic_beta to be injected into body")
 		}
 	})
+
+	t.Run("normalizes_mid_conversation_system_for_unsupported_model", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-4-6",
+			RawRequestBody: []byte(`{
+				"model":"model-router-alias",
+				"max_tokens":1024,
+				"system":[{"type":"text","text":"initial","cache_control":{"type":"ephemeral"}}],
+				"messages":[
+					{"role":"user","content":[{"type":"text","text":"hello"}]},
+					{"role":"system","content":[{"type":"text","text":"use skill","cache_control":{"type":"ephemeral"}}]},
+					{"role":"developer","content":"developer note"}
+				]
+			}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		messages := providerUtils.GetJSONField(result, "messages").Array()
+		if len(messages) != 1 {
+			t.Fatalf("expected only user message to remain, got %d messages: %s", len(messages), string(result))
+		}
+		if role := messages[0].Get("role").String(); role != "user" {
+			t.Fatalf("expected remaining message role user, got %q", role)
+		}
+
+		system := providerUtils.GetJSONField(result, "system").Array()
+		if len(system) != 3 {
+			t.Fatalf("expected initial + system + developer blocks in top-level system, got %d: %s", len(system), string(result))
+		}
+		if got := system[0].Get("text").String(); got != "initial" {
+			t.Errorf("system[0].text = %q, want initial", got)
+		}
+		if got := system[1].Get("text").String(); got != "use skill" {
+			t.Errorf("system[1].text = %q, want use skill", got)
+		}
+		if got := system[1].Get("cache_control.type").String(); got != "ephemeral" {
+			t.Errorf("system[1].cache_control.type = %q, want ephemeral", got)
+		}
+		if got := system[2].Get("text").String(); got != "developer note" {
+			t.Errorf("system[2].text = %q, want developer note", got)
+		}
+	})
+
+	t.Run("preserves_mid_conversation_system_for_opus48", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-opus-4-8",
+			RawRequestBody: []byte(`{
+				"model":"claude-auto",
+				"max_tokens":1024,
+				"system":"initial",
+				"messages":[
+					{"role":"user","content":"hello"},
+					{"role":"system","content":"new instruction"},
+					{"role":"user","content":"continue"}
+				]
+			}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		messages := providerUtils.GetJSONField(result, "messages").Array()
+		if len(messages) != 3 {
+			t.Fatalf("expected 3 messages, got %d: %s", len(messages), string(result))
+		}
+		if role := messages[1].Get("role").String(); role != "system" {
+			t.Fatalf("expected role system to be preserved for Opus 4.8, got %q", role)
+		}
+		if system := providerUtils.GetJSONField(result, "system"); system.String() != "initial" {
+			t.Fatalf("expected top-level system to remain unchanged, got %s", system.Raw)
+		}
+	})
+
+	t.Run("normalizes_mid_conversation_system_for_vertex", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    "claude-opus-4-8",
+			RawRequestBody: []byte(`{
+				"model":"claude-opus-4-8",
+				"max_tokens":1024,
+				"messages":[
+					{"role":"user","content":"hello"},
+					{"role":"system","content":"vertex fallback"}
+				]
+			}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider:         schemas.Vertex,
+			Deployment:       "claude-opus-4-8",
+			DeleteModelField: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		for i, msg := range providerUtils.GetJSONField(result, "messages").Array() {
+			if role := msg.Get("role").String(); role == "system" {
+				t.Fatalf("messages[%d] unexpectedly has role system for Vertex: %s", i, string(result))
+			}
+		}
+		system := providerUtils.GetJSONField(result, "system").Array()
+		if len(system) != 1 || system[0].Get("text").String() != "vertex fallback" {
+			t.Fatalf("expected vertex fallback in top-level system, got %s", providerUtils.GetJSONField(result, "system").Raw)
+		}
+	})
+
+	t.Run("normalizes_only_system_message_to_user_message", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-4-6",
+			RawRequestBody: []byte(`{
+				"model":"claude-sonnet-4-6",
+				"max_tokens":1024,
+				"messages":[{"role":"system","content":"system-only"}]
+			}`),
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		messages := providerUtils.GetJSONField(result, "messages").Array()
+		if len(messages) != 1 {
+			t.Fatalf("expected one user message, got %d: %s", len(messages), string(result))
+		}
+		if role := messages[0].Get("role").String(); role != "user" {
+			t.Fatalf("expected system-only message to become user, got %q", role)
+		}
+		content := messages[0].Get("content").Array()
+		if len(content) != 1 || content[0].Get("text").String() != "system-only" {
+			t.Fatalf("expected system-only content in user message, got %s", messages[0].Get("content").Raw)
+		}
+		if providerUtils.JSONFieldExists(result, "system") {
+			t.Fatalf("expected no duplicated top-level system, got %s", providerUtils.GetJSONField(result, "system").Raw)
+		}
+	})
 }
 
 func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
