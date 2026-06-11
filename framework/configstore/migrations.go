@@ -877,6 +877,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddFastModePricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCustomerNameUniqueConstraint(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9961,4 +9964,88 @@ func migrationAddMCPLibrarySourceColumns(ctx context.Context, db *gorm.DB) error
 		return fmt.Errorf("error running add_mcp_library_source_columns migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddCustomerNameUniqueConstraint deduplicates governance_customers by
+// appending -1, -2, … to later occurrences of the same name (ordered by
+// created_at then id), then adds a unique index on the name column.
+func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB) error {
+	const idxName = "idx_governance_customers_name"
+
+	// Step 1 (transactional): rename duplicate customer names so the later
+	// CREATE UNIQUE INDEX cannot fail due to pre-existing duplicates.
+	if err := RunSingleMigration(ctx, nil, db, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_dedup",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Fetch all customers in a stable order so the earliest-created row
+			// always keeps the original name and later duplicates receive suffixes.
+			var customers []tables.TableCustomer
+			if err := tx.Order("created_at ASC, id ASC").Find(&customers).Error; err != nil {
+				return fmt.Errorf("failed to fetch customers: %w", err)
+			}
+
+			// taken tracks every name that is currently (or will be) in use so
+			// suffix search never collides with an existing original name.
+			taken := make(map[string]bool, len(customers))
+			for _, c := range customers {
+				taken[c.Name] = true
+			}
+
+			firstSeen := make(map[string]bool, len(customers))
+			for _, c := range customers {
+				if !firstSeen[c.Name] {
+					firstSeen[c.Name] = true
+					continue // earliest occurrence keeps its name
+				}
+				// Find the lowest suffix whose candidate name is not already taken.
+				suffix := 1
+				candidate := fmt.Sprintf("%s-%d", c.Name, suffix)
+				for taken[candidate] {
+					suffix++
+					candidate = fmt.Sprintf("%s-%d", c.Name, suffix)
+				}
+				taken[candidate] = true
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", c.ID).Update("name", candidate).Error; err != nil {
+					return fmt.Errorf("failed to rename customer %s to %q: %w", c.ID, candidate, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil // name renames are not reversed; dropping the index in step 2 restores the invariant
+		},
+	}); err != nil {
+		return err
+	}
+
+	// Step 2 (non-transactional): create the unique index.
+	// UseTransaction must be false because CREATE INDEX CONCURRENTLY cannot
+	// execute inside a transaction block. IF NOT EXISTS makes this step safe
+	// to re-run if the process crashes after the index is built but before
+	// the migration record is written.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, &migrator.Migration{
+		ID: "add_customer_name_unique_constraint_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE UNIQUE INDEX IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			} else {
+				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + idxName + " ON governance_customers (name)"
+			}
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to create unique index on governance_customers.name: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP INDEX IF EXISTS " + idxName).Error
+		},
+	})
 }
