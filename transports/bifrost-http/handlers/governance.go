@@ -23,9 +23,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -106,13 +108,19 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
+	// logManager sources actual per-model usage (from request logs) for the quota
+	// endpoint's model_usage breakdown. Optional: nil when the logging plugin is
+	// not enabled, in which case the breakdown is simply omitted.
+	logManager logging.LogManager
 }
 
 // NewGovernanceHandler creates a new governance handler instance.
+// logManager is optional (may be nil); when supplied it powers the quota
+// endpoint's per-budget actual per-model usage breakdown.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -129,6 +137,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
+		logManager:        logManager,
 	}, nil
 }
 
@@ -4566,6 +4575,114 @@ func validateRoutingFallbacks(fallbacks []string) error {
 	return nil
 }
 
+// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets
+// and rate limit (with their current usage) for a specific model governed under this VK.
+// Mirrors how provider_configs surface per-provider governance.
+type quotaModelUsage struct {
+	ModelName string                            `json:"model_name"`
+	Provider  *string                           `json:"provider,omitempty"` // nil means all providers
+	Budgets   []configstoreTables.TableBudget   `json:"budgets,omitempty"`
+	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+}
+
+// collectVKModelUsage loads the VK-scoped model configs for vk in a single query, then
+// (1) reverse-maps the wildcard ("*") configs onto the VK and its provider configs — the
+// same hydration hydrateVKGovernance performs — and (2) returns a per-model usage list
+// built from the specific-model configs. Surfacing only VK-scoped governance keeps this
+// self-service endpoint reporting the key's own usage (global/shared per-model limits are
+// intentionally not exposed here). Returns an error on load failure so the endpoint fails
+// closed (500) rather than silently returning empty governance — an empty result here is
+// indistinguishable from a key that legitimately has no model configs.
+func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey) ([]quotaModelUsage, error) {
+	mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
+	if err != nil {
+		logger.Error("failed to load model configs for VK quota: %v", err)
+		return nil, err
+	}
+
+	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
+	for i := range mcs {
+		ptrs[i] = &mcs[i]
+	}
+	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs))
+
+	models := make([]quotaModelUsage, 0)
+	for i := range mcs {
+		mc := &mcs[i]
+		if mc.ModelName == configstoreTables.ModelConfigAllModels {
+			continue // wildcard configs are the VK-/provider-level governance handled above
+		}
+		models = append(models, quotaModelUsage{
+			ModelName: mc.ModelName,
+			Provider:  mc.Provider,
+			Budgets:   mc.Budgets,
+			RateLimit: mc.RateLimit,
+		})
+	}
+	return models, nil
+}
+
+// quotaModelSpend is one model's actual usage drawn from request logs (independent of
+// whether any governance config exists for that model) within a budget's current cycle.
+type quotaModelSpend struct {
+	Model         string  `json:"model"`
+	Provider      string  `json:"provider,omitempty"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+// quotaBudget is a VK budget plus the actual per-model spend (from request logs) accumulated
+// in its current cycle [last_reset, now]. The TableBudget is embedded so the budget's own
+// fields (id, max_limit, reset_duration, last_reset, current_usage, …) render flat alongside
+// the breakdown — no field is duplicated. The per-model totals reconcile with current_usage
+// (both measured since last_reset). models is empty when logging is disabled.
+type quotaBudget struct {
+	configstoreTables.TableBudget
+	Models []quotaModelSpend `json:"per_model_usage"`
+}
+
+// buildVKBudgetsWithUsage wraps each hydrated VK budget with its per-model actual usage,
+// queried from request logs over that budget's current cycle [last_reset, now]. Per-budget
+// because a VK's budgets can have independent reset cycles (e.g. daily + monthly). When
+// logging is disabled (logManager == nil) the budgets are returned with an empty models list
+// — that is the only case where per_model_usage is empty. A log-store query failure instead
+// returns an error so the endpoint fails closed (500) rather than reporting empty usage that
+// callers cannot distinguish from "logging disabled". Callers must hydrate vk.Budgets (via
+// collectVKModelUsage) before calling this.
+func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey, now time.Time) ([]quotaBudget, error) {
+	out := make([]quotaBudget, 0, len(vk.Budgets))
+	for i := range vk.Budgets {
+		b := &vk.Budgets[i]
+		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
+		if h.logManager != nil {
+			start := b.LastReset
+			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
+				VirtualKeyIDs: []string{vk.ID},
+				StartTime:     &start,
+				EndTime:       &now,
+			})
+			if err != nil {
+				logger.Error("failed to load per-model usage for VK quota (budget %s): %v", b.ID, err)
+				return nil, err
+			}
+			if ranking != nil {
+				for _, r := range ranking.Rankings {
+					entry.Models = append(entry.Models, quotaModelSpend{
+						Model:         r.Model,
+						Provider:      r.Provider,
+						TotalRequests: r.TotalRequests,
+						TotalTokens:   r.TotalTokens,
+						TotalCost:     r.TotalCost,
+					})
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 // getVirtualKeyQuota handles GET /api/governance/virtual-keys/quota
 // This is a self-service endpoint — no admin auth required. The VK value in the header is the credential.
 func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
@@ -4592,13 +4709,30 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.hydrateVKGovernance(ctx, vk)
+	// collectVKModelUsage hydrates the wildcard VK/provider governance (in place) and
+	// returns the configured per-model limits — both from a single VK-scoped model-config load.
+	// Fail closed: a load error must not degrade to empty governance (it would leave vk.Budgets
+	// un-hydrated and report "budgets": [], silently hiding configured limits).
+	models, err := h.collectVKModelUsage(ctx, vk)
+	if err != nil {
+		SendError(ctx, 500, "Failed to load model configurations")
+		return
+	}
+
+	// Each budget carries its actual per-model spend (from request logs) for the current
+	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
+	budgets, err := h.buildVKBudgetsWithUsage(ctx, vk, time.Now())
+	if err != nil {
+		SendError(ctx, 500, "Failed to load per-model usage")
+		return
+	}
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
-		"budgets":          vk.Budgets,
+		"budgets":          budgets,
 		"rate_limit":       vk.RateLimit,
 		"provider_configs": vk.ProviderConfigs,
+		"model_configs":    models,
 	})
 }
