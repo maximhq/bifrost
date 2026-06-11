@@ -90,6 +90,7 @@ Batch API uses OpenAI SDK with x-model-provider header to route to different pro
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -178,8 +179,10 @@ from .utils.common import (
     get_content_string,
     get_provider_voice,
     get_provider_voices,
+    get_vertex_gcs_config,
     mock_tool_response,
     skip_if_no_api_key,
+    skip_if_no_vertex_gcs,
     # Citation utilities
     assert_valid_openai_annotation,
     # WebSocket utilities
@@ -267,6 +270,43 @@ def get_provider_openai_client(provider, vk_enabled=False):
         timeout=api_config.get("timeout", 300),
         default_headers=default_headers if default_headers else None,
     )
+
+
+def get_file_storage_config(provider):
+    """Resolve the storage_config sent to the Files API for a provider.
+
+    Bedrock stores files in S3; Vertex stores them in a customer-owned GCS bucket.
+    Both are passed to the OpenAI SDK via storage_config (s3 / gcs) and the
+    returned file id round-trips through every endpoint. Skips the test when the
+    backing bucket is not configured.
+
+    Returns the storage_config dict to pass via extra_body (upload) / extra_query (list).
+    """
+    if provider == "vertex":
+        skip_if_no_vertex_gcs()
+        cfg = get_vertex_gcs_config()
+        # Use a unique sub-prefix per call so list() returns exactly the files this
+        # test uploaded. The bucket/prefix is shared with batch-staging objects, and
+        # GCS list is prefix + lexicographic with a page limit, so a shared prefix can
+        # page past a freshly uploaded object. Both upload and list in a given test
+        # reuse the same returned config, so the unique prefix stays consistent.
+        base = (cfg.get("prefix") or "").rstrip("/")
+        unique = f"file-api-tests/{uuid.uuid4()}"
+        prefix = f"{base}/{unique}" if base else unique
+        return {"gcs": {"bucket": cfg["bucket"], "prefix": prefix}}
+
+    # Default: S3-backed (Bedrock)
+    settings = get_config().get_integration_settings("bedrock")
+    s3_bucket = settings.get("s3_bucket")
+    if not s3_bucket:
+        pytest.skip("S3 bucket not configured for file tests")
+    return {
+        "s3": {
+            "bucket": s3_bucket,
+            "region": settings.get("region", "us-west-2"),
+            "prefix": settings.get("output_s3_prefix", "bifrost-batch-output"),
+        }
+    }
 
 
 def _wait_for_video_terminal_status(
@@ -2817,22 +2857,15 @@ class TestOpenAIIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("batch_file_upload"),
+        get_cross_provider_params_with_vk_for_scenario("file_upload"),
     )
     def test_41_file_upload(self, test_config, provider, model, vk_enabled):
-        """Test Case 41: Upload a file for batch processing"""
+        """Test Case 41: Direct file upload (S3-backed for Bedrock, GCS-backed for Vertex)"""
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for batch_file_upload scenario")
+            pytest.skip("No providers configured for file_upload scenario")
 
-        # Get S3 settings from config (bedrock uses S3 for file storage)
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # Get provider-specific client
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
@@ -2846,13 +2879,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -2866,13 +2893,7 @@ class TestOpenAIIntegration:
             list_response = client.files.list(
                 extra_query={
                     "provider": provider,
-                    "storage_config": {
-                        "s3": {
-                            "bucket": s3_bucket,
-                            "region": s3_region,
-                            "prefix": s3_prefix,
-                        },
-                    },
+                    "storage_config": storage_config,
                 }
             )
             assert_valid_file_list_response(list_response, min_count=1)
@@ -2900,16 +2921,10 @@ class TestOpenAIIntegration:
         """Test Case 42: List uploaded files"""
 
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for batch_file_upload scenario")
+            pytest.skip("No providers configured for file_list scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # First upload a file to ensure we have at least one
         jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
@@ -2921,13 +2936,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -2936,13 +2945,7 @@ class TestOpenAIIntegration:
             response = client.files.list(
                 extra_query={
                     "provider": provider,
-                    "storage_config": {
-                        "s3": {
-                            "bucket": s3_bucket,
-                            "region": s3_region,
-                            "prefix": s3_prefix,
-                        },
-                    },
+                    "storage_config": storage_config,
                 }
             )
 
@@ -2973,14 +2976,8 @@ class TestOpenAIIntegration:
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for file_retrieve scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # First upload a file
         jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
@@ -2992,13 +2989,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -3028,32 +3019,23 @@ class TestOpenAIIntegration:
     )
     def test_44_file_delete(self, test_config, provider, model, vk_enabled):
         """Test Case 44: Delete an uploaded file"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
+
         # First upload a file
         jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
 
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
-
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
 
         uploaded_file = client.files.create(
             file=("test_delete.jsonl", jsonl_content.encode(), "application/jsonl"),
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
@@ -3076,16 +3058,10 @@ class TestOpenAIIntegration:
         """Test Case 45: Download file content"""
 
         if provider == "_no_providers_" or model == "_no_model_":
-            pytest.skip("No providers configured for file_download scenario")
+            pytest.skip("No providers configured for file_content scenario")
 
-        config = get_config()
-        integration_settings = config.get_integration_settings("bedrock")
-        s3_bucket = integration_settings.get("s3_bucket")
-        s3_region = integration_settings.get("region", "us-west-2")
-        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
-
-        if not s3_bucket:
-            pytest.skip("S3 bucket not configured for file tests")
+        # Resolve provider-specific storage (S3 for Bedrock, GCS for Vertex)
+        storage_config = get_file_storage_config(provider)
 
         # Get provider-specific client
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
@@ -3098,13 +3074,7 @@ class TestOpenAIIntegration:
             purpose="batch",
             extra_body={
                 "provider": provider,
-                "storage_config": {
-                    "s3": {
-                        "bucket": s3_bucket,
-                        "region": s3_region,
-                        "prefix": s3_prefix,
-                    },
-                },
+                "storage_config": storage_config,
             },
         )
 
