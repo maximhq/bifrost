@@ -170,7 +170,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-allows-model-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-allows-model-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-allows-model-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-allows-model-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -615,7 +615,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-key-restriction-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-key-restriction-{{run_id}}\",\"weight\":1,\"key_ids\":[\"k1-{{run_id}}\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-key-restriction-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-key-restriction-{{run_id}}\",\"key_ids\":[\"k1-{{run_id}}\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -1060,7 +1060,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-disabled-key-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-disabled-key-{{run_id}}\",\"weight\":1,\"key_ids\":[\"k1-{{run_id}}\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-disabled-key-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-disabled-key-{{run_id}}\",\"key_ids\":[\"k1-{{run_id}}\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -1860,6 +1860,572 @@
       ]
     },
     {
+      "name": "A weightless VK is an allow-list (no LB), confirmed by the routing log trail",
+      "description": "Two providers on a VK with NO weights: A's key serves gpt-4o-mini, B's serves only gpt-4o. Routing the bare gpt-4o-mini, governance filters by capability (excludes B) and — having no weighted configs — skips load balancing, routing to A. The routing_engine_logs record the allow-list decisions.",
+      "item": [
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-01-add-provider",
+          "name": "01. add provider [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "pm.test(\"01. add provider [weightless-vk-allowlist-via-logs]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-02-add-key",
+          "name": "02. add key ka [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "pm.test(\"02. add key ka [weightless-vk-allowlist-via-logs]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-weightless-vk-allowlist-via-logs-ka-{{run_id}}\",\"models\":[\"gpt-4o-mini\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-03-add-provider",
+          "name": "03. add provider (b) [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "pm.test(\"03. add provider (b) [weightless-vk-allowlist-via-logs]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-04-add-key",
+          "name": "04. add key kb (b) [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "pm.test(\"04. add key kb (b) [weightless-vk-allowlist-via-logs]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-weightless-vk-allowlist-via-logs-kb-{{run_id}}\",\"models\":[\"gpt-4o\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-05-create-vk",
+          "name": "05. create vk [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"05. create vk [weightless-vk-allowlist-via-logs]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "  pm.collectionVariables.set('vkval_weightless-vk-allowlist-via-logs', vk.value || '');",
+                  "  pm.collectionVariables.set('vkid_weightless-vk-allowlist-via-logs', vk.id || '');",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtvk-weightless-vk-allowlist-via-logs-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-06-route",
+          "name": "06. bare model routes to the only capable provider (allow-list, no LB) [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
+                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 3000) {} }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
+                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var allowedProviders = ['catwiring-rt-weightless-vk-allowlist-via-logs-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(ri.provider) < 0) { throw new Error('routing_info.provider=' + ri.provider + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. bare model routes to the only capable provider (allow-list, no LB) [weightless-vk-allowlist-via-logs]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. bare model routes to the only capable provider (allow-list, no LB) [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_weightless-vk-allowlist-via-logs}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-07-capture-log",
+          "name": "07. capture routing log id [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
+                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 2000) {} }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
+                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
+                  "  var logs = (pm.response.json() || {}).logs || [];",
+                  "  if (!logs.length || !logs[0].id) { throw new Error('no log row yet for VK'); }",
+                  "  pm.collectionVariables.set('logid_weightless-vk-allowlist-via-logs', logs[0].id);",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"07. capture routing log id [weightless-vk-allowlist-via-logs]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"07. capture routing log id [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs?virtual_key_ids={{vkid_weightless-vk-allowlist-via-logs}}&limit=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{vkid_weightless-vk-allowlist-via-logs}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-weightless-vk-allowlist-via-logs-08-assert-trail",
+          "name": "08. log trail shows allow-list filtering and LB skipped [weightless-vk-allowlist-via-logs]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
+                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [weightless-vk-allowlist-via-logs]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
+                  "  var row = pm.response.json() || {};",
+                  "  var trail = row.routing_engine_logs || '';",
+                  "  var expected = [\"not in allowed models list\",\"No weighted configs\",\"skipping load balancing\"];",
+                  "  expected.forEach(function (s) {",
+                  "    if (String(trail).indexOf(s) < 0) { throw new Error('routing_engine_logs missing ' + JSON.stringify(s) + '; got ' + JSON.stringify(trail)); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"08. log trail shows allow-list filtering and LB skipped [weightless-vk-allowlist-via-logs]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"08. log trail shows allow-list filtering and LB skipped [weightless-vk-allowlist-via-logs]\", function () { throw new Error(errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/{{logid_weightless-vk-allowlist-via-logs}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{logid_weightless-vk-allowlist-via-logs}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-weightless-vk-allowlist-via-logs-cleanup-vk",
+              "name": "cleanup: delete vk [weightless-vk-allowlist-via-logs]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete vk [weightless-vk-allowlist-via-logs]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/virtual-keys/{{vkid_weightless-vk-allowlist-via-logs}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{vkid_weightless-vk-allowlist-via-logs}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-weightless-vk-allowlist-via-logs-cleanup-provider-self",
+              "name": "cleanup: delete provider [weightless-vk-allowlist-via-logs]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [weightless-vk-allowlist-via-logs]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-weightless-vk-allowlist-via-logs-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-weightless-vk-allowlist-via-logs-cleanup-provider-b",
+              "name": "cleanup: delete provider b [weightless-vk-allowlist-via-logs]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [weightless-vk-allowlist-via-logs]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-weightless-vk-allowlist-via-logs-b-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Governance load-balances a bare model across VK providers",
       "description": "A VK with two weighted providers, routing a bare (un-prefixed) model, has governance pick one of them; the log detail's routing_engine_logs records the load-balancing decision.",
       "item": [
@@ -2083,7 +2649,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-governance-lb-distributes-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-governance-lb-distributes-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-governance-lb-distributes-b-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-governance-lb-distributes-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-governance-lb-distributes-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"catwiring-rt-governance-lb-distributes-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -2978,6 +3544,237 @@
                     "api",
                     "providers",
                     "catwiring-rt-alias-collision-last-wins-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "A request resolves to an alias whose name differs only in case",
+      "description": "A key defines a mixed-case alias and gates the mixed-case name. Routing the lowercased form finds no exact-case alias but resolves through a case-insensitive fallback to the same target.",
+      "item": [
+        {
+          "id": "rt-alias-case-insensitive-fallback-01-add-provider",
+          "name": "01. add provider [alias-case-insensitive-fallback]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [alias-case-insensitive-fallback]\";",
+                  "pm.test(\"01. add provider [alias-case-insensitive-fallback]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-alias-case-insensitive-fallback-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-case-insensitive-fallback-02-add-key",
+          "name": "02. add key k1 [alias-case-insensitive-fallback]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [alias-case-insensitive-fallback]\";",
+                  "pm.test(\"02. add key k1 [alias-case-insensitive-fallback]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-case-insensitive-fallback-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-alias-case-insensitive-fallback-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-alias-case-insensitive-fallback-k1-{{run_id}}\",\"models\":[\"CatWiring-CI-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"CatWiring-CI-{{run_id}}\":\"gpt-4o-mini\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-case-insensitive-fallback-03-route",
+          "name": "03. lowercased request resolves via case-insensitive fallback [alias-case-insensitive-fallback]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
+                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 1000) {} }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
+                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [alias-case-insensitive-fallback]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var providerName = 'catwiring-rt-alias-case-insensitive-fallback-' + pm.variables.get('run_id');",
+                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
+                  "  var expectedKey = 'catwiring-rt-alias-case-insensitive-fallback-k1-' + pm.variables.get('run_id');",
+                  "  if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }",
+                  "  if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== \"gpt-4o-mini\") { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. lowercased request resolves via case-insensitive fallback [alias-case-insensitive-fallback]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. lowercased request resolves via case-insensitive fallback [alias-case-insensitive-fallback]\", function () { throw new Error(errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-case-insensitive-fallback-{{run_id}}/catwiring-ci-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-alias-case-insensitive-fallback-cleanup-provider-self",
+              "name": "cleanup: delete provider [alias-case-insensitive-fallback]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [alias-case-insensitive-fallback]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-alias-case-insensitive-fallback-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-alias-case-insensitive-fallback-{{run_id}}"
                   ]
                 }
               }
@@ -4369,7 +5166,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-same-model-openai-azure-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-same-model-openai-azure-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"azure\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-same-model-openai-azure-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-same-model-openai-azure-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"azure\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -5307,7 +6104,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-explicit-allowed-key-cant-serve-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-explicit-allowed-key-cant-serve-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-explicit-allowed-key-cant-serve-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-explicit-allowed-key-cant-serve-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -7243,7 +8040,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-lb-partial-exclusion-3-providers-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-b-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-c-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-lb-partial-exclusion-3-providers-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"catwiring-rt-lb-partial-exclusion-3-providers-c-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -8306,7 +9103,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-model-gated-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-model-gated-provider-{{run_id}}\",\"weight\":99,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-lb-skips-model-gated-provider-b-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-model-gated-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-model-gated-provider-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":99},{\"provider\":\"catwiring-rt-lb-skips-model-gated-provider-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -9231,7 +10028,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-blacklisted-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-blacklisted-provider-{{run_id}}\",\"weight\":99,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-lb-skips-blacklisted-provider-b-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-blacklisted-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-blacklisted-provider-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":99},{\"provider\":\"catwiring-rt-lb-skips-blacklisted-provider-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -10156,7 +10953,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-disabled-key-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-disabled-key-provider-{{run_id}}\",\"weight\":99,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"catwiring-rt-lb-skips-disabled-key-provider-b-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-lb-skips-disabled-key-provider-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-lb-skips-disabled-key-provider-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":99},{\"provider\":\"catwiring-rt-lb-skips-disabled-key-provider-b-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -11081,7 +11878,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-allowlist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-allowlist-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-allowlist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-allowlist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -11683,7 +12480,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-same-model-lb-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-same-model-lb-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"vertex\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]},{\"provider\":\"bedrock\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-cross-provider-same-model-lb-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-cross-provider-same-model-lb-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"vertex\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1},{\"provider\":\"bedrock\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -12422,7 +13219,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-standard-openai-vk-gate-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"openai\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-standard-openai-vk-gate-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"openai\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -12901,7 +13698,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-model-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-model-whitelist-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-model-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-model-whitelist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -13211,7 +14008,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-blacklist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-blacklist-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[\"gpt-4o\"]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-blacklist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-blacklist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[\"gpt-4o\"],\"weight\":1}]}"
             }
           }
         },
@@ -13521,7 +14318,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-vk-wildcard-bounded-by-key-gate-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-wildcard-bounded-by-key-gate-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-vk-wildcard-bounded-by-key-gate-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-vk-wildcard-bounded-by-key-gate-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -14056,7 +14853,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-alias-whitelisted-by-name-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-whitelisted-by-name-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"catwiring-alias-{{run_id}}\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-alias-whitelisted-by-name-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-whitelisted-by-name-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"catwiring-alias-{{run_id}}\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -14370,7 +15167,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-alias-vs-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-vs-whitelist-{{run_id}}\",\"weight\":1,\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[]}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-alias-vs-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-vs-whitelist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },

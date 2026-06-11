@@ -356,15 +356,20 @@ function expandScenario(sc) {
       }
       case "createVK": {
         hasVk = true;
-        const pcs = (step.providerConfigs || []).map((pc) => ({
-          provider: nameOf(pc.providerRef),
-          weight: pc.weight ?? 1,
-          // "*" stays literal; a logical key id (e.g. "k1") is namespaced to the
-          // run-scoped id the key was created with.
-          key_ids: pc.keyIds.map((kid) => (kid === "*" ? "*" : keyId(kid))),
-          allowed_models: [...pc.allowedModels],
-          blacklisted_models: [...pc.blacklistedModels],
-        }));
+        const pcs = (step.providerConfigs || []).map((pc) => {
+          const cfg = {
+            provider: nameOf(pc.providerRef),
+            // "*" stays literal; a logical key id (e.g. "k1") is namespaced to the
+            // run-scoped id the key was created with.
+            key_ids: pc.keyIds.map((kid) => (kid === "*" ? "*" : keyId(kid))),
+            allowed_models: [...pc.allowedModels],
+            blacklisted_models: [...pc.blacklistedModels],
+          };
+          // weight:null → omit the field entirely (a VK with no weighted configs
+          // is allow-list-only: governance gates providers but skips load balancing).
+          if (pc.weight !== null) cfg.weight = pc.weight ?? 1;
+          return cfg;
+        });
         const body = { name: `catwiring-rtvk-${sid}-{{run_id}}`, is_active: true, provider_configs: pcs };
         const name = uniq("create vk");
         items.push(item(nextId("create-vk"), name, request("POST", url(["api", "governance", "virtual-keys"]), body),
@@ -569,6 +574,19 @@ const SCENARIOS = [
     ],
   },
   {
+    id: "weightless-vk-allowlist-via-logs",
+    title: "A weightless VK is an allow-list (no LB), confirmed by the routing log trail",
+    description: "Two providers on a VK with NO weights: A's key serves gpt-4o-mini, B's serves only gpt-4o. Routing the bare gpt-4o-mini, governance filters by capability (excludes B) and — having no weighted configs — skips load balancing, routing to A. The routing_engine_logs record the allow-list decisions.",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ka", models: [MODEL_B] })] },
+      { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: [MODEL_A] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: null, allowedModels: ["*"] }), vkProvider({ providerRef: "b", weight: null, allowedModels: ["*"] })] },
+      { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self"], waitSeconds: 3, label: "bare model routes to the only capable provider (allow-list, no LB)" },
+      { type: "assertRoutingTrail", expectSubstrings: ["not in allowed models list", "No weighted configs", "skipping load balancing"], waitSeconds: 2, label: "log trail shows allow-list filtering and LB skipped" },
+      { type: "cleanup" },
+    ],
+  },
+  {
     id: "governance-lb-distributes",
     title: "Governance load-balances a bare model across VK providers",
     description: "A VK with two weighted providers, routing a bare (un-prefixed) model, has governance pick one of them; the log detail's routing_engine_logs records the load-balancing decision.",
@@ -602,6 +620,16 @@ const SCENARIOS = [
         key({ id: "k2", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_B } }),
       ] },
       { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k2", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias resolves to the last key (k2 → gpt-4o-mini)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "alias-case-insensitive-fallback",
+    title: "A request resolves to an alias whose name differs only in case",
+    description: "A key defines a mixed-case alias and gates the mixed-case name. Routing the lowercased form finds no exact-case alias but resolves through a case-insensitive fallback to the same target.",
+    steps: [
+      { type: "addProvider", keys: [key({ id: "k1", models: ["CatWiring-CI-{{run_id}}"], aliases: { "CatWiring-CI-{{run_id}}": MODEL_B } })] },
+      { type: "route", model: "catwiring-ci-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k1", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "lowercased request resolves via case-insensitive fallback" },
       { type: "cleanup" },
     ],
   },
