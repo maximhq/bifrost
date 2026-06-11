@@ -55,7 +55,6 @@ func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
 	})
 
 	stream := make(chan *schemas.BifrostStreamChunk)
-	close(stream)
 
 	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
 	router.handleStreaming(
@@ -77,6 +76,7 @@ func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
 	slot.Store(func() ([]schemas.PluginLogEntry, error) {
 		return wantLogs, nil
 	})
+	close(stream)
 
 	select {
 	case gotLogs := <-done:

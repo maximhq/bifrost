@@ -2562,8 +2562,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
 		defer func() {
-			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
 			reader.Done()
+			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
@@ -3109,8 +3109,8 @@ func (g *GenericRouter) handlePassthroughStream(
 
 	go func() {
 		defer func() {
-			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
 			reader.Done()
+			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
 			if traceCompleter != nil {
 				traceCompleter(transportLogs)
 			}
