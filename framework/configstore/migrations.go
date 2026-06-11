@@ -880,6 +880,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCustomerNameUniqueConstraint(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationNullLegacyCustomerBudgetID(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9834,6 +9837,113 @@ func migrationAddCustomerBudgetsToBudgetsTable(ctx context.Context, db *gorm.DB)
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_customer_budgets_to_budgets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationNullLegacyCustomerBudgetID clears the legacy governance_customers.budget_id
+// values left behind by migrationAddCustomerBudgetsToBudgetsTable. The column and its
+// FK (fk_governance_customers_budget) are intentionally kept — dropping either is
+// deferred to a major release — but rows still holding a value make DeleteCustomer's
+// `DELETE FROM governance_budgets WHERE customer_id = ?` fail that FK check. Ownership
+// already lives on governance_budgets.customer_id, so after a defensive backfill the
+// legacy values can be nulled; a null reference satisfies the FK unconditionally.
+func migrationNullLegacyCustomerBudgetID(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "null_legacy_customer_budget_id_refs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			// Customers the defensive backfill below will attach a budget to.
+			// GenerateCustomerHash includes sorted budget IDs, so their stored
+			// config_hash goes stale once the budget is linked and must be refreshed.
+			var affectedCustomerIDs []string
+			if err := tx.Raw(`
+				SELECT DISTINCT c.id
+				FROM governance_customers c
+				JOIN governance_budgets b ON b.id = c.budget_id
+				WHERE b.customer_id IS NULL
+				  AND b.virtual_key_id IS NULL AND b.team_id IS NULL
+				  AND b.provider_config_id IS NULL AND b.model_config_id IS NULL
+			`).Scan(&affectedCustomerIDs).Error; err != nil {
+				return fmt.Errorf("failed to identify customers affected by budget backfill: %w", err)
+			}
+			// Defensive backfill (same shape as migrationAddCustomerBudgetsToBudgetsTable)
+			// in case a budget_id was written after that migration ran, e.g. by an older
+			// instance in a mixed-version cluster. Only claims budgets with no owner yet.
+			if err := tx.Exec(`
+				UPDATE governance_budgets SET customer_id = (
+					SELECT id FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				) WHERE customer_id IS NULL
+				  AND virtual_key_id IS NULL AND team_id IS NULL
+				  AND provider_config_id IS NULL AND model_config_id IS NULL
+				  AND EXISTS (
+					SELECT 1 FROM governance_customers
+					WHERE governance_customers.budget_id = governance_budgets.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill customer budget customer_id: %w", err)
+			}
+			// Refresh config_hash for customers whose budgets just got linked, keeping
+			// migration and runtime hash generation in parity (same as
+			// migrationAddCustomerBudgetsToBudgetsTable).
+			for _, customerID := range affectedCustomerIDs {
+				var customer tables.TableCustomer
+				if err := tx.Preload("Budgets").First(&customer, "id = ?", customerID).Error; err != nil {
+					return fmt.Errorf("failed to reload customer %s for hash refresh: %w", customerID, err)
+				}
+				hash, err := GenerateCustomerHash(customer)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for customer %s: %w", customerID, err)
+				}
+				if err := tx.Model(&tables.TableCustomer{}).Where("id = ?", customerID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for customer %s: %w", customerID, err)
+				}
+			}
+			if err := tx.Exec(`UPDATE governance_customers SET budget_id = NULL WHERE budget_id IS NOT NULL`).Error; err != nil {
+				return fmt.Errorf("failed to clear legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+		// Best-effort inverse: repopulate budget_id from governance_budgets.customer_id.
+		// The legacy column held a single value while the new model allows several
+		// budgets per customer, so for multi-budget customers the oldest budget is
+		// picked — for any customer that predates the pivot that is the original
+		// legacy budget, since later additions sort newer.
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			legacyExists, err := hasColumn(tx, "governance_customers", "budget_id")
+			if err != nil {
+				return fmt.Errorf("failed to introspect governance_customers for budget_id: %w", err)
+			}
+			if !legacyExists {
+				return nil
+			}
+			if err := tx.Exec(`
+				UPDATE governance_customers SET budget_id = (
+					SELECT id FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+					ORDER BY created_at ASC, id ASC
+					LIMIT 1
+				) WHERE budget_id IS NULL AND EXISTS (
+					SELECT 1 FROM governance_budgets
+					WHERE governance_budgets.customer_id = governance_customers.id
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to restore legacy governance_customers.budget_id values: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running null_legacy_customer_budget_id_refs migration: %s", err.Error())
 	}
 	return nil
 }
