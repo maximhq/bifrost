@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -779,6 +780,36 @@ func isRealtimeTransportEndpoint(path string) bool {
 	return ok
 }
 
+func hasVirtualKeyCredential(ctx *fasthttp.RequestCtx) bool {
+	if vkHeader := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); vkHeader != "" {
+		if strings.HasPrefix(strings.ToLower(vkHeader), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		token := strings.TrimSpace(authHeader[7:])
+		if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
 	store             configstore.ConfigStore
@@ -945,11 +976,11 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 			}
 		}
 		return false
-	})
+	}, false)
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
-func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
+func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool, allowVirtualKeyAuth bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			// We will first check if its API key auth
@@ -977,6 +1008,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			if isRealtimeTransportEndpoint(url) {
+				next(ctx)
+				return
+			}
+			if allowVirtualKeyAuth && hasVirtualKeyCredential(ctx) {
 				next(ctx)
 				return
 			}
