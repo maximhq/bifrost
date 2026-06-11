@@ -7,10 +7,11 @@ import (
 )
 
 // TableMCPLibrary represents a single discoverable MCP server in the MCP
-// library catalog. Rows are synced from the external MCP library datasheet
-// (see modelcatalog.DefaultMCPLibraryURL) on a configurable interval — this is
-// a read-only, synced-only catalog that users browse and install from,
-// mirroring the governance_model_pricing / governance_model_parameters tables.
+// library catalog. Most rows are synced from the external MCP library datasheet
+// (see modelcatalog.DefaultMCPLibraryURL) on a configurable interval, mirroring
+// the governance_model_pricing / governance_model_parameters tables. Orgs may
+// also publish their own internal servers as "custom" rows (see Source), which
+// are protected from being overwritten or resurrected by the remote sync.
 //
 // A row is a *template* for an schemas.MCPClientConfig: it carries the
 // connection details a user needs to install the server, shaped the same way
@@ -56,6 +57,21 @@ type TableMCPLibrary struct {
 	Publisher string         `gorm:"type:varchar(255)" json:"publisher,omitempty"`
 	Tags      []string       `gorm:"type:text;serializer:json;default:null" json:"tags,omitempty"`
 	Metadata  map[string]any `gorm:"type:text;serializer:json;default:null" json:"metadata,omitempty"`
+
+	// Source distinguishes remote-synced rows ("remote") from org-internal rows
+	// a user published through the API ("custom"). Custom rows are protected from
+	// the remote sync: a slug clash in the remote payload is skipped, never
+	// overwritten. Defaults to "remote" so existing rows and the sync upsert keep
+	// their old behavior.
+	Source string `gorm:"type:varchar(20);not null;default:'remote';index:idx_mcp_library_source" json:"source"`
+
+	// DeletedAt is a soft-delete tombstone (nil = visible). A user may hide any
+	// entry — including a remote-seeded one — and the tombstone must survive the
+	// next sync so the row is never resurrected. This is a plain nullable
+	// timestamp rather than gorm.DeletedAt on purpose: the sync upsert keys off
+	// slug and must still see tombstoned rows by slug to skip them; gorm's
+	// soft-delete would hide them from that lookup and let duplicates reinsert.
+	DeletedAt *time.Time `gorm:"index:idx_mcp_library_deleted_at;default:null" json:"-"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
