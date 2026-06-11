@@ -428,14 +428,16 @@ func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, vir
 			return modelIn, err
 		}
 
+		// A caller-provided include-tools list can only narrow the virtual key's
+		// tool grant, never expand it — prune entries the key does not allow.
+		callerProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
 		p.cfgMutex.RUnlock()
-		if !autoInjectDisabled {
-			if existing := ctx.Value(schemas.MCPContextKeyIncludeTools); existing == nil {
-				if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
-					ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
-				}
+		if !callerProvided && !autoInjectDisabled {
+			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
 		}
 	}
@@ -781,13 +783,19 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 // directly; callers store it via ctx.SetValue(schemas.MCPContextKeyIncludeTools, ...). VK-specific
 // MCP configs take precedence over AllowOnAllVirtualKeys clients.
 func (p *GovernancePlugin) computeMCPIncludeTools(virtualKey *configstoreTables.TableVirtualKey) []string {
-	executeOnlyTools := make([]string, 0)
-
-	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName
 	var allowAllVKsClients map[string]string
 	if p.inMemoryStore != nil {
 		allowAllVKsClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
 	}
+	return p.computeMCPIncludeToolsWith(virtualKey, allowAllVKsClients)
+}
+
+// computeMCPIncludeToolsWith is the computeMCPIncludeTools variant taking a pre-fetched
+// AllowOnAllVirtualKeys map (clientID → clientName), so callers that make multiple
+// grant decisions per request can evaluate them all against one consistent snapshot.
+func (p *GovernancePlugin) computeMCPIncludeToolsWith(virtualKey *configstoreTables.TableVirtualKey, allowAllVKsClients map[string]string) []string {
+	executeOnlyTools := make([]string, 0)
+
 	if allowAllVKsClients == nil {
 		allowAllVKsClients = make(map[string]string)
 	}
@@ -824,6 +832,67 @@ func (p *GovernancePlugin) computeMCPIncludeTools(virtualKey *configstoreTables.
 	}
 
 	return executeOnlyTools
+}
+
+// pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx
+// from the x-bf-mcp-include-tools header in lib/ctx.go) down to the tools the virtual key
+// allows, and writes the pruned list back to ctx. Returns true when a caller list was present,
+// regardless of how many entries survived. Entries the key does not grant are dropped; a
+// "client-*" wildcard is kept only when the key itself is unrestricted for that client,
+// otherwise it is replaced by the key's specific grants for that client (passing the wildcard
+// through would read downstream as "all tools of this client").
+func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) bool {
+	existing := ctx.Value(schemas.MCPContextKeyIncludeTools)
+	if existing == nil {
+		return false
+	}
+	requested, _ := existing.([]string)
+
+	// Fetch the AllowOnAllVirtualKeys snapshot once so the wildcard checks (via vkSet)
+	// and the per-tool checks (via isMCPToolAllowedByVKWith) can't observe different
+	// states across a concurrent config reload.
+	var allowAllClients map[string]string
+	if p.inMemoryStore != nil {
+		allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+	}
+
+	vkTools := p.computeMCPIncludeToolsWith(virtualKey, allowAllClients)
+	vkSet := make(map[string]struct{}, len(vkTools))
+	for _, tool := range vkTools {
+		vkSet[tool] = struct{}{}
+	}
+
+	pruned := make([]string, 0, len(requested))
+	seen := make(map[string]struct{}, len(requested))
+	add := func(tool string) {
+		if _, dup := seen[tool]; !dup {
+			seen[tool] = struct{}{}
+			pruned = append(pruned, tool)
+		}
+	}
+	for _, pattern := range requested {
+		if pattern == "" {
+			continue
+		}
+		if clientName, isWildcard := strings.CutSuffix(pattern, "-*"); isWildcard {
+			if _, ok := vkSet[pattern]; ok {
+				add(pattern)
+				continue
+			}
+			for _, tool := range vkTools {
+				if strings.HasPrefix(tool, clientName+"-") {
+					add(tool)
+				}
+			}
+			continue
+		}
+		if p.isMCPToolAllowedByVKWith(virtualKey, pattern, allowAllClients) {
+			add(pattern)
+		}
+	}
+
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, pruned)
+	return true
 }
 
 // EvaluateGovernanceRequest is a common function that handles virtual key validation
@@ -1152,15 +1221,16 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 			return err
 		}
 
+		// A caller-provided include-tools list can only narrow the virtual key's
+		// tool grant, never expand it — prune entries the key does not allow.
+		callerProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
 		p.cfgMutex.RUnlock()
-		if !autoInjectDisabled {
-			// Don't overwrite a caller-provided include-tools value (set via header in lib/ctx.go).
-			if existing := ctx.Value(schemas.MCPContextKeyIncludeTools); existing == nil {
-				if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
-					ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
-				}
+		if !callerProvided && !autoInjectDisabled {
+			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
 		}
 	}
