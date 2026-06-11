@@ -2642,78 +2642,84 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 //
 // The output destination is taken from the typed output_folder.url (a gs:// prefix).
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-	if request.Model == nil || *request.Model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Vertex batch API", nil)
-	}
-	hasFileInput := request.InputFileID != ""
-	hasInlineRequests := len(request.Requests) > 0
-	if hasFileInput && hasInlineRequests {
-		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
-	}
-	if !hasFileInput && !hasInlineRequests {
-		return nil, providerUtils.NewBifrostOperationError("either input_file_id (gs:// JSONL URI) or requests is required for Vertex batch API", nil)
-	}
-
 	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
 	if cfgErr != nil {
 		return nil, cfgErr
 	}
 
-	// Output destination is the typed output_folder.url (a gs:// prefix). Vertex writes
-	// results into its own subdirectory under this prefix.
-	outputURI := ""
-	if request.OutputFolder != nil {
-		outputURI = strings.TrimSpace(request.OutputFolder.URL)
-	}
-	if outputURI == "" {
-		return nil, providerUtils.NewBifrostOperationError("output_folder.url (gs:// prefix) is required for Vertex batch API", nil)
-	}
+	rawBody, hasRawBody := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	hasRawBody = hasRawBody && len(rawBody) > 0
 
-	jobName := fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
-	if request.DisplayName != nil && *request.DisplayName != "" {
-		jobName = *request.DisplayName
-	} else if request.Metadata != nil {
-		// Back-compat: OpenAI-compatible clients may pass the job name via metadata.
-		if name, ok := request.Metadata["job_name"]; ok && name != "" {
-			jobName = name
-		}
-	}
-
-	// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 	inputFileID := request.InputFileID
-	if inputFileID == "" {
-		jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
+	jobName := ""
+	outputURI := ""
+	if !hasRawBody {
+		if request.Model == nil || *request.Model == "" {
+			return nil, providerUtils.NewBifrostOperationError("model is required for Vertex batch API", nil)
 		}
-		outBucket, outKey, parseErr := parseGCSURI(outputURI)
-		if parseErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+		hasFileInput := request.InputFileID != ""
+		hasInlineRequests := len(request.Requests) > 0
+		if hasFileInput && hasInlineRequests {
+			return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 		}
-		// Place the input alongside the output directory (sibling, not child) so the
-		// generated JSONL does not live inside the directory Vertex writes results to.
-		inputPrefix := "vertex-batches-input"
-		if trimmed := strings.Trim(outKey, "/"); trimmed != "" {
-			if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
-				inputPrefix = trimmed[:idx] + "/input"
-			} else {
-				inputPrefix = "input"
+		if !hasFileInput && !hasInlineRequests {
+			return nil, providerUtils.NewBifrostOperationError("either input_file_id (gs:// JSONL URI) or requests is required for Vertex batch API", nil)
+		}
+
+		// Output destination is the typed output_folder.url (a gs:// prefix). Vertex writes
+		// results into its own subdirectory under this prefix.
+		if request.OutputFolder != nil {
+			outputURI = strings.TrimSpace(request.OutputFolder.URL)
+		}
+		if outputURI == "" {
+			return nil, providerUtils.NewBifrostOperationError("output_folder.url (gs:// prefix) is required for Vertex batch API", nil)
+		}
+
+		jobName = fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
+		if request.DisplayName != nil && *request.DisplayName != "" {
+			jobName = *request.DisplayName
+		} else if request.Metadata != nil {
+			// Back-compat: OpenAI-compatible clients may pass the job name via metadata.
+			if name, ok := request.Metadata["job_name"]; ok && name != "" {
+				jobName = name
 			}
 		}
-		uploadResp, uploadErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
-			Provider:    schemas.Vertex,
-			File:        jsonlData,
-			Filename:    jobName + "-input.jsonl",
-			Purpose:     schemas.FilePurposeBatch,
-			ContentType: schemas.Ptr("application/jsonl"),
-			StorageConfig: &schemas.FileStorageConfig{
-				GCS: &schemas.GCSStorageConfig{Bucket: outBucket, Prefix: inputPrefix},
-			},
-		})
-		if uploadErr != nil {
-			return nil, uploadErr
+
+		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
+		if inputFileID == "" {
+			jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
+			}
+			outBucket, outKey, parseErr := parseGCSURI(outputURI)
+			if parseErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+			}
+			// Place the input alongside the output directory (sibling, not child) so the
+			// generated JSONL does not live inside the directory Vertex writes results to.
+			inputPrefix := "vertex-batches-input"
+			if trimmed := strings.Trim(outKey, "/"); trimmed != "" {
+				if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
+					inputPrefix = trimmed[:idx] + "/input"
+				} else {
+					inputPrefix = "input"
+				}
+			}
+			uploadResp, uploadErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+				Provider:    schemas.Vertex,
+				File:        jsonlData,
+				Filename:    jobName + "-input.jsonl",
+				Purpose:     schemas.FilePurposeBatch,
+				ContentType: schemas.Ptr("application/jsonl"),
+				StorageConfig: &schemas.FileStorageConfig{
+					GCS: &schemas.GCSStorageConfig{Bucket: outBucket, Prefix: inputPrefix},
+				},
+			})
+			if uploadErr != nil {
+				return nil, uploadErr
+			}
+			inputFileID = uploadResp.ID
 		}
-		inputFileID = uploadResp.ID
 	}
 
 	jsonData, bodyErr := providerUtils.CheckContextAndGetRequestBody(
@@ -2765,6 +2771,12 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	rawRequest, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &created, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if parseErr != nil {
 		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// In raw-passthrough mode inputFileID may be empty (e.g. BigQuery or multi-URI inputs the
+	// typed path never sees); fall back to the GCS source the created job echoes back.
+	if inputFileID == "" && created.InputConfig.GcsSource != nil && len(created.InputConfig.GcsSource.Uris) > 0 {
+		inputFileID = created.InputConfig.GcsSource.Uris[0]
 	}
 
 	result := &schemas.BifrostBatchCreateResponse{
@@ -3057,7 +3069,8 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	return &schemas.BifrostBatchCancelResponse{
-		ID:           vertexBatchJobIDFromName(request.BatchID),
+		// Echo the caller's id so it stays stable across create/retrieve/cancel.
+		ID:           request.BatchID,
 		Object:       "batch",
 		Status:       schemas.BatchStatusCancelling,
 		CancellingAt: schemas.Ptr(startTime.Unix()),
@@ -3123,7 +3136,8 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	return &schemas.BifrostBatchDeleteResponse{
-		ID:     vertexBatchJobIDFromName(request.BatchID),
+		// Echo the caller's id so it stays stable across create/retrieve/delete.
+		ID:     request.BatchID,
 		Object: "batch",
 		Status: schemas.BatchStatusDeleted,
 		ExtraFields: schemas.BifrostResponseExtraFields{

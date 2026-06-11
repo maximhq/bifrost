@@ -37,7 +37,7 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1;",
+          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1;",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -143,7 +143,9 @@
     { "key": "bedrockGuardrailIdentifier", "value": "", "type": "string" },
     { "key": "bedrockGuardrailVersion", "value": "DRAFT", "type": "string" },
     { "key": "vertexGcsBucket", "value": "replace-me-bucket", "type": "string" },
-    { "key": "vertexGcsPrefix", "value": "bifrost-e2e/", "type": "string" }
+    { "key": "vertexGcsPrefix", "value": "bifrost-e2e/", "type": "string" },
+    { "key": "vertexProject", "value": "replace-me-project", "type": "string" },
+    { "key": "vertexLocation", "value": "us-central1", "type": "string" }
   ],
   "item": [
     {
@@ -2272,6 +2274,366 @@
                 "exec": [
                   "var j = pm.response.json();",
                   "pm.test('Vertex resumable cleanup: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11c. Vertex Batches (/openai + native passthrough)",
+      "description": "Vertex batch prediction is GCS-backed. CRUD (create/list/retrieve/cancel) runs via the OpenAI drop-in (/openai/v1/batches, routed by provider=vertex); the base64 batch ids round-trip through every endpoint. The last two rows exercise the native genai surface raw passthrough: a verbatim Vertex BatchPredictionJob body POSTed to .../batchPredictionJobs is forwarded as-is and the native job resource is returned. All [PREVIEW]-tagged: needs a gateway Vertex provider key + a GCS bucket, plus vertexProject/vertexLocation for the native rows. Set vertexGcsBucket, vertexProject and run with --env-var include_preview=1.",
+      "item": [
+        {
+          "name": "[PREVIEW] Vertex: upload batch input (GCS, /openai)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "vertex",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][bucket]",
+                  "value": "{{vertexGcsBucket}}",
+                  "type": "text"
+                },
+                {
+                  "key": "storage_config[gcs][prefix]",
+                  "value": "{{vertexGcsPrefix}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex batch input: gcs backend', function () { pm.expect(j.storage_backend).to.eql('gcs'); });",
+                  "pm.test('Vertex batch input: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('vertexBatchInputFileId', j.id);",
+                  "pm.collectionVariables.set('vertexBatchInputGcsUri', j.storage_uri);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: create batch (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{vertexBatchInputFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"provider\": \"vertex\",\n  \"model\": \"gemini-2.5-flash\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/{{vertexGcsPrefix}}batch-output\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex create batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                  "pm.test('Vertex create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.test('Vertex create batch: input_file_id round-trips', function () { pm.expect(j.input_file_id).to.eql(pm.collectionVariables.get('vertexBatchInputFileId')); });",
+                  "pm.collectionVariables.set('vertexBatchId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: list batches (/openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex list batches: created batch present', function () { pm.expect((j.data || []).map(function (b) { return b.id; })).to.include(pm.collectionVariables.get('vertexBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: retrieve batch (/openai)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{vertexBatchId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{vertexBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex retrieve batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                  "pm.test('Vertex retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('vertexBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: cancel batch (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"vertex\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{vertexBatchId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{vertexBatchId}}",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                  "pm.test('Vertex cancel batch: cancelling/cancelled', function () { pm.expect(['cancelling','cancelled']).to.include(j.status); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: create batch RAW passthrough (native genai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"bifrost-harness-passthrough\",\n  \"model\": \"publishers/google/models/gemini-2.5-flash\",\n  \"inputConfig\": {\n    \"instancesFormat\": \"jsonl\",\n    \"gcsSource\": {\n      \"uris\": [\n        \"{{vertexBatchInputGcsUri}}\"\n      ]\n    }\n  },\n  \"outputConfig\": {\n    \"predictionsFormat\": \"jsonl\",\n    \"gcsDestination\": {\n      \"outputUriPrefix\": \"gs://{{vertexGcsBucket}}/{{vertexGcsPrefix}}batch-output\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/batchPredictionJobs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "batchPredictionJobs"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sends a verbatim Vertex BatchPredictionJob body; Bifrost passes it through (UseRawRequestBody)",
+                  "// and returns the native Vertex job resource. Proves the raw-passthrough path end to end.",
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex RAW passthrough: name is a batchPredictionJobs resource', function () { pm.expect(j.name).to.be.a('string'); pm.expect(j.name).to.include('batchPredictionJobs'); });",
+                  "pm.test('Vertex RAW passthrough: has JOB_STATE_ state', function () { pm.expect(j.state || '').to.match(/^JOB_STATE_/); });",
+                  "var parts = (j.name || '').split('/'); pm.collectionVariables.set('vertexRawBatchId', parts[parts.length - 1]);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete batch RAW passthrough (native genai, cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/batchPredictionJobs/{{vertexRawBatchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "batchPredictionJobs",
+                "{{vertexRawBatchId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex RAW passthrough cleanup: 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: delete batch input file (/openai, cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{vertexBatchInputFileId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{vertexBatchInputFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex batch input cleanup: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
                 ]
               }
             }
