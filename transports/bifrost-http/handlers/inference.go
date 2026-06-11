@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -3005,6 +3006,32 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// encodeStorageFileID makes a storage-URI file id (gs://...) opaque and path-safe so
+// callers can use it in retrieve/delete/content without percent-encoding slashes.
+// Non-URI ids (OpenAI/Gemini/Anthropic) pass through unchanged. The response's
+// storage_uri still carries the raw gs:// URI for direct use (e.g. inference).
+func encodeStorageFileID(id string) string {
+	if strings.HasPrefix(id, "gs://") {
+		return base64.RawURLEncoding.EncodeToString([]byte(id))
+	}
+	return id
+}
+
+// decodeStorageFileID reverses encodeStorageFileID. PathUnescape first (harmless for
+// the unreserved RawURL alphabet, and tolerant of callers that percent-encode), then
+// base64-decode the opaque gs:// id. Raw or percent-encoded gs:// ids passed directly
+// also work: PathUnescape yields the gs:// URI and the base64 step is skipped (a
+// gs:// string is not valid base64).
+func decodeStorageFileID(id string) string {
+	if unescaped, err := url.PathUnescape(id); err == nil {
+		id = unescaped
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(id); err == nil && strings.HasPrefix(string(decoded), "gs://") {
+		return string(decoded)
+	}
+	return id
+}
+
 // fileUpload handles POST /v1/files - Upload a file
 func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// Parse multipart form
@@ -3120,8 +3147,11 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3211,8 +3241,13 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		for i := range resp.Data {
+			resp.Data[i].ID = encodeStorageFileID(resp.Data[i].ID)
+		}
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3229,12 +3264,10 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
-	if decodedID, err := url.PathUnescape(fileID); err == nil {
-		fileID = decodedID
-	} else {
-		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
-	}
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -3264,8 +3297,11 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3282,12 +3318,10 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
-	if decodedID, err := url.PathUnescape(fileID); err == nil {
-		fileID = decodedID
-	} else {
-		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
-	}
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
@@ -3317,8 +3351,11 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		resp.ID = encodeStorageFileID(resp.ID)
+		if resp.ExtraFields.ProviderResponseHeaders != nil {
+			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+		}
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3335,12 +3372,10 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Decode URL-encoded file ID (e.g. gs:// / s3:// URIs must be percent-encoded in the path)
-	if decodedID, err := url.PathUnescape(fileID); err == nil {
-		fileID = decodedID
-	} else {
-		logger.Warn("Failed to URL-decode file_id %q: %v; using original", fileID, err)
-	}
+	// Vertex returns an opaque base64(gs://) id so callers don't percent-encode
+	// slashes in the path; decode it back (falls back to percent-decoding for raw
+	// or percent-encoded gs:// / s3:// ids passed directly).
+	fileID = decodeStorageFileID(fileID)
 
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
