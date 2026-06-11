@@ -156,8 +156,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												<Info className="text-muted-foreground h-3 w-3" />
 											</span>
 										</TooltipTrigger>
-										<TooltipContent>
-											<p>Determines traffic distribution between keys. Higher weights receive more requests.</p>
+										<TooltipContent className="max-w-sm">
+											<p>
+												Determines traffic distribution between keys. Higher weights receive more requests. Not used when adaptive load
+												balancing is enabled - key selection is then based on live performance.
+											</p>
 										</TooltipContent>
 									</Tooltip>
 								</TooltipProvider>
@@ -223,9 +226,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 													<Info className="text-muted-foreground h-3 w-3" />
 												</span>
 											</TooltipTrigger>
-											<TooltipContent>
+											<TooltipContent className="max-w-sm">
 												<p>
 													Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.
+													Aliases must be added by their alias name - listing only the underlying model does not allow the alias (an alias
+													best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
 												</p>
 											</TooltipContent>
 										</Tooltip>
@@ -278,8 +283,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											</TooltipTrigger>
 											<TooltipContent className="max-w-sm">
 												<p>
-													Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here,
-													it is blocked. Select "All Models" to block every model on this key.
+													Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and here,
+													it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias name -
+													blocking only the underlying model does not block aliases that point to it.
 												</p>
 											</TooltipContent>
 										</Tooltip>
@@ -324,7 +330,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormLabel>Deployments (Optional)</FormLabel>
 								<FormDescription>
 									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
-									ID, etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides — these power
+									ID, etc.). Expand a row to set the canonical model name, model family, and provider-specific overrides - these power
 									cost/pricing logs and family-based routing.
 								</FormDescription>
 								<FormControl>
@@ -401,7 +407,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 					{azureAuthType === "default_credential" && (
 						<p className="text-muted-foreground text-sm">
-							Uses DefaultAzureCredential — automatically detects managed identity on Azure VMs and containers, workload identity in AKS,
+							Uses DefaultAzureCredential - automatically detects managed identity on Azure VMs and containers, workload identity in AKS,
 							environment variables, and Azure CLI. No credentials required.
 						</p>
 					)}
