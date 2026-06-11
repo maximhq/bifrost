@@ -348,44 +348,51 @@ func NormalizeRawMidConversationSystem(jsonBody []byte, provider schemas.ModelPr
 		return jsonBody, nil
 	}
 
-	var messages []map[string]interface{}
-	if err := sonic.UnmarshalString(messagesResult.Raw, &messages); err != nil {
-		return nil, fmt.Errorf("normalize raw mid-conversation system: %w", err)
-	}
-
-	kept := make([]map[string]interface{}, 0, len(messages))
-	existingSystemBlocks := rawSystemContentBlocks(providerUtils.GetJSONField(jsonBody, "system"))
+	messages := messagesResult.Array()
 	movedSystemBlocks := []interface{}{}
-	changed := false
+	deleteIndexes := []int{}
 
-	for _, msg := range messages {
-		role, _ := msg["role"].(string)
+	for i, msg := range messages {
+		role := msg.Get("role").String()
 		if role != string(AnthropicMessageRoleSystem) && role != "developer" {
-			kept = append(kept, msg)
 			continue
 		}
-		changed = true
-		movedSystemBlocks = append(movedSystemBlocks, rawContentToSystemBlocks(msg["content"])...)
+		blocks, err := rawContentResultToSystemBlocks(msg.Get("content"))
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw mid-conversation system content: %w", err)
+		}
+		deleteIndexes = append(deleteIndexes, i)
+		movedSystemBlocks = append(movedSystemBlocks, blocks...)
 	}
 
-	if !changed {
+	if len(deleteIndexes) == 0 {
 		return jsonBody, nil
 	}
 
-	var err error
-	promotedOnlySystemMessage := false
-	if len(kept) == 0 && len(movedSystemBlocks) > 0 {
-		kept = append(kept, map[string]interface{}{
-			"role":    string(AnthropicMessageRoleUser),
-			"content": movedSystemBlocks,
-		})
-		promotedOnlySystemMessage = true
+	existingSystemBlocks, err := rawSystemContentBlocks(providerUtils.GetJSONField(jsonBody, "system"))
+	if err != nil {
+		return nil, fmt.Errorf("normalize raw mid-conversation system field: %w", err)
 	}
 
-	jsonBody, err = providerUtils.SetJSONField(jsonBody, "messages", kept)
-	if err != nil {
-		return nil, fmt.Errorf("normalize raw mid-conversation system messages: %w", err)
+	promotedOnlySystemMessage := false
+	if len(messages) == len(deleteIndexes) && len(movedSystemBlocks) > 0 {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "messages", []map[string]interface{}{{
+			"role":    string(AnthropicMessageRoleUser),
+			"content": movedSystemBlocks,
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("normalize raw mid-conversation system messages: %w", err)
+		}
+		promotedOnlySystemMessage = true
+	} else {
+		for i := len(deleteIndexes) - 1; i >= 0; i-- {
+			jsonBody, err = sjson.DeleteBytes(jsonBody, fmt.Sprintf("messages.%d", deleteIndexes[i]))
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw mid-conversation system messages: %w", err)
+			}
+		}
 	}
+
 	systemBlocks := existingSystemBlocks
 	if !promotedOnlySystemMessage {
 		systemBlocks = append(systemBlocks, movedSystemBlocks...)
@@ -400,15 +407,25 @@ func NormalizeRawMidConversationSystem(jsonBody []byte, provider schemas.ModelPr
 	return jsonBody, nil
 }
 
-func rawSystemContentBlocks(systemResult gjson.Result) []interface{} {
+func rawSystemContentBlocks(systemResult gjson.Result) ([]interface{}, error) {
 	if !systemResult.Exists() {
-		return nil
+		return nil, nil
+	}
+	return rawContentResultToSystemBlocks(systemResult)
+}
+
+func rawContentResultToSystemBlocks(contentResult gjson.Result) ([]interface{}, error) {
+	if !contentResult.Exists() || contentResult.Type == gjson.Null {
+		return nil, nil
+	}
+	if contentResult.Type == gjson.String {
+		return rawContentToSystemBlocks(contentResult.String()), nil
 	}
 	var raw interface{}
-	if err := sonic.UnmarshalString(systemResult.Raw, &raw); err != nil {
-		return nil
+	if err := sonic.UnmarshalString(contentResult.Raw, &raw); err != nil {
+		return nil, err
 	}
-	return rawContentToSystemBlocks(raw)
+	return rawContentToSystemBlocks(raw), nil
 }
 
 func rawContentToSystemBlocks(content interface{}) []interface{} {
