@@ -101,8 +101,8 @@ const MODEL_B = PROVIDERS.openai.model; // gpt-4o-mini
 // Spec helpers
 // --------------------------------------------------------------------------- //
 
-function key({ id, models = [], blacklisted = [], enabled = true, aliases = {}, weight } = {}) {
-  return { id, models, blacklisted, enabled, aliases, weight };
+function key({ id, models = [], blacklisted = [], enabled = true, aliases = {}, weight, badKey = false } = {}) {
+  return { id, models, blacklisted, enabled, aliases, weight, badKey };
 }
 
 // Key names must be unique across all providers, so namespace by scenario + key
@@ -111,7 +111,12 @@ function key({ id, models = [], blacklisted = [], enabled = true, aliases = {}, 
 // provider-specific key config (e.g. vertex_key_config) when prov.keyConfig is set.
 function keyBody(k, name, prov) {
   const out = { id: keyId(k.id), name, models: [...k.models], enabled: k.enabled };
-  if (prov.keyConfig) Object.assign(out, prov.keyConfig);
+  if (k.badKey) {
+    // A deliberately invalid credential so the provider attempt fails upstream
+    // (e.g. a 401), exercising the fallback path. The provider itself is real
+    // and capable of the model — only the credential is broken.
+    out.value = "sk-deadbeef-invalid-000";
+  } else if (prov.keyConfig) Object.assign(out, prov.keyConfig);
   else out.value = `env.${prov.env}`;
   if (k.blacklisted.length) out.blacklisted_models = [...k.blacklisted];
   // prov.aliasFor lets a provider expose a common model name (e.g. Bedrock maps
@@ -166,6 +171,16 @@ function routeAssertLines(sid, step, jsNameOf) {
       lines.push(
         `if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== ${JSON.stringify(step.expectResolvedModelId)}) { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }`
       );
+    }
+    if (step.expectIsFallback != null) {
+      lines.push(`if (Boolean(ri.is_fallback) !== ${JSON.stringify(step.expectIsFallback)}) { throw new Error('is_fallback=' + ri.is_fallback); }`);
+    }
+    if (step.expectPrimaryProviderRef != null) {
+      lines.push(`var expectedPrimary = ${jsNameOf(step.expectPrimaryProviderRef)};`);
+      lines.push("if (ri.primary_provider !== expectedPrimary) { throw new Error('primary_provider=' + ri.primary_provider + ' expected ' + expectedPrimary); }");
+    }
+    if (step.expectPrimaryModel != null) {
+      lines.push(`if (ri.primary_model !== ${JSON.stringify(step.expectPrimaryModel)}) { throw new Error('primary_model=' + ri.primary_model); }`);
     }
     return lines;
   }
@@ -387,6 +402,11 @@ function expandScenario(sc) {
           messages: [{ role: "user", content: "Reply with the single word: ok." }],
           max_tokens: 5,
         };
+        // Request-level fallbacks. The /v1 OpenAI-compatible endpoint takes the
+        // string "provider/model" form (not the {provider,model} object form).
+        if (step.fallbacks) {
+          body.fallbacks = step.fallbacks.map((f) => `${nameOf(f.providerRef)}/${f.model}`);
+        }
         items.push(item(nextId("route"), name, request("POST", url(["v1", "chat", "completions"]), body, headers),
           events(pollPrerequest(step.waitSeconds), pollTest(name, routeAssertLines(sid, step, jsNameOf), cleanupTarget))));
         break;
@@ -820,6 +840,53 @@ const SCENARIOS = [
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] }), vkProvider({ providerRef: "vtx", allowedModels: ["*"] }), vkProvider({ providerRef: "bdr", allowedModels: ["*"] })] },
       { type: "route", model: "claude-sonnet-4-5", bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "vtx", "bdr"], waitSeconds: 3, label: "bare claude model routes via anthropic, vertex, or bedrock (200)" },
       { type: "assertRoutingTrail", expectSubstrings: ["Load balancing model claude-sonnet-4-5", "Selected provider"], waitSeconds: 2, label: "log detail records cross-provider LB trail" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "fallback-cross-provider",
+    title: "A request fails over to a healthy provider via a request-level fallback",
+    description: "The primary provider's key is invalid, so its attempt fails upstream; a request-level fallback to a second provider serving the same model succeeds. routing_info marks the fallback and records the original primary provider/model. The /v1 endpoint takes fallbacks in the string \"provider/model\" form.",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: [MODEL_B], badKey: true })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kgood", models: [MODEL_B] })] },
+      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, waitSeconds: 1, label: "primary fails; request fallback serves (200, is_fallback)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "fallback-chain-first-healthy-wins",
+    title: "Fallbacks are tried in order until one succeeds",
+    description: "The primary and the first fallback both have invalid keys; the second fallback succeeds. routing_info reports the surviving provider and still names the original primary.",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "kbad1", models: [MODEL_B], badKey: true })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kbad2", models: [MODEL_B], badKey: true })] },
+      { type: "addProvider", ref: "c", keys: [key({ id: "kgood", models: [MODEL_B] })] },
+      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }, { providerRef: "c", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["c"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, waitSeconds: 1, label: "chain falls through to the only healthy provider (200)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "fallback-pruned-by-vk-allowlist",
+    title: "A fallback to a provider off the VK allowlist is pruned, not tried",
+    description: "Under a VK that permits only the primary provider, a request-level fallback to a healthy off-allowlist provider is pruned before the attempt loop. The primary's invalid key fails with a 401 and the pruned provider — which has a valid key and would otherwise return 200 — never rescues it, proving it was dropped.",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: [MODEL_B], badKey: true })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kgood", models: [MODEL_B] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] })] },
+      { type: "route", model: MODEL_B, routeRef: "self", fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 401, expectErrorSubstr: "Incorrect API key", waitSeconds: 1, label: "off-allowlist fallback pruned; request fails on the primary (401)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "vk-auto-attached-fallback",
+    title: "A VK with weighted providers auto-attaches the others as fallbacks",
+    description: "A VK weights two providers that both serve the model; the dominant-weight provider's key is invalid. With no request-level fallbacks, governance auto-attaches the remaining weighted config as a fallback, so every request still lands on the healthy low-weight provider — whether it was the load-balanced primary or the fallback.",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: [MODEL_B], badKey: true })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kgood", models: [MODEL_B] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: 100, allowedModels: ["*"] }), vkProvider({ providerRef: "b", weight: 1, allowedModels: ["*"] })] },
+      { type: "providerDistribution", model: MODEL_B, bareModel: true, n: 6, expectOnly: ["b"], label: "every request lands on the healthy provider via the auto-attached fallback" },
       { type: "cleanup" },
     ],
   },
