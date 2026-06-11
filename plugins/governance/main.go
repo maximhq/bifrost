@@ -408,9 +408,13 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // otherwise). Used by PreRequestHook's large-payload branch where req.Model is empty because
 // the body wasn't parsed.
 func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, hasRoutingRules bool, modelIn string, requestType schemas.RequestType) (string, error) {
+	// Parse a provider-prefixed model string the same way the transport does for
+	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
+	// ChatRequest.Provider and load balancing honors the caller's routing intent.
+	providerIn, parsedModel := schemas.ParseModelString(modelIn, "")
 	synthetic := &schemas.BifrostRequest{
 		RequestType: requestType,
-		ChatRequest: &schemas.BifrostChatRequest{Model: modelIn},
+		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
 	}
 
 	if hasRoutingRules {
