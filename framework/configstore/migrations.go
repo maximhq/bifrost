@@ -869,6 +869,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPLibraryTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPLibraryConfigColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -9809,6 +9812,50 @@ func migrationAddMCPLibraryTable(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_library_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPLibraryConfigColumns adds the mcp_library_url and
+// mcp_library_sync_interval columns to framework_configs. These store the sync
+// source + interval for the MCP server library catalog, mirroring pricing_url /
+// pricing_sync_interval. Idempotent via HasColumn guards.
+func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_library_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("add mcp_library_url column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				if err := mg.AddColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("add mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_url") {
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibraryURL"); err != nil {
+					return fmt.Errorf("drop mcp_library_url column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableFrameworkConfig{}, "mcp_library_sync_interval") {
+				if err := mg.DropColumn(&tables.TableFrameworkConfig{}, "MCPLibrarySyncInterval"); err != nil {
+					return fmt.Errorf("drop mcp_library_sync_interval column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_library_config_columns migration: %s", err.Error())
 	}
 	return nil
 }
