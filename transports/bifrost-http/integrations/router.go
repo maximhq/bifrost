@@ -2535,12 +2535,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Pre-allocate atomic.Value slot for the transport post-hook completer.
+	// Pre-allocate atomic.Value slot for the transport post-hook completer when
+	// TransportInterceptorMiddleware marked that post-hooks will run.
 	// TransportInterceptorMiddleware stores the completer into this slot after next(ctx)
 	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
 	// access after the handler returns (fasthttp recycles RequestCtx).
-	var completerSlot atomic.Value
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	var completerSlot *atomic.Value
+	if transportPostHookCompleterExpected(ctx) {
+		completerSlot = &atomic.Value{}
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, completerSlot)
+	}
 
 	// Get the trace completer function for use in the streaming callback.
 	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
@@ -2563,7 +2567,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	go func() {
 		defer func() {
 			reader.Done()
-			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
+			transportLogs := g.runTransportPostHookCompleter(completerSlot)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
@@ -2811,6 +2815,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}()
+}
+
+func transportPostHookCompleterExpected(ctx *fasthttp.RequestCtx) bool {
+	expected, _ := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(bool)
+	return expected
 }
 
 func (g *GenericRouter) runTransportPostHookCompleter(slot *atomic.Value) []schemas.PluginLogEntry {
@@ -3068,8 +3077,13 @@ func (g *GenericRouter) handlePassthroughStream(
 
 	// Skip post-hook body materialization — ctx.Response.Body() would buffer the entire stream.
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
-	var completerSlot atomic.Value
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	// Pre-allocate atomic.Value slot for the transport post-hook completer when
+	// TransportInterceptorMiddleware marked that post-hooks will run.
+	var completerSlot *atomic.Value
+	if transportPostHookCompleterExpected(ctx) {
+		completerSlot = &atomic.Value{}
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, completerSlot)
+	}
 
 	ctx.SetStatusCode(passthroughResp.StatusCode)
 	// Preserve the upstream Content-Type. Passthrough streams aren't always SSE — e.g.
@@ -3110,7 +3124,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	go func() {
 		defer func() {
 			reader.Done()
-			transportLogs := g.runTransportPostHookCompleter(&completerSlot)
+			transportLogs := g.runTransportPostHookCompleter(completerSlot)
 			if traceCompleter != nil {
 				traceCompleter(transportLogs)
 			}

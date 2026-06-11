@@ -53,6 +53,7 @@ func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func(logs []schemas.PluginLogEntry) {
 		done <- logs
 	})
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, true)
 
 	stream := make(chan *schemas.BifrostStreamChunk)
 
