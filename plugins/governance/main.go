@@ -430,12 +430,16 @@ func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, vir
 
 		// A caller-provided include-tools list can only narrow the virtual key's
 		// tool grant, never expand it — prune entries the key does not allow.
-		callerProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
 
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
 		p.cfgMutex.RUnlock()
-		if !callerProvided && !autoInjectDisabled {
+		// An include-clients filter opts the request into tool injection even when
+		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+		// the key's allowlist must be stamped on every path where injection can run.
+		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
 			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
 				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
@@ -1223,12 +1227,16 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 
 		// A caller-provided include-tools list can only narrow the virtual key's
 		// tool grant, never expand it — prune entries the key does not allow.
-		callerProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
 
 		p.cfgMutex.RLock()
 		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
 		p.cfgMutex.RUnlock()
-		if !callerProvided && !autoInjectDisabled {
+		// An include-clients filter opts the request into tool injection even when
+		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+		// the key's allowlist must be stamped on every path where injection can run.
+		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
 			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
 				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 			}
