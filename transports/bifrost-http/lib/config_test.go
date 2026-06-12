@@ -1508,13 +1508,14 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
 }
 
-func TestMergeGovernanceConfig_BackfillsLegacyComplexityHashesWithoutApplyingFileValues(t *testing.T) {
+func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty(t *testing.T) {
 	initTestLogger()
 
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.TierBoundaries.SimpleMedium = 0.12
 	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -1535,8 +1536,8 @@ func TestMergeGovernanceConfig_BackfillsLegacyComplexityHashesWithoutApplyingFil
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.12, stored.TierBoundaries.SimpleMedium)
-	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 

@@ -2450,15 +2450,6 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		}
 		return fileConfig
 	}
-	if current != nil && current.ConfigHashes.Empty() {
-		normalized := current.Normalized()
-		normalized.ConfigHashes = fileHashes
-		logger.Debug("complexity analyzer config missing section hashes, backfilling without applying config file values")
-		if reflect.DeepEqual(current, &normalized) {
-			return nil
-		}
-		return &normalized
-	}
 	if current != nil && current.ConfigHashes.Equal(fileHashes) {
 		logger.Debug("complexity analyzer config section hashes match, keeping DB config")
 		return nil
