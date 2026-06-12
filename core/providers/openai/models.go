@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -32,15 +33,18 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	included := make(map[string]bool)
 
 	for _, model := range response.Data {
-		for _, result := range pipeline.FilterModel(model.ID) {
-			entry := schemas.Model{
-				ID:            string(providerKey) + "/" + result.ResolvedID,
-				Created:       model.Created,
-				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
-			}
+		rawID := model.ID
+		if parsedProvider, parsedModel := schemas.ParseListModelString(rawID, ""); parsedProvider != "" && strings.EqualFold(string(parsedProvider), string(providerKey)) {
+			rawID = parsedModel
+		}
+
+		for _, result := range pipeline.FilterModel(rawID) {
+			entry := model
+			entry.ID = string(providerKey) + "/" + result.ResolvedID
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
+			} else {
+				entry.Alias = nil
 			}
 			bifrostResponse.Data = append(bifrostResponse.Data, entry)
 			included[strings.ToLower(result.ResolvedID)] = true
@@ -59,22 +63,24 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		return nil
 	}
 	openaiResponse := &OpenAIListModelsResponse{
-		Data: make([]OpenAIModel, 0, len(response.Data)),
+		Object: "list",
+		Data:   make([]schemas.Model, 0, len(response.Data)),
 	}
 	for _, model := range response.Data {
-		openaiModel := OpenAIModel{
-			ID:     model.ID,
-			Object: "model",
+		if len(model.RawModelJSON) == 0 {
+			model.RawModelJSON = json.RawMessage(`{"object":"model"}`)
+		} else {
+			payload := map[string]json.RawMessage{}
+			if err := json.Unmarshal(model.RawModelJSON, &payload); err == nil {
+				if _, ok := payload["object"]; !ok {
+					payload["object"] = json.RawMessage(`"model"`)
+					if raw, err := json.Marshal(payload); err == nil {
+						model.RawModelJSON = raw
+					}
+				}
+			}
 		}
-		if model.Created != nil {
-			openaiModel.Created = model.Created
-		}
-		if model.OwnedBy != nil {
-			openaiModel.OwnedBy = *model.OwnedBy
-		}
-
-		openaiResponse.Data = append(openaiResponse.Data, openaiModel)
-
+		openaiResponse.Data = append(openaiResponse.Data, model)
 	}
 	return openaiResponse
 }

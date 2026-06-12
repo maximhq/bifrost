@@ -5,8 +5,30 @@
 package modelcatalog
 
 import (
+	"strings"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func parseListModelString(model string, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, string) {
+	provider, parsedModel := schemas.ParseModelString(model, defaultProvider)
+	if !strings.Contains(model, "/") {
+		return provider, parsedModel
+	}
+	if provider != defaultProvider || parsedModel != model {
+		return provider, parsedModel
+	}
+
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) == 2 {
+		normalizedProvider := strings.ToLower(parts[0])
+		if schemas.IsKnownProvider(normalizedProvider) {
+			return schemas.ModelProvider(normalizedProvider), parts[1]
+		}
+	}
+
+	return provider, parsedModel
+}
 
 // UpsertLive caches one (provider, keyID, unfiltered) list-models response.
 func (mc *ModelCatalog) UpsertLive(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
@@ -99,7 +121,7 @@ func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.M
 	seen := make(map[string]struct{}, len(resp.Data))
 	out := make([]string, 0, len(resp.Data))
 	for _, m := range resp.Data {
-		parsedProvider, parsedModel := schemas.ParseModelString(m.ID, "")
+		parsedProvider, parsedModel := parseListModelString(m.ID, "")
 		if parsedProvider != "" && parsedProvider != provider {
 			continue
 		}

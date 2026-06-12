@@ -43,6 +43,26 @@ func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	}
 }
 
+func parseListModelString(model string, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, string) {
+	provider, parsedModel := schemas.ParseModelString(model, defaultProvider)
+	if !strings.Contains(model, "/") {
+		return provider, parsedModel
+	}
+	if provider != defaultProvider || parsedModel != model {
+		return provider, parsedModel
+	}
+
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) == 2 {
+		normalizedProvider := strings.ToLower(parts[0])
+		if schemas.IsKnownProvider(normalizedProvider) {
+			return schemas.ModelProvider(normalizedProvider), parts[1]
+		}
+	}
+
+	return provider, parsedModel
+}
+
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
 	client *bifrost.Bifrost
@@ -862,7 +882,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// Add pricing data to the response
 	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {
-			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
+			provider, modelName := parseListModelString(modelEntry.ID, "")
 			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
 			if pricingEntry == nil && modelEntry.Alias != nil {
 				// Retry with alias

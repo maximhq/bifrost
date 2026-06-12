@@ -65,6 +65,21 @@ func TestExtractModelIDs_StripsOwningProviderPrefix(t *testing.T) {
 	}
 }
 
+func TestExtractModelIDs_StripsCaseVariantOwningProviderPrefix(t *testing.T) {
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{
+			{ID: "OpenAI/gpt-4o"},
+			{ID: "openai/o1"},
+		},
+	}
+	got := extractModelIDs(resp, schemas.OpenAI)
+	slices.Sort(got)
+	want := []string{"gpt-4o", "o1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("extractModelIDs = %v, want %v", got, want)
+	}
+}
+
 // TestExtractModelIDs_KeepsNestedProviderForGateway covers the
 // gateway-provider shape (OpenRouter returns IDs like "openrouter/openai/gpt-4")
 // — ParseModelString splits on the first slash, so the parsed prefix matches
