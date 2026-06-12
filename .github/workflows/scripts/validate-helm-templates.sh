@@ -310,6 +310,10 @@ test_template "cluster: region (Gap 7)" \
   --set bifrost.cluster.gossip.config.failureThreshold=3 \
   --set bifrost.cluster.region=us-east-1
 
+# Gap 9: Server config
+test_template "server: readBufferSize (Gap 9)" \
+  --set bifrost.server.readBufferSize=131072
+
 # Gap 8: Combined production-like with all new fields
 test_template "combined: all new Gap 1-8 fields" \
   --set bifrost.client.asyncJobResultTTL=300 \

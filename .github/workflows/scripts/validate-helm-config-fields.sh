@@ -220,6 +220,24 @@ assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interv
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
 
 ###############################################################################
+# 1b. Server Config
+###############################################################################
+echo ""
+echo -e "${CYAN}🖥️  1b - Server Config${NC}"
+echo "----------------------"
+
+cat > "$TMPDIR/values-server.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  server:
+    readBufferSize: 131072
+VALS
+
+render_config "$TMPDIR/values-server.yaml"
+assert_field_value 'server.read_buffer_size' '.server.read_buffer_size' '131072'
+
+###############################################################################
 # 2. Framework (Pricing)
 ###############################################################################
 echo ""
