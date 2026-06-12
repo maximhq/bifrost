@@ -4484,3 +4484,95 @@ func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
 		}
 	})
 }
+
+func TestGroundingMetadataToChatAnnotations(t *testing.T) {
+	buildResponse := func(metadata *gemini.GroundingMetadata) *gemini.GenerateContentResponse {
+		return &gemini.GenerateContentResponse{
+			ResponseID:   "resp-1",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris est la capitale de la France."}},
+					},
+					FinishReason:      gemini.FinishReasonStop,
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+	}
+
+	t.Run("supports with web chunks produce indexed url_citations", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/a", Title: "Source A"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/b", Title: "Source B"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 20},
+					GroundingChunkIndices: []int32{0, 1},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		require.Len(t, resp.Choices, 1)
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 2)
+
+		assert.Equal(t, "url_citation", annotations[0].Type)
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 20, annotations[0].URLCitation.EndIndex)
+		assert.Equal(t, "Source A", annotations[0].URLCitation.Title)
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/a", *annotations[0].URLCitation.URL)
+
+		assert.Equal(t, "Source B", annotations[1].URLCitation.Title)
+	})
+
+	t.Run("web chunks without supports produce citations without indices", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/c", Title: "Source C"}},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1)
+		assert.Equal(t, "Source C", annotations[0].URLCitation.Title)
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 0, annotations[0].URLCitation.EndIndex)
+	})
+
+	t.Run("non-web chunks are ignored", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "gs://bucket/doc", Title: "Doc"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 5},
+					GroundingChunkIndices: []int32{0},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		if msg.ChatAssistantMessage != nil {
+			assert.Empty(t, msg.ChatAssistantMessage.Annotations)
+		}
+	})
+
+	t.Run("no grounding no annotations", func(t *testing.T) {
+		resp := buildResponse(nil).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		if msg.ChatAssistantMessage != nil {
+			assert.Empty(t, msg.ChatAssistantMessage.Annotations)
+		}
+	})
+}

@@ -273,10 +273,12 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			ContentBlocks: contentBlocks,
 		}
 
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
+		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
 			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls:        toolCalls,
 				ReasoningDetails: reasoningDetails,
+				Annotations:      annotations,
 			}
 		}
 
@@ -600,4 +602,57 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 	}
 
 	return errorResp
+}
+
+// convertGroundingMetadataToChatAnnotations converts Gemini grounding metadata
+// (Google Search results) into OpenAI-style url_citation annotations.
+// One annotation per (support, web chunk) pair; falls back to bare web sources
+// (no segment indices) when no usable supports are present.
+func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []schemas.ChatAssistantMessageAnnotation {
+	if metadata == nil {
+		return nil
+	}
+
+	var annotations []schemas.ChatAssistantMessageAnnotation
+
+	for _, support := range metadata.GroundingSupports {
+		if support == nil || support.Segment == nil {
+			continue
+		}
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
+			}
+			chunk := metadata.GroundingChunks[chunkIdx]
+			if chunk == nil || chunk.Web == nil {
+				continue
+			}
+			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					StartIndex: int(support.Segment.StartIndex),
+					EndIndex:   int(support.Segment.EndIndex),
+					Title:      chunk.Web.Title,
+					URL:        schemas.Ptr(chunk.Web.URI),
+				},
+			})
+		}
+	}
+
+	if len(annotations) == 0 {
+		for _, chunk := range metadata.GroundingChunks {
+			if chunk == nil || chunk.Web == nil {
+				continue
+			}
+			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					Title: chunk.Web.Title,
+					URL:   schemas.Ptr(chunk.Web.URI),
+				},
+			})
+		}
+	}
+
+	return annotations
 }
