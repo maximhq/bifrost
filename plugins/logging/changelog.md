@@ -1,2 +1,0 @@
-- feat: added canonical_model_name and alias_model_family columns to logs
-- chore: upgraded core to v1.5.19 and framework to v1.3.19

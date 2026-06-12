@@ -1,1 +1,0 @@
-- feat: initial release - provider resolution extracted from core into a standalone plugin, with routing allowlist enforcement and provider-prefixed model parsing

@@ -1,8 +1,0 @@
-- feat: added complexity router with complexity_tier CEL routing and configurable analyzer
-- feat: enforce VK tool-grant boundary on caller-provided x-bf-mcp-include-* headers
-- fix: stamp virtual key tool allowlist when the include-clients filter is present
-- fix: teams and customers name mappings on logs
-- fix: complexity router keyword merging and removal via config.json changes
-- fix: parse provider-prefixed model strings in pre-request routing
-- fix: exempt cache creation requests from model checks
-- chore: upgraded core to v1.5.19 and framework to v1.3.19
