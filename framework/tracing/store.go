@@ -139,6 +139,15 @@ func (s *TraceStore) SetRequestHeaders(traceID string, headers map[string]string
 	trace.SetRequestHeaders(headers)
 }
 
+// SetTraceAttribute sets a trace-level attribute on the trace
+func (s *TraceStore) SetTraceAttribute(traceID string, key string, value any) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetAttribute(key, value)
+}
+
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing
 func (s *TraceStore) CompleteTrace(traceID string) *schemas.Trace {
 	// Clear any deferred span for this trace
