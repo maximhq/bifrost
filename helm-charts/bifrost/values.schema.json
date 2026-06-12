@@ -466,6 +466,18 @@
           },
           "additionalProperties": false
         },
+        "server": {
+          "type": "object",
+          "description": "HTTP server configuration",
+          "properties": {
+            "readBufferSize": {
+              "type": "integer",
+              "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
+              "default": 65536
+            }
+          },
+          "additionalProperties": false
+        },
         "framework": {
           "type": "object",
           "properties": {

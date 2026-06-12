@@ -257,6 +257,10 @@ bifrost:
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
 
+  # Server configuration
+  server:
+    readBufferSize: 65536      # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+
   # Framework configuration
   framework:
     pricing:

@@ -318,6 +318,16 @@ false
 {{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
+{{- /* Server */ -}}
+{{- if .Values.bifrost.server }}
+{{- $server := dict }}
+{{- if .Values.bifrost.server.readBufferSize }}
+{{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if $server }}
+{{- $_ := set $config "server" $server }}
+{{- end }}
+{{- end }}
 {{- /* Framework */ -}}
 {{- if .Values.bifrost.framework }}
 {{- $framework := dict }}
