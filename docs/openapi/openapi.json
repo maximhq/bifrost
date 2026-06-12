@@ -49136,7 +49136,14 @@
             }
           },
           "503": {
-            "$ref": "#/components/responses/ConfigStoreUnavailable"
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -49347,7 +49354,14 @@
             }
           },
           "503": {
-            "$ref": "#/components/responses/ConfigStoreUnavailable"
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -49461,7 +49475,14 @@
             }
           },
           "503": {
-            "$ref": "#/components/responses/ConfigStoreUnavailable"
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
