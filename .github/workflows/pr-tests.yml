@@ -135,6 +135,8 @@ jobs:
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
