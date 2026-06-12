@@ -38,6 +38,56 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	assert.True(t, stream)
 }
 
+func TestHandleStreamingRetainsTransportPluginLogs(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/anthropic/v1/messages")
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+
+	wantLogs := []schemas.PluginLogEntry{{
+		PluginName: "test-transport",
+		Level:      schemas.LogLevelInfo,
+		Message:    `{"action":"rewrite"}`,
+		Timestamp:  1781147283369,
+	}}
+	done := make(chan []schemas.PluginLogEntry, 1)
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func(logs []schemas.PluginLogEntry) {
+		done <- logs
+	})
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, true)
+
+	stream := make(chan *schemas.BifrostStreamChunk)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
+	router.handleStreaming(
+		ctx,
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		RouteConfig{
+			Type:         RouteConfigTypeAnthropic,
+			Path:         "/anthropic/v1/messages",
+			StreamConfig: &StreamConfig{},
+		},
+		stream,
+		func() {},
+	)
+
+	slot, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(interface {
+		Store(any)
+	})
+	require.True(t, ok)
+	slot.Store(func() ([]schemas.PluginLogEntry, error) {
+		return wantLogs, nil
+	})
+	close(stream)
+
+	select {
+	case gotLogs := <-done:
+		require.Len(t, gotLogs, 1)
+		assert.Equal(t, wantLogs[0], gotLogs[0])
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace completer")
+	}
+}
+
 func TestRequestWithSettableExtraParams_OpenAIChatRequest(t *testing.T) {
 	t.Run("SetExtraParams populates both standalone and embedded ExtraParams", func(t *testing.T) {
 		req := &openai.OpenAIChatRequest{}

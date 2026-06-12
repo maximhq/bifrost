@@ -338,6 +338,9 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				next(ctx)
 				return
 			}
+			// Mark that streaming handlers should allocate a post-hook completer slot.
+			// The handler replaces this marker with *atomic.Value before returning.
+			ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, true)
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
 			// Acquire pooled request
