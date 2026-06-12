@@ -12,10 +12,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.5.18
-	github.com/maximhq/bifrost/framework v1.3.18
+	github.com/maximhq/bifrost/core v1.5.19
+	github.com/maximhq/bifrost/framework v1.3.19
 	github.com/maximhq/bifrost/plugins/compat v0.1.17
-	github.com/maximhq/bifrost/plugins/governance v1.5.18
+	github.com/maximhq/bifrost/plugins/governance v1.5.19
 	github.com/maximhq/bifrost/plugins/logging v1.5.18
 	github.com/maximhq/bifrost/plugins/maxim v1.6.18
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v0.0.0-20260531215024-856c9963e662
