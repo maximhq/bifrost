@@ -1785,7 +1785,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Register UI handler
 	s.RegisterUIRoutes()
 	// Checking if config has server config and use it to set read buffer size
-	logger.Debug("server buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
+	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
