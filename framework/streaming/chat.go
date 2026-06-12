@@ -102,6 +102,11 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Annotations slice
+	if len(original.Annotations) > 0 {
+		copy.Annotations = append([]schemas.ChatAssistantMessageAnnotation(nil), original.Annotations...)
+	}
+
 	// Deep copy Audio
 	if original.Audio != nil {
 		copy.Audio = &schemas.ChatAudioMessageAudio{

@@ -331,10 +331,11 @@ func (p *JsonParserPlugin) deepCopyChatStreamResponseChoiceDelta(original *schem
 	}
 
 	result := &schemas.ChatStreamResponseChoiceDelta{
-		Role:      original.Role,
-		Reasoning: original.Reasoning, // Shallow copy
-		Refusal:   original.Refusal,   // Shallow copy
-		ToolCalls: original.ToolCalls, // Shallow copy - we don't modify tool calls
+		Role:        original.Role,
+		Reasoning:   original.Reasoning,   // Shallow copy
+		Refusal:     original.Refusal,     // Shallow copy
+		ToolCalls:   original.ToolCalls,   // Shallow copy - we don't modify tool calls
+		Annotations: original.Annotations, // Shallow copy
 	}
 
 	// Deep copy Content pointer if it exists (this is what we modify)
