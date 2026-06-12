@@ -197,6 +197,7 @@ func (g *Gormigrate) MigrateTo(migrationID string) error {
 }
 
 func (g *Gormigrate) migrate(migrationID string) error {
+
 	if !g.hasMigrations() {
 		return ErrNoMigrationDefined
 	}
@@ -339,6 +340,7 @@ func (g *Gormigrate) RollbackTo(migrationID string) error {
 	return g.commit()
 }
 
+// getLastRunMigration returns the last run migration.
 func (g *Gormigrate) getLastRunMigration() (*Migration, error) {
 	for i := len(g.migrations) - 1; i >= 0; i-- {
 		migration := g.migrations[i]
@@ -366,6 +368,7 @@ func (g *Gormigrate) RollbackMigration(m *Migration) error {
 	return g.commit()
 }
 
+// rollbackMigration rolls back a migration.
 func (g *Gormigrate) rollbackMigration(m *Migration) error {
 	if m.Rollback == nil {
 		return ErrRollbackImpossible
@@ -379,6 +382,7 @@ func (g *Gormigrate) rollbackMigration(m *Migration) error {
 	return g.tx.Table(g.options.TableName).Where(cond, m.ID).Delete(g.model()).Error
 }
 
+// runInitSchema runs the initial schema migration.
 func (g *Gormigrate) runInitSchema() error {
 	if err := g.initSchema(g.tx); err != nil {
 		return err
@@ -396,6 +400,7 @@ func (g *Gormigrate) runInitSchema() error {
 	return nil
 }
 
+// runMigration runs a migration.
 func (g *Gormigrate) runMigration(migration *Migration) error {
 	if len(migration.ID) == 0 {
 		return ErrMissingID
@@ -450,6 +455,7 @@ func (g *Gormigrate) model() any {
 	return structValue.Addr().Interface()
 }
 
+// createMigrationTableIfNotExists creates the migration table if it does not exist.
 func (g *Gormigrate) createMigrationTableIfNotExists() error {
 	if err := g.tx.Table(g.options.TableName).AutoMigrate(g.model()); err != nil {
 		return err
@@ -511,6 +517,7 @@ func (g *Gormigrate) backfillMigrationMetadata() error {
 	return nil
 }
 
+// migrationRan checks if a migration has been applied.
 func (g *Gormigrate) migrationRan(m *Migration) (bool, error) {
 	var count int64
 	err := g.tx.
@@ -541,6 +548,7 @@ func (g *Gormigrate) canInitializeSchema() (bool, error) {
 	return count == 0, err
 }
 
+// unknownMigrationsHaveHappened checks if there are unknown migrations in the database.
 func (g *Gormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	rows, err := g.tx.Table(g.options.TableName).Select(g.options.IDColumnName).Rows()
 	if err != nil {
@@ -571,6 +579,7 @@ func (g *Gormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	return false, nil
 }
 
+// nextSequence returns the next sequence number for a migration.
 func (g *Gormigrate) nextSequence() (int64, error) {
 	var maxSeq int64
 	err := g.tx.Table(g.options.TableName).
@@ -582,6 +591,7 @@ func (g *Gormigrate) nextSequence() (int64, error) {
 	return maxSeq + 1, nil
 }
 
+// insertMigration inserts a migration into the database.
 func (g *Gormigrate) insertMigration(id string) error {
 	seq, err := g.nextSequence()
 	if err != nil {
@@ -597,6 +607,7 @@ func (g *Gormigrate) insertMigration(id string) error {
 	return g.tx.Table(g.options.TableName).Clauses(clause.OnConflict{DoNothing: true}).Create(record).Error
 }
 
+// insertMigration inserts a migration into the database.
 func (g *Gormigrate) begin() {
 	if g.options.UseTransaction {
 		g.tx = g.db.Begin()
@@ -605,6 +616,7 @@ func (g *Gormigrate) begin() {
 	}
 }
 
+// commit commits the transaction if one is in progress.
 func (g *Gormigrate) commit() error {
 	if g.options.UseTransaction {
 		return g.tx.Commit().Error
@@ -612,6 +624,7 @@ func (g *Gormigrate) commit() error {
 	return nil
 }
 
+// rollback rolls back the transaction if one is in progress.
 func (g *Gormigrate) rollback() {
 	if g.options.UseTransaction {
 		g.tx.Rollback()

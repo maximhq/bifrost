@@ -218,6 +218,10 @@ Create `config.json` in your app directory:
   schema.
 </Note>
 
+<Note>
+  If you are behind PgBouncer in transaction pooling mode, RDS Proxy or any proxy that does not guarantee session affinity, Bifrost migrations may fail due to concurrent session locking issues.
+</Note>
+
 If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.
 
 Use `template0` when creating the database so PostgreSQL applies UTF8 and locale settings explicitly:
