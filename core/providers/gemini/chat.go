@@ -502,8 +502,14 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		}
 	}
 
+	// Attach url_citation annotations when this chunk carries grounding metadata
+	// (Google Search results arrive on the trailing chunks).
+	if annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata); len(annotations) > 0 {
+		delta.Annotations = annotations
+	}
+
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}

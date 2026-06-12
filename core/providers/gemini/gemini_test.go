@@ -4616,3 +4616,90 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		}
 	})
 }
+
+func TestGroundingMetadataToChatStreamAnnotations(t *testing.T) {
+	metadata := &gemini.GroundingMetadata{
+		GroundingChunks: []*gemini.GroundingChunk{
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/a", Title: "Source A"}},
+		},
+		GroundingSupports: []*gemini.GroundingSupport{
+			{
+				Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 10},
+				GroundingChunkIndices: []int32{0},
+			},
+		},
+	}
+
+	t.Run("chunk carrying groundingMetadata emits delta annotations", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-1",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris."}},
+					},
+					FinishReason:      gemini.FinishReasonStop,
+					GroundingMetadata: metadata,
+				},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp)
+		assert.True(t, isLast)
+
+		require.Len(t, streamResp.Choices, 1)
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 1)
+		assert.Equal(t, "url_citation", delta.Annotations[0].Type)
+		require.NotNil(t, delta.Annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/a", *delta.Annotations[0].URLCitation.URL)
+	})
+
+	t.Run("chunk with annotations but no text is not filtered out", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-2",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content:           &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, _ := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp, "chunk with annotations only must not be skipped")
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 1)
+	})
+
+	t.Run("chunk without grounding has no annotations", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-3",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Bonjour."}},
+					},
+				},
+			},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, _ := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp)
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Empty(t, delta.Annotations)
+	})
+}
