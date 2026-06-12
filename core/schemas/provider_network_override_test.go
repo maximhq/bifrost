@@ -9,6 +9,7 @@ import (
 
 func TestApplyProviderNetworkConfigOverride_PartialOverrideKeepsDefaults(t *testing.T) {
 	maxRetries := 2
+	allowPrivateNetwork := true
 	base := NetworkConfig{
 		BaseURL:                        "https://api.example.com",
 		ExtraHeaders:                   map[string]string{"x-static": "yes"},
@@ -22,8 +23,9 @@ func TestApplyProviderNetworkConfigOverride_PartialOverrideKeepsDefaults(t *test
 	}
 
 	got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
-		ExtraHeaders: map[string]string{"x-tenant": "org1"},
-		MaxRetries:   &maxRetries,
+		ExtraHeaders:        map[string]string{"x-tenant": "org1"},
+		MaxRetries:          &maxRetries,
+		AllowPrivateNetwork: &allowPrivateNetwork,
 	})
 
 	if got.DefaultRequestTimeoutInSeconds != base.DefaultRequestTimeoutInSeconds {
@@ -37,6 +39,9 @@ func TestApplyProviderNetworkConfigOverride_PartialOverrideKeepsDefaults(t *test
 	}
 	if !got.InsecureSkipVerify || got.MaxConnsPerHost != base.MaxConnsPerHost || got.BaseURL != base.BaseURL {
 		t.Fatalf("non-overridden fields changed: got %+v want base-derived %+v", got, base)
+	}
+	if !got.AllowPrivateNetwork {
+		t.Fatalf("AllowPrivateNetwork = false, want true")
 	}
 	if got.ExtraHeaders["x-static"] != "yes" || got.ExtraHeaders["x-tenant"] != "org1" {
 		t.Fatalf("ExtraHeaders = %+v, want merged static and tenant headers", got.ExtraHeaders)
@@ -58,6 +63,21 @@ func TestBifrostRequestClone_ProviderNetworkConfigOverrideHeadersAreIndependent(
 
 	if req.ProviderOverride.NetworkConfig.ExtraHeaders["x-tenant"] != "org1" {
 		t.Fatalf("original ProviderOverride.NetworkConfig.ExtraHeaders was mutated: %+v", req.ProviderOverride.NetworkConfig.ExtraHeaders)
+	}
+}
+
+func TestApplyProviderNetworkConfigOverride_CanDisablePrivateNetwork(t *testing.T) {
+	allowPrivateNetwork := false
+	base := NetworkConfig{
+		AllowPrivateNetwork: true,
+	}
+
+	got := ApplyProviderNetworkConfigOverride(base, &ProviderNetworkConfigOverride{
+		AllowPrivateNetwork: &allowPrivateNetwork,
+	})
+
+	if got.AllowPrivateNetwork {
+		t.Fatalf("AllowPrivateNetwork = true, want false")
 	}
 }
 

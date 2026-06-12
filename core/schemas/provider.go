@@ -103,6 +103,7 @@ type ProviderNetworkConfigOverride struct {
 	RetryBackoffInitial        *time.Duration `json:"retry_backoff_initial,omitempty"`
 	RetryBackoffMax            *time.Duration `json:"retry_backoff_max,omitempty"`
 	StreamIdleTimeoutInSeconds *int           `json:"stream_idle_timeout_in_seconds,omitempty"`
+	AllowPrivateNetwork        *bool          `json:"allow_private_network,omitempty"`
 }
 
 // ApplyProviderNetworkConfigOverride returns base with request-scoped overrides
@@ -130,6 +131,9 @@ func ApplyProviderNetworkConfigOverride(base NetworkConfig, override *ProviderNe
 	}
 	if override.StreamIdleTimeoutInSeconds != nil && *override.StreamIdleTimeoutInSeconds > 0 {
 		base.StreamIdleTimeoutInSeconds = *override.StreamIdleTimeoutInSeconds
+	}
+	if override.AllowPrivateNetwork != nil {
+		base.AllowPrivateNetwork = *override.AllowPrivateNetwork
 	}
 	return base
 }
