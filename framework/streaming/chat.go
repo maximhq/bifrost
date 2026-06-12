@@ -236,6 +236,16 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				completeMessage.ChatAssistantMessage.Audio.ExpiresAt = chunk.Delta.Audio.ExpiresAt
 			}
 		}
+		// Accumulate annotations
+		if len(chunk.Delta.Annotations) > 0 {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			completeMessage.ChatAssistantMessage.Annotations = append(
+				completeMessage.ChatAssistantMessage.Annotations,
+				chunk.Delta.Annotations...,
+			)
+		}
 		// Accumulate tool calls by index
 		for _, deltaToolCall := range chunk.Delta.ToolCalls {
 			if tcAccums == nil {

@@ -321,8 +321,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 // GeminiStreamState tracks tool-call index across streaming chunks.
 type GeminiStreamState struct {
-	nextToolCallIndex int
-	hadToolCalls      bool // true if any tool calls were seen in this stream
+	nextToolCallIndex    int
+	hadToolCalls         bool // true if any tool calls were seen in this stream
+	hasEmittedAnnotations bool // true once grounding annotations have been sent, to avoid duplicates
 }
 
 // NewGeminiStreamState returns initialised stream state for one streaming response.
@@ -503,9 +504,13 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	}
 
 	// Attach url_citation annotations when this chunk carries grounding metadata
-	// (Google Search results arrive on the trailing chunks).
-	if annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata); len(annotations) > 0 {
-		delta.Annotations = annotations
+	// (Google Search results arrive on the trailing chunks). Emitted at most
+	// once per stream in case Gemini repeats the metadata on several chunks.
+	if !state.hasEmittedAnnotations {
+		if annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata); len(annotations) > 0 {
+			delta.Annotations = annotations
+			state.hasEmittedAnnotations = true
+		}
 	}
 
 	// Check if delta has any content - if not and it's not the last chunk, skip it

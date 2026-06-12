@@ -4674,9 +4674,10 @@ func TestGroundingMetadataToChatStreamAnnotations(t *testing.T) {
 		}
 
 		state := gemini.NewGeminiStreamState()
-		streamResp, bifrostErr, _ := response.ToBifrostChatCompletionStream(state)
+		streamResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
 		require.Nil(t, bifrostErr)
 		require.NotNil(t, streamResp, "chunk with annotations only must not be skipped")
+		assert.False(t, isLast)
 		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
 		require.Len(t, delta.Annotations, 1)
 	})
@@ -4701,5 +4702,50 @@ func TestGroundingMetadataToChatStreamAnnotations(t *testing.T) {
 		require.NotNil(t, streamResp)
 		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
 		assert.Empty(t, delta.Annotations)
+	})
+
+	t.Run("grounding metadata repeated on several chunks is emitted once", func(t *testing.T) {
+		firstResponse := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-4a",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris."}},
+					},
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+		finishReason := gemini.FinishReasonStop
+		secondResponse := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-4b",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content:           &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+					FinishReason:      finishReason,
+					GroundingMetadata: metadata,
+				},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+		}
+
+		state := gemini.NewGeminiStreamState()
+
+		firstResp, bifrostErr, isLast := firstResponse.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, firstResp)
+		assert.False(t, isLast)
+		firstDelta := firstResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Len(t, firstDelta.Annotations, 1, "first chunk must carry the annotation")
+
+		secondResp, bifrostErr, isLast := secondResponse.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, secondResp)
+		assert.True(t, isLast)
+		secondDelta := secondResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Empty(t, secondDelta.Annotations, "second chunk must not repeat the annotation")
 	})
 }
