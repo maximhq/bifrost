@@ -123,6 +123,15 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 		}
 	}
 
+	// Bedrock bills rerank per query but returns no usage payload in the body,
+	// so synthesize the billable query count: one call is one query. Input
+	// tokens are backfilled separately from response headers (#3917).
+	bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: schemas.Ptr(1),
+		},
+	}
+
 	return bifrostResponse
 }
 

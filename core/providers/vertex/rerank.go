@@ -259,8 +259,15 @@ func (response *VertexRankResponse) ToBifrostRerankResponse(documents []schemas.
 		return results[i].RelevanceScore > results[j].RelevanceScore
 	})
 
+	// The Vertex AI Ranking API bills per query but returns no usage payload,
+	// so synthesize the billable query count: one call is one query.
 	return &schemas.BifrostRerankResponse{
 		Results: results,
+		Usage: &schemas.BifrostLLMUsage{
+			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+				NumSearchQueries: schemas.Ptr(1),
+			},
+		},
 	}, nil
 }
 

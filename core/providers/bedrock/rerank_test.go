@@ -231,3 +231,20 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "requires an ARN")
 }
+
+// TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsage verifies
+// that the conversion synthesizes per-query usage (one billable query per call),
+// since Bedrock's rerank response body carries no usage payload.
+func TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsage(t *testing.T) {
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}

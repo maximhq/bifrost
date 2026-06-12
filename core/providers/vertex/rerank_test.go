@@ -203,3 +203,23 @@ func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid record id")
 }
+
+// TestVertexRankResponseToBifrostRerankResponseSynthesizesQueryUsage verifies
+// that the conversion synthesizes per-query usage (one billable query per call),
+// since the Vertex AI Ranking API response carries no usage payload.
+func TestVertexRankResponseToBifrostRerankResponseSynthesizesQueryUsage(t *testing.T) {
+	t.Parallel()
+
+	response, err := (&VertexRankResponse{
+		Records: []VertexRankedRecord{
+			{ID: "idx:0", Score: 0.91},
+		},
+	}).ToBifrostRerankResponse([]schemas.RerankDocument{{Text: "doc-0"}}, false)
+	require.NoError(t, err)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}
