@@ -354,6 +354,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationRecreateFilterCustomersMatView(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCanonicalModelColumns(ctx, db); err != nil {
+		return err
+	}
 	// migrationSplitFilterDataMatView is intentionally NOT invoked in this
 	// release. Dropping mv_logs_filterdata while old replicas are still
 	// serving /api/logs/filterdata from it would surface "relation does not
@@ -2767,6 +2770,46 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
 
+	}
+	return nil
+}
+
+// migrationAddCanonicalModelColumns adds the canonical_model_name and
+// alias_model_family columns to the logs table. Both are copied from the resolved
+// alias config when the request's model was resolved via alias mapping and the
+// alias defines them.
+func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_canonical_model_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, column := range []string{"canonical_model_name", "alias_model_family"} {
+				if !mig.HasColumn(&Log{}, column) {
+					if err := mig.AddColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, column := range []string{"canonical_model_name", "alias_model_family"} {
+				if mig.HasColumn(&Log{}, column) {
+					if err := mig.DropColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding canonical model columns: %s", err.Error())
 	}
 	return nil
 }
