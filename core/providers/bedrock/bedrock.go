@@ -2028,13 +2028,9 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 
 	// Bedrock returns rerank input token usage only in the X-Amzn-Bedrock-Input-Token-Count
 	// response header (it is absent from the body); backfill Usage from it. (#3917)
-	// The conversion already synthesizes Usage with the billable query count, so
-	// merge the header tokens into it — still only filling token fields that are
-	// missing, preserving the original backfill semantics.
+	// ToBifrostRerankResponse always synthesizes a non-nil Usage (with NumSearchQueries),
+	// so only merge in token fields that are still missing.
 	if inputTokens, ok := inputTokensFromHeaders(providerResponseHeaders); ok {
-		if bifrostResponse.Usage == nil {
-			bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
-		}
 		if bifrostResponse.Usage.PromptTokens == 0 {
 			bifrostResponse.Usage.PromptTokens = inputTokens
 			bifrostResponse.Usage.TotalTokens += inputTokens

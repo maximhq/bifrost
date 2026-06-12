@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestToBedrockRerankRequest verifies Bifrost rerank requests convert to the
+// Bedrock wire format with documents, top_n, and model ARN in place.
 func TestToBedrockRerankRequest(t *testing.T) {
 	topN := 10
 	maxTokensPerDoc := 512
@@ -48,6 +50,8 @@ func TestToBedrockRerankRequest(t *testing.T) {
 	assert.Equal(t, "END", fields["truncate"])
 }
 
+// TestBedrockRerankResponseToBifrostRerankResponse verifies result ordering
+// and document parsing when converting a Bedrock rerank response.
 func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	response := (&BedrockRerankResponse{
 		Results: []BedrockRerankResult{
@@ -85,6 +89,8 @@ func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, "doc-1", response.Results[1].Document.Text)
 }
 
+// TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments verifies
+// request documents are echoed back onto results when return_documents is set.
 func TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T) {
 	requestDocs := []schemas.RerankDocument{
 		{Text: "request-doc-0"},
@@ -132,6 +138,8 @@ func TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.
 	assert.Equal(t, "request-doc-2", response.Results[2].Document.Text)
 }
 
+// TestBedrockRerankRequestToBifrostRerankRequest verifies the Bedrock rerank
+// request converts back to the Bifrost request shape.
 func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	topN := 3
 	bedrockReq := &BedrockRerankRequest{
@@ -191,11 +199,15 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	assert.Equal(t, "END", result.Params.ExtraParams["truncate"])
 }
 
+// TestBedrockRerankRequestToBifrostRerankRequestNil verifies a nil request
+// converts to nil instead of panicking.
 func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
 	var req *BedrockRerankRequest
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
+// TestResolveBedrockDeployment verifies deployment resolution falls back to
+// the requested model when no deployment mapping exists.
 func TestResolveBedrockDeployment(t *testing.T) {
 	key := schemas.Key{
 		Aliases: schemas.KeyAliases{
@@ -209,6 +221,8 @@ func TestResolveBedrockDeployment(t *testing.T) {
 	assert.Equal(t, "", key.Aliases.Resolve(""))
 }
 
+// TestBedrockRerankRequiresARNModelIdentifier verifies rerank rejects
+// non-ARN model identifiers with a configuration error.
 func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	provider := &BedrockProvider{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
