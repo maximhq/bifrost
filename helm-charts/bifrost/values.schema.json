@@ -2977,6 +2977,12 @@
                     "minimum": 0,
                     "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
                   },
+                  "evaluation_mode": {
+                    "type": "string",
+                    "enum": ["bundled", "per_turn"],
+                    "default": "bundled",
+                    "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
