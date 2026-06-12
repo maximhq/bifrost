@@ -404,6 +404,9 @@ false
 {{- if $providerConfig.network_config.beta_header_overrides }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
 {{- end }}
+{{- if hasKey $providerConfig.network_config "allow_private_network" }}
+{{- $_ := set $networkConfig "allow_private_network" $providerConfig.network_config.allow_private_network }}
+{{- end }}
 {{- $_ := set $providerCopy "network_config" $networkConfig }}
 {{- end }}
 {{- if $providerConfig.keys }}

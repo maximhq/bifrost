@@ -287,6 +287,7 @@ bifrost:
         max_retries: 5
         retry_backoff_initial_ms: 200
         retry_backoff_max_ms: 10000
+        allow_private_network: true
       concurrency_and_buffer_size:
         concurrency: 50
         buffer_size: 100
@@ -345,6 +346,7 @@ assert_field_value 'providers.openai.network_config.default_request_timeout_in_s
 assert_field_value 'providers.openai.network_config.max_retries' '.providers.openai.network_config.max_retries' '5'
 assert_field_value 'providers.openai.network_config.retry_backoff_initial' '.providers.openai.network_config.retry_backoff_initial' '200'
 assert_field_value 'providers.openai.network_config.retry_backoff_max' '.providers.openai.network_config.retry_backoff_max' '10000'
+assert_field_value 'providers.openai.network_config.allow_private_network' '.providers.openai.network_config.allow_private_network' 'true'
 
 # Concurrency config
 assert_field_value 'providers.openai.concurrency_and_buffer_size.concurrency' '.providers.openai.concurrency_and_buffer_size.concurrency' '50'
