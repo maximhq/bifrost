@@ -1877,6 +1877,201 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "kafka"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Kafka traces plugin (Enterprise). Publishes completed traces as JSON messages to a Kafka topic, keyed by trace ID.",
+                  "properties": {
+                    "brokers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "minItems": 1,
+                      "description": "Kafka broker addresses (required)"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "Kafka topic to publish traces to (required)"
+                    },
+                    "sasl_enabled": {
+                      "type": "boolean",
+                      "description": "Enable SASL authentication. SASL is only activated when both sasl_enabled is true and sasl is set.",
+                      "default": false
+                    },
+                    "sasl": {
+                      "type": "object",
+                      "description": "SASL credentials, used when sasl_enabled is true",
+                      "properties": {
+                        "mechanism": {
+                          "type": "string",
+                          "enum": ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]
+                        },
+                        "username": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL username. Supports env var syntax: \"env.MY_VAR\"."
+                        },
+                        "password": {
+                          "anyOf": [
+                            { "type": "string" },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "value": { "type": "string" },
+                                "env_var": { "type": "string" },
+                                "from_env": { "type": "boolean" }
+                              },
+                              "additionalProperties": false
+                            }
+                          ],
+                          "description": "SASL password. Supports env var syntax: \"env.MY_VAR\"."
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "tls_enabled": {
+                      "type": "boolean",
+                      "description": "Enable TLS for broker connections",
+                      "default": false
+                    },
+                    "ca_cert": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "PEM-encoded CA certificate used to verify the broker's TLS certificate. Omit to use the system CA pool. Supports env var syntax: \"env.KAFKA_CA_CERT\"."
+                    },
+                    "compression": {
+                      "type": "string",
+                      "enum": ["none", "gzip", "snappy", "lz4", "zstd"],
+                      "description": "Compression codec for published messages",
+                      "default": "none"
+                    },
+                    "batch_size": {
+                      "type": "integer",
+                      "description": "Maximum number of messages batched per write",
+                      "default": 100
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "description": "Maximum time (ms) to wait before flushing a batch",
+                      "default": 1000
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist",
+                      "default": false
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip input/output message content from traces before publishing",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are embedded in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["brokers", "topic"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "pubsub"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Google Cloud Pub/Sub traces plugin (Enterprise). Publishes completed traces as JSON messages to a Pub/Sub topic.",
+                  "properties": {
+                    "project_id": {
+                      "type": "string",
+                      "description": "GCP project ID (required)"
+                    },
+                    "topic_id": {
+                      "type": "string",
+                      "description": "Pub/Sub topic ID — just the ID, not the full resource name (required)"
+                    },
+                    "service_account_key": {
+                      "anyOf": [
+                        { "type": "string" },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "value": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "from_env": { "type": "boolean" }
+                          },
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Service account key JSON for authentication. Omit to use Application Default Credentials (ADC). Supports env var syntax: \"env.MY_VAR\"."
+                    },
+                    "auto_create_topic": {
+                      "type": "boolean",
+                      "description": "Create the topic at startup if it does not exist",
+                      "default": false
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from traces before publishing",
+                      "default": false
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are included in published traces"
+                    },
+                    "plugin_span_filter": {
+                      "$ref": "#/$defs/plugin_span_filter"
+                    }
+                  },
+                  "required": ["project_id", "topic_id"],
+                  "additionalProperties": false
+                }
+              }
+            }
           }
         ],
         "additionalProperties": false

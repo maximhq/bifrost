@@ -555,6 +555,43 @@ bifrost:
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
 
+    kafka:
+      enabled: false
+      version: 1
+      config:
+        brokers: []                   # Kafka broker addresses (required when enabled)
+        topic: ""                     # Topic to publish traces to (required when enabled)
+        sasl_enabled: false
+        # sasl:
+        #   mechanism: "PLAIN"        # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+        #   username: "env.KAFKA_USERNAME"
+        #   password: "env.KAFKA_PASSWORD"
+        tls_enabled: false
+        # ca_cert: "env.KAFKA_CA_CERT" # PEM CA certificate to verify the broker. Omit to use the system CA pool.
+        compression: "none"           # none | gzip | snappy | lz4 | zstd
+        batch_size: 100
+        flush_interval_ms: 1000
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
+    pubsub:
+      enabled: false
+      version: 1
+      config:
+        project_id: ""                # GCP project ID (required when enabled)
+        topic_id: ""                  # Pub/Sub topic ID (required when enabled)
+        # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
+        auto_create_topic: false
+        disable_content_logging: false
+        # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
+        #   mode: "exclude"           # "include" or "exclude"
+        #   plugins: ["logging"]
+
     # Custom/dynamic plugins
     custom: []
       # - name: "my-custom-plugin"
